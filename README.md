@@ -18,13 +18,43 @@ This site is published by the GitHub Actions workflow in [site/.github/workflows
 
 - `PAGES_CNAME`: optional custom domain, for example `example.com`
 
+## Current Domain Plan
+
+- Canonical Pages domain: `tiinex.dev`
+- Secondary domain: `tiinex.com`
+- Redirect plan: forward `tiinex.com` to `https://tiinex.dev`
+- Repo source of truth: `CNAME`
+
 ## GitHub Pages Setup
 
 1. Open repository `Settings` -> `Pages`
 2. Choose `Deploy from a branch`
 3. Select `public`
 4. Select `/ (root)` as the folder
-5. If you use a custom domain, set `PAGES_CNAME` so the workflow keeps the `CNAME` file in sync
+5. Set the custom domain to `tiinex.dev`
+6. If you later want the workflow to override the file-based setting, set `PAGES_CNAME`
+
+## Squarespace DNS
+
+For `tiinex.dev`, point the apex domain to GitHub Pages using these records:
+
+- `A` -> `185.199.108.153`
+- `A` -> `185.199.109.153`
+- `A` -> `185.199.110.153`
+- `A` -> `185.199.111.153`
+
+Optional IPv6 records:
+
+- `AAAA` -> `2606:50c0:8000::153`
+- `AAAA` -> `2606:50c0:8000::154`
+- `AAAA` -> `2606:50c0:8000::155`
+- `AAAA` -> `2606:50c0:8000::156`
+
+Optional `www` support for the same canonical domain:
+
+- `CNAME` `www` -> `tiinex.github.io`
+
+For `tiinex.com`, do not point it at the site directly if `tiinex.dev` is canonical. Configure Squarespace or the registrar to redirect it to `https://tiinex.dev`.
 
 ## Manual Publish
 
