@@ -2,8 +2,29 @@
   "title": "Feedback Review Queue",
   "summary": "A small public view of feedback that is waiting for human review.",
   "problem": "The human feedback loop is under-covered and one human lane carries too much of the review burden.",
-  "feedbackAsk": "Useful feedback says what signal would tell you this is wrong or actually held.",
+  "feedbackAsk": "Use @Tiinex feedback: when you want review.",
   "reviewGate": "Nothing here changes direction until a human records a triage decision.",
+  "optInPolicy": {
+    "title": "How To Send Feedback",
+    "summary": "Public messages are only pulled into review when they are clearly addressed to Tiinex and clearly meant as feedback.",
+    "eligibilityRule": "Eligible feedback needs both an address marker and an intent marker.",
+    "requiredParts": [
+      "Address Tiinex directly with @Tiinex or Tiinex:",
+      "Use one intent marker: feedback:, question:, bug:, or idea:",
+      "Keep the message specific enough to review without guessing"
+    ],
+    "examples": [
+      "@Tiinex feedback: the HUD is hard to read on mobile",
+      "@Tiinex question: why keep unseen comments separate?",
+      "@Tiinex bug: copied feedback loses context",
+      "@Tiinex idea: keep images linked instead of pasted"
+    ],
+    "notCollected": [
+      "General chat is not treated as feedback by default",
+      "Casual role mentions do not count as consent",
+      "Human review still decides what matters"
+    ]
+  },
   "principles": [
     "One human-reviewed truth source",
     "Human review outranks automation",

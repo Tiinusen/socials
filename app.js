@@ -41,6 +41,39 @@ function renderStates(states) {
     });
 }
 
+function renderPolicy(policy) {
+    setText("policy-title", policy.title);
+    setText("policy-summary", policy.summary);
+    setText("policy-rule", policy.eligibilityRule);
+
+    const requiredRoot = document.getElementById("policy-required");
+    requiredRoot.innerHTML = "";
+
+    (policy.requiredParts || []).forEach((part) => {
+        const item = document.createElement("li");
+        item.textContent = part;
+        requiredRoot.appendChild(item);
+    });
+
+    const exampleRoot = document.getElementById("policy-examples");
+    exampleRoot.innerHTML = "";
+
+    (policy.examples || []).forEach((example) => {
+        const item = document.createElement("li");
+        item.textContent = example;
+        exampleRoot.appendChild(item);
+    });
+
+    const excludedRoot = document.getElementById("policy-not-collected");
+    excludedRoot.innerHTML = "";
+
+    (policy.notCollected || []).forEach((part) => {
+        const item = document.createElement("li");
+        item.textContent = part;
+        excludedRoot.appendChild(item);
+    });
+}
+
 function renderSample(item) {
     setText("sample-id", item.id);
     setText("sample-source", item.source);
@@ -73,6 +106,7 @@ async function init() {
         setText("hero-state-count", String((model.triageStates || []).length));
         setText("hero-principle-count", String((model.principles || []).length));
 
+        renderPolicy(model.optInPolicy || {});
         renderPrinciples(model.principles || []);
         renderStates(model.triageStates || []);
         renderSample(model.sampleItem || {});
@@ -82,6 +116,9 @@ async function init() {
         setText("feedback-ask", "Useful feedback should name the signal that looks wrong or genuinely held.");
         setText("hero-gate", "No public direction should change until a human records a review decision.");
         setText("problem", error.message);
+        setText("policy-title", "How To Send Feedback");
+        setText("policy-summary", "Use @Tiinex with a clear feedback marker when you want review.");
+        setText("policy-rule", "General chat is not treated as feedback by default.");
         setText("hero-updated", "Update time unavailable.");
         setText("hero-report", "Current report unavailable.");
 
