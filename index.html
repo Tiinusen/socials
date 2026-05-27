@@ -3,167 +3,196 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tiinex Feedback Spine</title>
+    <meta name="description" content="Tiinex builds open infrastructure for owned continuity: traceable, recoverable, portable AI-assisted workflows.">
+    <title>Tiinex — Infrastructure for Owned Continuity</title>
     <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
-    <main class="shell">
-        <section class="hero">
-            <header class="masthead">
-                <div class="brand-lockup">
-                    <img
-                        class="brand-mark"
-                        src="./assets/tiinex-logotype-subtitle-white-transparent.png"
-                        alt="Tiinex"
-                    >
+    <header class="site-header">
+        <a class="brand" href="#top" aria-label="Tiinex home">
+            <img src="./assets/tiinex-logotype-subtitle-white-transparent.png" alt="Tiinex — Infrastructure for Owned Continuity">
+        </a>
+        <nav class="nav" aria-label="Primary navigation">
+            <a href="#why">Why</a>
+            <a href="#runtime">Runtime</a>
+            <a href="#format">Format</a>
+            <a href="#repos">Repos</a>
+            <a href="https://github.com/Tiinex" target="_blank" rel="noopener">GitHub</a>
+        </nav>
+    </header>
+
+    <main id="top">
+        <section class="hero section-pad">
+            <div class="hero-copy">
+                <p class="kicker">Built around operational reality</p>
+                <h1>You own the continuity. We provide the infrastructure.</h1>
+                <p class="lead">
+                    Tiinex explores open continuity infrastructure for AI-assisted workflows that need to be explicit,
+                    recoverable, inspectable, portable, and runtime-agnostic.
+                </p>
+                <div class="hero-actions">
+                    <a class="button primary" href="https://github.com/Tiinex/ai-provenance" target="_blank" rel="noopener">Explore ai-provenance</a>
+                    <a class="button" href="#format">See the format direction</a>
                 </div>
+            </div>
 
-                <nav class="external-links" aria-label="External links">
-                    <ul>
-                        <li><a href="https://github.com/Tiinex" target="_blank" rel="noopener">GitHub</a></li>
-                        <li><a href="https://www.reddit.com/r/Tiinex/" target="_blank" rel="noopener">Reddit</a></li>
-                        <li><a href="https://www.youtube.com/@Tiinex" target="_blank" rel="noopener">YouTube</a></li>
-                        <li><a href="/discord">Discord</a></li>
-                    </ul>
-                </nav>
-
-                <section class="mission-panel" aria-label="Tiinex mission">
-                    <p class="mission-title">Building recoverable AI workflows instead of magical ones</p>
-                    <div class="mission-traits">
-                        <span>Explicit</span>
-                        <span>Recoverable</span>
-                        <span>Observable</span>
-                        <span>Adaptable</span>
-                    </div>
-                </section>
-            </header>
-
-            <div class="hero-layout">
-                <div class="hero-copy">
-                    <p class="eyebrow">Feedback layer</p>
-                    <h1 id="title">Loading feedback spine</h1>
-                    <p id="summary" class="summary">Waiting for canonical feedback data.</p>
-                    <p id="feedback-ask" class="ask">Waiting for useful feedback guidance.</p>
+            <aside class="hero-card" aria-label="Tiinex principles">
+                <p class="card-label">Core principles</p>
+                <div class="principle-grid">
+                    <span>Explicit</span>
+                    <span>Recoverable</span>
+                    <span>Observable</span>
+                    <span>Portable</span>
+                    <span>Yours</span>
                 </div>
+                <p class="card-note">No hidden magic. No forced platform lock-in. Continuity should survive runtimes.</p>
+            </aside>
+        </section>
 
-                <aside class="hero-card" aria-label="Queue snapshot">
-                    <p class="hero-card-label">Queue snapshot</p>
-                    <div class="hero-card-status">
-                        <span id="hero-status" class="status-chip status-captured">loading</span>
-                        <span id="hero-updated" class="hero-updated">Waiting for update time.</span>
-                    </div>
-
-                    <div class="hero-stats">
-                        <div class="hero-stat">
-                            <span class="hero-stat-value" id="hero-state-count">0</span>
-                            <span class="hero-stat-label">triage states</span>
-                        </div>
-
-                        <div class="hero-stat">
-                            <span class="hero-stat-value" id="hero-principle-count">0</span>
-                            <span class="hero-stat-label">public principles</span>
-                        </div>
-                    </div>
-
-                    <div class="hero-card-block">
-                        <p class="hero-card-label">Human gate</p>
-                        <p id="hero-gate">Waiting for review boundary.</p>
-                    </div>
-
-                    <div class="hero-card-block">
-                        <p class="hero-card-label">Current report</p>
-                        <p id="hero-report">Waiting for current report.</p>
-                    </div>
-                </aside>
+        <section id="why" class="section-pad split">
+            <div>
+                <p class="kicker">Why Tiinex</p>
+                <h2>AI work is becoming harder to inspect after the fact.</h2>
+            </div>
+            <div class="copy-stack">
+                <p>
+                    Useful AI workflows often span chats, tools, files, roles, models, and human decisions. When the
+                    continuity is hidden inside a runtime, it becomes difficult to understand what happened, what drifted,
+                    and what can be recovered.
+                </p>
+                <p>
+                    Tiinex treats continuity as an artifact: something you can inspect, move, fork, compress, verify,
+                    and continue from without pretending the system is perfect.
+                </p>
             </div>
         </section>
 
-        <section class="panel problem-panel lane-cyan">
-            <div class="panel-header">
-                <h2>Current Problem</h2>
-                <span class="badge">Human review required</span>
-            </div>
-            <p id="problem" class="problem-copy">Waiting for problem framing.</p>
-        </section>
-
-        <section class="panel policy-panel lane-violet">
-            <div class="panel-header">
-                <h2 id="policy-title">How To Send Feedback</h2>
-                <span class="badge">Opt-in only</span>
+        <section id="runtime" class="section-pad panel runtime-panel">
+            <div class="section-heading">
+                <p class="kicker">Continuity runtime</p>
+                <h2>Traceable interactions become recoverable.</h2>
             </div>
 
-            <div class="policy-grid">
-                <div class="policy-copy">
-                    <p id="policy-summary" class="policy-summary">Waiting for feedback policy.</p>
-                    <p id="policy-rule" class="policy-rule">Waiting for eligibility rule.</p>
-                </div>
-
-                <div class="policy-blocks">
-                    <article class="policy-block">
-                        <h3>Required</h3>
-                        <ul id="policy-required" class="policy-list"></ul>
-                    </article>
-
-                    <article class="policy-block">
-                        <h3>Examples</h3>
-                        <ul id="policy-examples" class="policy-list policy-list-code"></ul>
-                    </article>
-
-                    <article class="policy-block">
-                        <h3>Not Collected By Default</h3>
-                        <ul id="policy-not-collected" class="policy-list"></ul>
-                    </article>
-                </div>
+            <div class="flow" aria-label="Continuity runtime flow">
+                <article>
+                    <strong>Input</strong>
+                    <span>Human, agent, files, context</span>
+                </article>
+                <article>
+                    <strong>Agent</strong>
+                    <span>Model, provider, role, tools</span>
+                </article>
+                <article>
+                    <strong>Trace</strong>
+                    <span>.trace.md record of interaction</span>
+                </article>
+                <article>
+                    <strong>Lineage</strong>
+                    <span>Parent / child continuity tree</span>
+                </article>
+                <article>
+                    <strong>Carry</strong>
+                    <span>Explicit state passed forward</span>
+                </article>
+                <article>
+                    <strong>Follow-up</strong>
+                    <span>Continue, fork, reconstruct, extend</span>
+                </article>
             </div>
         </section>
 
-        <section class="grid">
-            <article class="panel lane-cyan">
-                <div class="panel-header">
-                    <h2>Principles</h2>
-                    <span class="badge badge-muted">One source</span>
-                </div>
-                <ul id="principles" class="pill-list"></ul>
+        <section class="section-pad grid-3">
+            <article class="panel">
+                <p class="kicker">Filesystem foundation</p>
+                <h3>Hidden by default. Inspectable on demand.</h3>
+                <p>
+                    Work can live in hidden `.topics` folders while user-facing clients render conversations, traces,
+                    topics, and evidence in simpler views.
+                </p>
             </article>
-
-            <article class="panel lane-gold">
-                <div class="panel-header">
-                    <h2>Triage States</h2>
-                    <span class="badge badge-muted">Shared states</span>
-                </div>
-                <div id="states" class="state-list"></div>
+            <article class="panel">
+                <p class="kicker">Degradation & recovery</p>
+                <h3>Not every run succeeds. The state should still be truthful.</h3>
+                <p>
+                    Partial, failed, unresolved, and recoverable states are first-class signals instead of being hidden
+                    behind plausible output.
+                </p>
+            </article>
+            <article class="panel">
+                <p class="kicker">Privacy & control</p>
+                <h3>You decide what is captured.</h3>
+                <p>
+                    Continuity is opt-in, movable, compressible, shareable, and deletable. The goal is explicit
+                    continuity, not surveillance memory.
+                </p>
             </article>
         </section>
 
-        <section class="panel sample-panel lane-violet">
-            <div class="panel-header">
-                <h2>Sample Feedback Item</h2>
-                <span id="sample-status" class="status-chip">Waiting</span>
+        <section id="format" class="section-pad panel format-panel">
+            <div class="section-heading">
+                <p class="kicker">Format direction</p>
+                <h2>Simple artifacts before proprietary containers.</h2>
             </div>
 
-            <div class="sample-meta">
-                <span id="sample-id">--</span>
-                <span id="sample-source">--</span>
-                <span id="sample-updated">--</span>
+            <div class="format-grid">
+                <article>
+                    <h3>.trace.md</h3>
+                    <p>Human-readable markdown continuity records with explicit runtime and lineage metadata.</p>
+                </article>
+                <article>
+                    <h3>.trace.zip</h3>
+                    <p>Flat lineage export: simple `.trace.md` files in a zip archive for cross-platform portability.</p>
+                </article>
+                <article>
+                    <h3>Checksums</h3>
+                    <p>Integrity verification for parent edges and exported artifacts without pretending to be a blockchain.</p>
+                </article>
+                <article>
+                    <h3>Remote parents</h3>
+                    <p>Pinned references can let lineage span repos, teams, runtimes, and origins without inheriting hidden trust.</p>
+                </article>
+            </div>
+        </section>
+
+        <section id="repos" class="section-pad repos">
+            <div class="section-heading">
+                <p class="kicker">Start here</p>
+                <h2>Current public work surfaces</h2>
             </div>
 
-            <div class="sample-block">
-                <h3>Report</h3>
-                <p id="sample-report">Waiting for report.</p>
+            <div class="repo-list">
+                <a href="https://github.com/Tiinex/ai-provenance" target="_blank" rel="noopener">
+                    <strong>ai-provenance</strong>
+                    <span>TRACEABLE, `.trace.md`, lineage, recoverability, runtime evidence.</span>
+                </a>
+                <a href="https://github.com/Tiinex/ai-vscode-tools" target="_blank" rel="noopener">
+                    <strong>ai-vscode-tools</strong>
+                    <span>Local chat inspection, session-store tooling, and host utilities.</span>
+                </a>
+                <a href="https://github.com/Tiinex/feedback" target="_blank" rel="noopener">
+                    <strong>feedback</strong>
+                    <span>Experimental topic-oriented feedback and evaluation workflows.</span>
+                </a>
+                <a href="https://github.com/Tiinex/ai" target="_blank" rel="noopener">
+                    <strong>ai</strong>
+                    <span>Maintained role sources, canon, transfer artifacts, and broader continuity context.</span>
+                </a>
             </div>
+        </section>
 
-            <div class="sample-block">
-                <h3>Why It Matters</h3>
-                <p id="sample-why">Waiting for reasoning.</p>
-            </div>
-
-            <div class="sample-block">
-                <h3>Human Decision</h3>
-                <p id="sample-decision">Waiting for decision.</p>
-            </div>
+        <section class="section-pad closing">
+            <p class="kicker">North star</p>
+            <h2>Recoverability is the path to trust.</h2>
+            <p>
+                Built in public. Improved in public. Owned by the people who create the continuity.
+            </p>
         </section>
     </main>
 
-    <script src="./app.js"></script>
+    <footer class="footer">
+        <span>Tiinex</span>
+        <span>Open format. Open ecosystem. Open collaboration.</span>
+        <a href="https://ko-fi.com/Tiinusen" target="_blank" rel="noopener">Support</a>
+    </footer>
 </body>
 </html>
