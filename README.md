@@ -1608,3 +1608,584 @@ Add/Edit single-scroll layout.
 - Rich editor and Raw textarea scroll internally.
 - The outer dialog body no longer scrolls during normal Add/Edit use.
 - On short screens the relation card can collapse to preserve editor space.
+
+
+## v6.155
+
+Root-shaped Add/Continue/Reference templates.
+
+- Add/Continue/Reference markdown templates now follow the Tiinex root envelope shape more closely.
+- Templates now include:
+  - `Envelope Schema`
+  - nested `Parent` block for Continue
+  - nested `Current` block
+  - `Created At` with `YYYY-MM-DD hh:mm:ss`
+  - root-shaped `Continuity Integrity` method entry
+- Continue parent edges now emit `Parent Schema`, `Created At` when known, `Trace`, and recoverable `Origin` hints.
+- Reference drafts remain independent local leaves and point at the selected artifact in the body.
+
+
+## v6.156
+
+Route/history selected lineage state.
+
+- Browser history and Copy link now preserve selected lineage state.
+- Route state now includes:
+  - selected node id
+  - selected path
+  - selected title fallback
+  - view mode: `lineage` or `discovery`
+- Back/forward restore attempts to resolve selection by id, exact path, filename fallback, then title.
+- If the selection is not yet loaded, the viewer keeps a pending selection instead of silently falling back to discovery.
+- Static file `#view=` state and shareable `#state=` routes both receive the selected-lineage fields.
+
+
+## v6.157
+
+Restore workspace plus source flow.
+
+- Fixes regression where the workspace plus button was redirected directly to `New markdown artifact`.
+- Workspace plus now opens the source/material dialog again.
+- New local artifact creation remains available as a secondary option from the source/material dialog.
+- Continue and Reference still open contextual Add flows directly from node cards.
+
+
+## v6.158
+
+Tiinex artifact wizard and reference parent picker.
+
+- Renames the source-dialog launcher from `New markdown artifact` to `New Tiinex artifact`.
+- The launcher opens a wizard first, not the Raw/Rich editor directly.
+- Human-authored schema options are exposed as cards:
+  - Topic
+  - Evidence
+  - Feedback
+  - Reduction
+  - Task
+  - Decision
+  - Pointer
+  - Lineage Upgrade Deferral
+  - Workspace
+  - Raw Tiinex Artifact
+- Runtime/machine-oriented schemas are intentionally excluded from the human wizard.
+- Continue opens the wizard with parent preselected.
+- Reference enters parent-picker mode first.
+- In parent-picker mode, node action rows collapse down to `Select as parent`.
+- Selecting the same node as the reference target becomes a continuation shortcut.
+- After schema/relation selection, the existing Raw/Rich editor remains the fallback content step.
+
+
+## v6.159
+
+Paged Tiinex artifact wizard.
+
+- Splits the Tiinex artifact wizard into smaller pages:
+  - Type
+  - Details
+  - Content editor
+- Type selection advances to Details automatically to reduce mobile clicks.
+- Details page can go back to Type.
+- Content still opens the existing Rich/Raw editor as the final step.
+- The wizard body is smaller and more mobile-friendly because only one step is visible at a time.
+- Schema cards remain limited to human-authored artifact types.
+
+
+## v6.160
+
+Compact source-dialog Tiinex artifact action.
+
+- Shrinks the `New Tiinex artifact` launcher in the source/material dialog.
+- Keeps it as a secondary header action rather than a large call-to-action pill.
+- Height is now closer to the close/header action control family.
+- Mobile width and height are tightened.
+
+
+## v6.161
+
+Tiinex artifact as first Add choice only.
+
+- Moves `New Tiinex artifact` out of the Add dialog header.
+- Shows it as a normal Add choice card on the first Add screen.
+- Removes it from Git source, Explicit URLs, Drag/drop, and other Add substeps.
+- This prevents the artifact option from looking like a Done/Next button in source subflows.
+
+
+## v6.162
+
+Schema-grounded artifact wizard templates.
+
+- Reworks generated Add/Continue/Reference markdown templates against the current Tiinex root and human-authored schema contracts in `Tiinex/docs`.
+- Generated envelopes now use the conventional readable shape:
+  - blank line after `# Continuity Context`
+  - linked `Envelope Schema` when a relative schema path can be generated
+  - nested `Parent` and `Current` blocks
+  - root-shaped `Continuity Integrity` method entry
+- Child/continuation integrity now points `Towards` the parent trace instead of defaulting to `self`.
+- Schema-specific wizard bodies now follow the declared `Artifact Creation Contract` body shapes for:
+  - Topic
+  - Evidence
+  - Feedback
+  - Reduction
+  - Task
+  - Decision
+  - Pointer
+  - Lineage Upgrade Deferral
+- Runtime/machine-oriented schemas remain hidden from the human authoring wizard.
+- The final editor title now says `New Tiinex artifact`, not `New markdown artifact`.
+
+
+## v6.163
+
+Schema-aware low-friction artifact forms.
+
+- Details step now uses schema-aware fields for known human-authored Tiinex artifact types.
+- Known types no longer show a generic markdown body textarea in Details.
+- Raw Tiinex Artifact still uses the raw markdown body textarea.
+- The Content step still opens the shared Rich/Raw markdown editor as the final review/refinement surface.
+- Generated markdown is assembled from small, schema-specific fields.
+- This reduces cognitive load while preserving portable markdown output.
+
+
+## v6.164
+
+Evidence attachment collector.
+
+- Evidence Details now behaves more like an evidence collector.
+- The Details step focuses on:
+  - supported claim
+  - repeatable attachments
+- Attachments currently support:
+  - URL
+  - local file
+- Attachment cards include label, representation, notes, and limits.
+- File attachments are preserved into the local workspace asset map when the evidence artifact is saved.
+- Generated Evidence markdown builds Provenance, Evidence Material, and Interpretation Limits from the attachment list.
+- Responsive layout:
+  - desktop: attachment cards can use two columns
+  - mobile: one column with larger touch-friendly actions
+
+
+## v6.165
+
+Compact Evidence collector and global drop target.
+
+- Evidence Details is more compact to reduce internal scroll.
+- Desktop layout places Supported Claim and Evidence Attachments side by side.
+- Mobile layout remains single-column with touch-friendly Add URL / Add file buttons.
+- While the Evidence step is open, dropping files anywhere on the dialog/window adds them as evidence attachments.
+- Dragging files over the active Evidence dialog shows a global drop affordance.
+
+
+## v6.166
+
+Evidence Details polish.
+
+- Tightens the Evidence Details step so the dialog better fits its content.
+- Removes the extra helper line below the Evidence collector.
+- Keeps claim and attachments side-by-side on desktop.
+- Keeps mobile single-column behavior.
+- Adds a small attachment count pill when attachments exist.
+- Makes attachment actions shorter (`URL`, `File`) and easier to scan.
+- Keeps global drag/drop support from v6.165.
+
+
+## v6.167
+
+Simplified Evidence attachments and draft wording cleanup.
+
+- Evidence attachment cards now show only the useful defaults first:
+  - URL for URL attachments
+  - immutable file name for file attachments
+  - Notes
+- Label, Representation, and Limits are moved behind `More details`.
+- File name is treated as file-derived metadata rather than something the user must re-enter.
+- Representation is still preserved but treated as advanced metadata.
+- Limits are auto-generated when the user does not provide explicit ones.
+- New artifact summary wording no longer defaults to `Draft ... created in Tiinex Viewer.`
+
+
+## v6.168
+
+Evidence attachment metadata chips.
+
+- File attachments no longer repeat the file name inside the card body.
+- File-derived metadata is shown as compact chips near the attachment title:
+  - file type / extension
+  - size
+  - image dimensions when available
+- Image dimensions are read locally in the browser from the dropped/selected file.
+- Metadata is also emitted into generated Evidence markdown when available.
+- URL attachments still show the URL input because the URL is the user-authored target.
+
+
+## v6.169
+
+LLM orientation entrypoint.
+
+- Adds `llms.txt` as a short model-facing entrypoint.
+- Adds `tiinex.app.llm.v1.md` as a Tiinex-style app orientation document.
+- Adds HTML discovery hints:
+  - `link rel="help"` to `llms.txt`
+  - `link rel="help"` to `tiinex.app.llm.v1.md`
+  - `meta name="tiinex:llm-entrypoint"`
+  - hidden `data-tiinex-llm-entrypoint` section
+  - JSON-LD software/application description
+- The orientation explains current app purpose, artifact semantics, Evidence UX, implementation cautions, and conservative source adapter principles.
+
+
+## v6.170
+
+Evidence representation becomes derived metadata.
+
+- Removes editable `Representation` from Evidence attachment details.
+- Shows representation as derived/read-only metadata instead.
+- Adds representation as a metadata chip when available.
+- Lets `Label` take the full advanced-details width.
+- Keeps `Notes` as the primary human field.
+- Keeps `Limits` available as advanced override.
+
+
+## v6.171
+
+Evidence image thumbnails and overlay preview.
+
+- Image attachments now use a thumbnail in the same visual slot as the file icon.
+- Clicking the thumbnail opens an in-app image preview overlay above the current dialog.
+- The preview overlay uses the same local File object URL as the thumbnail.
+- Preview shows attachment metadata chips when available.
+- Escape closes the preview overlay.
+- Non-image attachments keep the existing icon behavior.
+
+
+## v6.172
+
+Restore Discovery search filtering.
+
+- Fixes a regression where Discovery search text updated but non-matching cards stayed visible.
+- Restores search filtering after the display-options override.
+- Keeps Display Options behavior:
+  - leaves only
+  - trace/schema/workspace visibility
+  - schema filter
+  - draft filter
+- Applies the search filter last so typed queries hard-filter Discovery cards again.
+
+
+## v6.173
+
+Stabilize Tree search toolbar.
+
+- Keeps the Tree expand/collapse control slot visible when search returns no folders.
+- The disabled placeholder prevents the search box from jumping left/right as results appear or disappear.
+- No behavior change when folders exist.
+
+
+## v6.174
+
+Dark themed native select controls.
+
+- Styles native select controls and options to match the Tiinex dark theme.
+- Applies to schema-aware wizard dropdowns such as Feedback Disposition and Decision State.
+- Adds dark `color-scheme` hints to modal/wizard containers.
+- Improves selected/hover/disabled option readability where the browser allows option styling.
+
+
+## v6.175
+
+Create directly from schema wizard Details.
+
+- Known schema wizards no longer force the user through the final Rich/Raw markdown review step.
+- Details footer now offers:
+  - primary `Create artifact` / `Create continuation` / `Create reference`
+  - secondary `Review markdown`
+- Raw Tiinex Artifact still uses the markdown editor path.
+- Direct create uses the same generated markdown template as the review path.
+- Evidence direct create preserves file attachments as local workspace assets.
+
+
+## v6.176
+
+Repair local generated artifact indexing.
+
+- Fixes local generated artifacts being indexed as legacy markdown.
+- Root cause: local artifact save/upsert stored markdown in `text`, while the parser reads `content`.
+- New local artifacts now store both `text` and `content`.
+- Existing local/browser-state files with `text` but missing `content` are repaired before indexing.
+- Direct schema wizard create should now produce modern schema-aware nodes immediately.
+
+
+## v6.177
+
+Schema-aware Edit for local known artifacts.
+
+- Local editable artifacts with known Tiinex schemas now open the same schema-aware wizard used by Add.
+- The old Rich/Raw markdown editor remains available through `Review markdown`.
+- Unknown or legacy local markdown still falls back to the raw markdown editor.
+- Save local edit regenerates the markdown from schema-aware fields and writes back to the same local artifact path.
+- Existing Topic/Feedback/Reduction/Task/Decision/Pointer/Workspace fields are populated from the current markdown body where possible.
+
+
+## v6.178
+
+Trim body separator before integrity.
+
+- Fixes schema-aware Edit fields receiving trailing `---` from the body/integrity separator.
+- Parsed node body now strips standalone markdown separators before `# Continuity Integrity`.
+- Edit field extraction also strips separators defensively.
+- This prevents fields such as `Next artifacts` from being populated with `---`.
+- Transform/schema migration is intentionally not implemented in this leaf.
+
+
+## v6.179
+
+Folder-scoped Add and unique root artifact paths.
+
+- New root/local artifacts now receive a unique path automatically.
+- If the target folder already has numeric trace filenames, creation picks the next numeric `.trace.md`.
+- Otherwise creation uses the title slug and appends `-2`, `-3`, etc. when needed.
+- Tree view folders now expose a small Add button.
+- Root note also exposes an Add button for the workspace discovery root.
+- Folder Add opens the regular schema wizard but scopes the generated path to that folder.
+
+
+## v6.180
+
+Export dialog v1.
+
+- Workspace export now opens an Export dialog instead of immediately downloading generated files.
+- Short export modes:
+  - `All`
+  - `Local`
+  - `Sources`
+- `Sources` mode can select one or more source groups.
+- Assets can be included or excluded.
+- Zip exports include:
+  - selected markdown/files
+  - optional preserved assets
+  - `_tiinex/export.manifest.json`
+  - `_tiinex/README.md`
+- Duplicate output paths are disambiguated under `_sources/` or `_assets/`.
+- Export no longer mutates the loaded workspace.
+
+
+## v6.181
+
+Export active-workspace helper fix.
+
+- Adds a compatibility `getActiveWorkspace()` helper used by older/header export code paths.
+- Fixes the console error `ReferenceError: getActiveWorkspace is not defined` when pressing Export.
+- No Export dialog semantics changed from v6.180.
+
+
+## v6.182
+
+URL view-state scroll preservation.
+
+- Adds feed/lineage scroll position to URL route state.
+- Supports both `#state=` route links and static/local `#view=` links.
+- Restores scroll after refresh, route restore, and browser history navigation.
+- Debounces scroll updates with `history.replaceState` so scrolling does not spam history.
+- Copy Link now captures the latest visible feed scroll before copying.
+- Unsaved edit/modal form state is still not URLified.
+
+
+## v6.183
+
+Robust URL scroll lens and focus preservation.
+
+- Captures scroll from both `.post-feed` and broader workspace scroll containers.
+- Saves scroll immediately to a local fallback cache as well as URL route state.
+- Restores scroll over several animation frames/timeouts so async source loading does not reset the viewport.
+- Avoids URL writes while form/editor inputs are active.
+- Attempts to restore focused inputs after a render when the same modal remains open.
+- Copy Link captures current workspace scroll before copying.
+
+
+## v6.184
+
+Encrypted Tiinex export package.
+
+- Adds optional password encryption to Export.
+- Encrypted exports are downloaded as `.tiinex.enc.zip`.
+- The encrypted package wraps the normal exported zip using:
+  - PBKDF2-SHA256
+  - AES-GCM-256
+  - random salt
+  - random IV
+- Drag/drop import detects the Tiinex encrypted package magic header.
+- Import prompts for the password, decrypts locally in the browser, then imports the inner zip.
+- This is app-level Tiinex package encryption, not legacy OS-level ZIP encryption.
+
+
+## v6.185
+
+Archive format and password mode choices.
+
+- Export now separates archive format from password mode.
+- Archive choices:
+  - `zip`
+  - `tar`
+  - `tar.gz`
+- Password choices:
+  - `None`
+  - `Tiinex`
+  - `Zip`
+- Tiinex password mode wraps the selected archive using the app-level encrypted Tiinex package format.
+- Zip password mode generates a traditional ZIP-password archive intended for compatibility with OS archive tools.
+- The inner representation remains the same: user content rooted at `.topics/` when that is the source structure, with `_tiinex/` reserved for export metadata.
+
+
+## v6.186
+
+LICENSE / NOTICE document width polish.
+
+- Policy/notice prose blocks now use the available modal width more consistently.
+- Removes narrow text-column behavior inside large LICENSE and NOTICE dialogs.
+- Keeps wrapping readable with `pre-wrap` and `overflow-wrap`.
+- Does not change the underlying policy detection or export behavior.
+
+
+## v6.187
+
+Transparent encryption labels and Export header polish.
+
+- Password mode labels now name the actual method:
+  - `AES-GCM`
+  - `ZipCrypto`
+- Help text clarifies that AES-GCM mode uses PBKDF2-SHA256 + AES-GCM-256 inside a Tiinex package container.
+- ZipCrypto is labeled as legacy ZIP compatibility, not as stronger encryption.
+- Export modal header now has clearer icon/title separation and stronger visual hierarchy.
+
+
+## v6.188
+
+Visible assets and stable Discovery search width.
+
+- Discovery toolbar search now keeps a fixed responsive width and right alignment.
+- Imported non-lineage files can now be surfaced as Assets.
+- Display Options includes `Show assets` (default off).
+- Empty workspaces with hidden assets show a prompt to enable assets.
+- Asset cards support:
+  - Open/Preview for image and text-like assets
+  - Download
+  - Remove
+- `Show assets` is carried in URL view-state for shareable lens behavior.
+
+
+## v6.189
+
+Fix Discovery toolbar overlap regression.
+
+- Repairs v6.188 toolbar CSS that allowed search to overlap the Feed/Tree toggle.
+- Feed/Tree mode controls now get a reserved left column.
+- Search/tools use a reserved right column.
+- On narrow widths, the toolbar stacks instead of overlapping.
+- No behavior changes to search, tree, or asset visibility.
+
+
+## v6.190
+
+Stabilize Discovery search across Feed and Tree.
+
+- Reserves the Tree expand/collapse icon slot in both Feed and Tree modes.
+- Search now stays in the same horizontal position when switching Feed/Tree.
+- CSS-only patch; no behavior changes.
+
+
+## v6.191
+
+Stabilize Discovery toolbar vertical alignment.
+
+- Makes the Tree expand/collapse button and placeholder slot exactly match the Discovery search box height.
+- Prevents vertical jumping when switching Feed and Tree.
+- CSS-only patch; no behavior changes.
+
+
+## v6.192
+
+Responsive discovery loading and feed windowing.
+
+- Repo discovery no longer re-renders the whole app every small batch by default.
+- GitHub fetches still run in parallel, but UI render is deferred until final indexing unless batch rendering is explicitly enabled.
+- Discovery feed renders a window of cards first instead of every matching card.
+- Adds `Show more` for additional Discovery feed cards.
+- Shows a lightweight loading notice while repo discovery is running.
+- Keeps Tree mode full-structure for now.
+
+
+## v6.193
+
+Lightweight discovery progress bar.
+
+- Replaces verbose loading copy with a compact progress bar.
+- Progress updates imperatively in the DOM while GitHub files are fetched.
+- Avoids re-rendering the whole workspace for every progress tick.
+- Keeps final indexing as the remaining expensive phase.
+
+
+## v6.194
+
+Mobile logo and post action touch-target polish.
+
+- Keeps the Tiinex mark visible in narrow/mobile layouts.
+- Mobile post actions now use an equal-width grid across the card width.
+- Mobile action buttons get larger, predictable touch targets.
+- Desktop layout is intentionally left unchanged.
+
+
+## v6.195
+
+Feed Preview mode for referenced material / attachments.
+
+- Adds a Feed-only Preview toggle in the toolbar icon slot.
+- Preview mode hides cards without referenced material.
+- Cards with material lift the referenced material panel into the feed card.
+- Preview type filters are generated from actual material kinds in the loaded workspace.
+- Preview state is carried in URL/view-state.
+
+
+## v6.196
+
+Multi-select Preview filters and Lineage preview.
+
+- Preview attachment filters are now multi-select toggles.
+- `All` resets Preview filters to show every material type.
+- Preview toggle is available in Lineage mode too.
+- In Lineage mode, Preview lifts material panels into cards without hiding ancestors/parents.
+- Preview multi-select state is included in URL/view-state.
+
+
+## v6.197
+
+Compact Preview filter tray.
+
+- Preview filters now show only selected material types by default.
+- `Types` opens a compact multi-select tray.
+- Selected type badges can be clicked to remove that type.
+- `All` remains the reset/default state.
+- The Preview bar is more compact on mobile.
+- Mobile footer/powered-by chrome is visually reduced.
+
+
+## v6.198
+
+Mobile compact action strip.
+
+- Mobile post actions are now forced into compact equal-width icon columns.
+- Prevents each action from taking a full row in dense mobile feeds.
+- Keeps touch targets reasonable while restoring reading space.
+- Asset cards keep short labels because they have fewer actions.
+
+
+## v6.199
+
+Mobile action strip and scroll chrome compression.
+
+- Mobile post actions now render as a compact horizontal icon strip instead of full-width rows.
+- The action strip keeps equal flexible hit targets while using far less vertical space.
+- On mobile, scrolling down compacts discovery chrome:
+  - source tabs/drop hint
+  - preview filter bar
+  - discovery label chrome
+- Scrolling up expands chrome again.
+- Desktop remains unchanged.

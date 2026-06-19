@@ -2198,3 +2198,732 @@ Validated in sandbox:
 Grounded user feedback:
 
 - Rich editor now behaves much better, but the Add/Edit dialog still showed both modal-level and editor-level scrollbars.
+
+
+## v6.155 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Continue template uses nested `Parent` and `Current` blocks.
+- New/Reference templates include `Envelope Schema`.
+- Continuity footer uses method-entry shape:
+  - `sha256-base64url-c14n-v1`
+  - `Towards`
+  - `Value`
+
+Grounding:
+
+- Tiinex root schema requires `Continuity Context`, `Envelope Schema`, `Current`, and `Continuity Integrity`.
+- Root timestamp shape is `YYYY-MM-DD hh:mm:ss`.
+- Existing Tiinex trace examples use nested `Parent` / `Current` envelope fields rather than flat `Parent: ...`.
+
+
+## v6.156 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- `viewRouteStateV695` includes selected lineage metadata.
+- `routeState` includes selected lineage metadata.
+- `applyViewRouteStateV695` and `applyViewStateToWorkspace` restore selected lineage metadata.
+- Pending selection is preserved when a route is applied before the node is available.
+
+Grounded user feedback:
+
+- Browser back/forward and Copy link preserved the workspace but reopened Discovery even when a lineage was selected.
+
+
+## v6.157 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Removed the v6.143 `renderWorkspaceWithEditAddV6143` plus-button redirect.
+- Workspace plus should call `open-source-modal` again.
+- New markdown artifact is exposed as a secondary launcher inside the source/material modal.
+
+Grounded user feedback:
+
+- Plus button previously added sources/material to a workspace.
+- v6.143 redirected it to only create new traces/schemas/workspace markdowns, removing source-add functionality.
+
+
+## v6.158 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- `New Tiinex artifact` opens `artifact-wizard`.
+- Continue opens `artifact-wizard` with parent selected.
+- Reference enters parent-picker mode before opening the wizard.
+- Human-authored schema cards are present; runtime-like schemas are omitted.
+
+Grounded user feedback:
+
+- The primary add label should say Tiinex artifact, not markdown artifact.
+- Add should be wizard-like with explicit schema/type steps before the editor.
+- Continue and Reference should share the Add/Edit wizard model.
+- Reference should first choose a parent, with selecting the same artifact acting as a continuation shortcut.
+
+
+## v6.159 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- `renderArtifactWizardModalV6158` is overridden via assignment, not a hoisted function declaration.
+- Wizard step state supports `type` and `describe`.
+- `wizard-select-schema` advances to Details.
+- `wizard-next-step` advances from Type to Details.
+- Existing `wizard-open-editor` remains the transition to the Rich/Raw content editor.
+
+Grounded user feedback:
+
+- The wizard looked good, but stacked all steps in one scrollable dialog.
+- Mobile required too much scrolling to create one leaf.
+- Smaller step-by-step dialogs are preferred for fast Add/Continue/Reference flow.
+
+
+## v6.160 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- CSS constrains `.add-artifact-launcher` height, padding, width, font-size, and icon size.
+
+Grounded user feedback:
+
+- `New Tiinex artifact` in the Add/source dialog was too large.
+- Desired height should be closer to the close button for visual symmetry.
+
+
+## v6.161 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- `renderModal` now strips the old header artifact launcher from source modals.
+- First Add screen injects `New Tiinex artifact` as an `add-choice-card`.
+- Source substeps with `modal.addMode` do not show the artifact launcher.
+
+Grounded user feedback:
+
+- `New Tiinex artifact` should sit in the first Add step only.
+- It should not appear in Git source / source subflows where it can be mistaken for a completion action.
+
+
+## v6.162 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Wizard templates now use schema-specific body sections from current Tiinex schema contracts.
+- Generated child artifacts use `Towards: <parent trace>` when a parent exists.
+- New root/local artifacts still use `Towards: self` with pending value.
+- Final editor copy uses `New Tiinex artifact`.
+
+Grounding inspected in `Tiinex/docs`:
+
+- `tiinex.root.v1.schema.md`
+- `tiinex.topic.v1.schema.md`
+- `tiinex.evidence.v1.schema.md`
+- `tiinex.feedback.v1.schema.md`
+- `tiinex.reduction.v1.schema.md`
+- `tiinex.task.v1.schema.md`
+- `tiinex.decision.v1.schema.md`
+- `tiinex.pointer.v1.schema.md`
+- `tiinex.lineage.upgrade.deferral.v1.schema.md`
+- Example evidence traces under `.topics/educational/memes/...`
+
+
+## v6.163 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Known human-authored schema types render schema-aware Details fields.
+- Raw fallback still renders a markdown body textarea.
+- Wizard markdown is assembled from form fields before entering Rich/Raw Content.
+- Generic Rich/Raw editor remains shared for final review and future reuse.
+
+Grounded user feedback:
+
+- Known schemas should not force the user to author markdown in the Details step.
+- The wizard should keep cognitive load focused on provenance fields, not formatting mechanics.
+
+
+## v6.164 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Evidence wizard Details renders supported claim + attachment collector.
+- Add URL creates repeatable URL attachment cards.
+- Add file accepts local files and carries the File object through to final Add.
+- On save, local file attachments are preserved as workspace assets under `assets/` relative to the evidence artifact path.
+- Generated Evidence markdown references attachments with relative paths when applicable.
+
+Not yet implemented:
+
+- Drag/drop directly onto draft Evidence cards.
+- Editing attachment metadata from the final Rich/Raw editor step.
+- Schema-wide attachment patterns for non-Evidence artifacts.
+
+
+## v6.165 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Evidence Details has compact layout overrides.
+- Global dragenter/dragover/drop handlers are gated to the active Evidence wizard step.
+- File drops call the existing attachment path and preserve files on final save.
+
+Not validated in browser here:
+
+- Native drag/drop behavior across all browsers.
+- Touch/mobile file picker ergonomics beyond CSS responsiveness.
+
+
+## v6.166 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Evidence Details active state toggles a body class for targeted layout polish.
+- Evidence collector is more compact and no longer carries the extra bottom hint.
+- Existing global file drop behavior remains in place.
+
+Not validated in browser here:
+
+- Final visual height across different desktop viewport sizes.
+- Native drag/drop behavior across all browsers.
+
+
+## v6.167 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Evidence file attachments no longer expose Label/Representation/Limits by default.
+- Advanced attachment fields remain available behind `More details`.
+- Generated Evidence markdown still emits an `Interpretation Limits` surface.
+- New artifact default summary no longer uses `Draft`.
+
+Repository note:
+
+- `Draft` appears in existing trace content, but no current schema search result indicates it is a first-class root/schema contract field.
+
+
+## v6.168 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- File attachment cards no longer repeat file name in a separate body field.
+- File metadata chips are derived from extension, MIME type, size, and image dimensions when readable.
+- Generated Evidence markdown includes attachment metadata lines when available.
+
+Not validated in browser here:
+
+- Image dimension extraction across all browsers and file types.
+
+
+## v6.169 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- `llms.txt` exists.
+- `tiinex.app.llm.v1.md` exists.
+- `index.html` exposes LLM-readable discovery hints without changing visible UI.
+
+Not browser-validated here:
+
+- Whether every external LLM/tooling surface will fetch linked markdown automatically.
+
+
+## v6.170 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Evidence attachment representation is no longer editable in the UI.
+- Representation remains available for generated markdown as derived attachment metadata.
+- Label uses full-width advanced layout.
+
+
+## v6.171 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Evidence image attachments render thumbnail buttons.
+- Thumbnail click opens an overlay preview without replacing the underlying wizard modal.
+- Escape closes the overlay preview.
+- Non-image attachments keep icon rendering.
+
+Not browser-validated here:
+
+- Object URL lifecycle across repeated add/remove cycles.
+- Preview behavior for SVG/AVIF and uncommon browser image support.
+
+
+## v6.172 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Root cause identified: the later display-options `filteredDiscoveryNodes` override did not apply `ws.discoverySearch`.
+- Late override now combines display options, schema filter, draft filter, and discovery search.
+
+Not browser-validated here:
+
+- Live typing behavior in the UI.
+
+
+## v6.173 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Tree toolbar renders a disabled expand icon placeholder when the filtered result has no folders.
+- Search layout should no longer jump when query has zero matches.
+
+Not browser-validated here:
+
+- Exact toolbar pixel alignment across viewport sizes.
+
+
+## v6.174 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Added dark theme CSS for native selects and option lists.
+
+Caveat:
+
+- Native select dropdown rendering is partly browser/OS controlled. CSS should improve readability in Chromium-based browsers, but exact popup appearance may vary.
+
+
+## v6.175 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Schema-aware Details step can create directly without opening final editor.
+- Review markdown remains available.
+- Raw artifact remains editor-first.
+- Direct Evidence create stores attachments through the existing evidence attachment preservation path.
+
+Not browser-validated here:
+
+- Direct create UX for every schema type.
+- Duplicate path handling beyond existing validation.
+
+
+## v6.176 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- `upsertWorkspaceTextFileV6143` now writes `content`.
+- `computeWorkspaceIndex` repairs old local files that have `text` but missing `content`.
+
+Grounded user report:
+
+- Direct-created Topic appeared as `legacy markdown`.
+- Edit dialog still had the generated markdown, indicating the text existed but parser/index did not see it.
+
+
+## v6.177 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- `open-node-edit` is intercepted for local editable nodes with known schema IDs.
+- Schema-aware edit modal uses `mode: edit` and saves back to the existing node.
+- Review markdown from edit opens the existing markdown edit modal with generated content.
+
+Not browser-validated here:
+
+- Form extraction fidelity for every schema type.
+- Edit behavior for Evidence artifacts with existing attachment markdown.
+
+
+## v6.178 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- `parseTraceFile` is wrapped late using assignment, not a hoisted function declaration.
+- Parsed body and schema-aware edit extraction strip trailing standalone `---`.
+
+Not implemented:
+
+- Schema transform/migration UX. That needs a separate design pass because changing schema type is not always a lossless edit.
+
+
+## v6.179 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- New root wizard paths are generated uniquely instead of colliding on `.topics/new-topic.trace.md`.
+- Tree folder rows include a non-nested Add button to avoid button-inside-button markup.
+- Folder Add passes `folderPathV6179` to the wizard and path generation uses it.
+
+Not implemented:
+
+- Full folder picker dialog.
+- Schema transform/migration UX.
+- Folder-as-schema semantics.
+
+
+## v6.180 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Export button now opens a modal.
+- Export zip includes a manifest and README.
+- Export supports All, Local, and Sources modes.
+- Export can include workspace assets.
+
+Not implemented:
+
+- Full file/folder selection picker.
+- Fork workspace.
+- Merge sources.
+- Move.
+- Final checksum recomputation/finalization during export.
+
+
+## v6.181 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Added `getActiveWorkspace()` compatibility helper before the v6.180 export dialog layer.
+
+Grounded user report:
+
+- Pressing Export raised `ReferenceError: getActiveWorkspace is not defined`.
+
+
+## v6.182 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Route state now carries `scrollTop`, `scrollMode`, and `scrollSelectedPath`.
+- Render pass schedules scroll restoration after DOM is recreated.
+- Scroll handler updates URL route state using debounced replace semantics.
+
+Not browser-validated here:
+
+- Exact scroll restoration after F5 in the user's browser.
+- Browser history behavior after rapid scrolling.
+
+
+## v6.183 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Replaces v6.182's narrow `.post-feed` scroll capture with broader workspace-aware capture.
+- Removes v6.182 document scroll handler and installs a guarded handler.
+- Adds local fallback cache for refreshes where URL replacement has not completed yet.
+- Adds focused input restoration after render.
+
+Not browser-validated here:
+
+- F5 scroll restoration on the user's exact browser.
+- Focus preservation during every async GitHub import render.
+
+
+## v6.184 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Export dialog includes a password/encryption option.
+- Encrypted package import hooks into `fileToImportEntries` before ordinary zip handling.
+- Encryption/decryption use Web Crypto PBKDF2 + AES-GCM.
+
+Validated uploaded export zip from user:
+
+- Zip opens successfully.
+- 360 entries total.
+- 206 `.trace.md` files.
+- 13 `.schema.md` files.
+- `_tiinex/export.manifest.json` exists.
+- No path traversal entries found.
+- No duplicate entry names found.
+- Actual content root remains `.topics`; `_tiinex` is export metadata.
+
+Not implemented:
+
+- Standard OS ZIP encryption.
+- Remote parent traversal of encrypted packages by URL.
+- Password UI for remote fetches.
+
+
+## v6.185 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Export dialog shows Archive and Password choices.
+- Plain zip still uses JSZip.
+- Plain tar is generated locally.
+- Plain tar.gz uses browser `CompressionStream('gzip')` when available.
+- Tiinex password mode wraps any selected archive format.
+- Zip password mode uses traditional ZipCrypto-compatible archive generation.
+
+Not browser-validated here:
+
+- Windows Explorer extraction of Zip password mode.
+- tar.gz support in browsers without `CompressionStream`.
+- Cross-tool compatibility of ZipCrypto archives.
+
+
+## v6.186 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- CSS-only patch widens LICENSE / NOTICE prose containers.
+
+Not browser-validated here:
+
+- Exact modal text width in the user's Chromium build.
+- Whether every historical class variant is still present in current generated policy modals.
+
+
+## v6.187 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Export password labels no longer imply Tiinex invented the encryption method.
+- Header polish is CSS/HTML string replacement only and does not change export behavior.
+
+
+## v6.188 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Added asset visibility support without changing parse/index semantics.
+- Display Options can toggle `showAssets`.
+- Discovery toolbar search width is stabilized through CSS.
+- Asset preview modal supports image and text-like assets.
+
+Not implemented:
+
+- Drop Intent Resolver.
+- Attach/Continue/Reference choice on drop target.
+- Folder picker for asset placement.
+- Schema-specific attachment quick-add from asset cards.
+
+
+## v6.189 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- CSS-only patch.
+- Feed/Tree controls and Discovery search now occupy separate grid columns.
+
+Grounded user report:
+
+- v6.188 search overlapped the Feed/Tree toggle, making view selection difficult.
+
+
+## v6.190 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- CSS reserves a fixed icon column before Discovery search in both Feed and Tree.
+
+Grounded user report:
+
+- Search still shifted horizontally between Feed and Tree because Tree includes an icon before search and Feed does not.
+
+
+## v6.191 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- CSS-only patch.
+- Discovery Tree icon slot and search box both use a fixed 2rem height.
+
+Grounded user report:
+
+- Feed/Tree horizontal position looked stable, but the Tree button was taller than search and caused vertical jitter.
+
+
+## v6.192 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- `discoverGitHubRepoIntoWorkspace` is reassigned late to the responsive v6.192 implementation.
+- Discovery feed uses a render-time filtered window via `filteredDiscoveryNodes` context.
+- User can expand the window with `Show more`.
+
+Not browser-validated here:
+
+- Responsiveness during live GitHub discovery on the user's machine.
+- Whether final indexing/render still produces a noticeable pause for very large repos.
+
+
+## v6.193 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- GitHub discovery implementation is reassigned late to v6.193 progress-aware version.
+- Progress updates use direct DOM mutation plus requestAnimationFrame yields.
+
+Not browser-validated here:
+
+- Whether progress advances smoothly on the user's live GitHub fetch path.
+- Whether final `computeWorkspaceIndex` still causes a short freeze after all files are fetched.
+
+
+## v6.194 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- CSS-only patch.
+- Mobile-only overrides for brand/logo visibility and post action touch targets.
+
+Grounded user report:
+
+- Logo disappeared in mobile view.
+- Quick action buttons were hard to tap and did not use the available width evenly.
+
+
+## v6.195 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Preview mode filters cards through `extractMaterialRefs`.
+- Preview material panel reuses the existing material rendering/lightbox/open/copy actions.
+- Preview state is included in route/view-state wrappers.
+
+Not implemented:
+
+- Drag/drop intent resolver.
+- Schema-specific attachment quick-add.
+- Atlas presentation of preview/attachments.
+
+
+## v6.196 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Preview filters now use an array state while preserving v6.195 single-kind compatibility.
+- Lineage mode injects the Preview toggle into the lineage search toolbar.
+- Lineage preview does not filter out parent chain cards.
+
+Not browser-validated here:
+
+- Exact toolbar layout with Preview toggle in Lineage mode on the user's device.
+- Whether every material kind label is ideal for multi-select mode.
+
+
+## v6.197 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Preview filter tray is controlled by `previewFilterOpen`.
+- Selected filter state still uses the v6.196 multi-select array.
+- Filter tray open state is included in URL/view-state.
+
+Not browser-validated here:
+
+- Exact mobile height reduction on the user's device.
+- Whether the selected-chip truncation threshold is ideal for all labels.
+
+
+## v6.198 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- CSS-only patch.
+- Mobile post action rows now use six compact equal columns.
+
+Grounded user report:
+
+- Mobile action buttons were taking over half the visible feed height because each action appeared on a separate row.
+
+
+## v6.199 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- CSS overrides use direct-child `.lineage-post > .post-actions` selectors to beat older mobile rules.
+- Mobile scroll listener toggles compact workspace chrome after downward scroll.
+
+Not browser-validated here:
+
+- Exact feel of scroll-down/up chrome compression on the user's mobile viewport.
+- Whether any touch target should be slightly larger/smaller after real testing.

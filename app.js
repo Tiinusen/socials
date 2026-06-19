@@ -15509,6 +15509,138 @@ ${bodySections}
 
 
 
+
+
+  // ===== v6.182 URL view-state scroll preservation =====
+  function activeFeedElementForWorkspaceV6182(ws) {
+    if (!ws) return null;
+    const selected = selectedNode(ws);
+    if (selected) {
+      return document.querySelector(`.post-feed.lineage[data-ws="${CSS.escape(ws.id)}"][data-selected="${CSS.escape(selected.id)}"]`);
+    }
+    return document.querySelector(`.post-feed.discovery[data-ws="${CSS.escape(ws.id)}"]`);
+  }
+
+  function feedScrollTopForWorkspaceV6182(ws) {
+    const el = activeFeedElementForWorkspaceV6182(ws);
+    if (el) return Math.max(0, Math.round(el.scrollTop || 0));
+    return Math.max(0, Math.round(ws?.routeScrollTopV6182 || 0));
+  }
+
+  function routeScrollStateForWorkspaceV6182(ws) {
+    const selected = selectedNode(ws);
+    return {
+      scrollTop: feedScrollTopForWorkspaceV6182(ws),
+      scrollMode: selected ? 'lineage' : 'discovery',
+      scrollSelectedPath: selected?.path || ''
+    };
+  }
+
+  function applyRouteScrollStateToWorkspaceV6182(ws, source) {
+    if (!ws || !source) return;
+    ws.routeScrollTopV6182 = Number(source.scrollTop || source.feedScrollTop || 0) || 0;
+    ws.routeScrollModeV6182 = source.scrollMode || (source.selectedPath ? 'lineage' : 'discovery');
+    ws.routeScrollSelectedPathV6182 = source.scrollSelectedPath || source.selectedPath || '';
+  }
+
+  const routeStateBeforeScrollV6182 = routeState;
+  routeState = function routeStateWithScrollV6182() {
+    const state = routeStateBeforeScrollV6182();
+    if (state && Array.isArray(state.sources)) {
+      state.sources.forEach((source, index) => {
+        const ws = app.workspaces[index];
+        Object.assign(source, routeScrollStateForWorkspaceV6182(ws));
+      });
+    }
+    return state;
+  };
+
+  const viewRouteStateBeforeScrollV6182 = viewRouteStateV695;
+  viewRouteStateV695 = function viewRouteStateWithScrollV6182() {
+    const state = viewRouteStateBeforeScrollV6182();
+    if (state && Array.isArray(state.workspaces)) {
+      state.workspaces.forEach((source, index) => {
+        const ws = app.workspaces[index];
+        Object.assign(source, routeScrollStateForWorkspaceV6182(ws));
+      });
+    }
+    return state;
+  };
+
+  const applyViewStateBeforeScrollV6182 = applyViewStateToWorkspace;
+  applyViewStateToWorkspace = function applyViewStateWithScrollV6182(ws, source) {
+    applyViewStateBeforeScrollV6182(ws, source);
+    applyRouteScrollStateToWorkspaceV6182(ws, source);
+  };
+
+  const applyViewRouteStateBeforeScrollV6182 = applyViewRouteStateV695;
+  applyViewRouteStateV695 = function applyViewRouteStateWithScrollV6182(state) {
+    const ok = applyViewRouteStateBeforeScrollV6182(state);
+    if (ok && state && Array.isArray(state.workspaces)) {
+      state.workspaces.forEach((source, index) => applyRouteScrollStateToWorkspaceV6182(app.workspaces[index], source));
+    }
+    return ok;
+  };
+
+  function restoreRouteScrollForWorkspaceV6182(ws) {
+    if (!ws || !ws.routeScrollTopV6182) return;
+    const selected = selectedNode(ws);
+    const expectedMode = selected ? 'lineage' : 'discovery';
+    if (ws.routeScrollModeV6182 && ws.routeScrollModeV6182 !== expectedMode) return;
+    if (expectedMode === 'lineage' && ws.routeScrollSelectedPathV6182 && selected?.path && ws.routeScrollSelectedPathV6182 !== selected.path) return;
+    const el = activeFeedElementForWorkspaceV6182(ws);
+    if (!el) return;
+    const top = Math.max(0, Number(ws.routeScrollTopV6182 || 0));
+    if (!top) return;
+    el.scrollTop = Math.min(top, Math.max(0, el.scrollHeight - el.clientHeight));
+  }
+
+  function restoreRouteScrollV6182() {
+    requestAnimationFrame(() => {
+      app.workspaces.forEach((ws) => restoreRouteScrollForWorkspaceV6182(ws));
+    });
+  }
+
+  const renderBeforeRouteScrollV6182 = render;
+  render = function renderWithRouteScrollV6182() {
+    const result = renderBeforeRouteScrollV6182();
+    restoreRouteScrollV6182();
+    return result;
+  };
+
+  function rememberFeedScrollV6182(el) {
+    if (!el) return;
+    const ws = getWorkspace(el.dataset.ws || '');
+    if (!ws) return;
+    ws.routeScrollTopV6182 = Math.max(0, Math.round(el.scrollTop || 0));
+    ws.routeScrollModeV6182 = el.classList.contains('lineage') ? 'lineage' : 'discovery';
+    const selected = selectedNode(ws);
+    ws.routeScrollSelectedPathV6182 = selected?.path || '';
+  }
+
+  function scheduleScrollRouteReplaceV6182() {
+    if (app.routing?.restoring || app.isBootingFromUrl) return;
+    clearTimeout(app.routeScrollSaveTimerV6182);
+    app.routeScrollSaveTimerV6182 = setTimeout(() => setRouteState('replace'), 180);
+  }
+
+  function onFeedScrollRouteStateV6182(event) {
+    const el = event.target;
+    if (!el || !el.classList || !el.classList.contains('post-feed')) return;
+    rememberFeedScrollV6182(el);
+    scheduleScrollRouteReplaceV6182();
+  }
+
+  document.addEventListener('scroll', onFeedScrollRouteStateV6182, true);
+
+  const copyShareLinkBeforeScrollV6182 = copyShareLink;
+  copyShareLink = function copyShareLinkWithLatestScrollV6182() {
+    document.querySelectorAll('.post-feed[data-ws]').forEach((el) => rememberFeedScrollV6182(el));
+    setRouteState('replace');
+    return copyShareLinkBeforeScrollV6182();
+  };
+
+
   // ===== v6.99 reduce low-signal leaf-candidate badge noise =====
   function relationChipHtmlV699(ws, node, relation, isTarget, inLineage) {
     if (isTarget) return `<span class="badge-soft muted-chip selected-chip">selected leaf</span>`;
@@ -19687,15 +19819,7 @@ Draft body.
     return onActionV645BeforeEditAddV6143(event);
   };
 
-  const renderWorkspaceBeforeEditAddV6143 = renderWorkspace;
-  renderWorkspace = function renderWorkspaceWithEditAddV6143(ws) {
-    const html = renderWorkspaceBeforeEditAddV6143(ws);
-    return html.replace(
-      `data-action="open-source-modal" data-ws="${escapeAttr(ws.id)}"`,
-      `data-action="open-add-artifact" data-ws="${escapeAttr(ws.id)}"`
-    );
-  };
-
+  // v6.157: removed v6.143 workspace-plus redirect. Plus opens source/material modal again.
 
 
 
@@ -20685,6 +20809,5565 @@ Notes:
     if (!field) return;
     updateModalFieldV6143(field, richHtmlToMarkdownV6151(event.target));
   }
+
+
+
+
+  // ===== v6.155 root-shaped Add/Continue/Reference templates =====
+  function rootTimestampV6155(date = new Date()) {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
+  }
+
+  function schemaIdFromTextV6155(value, fallback = 'tiinex.topic.v1') {
+    const text = String(value || '').trim();
+    if (!text) return fallback;
+    const markdown = text.match(/\[([^\]]+)\]\([^)]+\)/);
+    if (markdown) return markdown[1].trim() || fallback;
+    return text.replace(/^Current Schema:\s*/i, '').trim() || fallback;
+  }
+
+  function schemaRefV6155(value, fallback = 'tiinex.topic.v1') {
+    const text = String(value || '').trim();
+    if (/\[[^\]]+\]\([^)]+\)/.test(text)) return text;
+    return schemaIdFromTextV6155(text, fallback);
+  }
+
+  function pathDirPartsV6155(path) {
+    const clean = canonicalWorkspacePath(path || '');
+    const parts = clean.split('/').filter(Boolean);
+    parts.pop();
+    return parts;
+  }
+
+  function relativePathFromToV6155(fromPath, toPath) {
+    const fromDir = pathDirPartsV6155(fromPath);
+    const to = canonicalWorkspacePath(toPath || '').split('/').filter(Boolean);
+    const toFile = to.pop() || '';
+    let i = 0;
+    while (i < fromDir.length && i < to.length && fromDir[i] === to[i]) i += 1;
+    const ups = fromDir.slice(i).map(() => '..');
+    const downs = to.slice(i);
+    return [...ups, ...downs, toFile].filter(Boolean).join('/') || toFile || toPath || '';
+  }
+
+  function displayFileNameV6155(path) {
+    return fileNameFromPath(path || '') || path || 'artifact';
+  }
+
+  function linkForPathV6155(label, href) {
+    const safeLabel = label || displayFileNameV6155(href);
+    return `[${safeLabel}](${href || safeLabel})`;
+  }
+
+  function parentOriginBlockV6155(node, childPath) {
+    const lines = [];
+    const rel = relativePathFromToV6155(childPath, node?.path || '');
+    if (rel) lines.push(`    - [relative](${rel})`);
+    if (node?.browseUrl) lines.push(`    - [browse + git](${node.browseUrl})`);
+    if (node?.rawUrl) lines.push(`    - [raw](${node.rawUrl})`);
+    if (!lines.length) return '';
+    return `  - Origin:\n${lines.join('\n')}\n`;
+  }
+
+  function parentBlockV6155(node, childPath) {
+    if (!node) return '';
+    const rel = relativePathFromToV6155(childPath, node.path || '');
+    const trace = linkForPathV6155(displayFileNameV6155(node.path), rel || node.path || '');
+    const schema = schemaRefV6155(node.currentSchemaText || node.currentSchema, 'tiinex.topic.v1');
+    const created = node.createdAt || node.created || '';
+    return `- Parent
+  - Parent Schema: ${schema}
+${created ? `  - Created At: ${created}\n` : ''}  - Trace: ${trace}
+${parentOriginBlockV6155(node, childPath)}`;
+  }
+
+  function currentBlockV6155(schemaValue, summary, why = '') {
+    const created = rootTimestampV6155();
+    const schema = schemaRefV6155(schemaValue, 'tiinex.topic.v1');
+    return `- Current
+  - Current Schema: ${schema}
+  - Created At: ${created}
+${why ? `  - Why: ${why}\n` : ''}${summary ? `  - Summary: ${summary}\n` : ''}`;
+  }
+
+  function integrityFooterV6155(towards = 'self', value = 'pending') {
+    return `# Continuity Integrity
+
+- sha256-base64url-c14n-v1
+  - Towards: ${towards}
+  - Value: ${value}
+`;
+  }
+
+  defaultArtifactTemplateV6143 = function defaultArtifactTemplateV6155(kind, path, title) {
+    const safeTitle = title || (kind === 'schema' ? 'New Schema' : kind === 'workspace' ? 'New Workspace' : 'New Trace');
+    const schema = kind === 'schema'
+      ? 'tiinex.root.v1'
+      : kind === 'workspace'
+        ? 'tiinex.workspace.v1'
+        : 'tiinex.topic.v1';
+
+    return `# Continuity Context
+- Envelope Schema: tiinex.root.v1
+${currentBlockV6155(schema, 'Draft created in Tiinex Viewer.')}
+---
+
+# ${safeTitle}
+
+Draft body.
+
+---
+
+${integrityFooterV6155('self', 'pending')}`;
+  };
+
+  continuationTemplateV6145 = function continuationTemplateV6155(ws, node, path) {
+    const title = `${node?.title || 'Selected artifact'} continuation`;
+    const schema = node?.currentSchemaText || node?.currentSchema || 'tiinex.topic.v1';
+    const parent = parentBlockV6155(node, path);
+    const summary = 'Draft continuation created in Tiinex Viewer.';
+
+    return `# Continuity Context
+- Envelope Schema: tiinex.root.v1
+${parent}${currentBlockV6155(schema, summary)}
+---
+
+# ${title}
+
+Draft continuation.
+
+---
+
+${integrityFooterV6155('self', 'pending')}`;
+  };
+
+  referenceTemplateV6146 = function referenceTemplateV6155(ws, node, path) {
+    const title = `${node?.title || 'Selected artifact'} reference`;
+    const targetRel = relativePathFromToV6155(path, node?.path || '');
+    const targetHref = targetRel || node?.browseUrl || node?.rawUrl || node?.path || '';
+    const targetLabel = displayFileNameV6155(node?.path || 'reference target');
+
+    return `# Continuity Context
+- Envelope Schema: tiinex.root.v1
+${currentBlockV6155('tiinex.evidence.v1', 'Draft reference created in Tiinex Viewer.')}
+---
+
+# ${title}
+
+## Reference Target
+
+- ${linkForPathV6155(targetLabel, targetHref)}
+
+## Notes
+
+- 
+
+---
+
+${integrityFooterV6155('self', 'pending')}`;
+  };
+
+
+
+
+  // ===== v6.156 route/history selected lineage state =====
+  function selectedNodeRouteDescriptorV6156(ws) {
+    const node = selectedNode(ws);
+    if (!node) return { selectedNodeId: '', selectedPath: '', selectedTitle: '', mode: 'discovery' };
+    return {
+      selectedNodeId: node.id || '',
+      selectedPath: node.path || '',
+      selectedTitle: node.title || '',
+      mode: 'lineage'
+    };
+  }
+
+  function resolveRouteSelectedNodeV6156(ws, source) {
+    if (!ws || !source) return null;
+    const selectedId = source.selectedNodeId || '';
+    const selectedPath = source.selectedPath || '';
+    const selectedTitle = source.selectedTitle || '';
+
+    return (selectedId && ws.nodeById?.get?.(selectedId))
+      || (selectedPath && ws.nodes?.find?.((node) => node.path === selectedPath))
+      || (selectedPath && Array.from(ws.nodeById?.values?.() || []).find((node) => node.path === selectedPath))
+      || (selectedPath && Array.from(ws.nodeById?.values?.() || []).find((node) => fileNameFromPath(node.path) === fileNameFromPath(selectedPath)))
+      || (selectedTitle && Array.from(ws.nodeById?.values?.() || []).find((node) => node.title === selectedTitle))
+      || null;
+  }
+
+  function applySelectedRouteStateV6156(ws, source) {
+    if (!ws || !source) return;
+    const wantsLineage = source.mode === 'lineage' || Boolean(source.selectedNodeId || source.selectedPath || source.selectedTitle);
+    const selected = resolveRouteSelectedNodeV6156(ws, source);
+    if (selected) {
+      ws.selectedNodeId = selected.id;
+      return;
+    }
+    if (wantsLineage) {
+      // Preserve the unresolved selection so it can be retried after async source
+      // loading or parent lazy-load. Do not silently fall back to discovery.
+      ws.pendingSelectedRouteV6156 = {
+        selectedNodeId: source.selectedNodeId || '',
+        selectedPath: source.selectedPath || '',
+        selectedTitle: source.selectedTitle || '',
+        mode: 'lineage'
+      };
+      return;
+    }
+    ws.selectedNodeId = null;
+    ws.pendingSelectedRouteV6156 = null;
+  }
+
+  function resolvePendingSelectedRoutesV6156() {
+    for (const ws of app.workspaces || []) {
+      if (!ws?.pendingSelectedRouteV6156) continue;
+      const selected = resolveRouteSelectedNodeV6156(ws, ws.pendingSelectedRouteV6156);
+      if (selected) {
+        ws.selectedNodeId = selected.id;
+        ws.pendingSelectedRouteV6156 = null;
+      }
+    }
+  }
+
+  function viewRouteStateV695() {
+    const activeIndex = Math.max(0, app.workspaces.findIndex((ws) => ws.id === app.activeWorkspaceId));
+    return {
+      v: 156,
+      kind: 'view',
+      activeIndex,
+      workspaceOffset: Number(app.workspaceOffset || 0),
+      workspaces: app.workspaces.map((ws) => {
+        const selected = selectedNodeRouteDescriptorV6156(ws);
+        return {
+          label: workspaceDisplayLabel(ws),
+          selectedNodeId: selected.selectedNodeId,
+          selectedPath: selected.selectedPath,
+          selectedTitle: selected.selectedTitle,
+          mode: selected.mode,
+          discoveryView: ws.discoveryView || 'feed',
+          discoveryFilterSchema: ws.discoveryFilterSchema || ws.filterSchema || 'all',
+          discoverySearch: ws.discoverySearch || '',
+          lineageSearch: ws.lineageSearch || ''
+        };
+      })
+    };
+  }
+
+  function applyViewRouteStateV695(state) {
+    if (!state || state.kind !== 'view') return false;
+    const workspaces = Array.isArray(state.workspaces) ? state.workspaces : [];
+    app.pendingViewRouteStateV6156 = state;
+
+    workspaces.forEach((source, index) => {
+      const ws = app.workspaces[index];
+      if (!ws) return;
+      ws.discoveryView = source.discoveryView || ws.discoveryView || 'feed';
+      ws.discoveryFilterSchema = source.discoveryFilterSchema || source.filterSchema || ws.discoveryFilterSchema || 'all';
+      ws.filterSchema = ws.discoveryFilterSchema;
+      ws.discoverySearch = source.discoverySearch || '';
+      ws.lineageSearch = source.lineageSearch || '';
+      applySelectedRouteStateV6156(ws, source);
+    });
+
+    const count = visibleWorkspaceCount();
+    const activeIndex = Math.max(0, Math.min(Number(state.activeIndex || 0), app.workspaces.length - 1));
+    const maxOffset = Math.max(0, app.workspaces.length - count);
+    app.activeWorkspaceId = app.workspaces[activeIndex]?.id || app.workspaces[0]?.id || null;
+    app.workspaceOffset = Math.max(0, Math.min(Number(state.workspaceOffset || activeIndex || 0), maxOffset));
+    if (app.activeWorkspaceId) focusWorkspaceWindow(app.activeWorkspaceId);
+    return true;
+  }
+
+  function routeState() {
+    return {
+      v: 156,
+      activeIndex: Math.max(0, workspaceIndex(app.activeWorkspaceId)),
+      workspaceOffset: app.workspaceOffset || 0,
+      sources: app.workspaces.map((ws) => {
+        const selected = selectedNodeRouteDescriptorV6156(ws);
+        return {
+          label: ws.label,
+          urls: workspaceSourceUrls(ws),
+          selectedNodeId: selected.selectedNodeId,
+          selectedPath: selected.selectedPath,
+          selectedTitle: selected.selectedTitle,
+          mode: selected.mode,
+          layoutMode: ws.layoutMode || 'expanded',
+          discoveryFilterSchema: ws.discoveryFilterSchema || ws.filterSchema || 'all',
+          discoverySearch: ws.discoverySearch || '',
+          lineageSearch: ws.lineageSearch || '',
+          expandedPaths: ws.nodes.filter((node) => node.expanded).map((node) => node.path)
+        };
+      }).filter((source) => source.urls.length)
+    };
+  }
+
+  function applyViewStateToWorkspace(ws, source) {
+    if (!ws || !source) return;
+    ws.layoutMode = source.layoutMode || 'expanded';
+    ws.discoveryView = source.discoveryView || ws.discoveryView || 'feed';
+    ws.discoveryFilterSchema = source.discoveryFilterSchema || source.filterSchema || 'all';
+    ws.filterSchema = ws.discoveryFilterSchema;
+    ws.discoverySearch = source.discoverySearch || '';
+    ws.lineageSearch = source.lineageSearch || '';
+    const expanded = new Set(source.expandedPaths || []);
+    ws.nodes.forEach((node) => {
+      node.expanded = expanded.has(node.path);
+    });
+    applySelectedRouteStateV6156(ws, source);
+  }
+
+  const computeWorkspaceIndexBeforeRouteSelectionV6156 = computeWorkspaceIndex;
+  computeWorkspaceIndex = function computeWorkspaceIndexWithRouteSelectionV6156(ws) {
+    computeWorkspaceIndexBeforeRouteSelectionV6156(ws);
+    resolvePendingSelectedRoutesV6156();
+  };
+
+  const renderBeforeRouteSelectionV6156 = render;
+  render = function renderWithRouteSelectionV6156() {
+    resolvePendingSelectedRoutesV6156();
+    return renderBeforeRouteSelectionV6156();
+  };
+
+  function copyShareLink() {
+    setRouteState('replace');
+    const hasLocalOnly = app.workspaces.some((ws) => !Array.from(ws.files?.values?.() || []).some((f) => f.rawUrl && !f.isGenerated));
+    const isEmpty = !app.workspaces.length;
+    navigator.clipboard?.writeText(location.href).then(
+      () => toast(
+        isEmpty
+          ? 'Copied empty viewer link.'
+          : (hasLocalOnly ? 'Copied link. Local/uploaded workspaces are not fully shareable until exported or published.' : 'Copied current viewer link including selected lineage.'),
+        isEmpty ? 'ok' : (hasLocalOnly ? 'warn' : 'ok')
+      ),
+      () => toast('Could not copy automatically. Copy the address bar URL.', 'warn')
+    );
+  }
+
+
+
+
+  // ===== v6.157 restore workspace plus source flow =====
+  function addArtifactLauncherButtonV6157(wsId) {
+    return `<button class="tv-btn subtle add-artifact-launcher" data-action="open-add-artifact" data-ws="${escapeAttr(wsId || '')}" title="Create a new local markdown artifact"><i class="fa-solid fa-file-circle-plus"></i>New markdown artifact</button>`;
+  }
+
+  const renderModalBeforeAddLauncherV6157 = renderModal;
+  renderModal = function renderModalWithAddLauncherV6157(modal) {
+    const html = renderModalBeforeAddLauncherV6157(modal);
+    if (!modal || modal.type !== 'source') return html;
+    const wsId = modal.wsId || app.activeWorkspaceId || '';
+    const launcher = addArtifactLauncherButtonV6157(wsId);
+
+    if (html.includes('data-action="open-add-artifact"')) return html;
+
+    if (html.includes('data-action="close-modal"')) {
+      return html.replace(/(<button[^>]+data-action="close-modal"[\s\S]*?<\/button>)/, `${launcher}$1`);
+    }
+    return html.replace('</div></div>', `${launcher}</div></div>`);
+  };
+
+
+
+
+  // ===== v6.158 Tiinex artifact wizard and reference parent picker =====
+  function humanSchemaOptionsV6158() {
+    return [
+      {
+        id: 'tiinex.topic.v1',
+        label: 'Topic',
+        icon: 'fa-diagram-project',
+        suffix: '.trace.md',
+        summary: 'A topic/root or continuation note with context, carry-forward intent, and readable body.',
+        bodyLabel: 'Topic body',
+        body: '## Source Context\n\nWhat this artifact is about.\n\n## Carry Forward\n\nWhat the next reader should preserve.'
+      },
+      {
+        id: 'tiinex.evidence.v1',
+        label: 'Evidence',
+        icon: 'fa-paperclip',
+        suffix: '.trace.md',
+        summary: 'A bounded evidence slice with source, observation, limits, and uncertainty.',
+        bodyLabel: 'Evidence body',
+        body: '## Source\n\n- \n\n## Observation\n\nWhat was observed.\n\n## Limits\n\nWhat this evidence does not prove.'
+      },
+      {
+        id: 'tiinex.feedback.v1',
+        label: 'Feedback',
+        icon: 'fa-comment-dots',
+        suffix: '.trace.md',
+        summary: 'Directed feedback with target, received feedback, disposition, and limits.',
+        bodyLabel: 'Feedback body',
+        body: '## Target\n\nWhat the feedback applies to.\n\n## Received Feedback\n\nWhat was said.\n\n## Disposition\n\nAccept / reject / defer / narrow.\n\n## Limits\n\nWhat remains uncertain.'
+      },
+      {
+        id: 'tiinex.reduction.v1',
+        label: 'Reduction',
+        icon: 'fa-compress',
+        suffix: '.trace.md',
+        summary: 'A reduction artifact that preserves carry-forward state, loss, and uncertainty.',
+        bodyLabel: 'Reduction body',
+        body: '## Carry-Forward State\n\nThe smallest useful claim to carry forward.\n\n## Loss and Uncertainty\n\nWhat was dropped or remains uncertain.\n\n## Validation\n\nHow a later reader can check this reduction.'
+      },
+      {
+        id: 'tiinex.task.v1',
+        label: 'Task',
+        icon: 'fa-list-check',
+        suffix: '.trace.md',
+        summary: 'A bounded task or handoff with target, constraints, validation, and postback.',
+        bodyLabel: 'Task body',
+        body: '## Target\n\nWho or what should act.\n\n## Leaf\n\nThe smallest reversible task.\n\n## Constraints\n\nBoundaries and non-goals.\n\n## Validation\n\nHow completion should be checked.\n\n## Postback Expectation\n\nWhat evidence should come back.'
+      },
+      {
+        id: 'tiinex.decision.v1',
+        label: 'Decision',
+        icon: 'fa-scale-balanced',
+        suffix: '.trace.md',
+        summary: 'A decision artifact with context, choice, reasoning, and deferrals.',
+        bodyLabel: 'Decision body',
+        body: '## Decision\n\nThe selected path.\n\n## Context\n\nWhy this decision exists.\n\n## Options Considered\n\n- \n\n## Reasoning\n\nWhy this option was selected.\n\n## Deferred\n\nWhat is intentionally not decided.'
+      },
+      {
+        id: 'tiinex.pointer.v1',
+        label: 'Pointer',
+        icon: 'fa-link',
+        suffix: '.trace.md',
+        summary: 'A pointer to another artifact, source, or continuity target without overclaiming ownership.',
+        bodyLabel: 'Pointer body',
+        body: '## Target\n\n- \n\n## Why This Pointer Exists\n\nWhat this pointer lets the next reader find.\n\n## Resolution Notes\n\nHow to verify or follow it.'
+      },
+      {
+        id: 'tiinex.lineage.upgrade.deferral.v1',
+        label: 'Lineage Upgrade Deferral',
+        icon: 'fa-clock-rotate-left',
+        suffix: '.trace.md',
+        summary: 'A human decision to acknowledge but defer lineage repair or upgrade work.',
+        bodyLabel: 'Deferral body',
+        body: '## Deferred Upgrade\n\nWhat should eventually be repaired or upgraded.\n\n## Keep\n\nWhat should remain unchanged for now.\n\n## Reason\n\nWhy the upgrade is deferred.\n\n## Next Review\n\nWhen or how to revisit.'
+      },
+      {
+        id: 'tiinex.workspace.v1',
+        label: 'Workspace',
+        icon: 'fa-folder-tree',
+        suffix: '.workspace.md',
+        summary: 'A markdown-first workspace artifact for describing a local/review workspace.',
+        bodyLabel: 'Workspace body',
+        body: '## Workspace Scope\n\nWhat this workspace contains.\n\n## Sources\n\n- \n\n## Notes\n\nWhat the next reader should know.'
+      },
+      {
+        id: 'raw',
+        label: 'Raw Tiinex Artifact',
+        icon: 'fa-code',
+        suffix: '.trace.md',
+        summary: 'Fallback authoring surface for unusual or not-yet-modeled human artifacts.',
+        bodyLabel: 'Raw body',
+        body: 'Draft body.'
+      }
+    ];
+  }
+
+  function schemaOptionByIdV6158(id) {
+    return humanSchemaOptionsV6158().find((option) => option.id === id) || humanSchemaOptionsV6158()[0];
+  }
+
+  function slugifyTitleV6158(title) {
+    return String(title || 'new-artifact')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 64) || 'new-artifact';
+  }
+
+  function wizardModeCopyV6158(modal) {
+    const mode = modal?.mode || 'new';
+    if (mode === 'continue') {
+      return {
+        kicker: 'Continue',
+        title: 'Create continuation leaf',
+        lead: 'Choose the human-authored Tiinex artifact shape for the child leaf.',
+        icon: 'fa-code-branch',
+        button: 'Continue to content'
+      };
+    }
+    if (mode === 'reference') {
+      return {
+        kicker: 'Reference',
+        title: 'Create reference leaf',
+        lead: 'Choose the artifact shape that will carry a reference to the selected material.',
+        icon: 'fa-link',
+        button: 'Continue to content'
+      };
+    }
+    return {
+      kicker: 'Add',
+      title: 'Create Tiinex artifact',
+      lead: 'Choose a human-authored Tiinex artifact type before editing content.',
+      icon: 'fa-file-circle-plus',
+      button: 'Continue to content'
+    };
+  }
+
+  function wizardNodeByIdV6158(ws, id) {
+    return id ? ws?.nodeById?.get?.(id) || null : null;
+  }
+
+  function wizardRelationCardV6158(ws, modal) {
+    const mode = modal?.mode || 'new';
+    const parent = wizardNodeByIdV6158(ws, modal?.parentNodeId);
+    const referenced = wizardNodeByIdV6158(ws, modal?.referencedNodeId);
+
+    if (mode === 'new' && !parent && !referenced) {
+      return `<div class="wizard-relation-card neutral"><div class="wizard-relation-icon"><i class="fa-solid fa-seedling"></i></div><div><strong>New local artifact</strong><p>No parent is selected yet. This can become a root, or you can use Continue/Reference from an existing card.</p></div></div>`;
+    }
+
+    const rows = [];
+    if (parent) rows.push(`<div><strong>Parent</strong><span>${escapeHtml(parent.title || parent.path)}</span></div>`);
+    if (referenced) rows.push(`<div><strong>Reference target</strong><span>${escapeHtml(referenced.title || referenced.path)}</span></div>`);
+    const relation = mode === 'continue' ? 'Continuation relation' : mode === 'reference' ? 'Reference relation' : 'Selected relation';
+    const icon = mode === 'continue' ? 'fa-code-branch' : mode === 'reference' ? 'fa-link' : 'fa-diagram-project';
+    return `<div class="wizard-relation-card ${escapeAttr(mode)}"><div class="wizard-relation-icon"><i class="fa-solid ${icon}"></i></div><div><strong>${escapeHtml(relation)}</strong><p>${escapeHtml(mode === 'reference' ? 'This draft will be placed under the selected parent and point back to the referenced artifact.' : 'This draft will be created as a child of the selected parent artifact.')}</p><div class="wizard-relation-rows">${rows.join('')}</div></div></div>`;
+  }
+
+  function defaultWizardTitleV6158(ws, modal, option) {
+    const parent = wizardNodeByIdV6158(ws, modal?.parentNodeId);
+    const referenced = wizardNodeByIdV6158(ws, modal?.referencedNodeId);
+    if (modal?.title) return modal.title;
+    if (modal?.mode === 'continue' && parent) return `${parent.title || 'Selected artifact'} continuation`;
+    if (modal?.mode === 'reference' && referenced) return `${referenced.title || 'Selected artifact'} reference`;
+    return `New ${option.label}`;
+  }
+
+  function defaultWizardSummaryV6158(modal, option) {
+    if (modal?.summary) return modal.summary;
+    if (modal?.mode === 'continue') return `Continuation ${option.label.toLowerCase()} created in Tiinex Viewer.`;
+    if (modal?.mode === 'reference') return `Reference ${option.label.toLowerCase()} created in Tiinex Viewer.`;
+    return `Draft ${option.label.toLowerCase()} created in Tiinex Viewer.`;
+  }
+
+  function renderArtifactWizardModalV6158(modal) {
+    const ws = getWorkspace(modal.wsId);
+    if (!ws) return '';
+    const options = humanSchemaOptionsV6158();
+    const selectedId = modal.schemaId || options[0].id;
+    const selected = schemaOptionByIdV6158(selectedId);
+    const copy = wizardModeCopyV6158(modal);
+    const title = defaultWizardTitleV6158(ws, modal, selected);
+    const summary = defaultWizardSummaryV6158(modal, selected);
+    const body = typeof modal.body === 'string' ? modal.body : selected.body;
+
+    return `<div class="modal-backdrop-custom focus-modal artifact-wizard-backdrop" role="dialog" aria-modal="true" aria-labelledby="artifact-wizard-title">
+      <div class="modal-panel artifact-wizard-panel">
+        <div class="modal-header-lite artifact-wizard-head">
+          <div>
+            <p class="kicker">${escapeHtml(copy.kicker)}</p>
+            <h2 class="modal-title-lite" id="artifact-wizard-title"><i class="fa-solid ${escapeAttr(copy.icon)}"></i>${escapeHtml(copy.title)}</h2>
+            <p class="text-secondary mb-0">${escapeHtml(copy.lead)}</p>
+          </div>
+          <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="artifact-wizard-body">
+          ${wizardRelationCardV6158(ws, modal)}
+          <section class="wizard-step">
+            <div class="wizard-step-head"><span>1</span><div><strong>Choose Tiinex artifact type</strong><p>Runtime-oriented schemas are hidden here; this list is for human-authored artifacts.</p></div></div>
+            <div class="wizard-schema-grid">
+              ${options.map((option) => `<button type="button" class="wizard-schema-card ${option.id === selectedId ? 'selected' : ''}" data-action="wizard-select-schema" data-schema="${escapeAttr(option.id)}" data-ws="${escapeAttr(ws.id)}">
+                <i class="fa-solid ${escapeAttr(option.icon)}"></i>
+                <strong>${escapeHtml(option.label)}</strong>
+                <small>${escapeHtml(option.suffix)}</small>
+                <p>${escapeHtml(option.summary)}</p>
+              </button>`).join('')}
+            </div>
+          </section>
+          <section class="wizard-step">
+            <div class="wizard-step-head"><span>2</span><div><strong>Describe the leaf</strong><p>These fields seed the Rich/Raw editor. You can still refine the generated markdown before creating it.</p></div></div>
+            <div class="wizard-fields">
+              <label class="field-label">Title<input class="form-control tv-input" data-field="wizardTitle" value="${escapeAttr(title)}"></label>
+              <label class="field-label">Summary<input class="form-control tv-input" data-field="wizardSummary" value="${escapeAttr(summary)}"></label>
+              <label class="field-label wizard-body-field">${escapeHtml(selected.bodyLabel || 'Body')}<textarea class="form-control tv-textarea wizard-body-textarea" data-field="wizardBody" spellcheck="true">${escapeHtml(body)}</textarea></label>
+            </div>
+          </section>
+          <div class="modal-footer-actions artifact-wizard-actions">
+            <button class="tv-btn primary" data-action="wizard-open-editor" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-arrow-right"></i>${escapeHtml(copy.button)}</button>
+            <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  const renderModalBeforeArtifactWizardV6158 = renderModal;
+  renderModal = function renderModalWithArtifactWizardV6158(modal) {
+    if (modal?.type === 'artifact-wizard') return renderArtifactWizardModalV6158(modal);
+    return renderModalBeforeArtifactWizardV6158(modal);
+  };
+
+  function openArtifactWizardV6158(ws, options = {}) {
+    if (!ws) return;
+    const schemaId = options.schemaId || 'tiinex.topic.v1';
+    const option = schemaOptionByIdV6158(schemaId);
+    app.modal = {
+      type: 'artifact-wizard',
+      wsId: ws.id,
+      mode: options.mode || 'new',
+      parentNodeId: options.parentNodeId || '',
+      referencedNodeId: options.referencedNodeId || '',
+      schemaId,
+      title: options.title || '',
+      summary: options.summary || '',
+      body: typeof options.body === 'string' ? options.body : option.body
+    };
+    render();
+  }
+
+  function wizardKindForSchemaV6158(schemaId) {
+    return schemaId === 'tiinex.workspace.v1' ? 'workspace' : 'trace';
+  }
+
+  function wizardPathForV6158(ws, modal, option, title) {
+    const kind = wizardKindForSchemaV6158(option.id);
+    if (modal.mode === 'continue' && modal.parentNodeId) {
+      const parent = wizardNodeByIdV6158(ws, modal.parentNodeId);
+      if (parent && kind === 'trace') return nextSiblingTracePathV6145(parent);
+    }
+    if (modal.mode === 'reference' && modal.parentNodeId) {
+      const parent = wizardNodeByIdV6158(ws, modal.parentNodeId);
+      if (parent && kind === 'trace') return nextSiblingTracePathV6145(parent).replace(/\.trace\.md$/i, '-reference.trace.md');
+    }
+    const slug = slugifyTitleV6158(title || option.label);
+    if (kind === 'workspace') return `.topics/workspaces/${slug}.workspace.md`;
+    return `.topics/${slug}.trace.md`;
+  }
+
+  function relationReferenceBodyV6158(ws, modal, path) {
+    const referenced = wizardNodeByIdV6158(ws, modal.referencedNodeId);
+    if (!referenced) return '';
+    const targetRel = relativePathFromToV6155(path, referenced.path || '');
+    const href = targetRel || referenced.browseUrl || referenced.rawUrl || referenced.path || '';
+    return `\n## Reference Target\n\n- ${linkForPathV6155(displayFileNameV6155(referenced.path || 'reference target'), href)}\n`;
+  }
+
+  function wizardTemplateV6158(ws, modal) {
+    const option = schemaOptionByIdV6158(modal.schemaId || 'tiinex.topic.v1');
+    const schema = option.id === 'raw' ? 'tiinex.topic.v1' : option.id;
+    const title = defaultWizardTitleV6158(ws, modal, option);
+    const summary = defaultWizardSummaryV6158(modal, option);
+    const body = typeof modal.body === 'string' ? modal.body : option.body;
+    const path = wizardPathForV6158(ws, modal, option, title);
+    const parent = wizardNodeByIdV6158(ws, modal.parentNodeId);
+    const parentBlock = parent ? parentBlockV6155(parent, path) : '';
+    const referenceBlock = modal.mode === 'reference' ? relationReferenceBodyV6158(ws, modal, path) : '';
+    return {
+      kind: wizardKindForSchemaV6158(option.id),
+      path,
+      title,
+      schema,
+      text: `# Continuity Context\n- Envelope Schema: tiinex.root.v1\n${parentBlock}${currentBlockV6155(schema, summary)}---\n\n# ${title}\n\n${body}${referenceBlock}\n\n---\n\n${integrityFooterV6155('self', 'pending')}`
+    };
+  }
+
+  function enterReferenceParentPickerV6158(ws, referencedNode) {
+    app.modal = null;
+    app.parentPickerV6158 = {
+      wsId: ws.id,
+      referencedNodeId: referencedNode.id,
+      startedAt: Date.now()
+    };
+    render();
+    toast('Select a parent for the reference leaf.', 'ok');
+  }
+
+  function parentPickerActiveForV6158(ws) {
+    return Boolean(app.parentPickerV6158 && (!ws || app.parentPickerV6158.wsId === ws.id));
+  }
+
+  function renderParentPickerBannerV6158(ws) {
+    if (!parentPickerActiveForV6158(ws)) return '';
+    const referenced = wizardNodeByIdV6158(ws, app.parentPickerV6158.referencedNodeId);
+    return `<div class="parent-picker-banner-v6158">
+      <div><strong><i class="fa-solid fa-link"></i>Select parent for reference</strong><p>Reference target: ${escapeHtml(referenced?.title || referenced?.path || 'selected artifact')}. Choose where the new leaf belongs.</p></div>
+      <button class="tv-btn tiny subtle" data-action="cancel-parent-picker" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-xmark"></i>Cancel</button>
+    </div>`;
+  }
+
+  const renderWorkspaceFeedBeforeParentPickerV6158 = renderWorkspaceFeed;
+  renderWorkspaceFeed = function renderWorkspaceFeedWithParentPickerV6158(ws, selected) {
+    const html = renderWorkspaceFeedBeforeParentPickerV6158(ws, selected);
+    if (!parentPickerActiveForV6158(ws)) return html;
+    return html.replace('<div class="post-feed', `${renderParentPickerBannerV6158(ws)}<div class="post-feed`);
+  };
+
+  const renderNodePostBeforeParentPickerV6158 = renderNodePost;
+  renderNodePost = function renderNodePostWithParentPickerV6158(ws, node, options = {}) {
+    let html = renderNodePostBeforeParentPickerV6158(ws, node, options);
+    if (!parentPickerActiveForV6158(ws)) return html;
+    const button = `<button class="post-action select-parent-action" data-action="select-reference-parent" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="Select as parent for reference leaf" aria-label="Select as parent"><i class="fa-solid fa-location-crosshairs"></i>Select as parent</button>`;
+    const footerIndex = html.lastIndexOf('</div>');
+    if (footerIndex < 0) return html + button;
+    return html.slice(0, footerIndex) + button + html.slice(footerIndex);
+  };
+
+  const renderBeforeParentPickerClassV6158 = render;
+  render = function renderWithParentPickerClassV6158() {
+    const result = renderBeforeParentPickerClassV6158();
+    document.body.classList.toggle('parent-picker-active-v6158', Boolean(app.parentPickerV6158));
+    return result;
+  };
+
+  const addArtifactLauncherButtonBeforeV6158 = addArtifactLauncherButtonV6157;
+  addArtifactLauncherButtonV6157 = function addArtifactLauncherButtonV6158(wsId) {
+    return `<button class="tv-btn subtle add-artifact-launcher" data-action="open-artifact-wizard" data-ws="${escapeAttr(wsId || '')}" title="Create a new Tiinex artifact"><i class="fa-solid fa-file-circle-plus"></i>New Tiinex artifact</button>`;
+  };
+
+  const updateModalFieldBeforeWizardV6158 = updateModalFieldV6143;
+  updateModalFieldV6143 = function updateModalFieldWithWizardV6158(field, value) {
+    if (app.modal?.type === 'artifact-wizard') {
+      if (field === 'wizardTitle') { app.modal.title = value; return true; }
+      if (field === 'wizardSummary') { app.modal.summary = value; return true; }
+      if (field === 'wizardBody') { app.modal.body = value; return true; }
+    }
+    return updateModalFieldBeforeWizardV6158(field, value);
+  };
+
+  const onActionV645BeforeWizardV6158 = onActionV645;
+  onActionV645 = async function wizardActionV6158(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+    const label = String(event.currentTarget?.textContent || '').trim().toLowerCase();
+    const hasNodeContext = Boolean(event.currentTarget?.dataset?.ws && event.currentTarget?.dataset?.node);
+
+    if (action === 'open-artifact-wizard' || action === 'open-add-artifact') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || app.activeWorkspaceId || '');
+      if (!ws) return toast('No workspace selected.', 'warn');
+      openArtifactWizardV6158(ws, { mode: 'new' });
+      return;
+    }
+
+    if (action === 'wizard-select-schema') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'artifact-wizard') return;
+      const option = schemaOptionByIdV6158(event.currentTarget.dataset.schema || 'tiinex.topic.v1');
+      app.modal.schemaId = option.id;
+      app.modal.body = option.body;
+      render();
+      return;
+    }
+
+    if (action === 'wizard-open-editor') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
+      if (!ws || !app.modal || app.modal.type !== 'artifact-wizard') return;
+      const artifact = wizardTemplateV6158(ws, app.modal);
+      const previous = app.modal;
+      app.modal = {
+        type: 'add-artifact',
+        wsId: ws.id,
+        kind: artifact.kind,
+        path: artifact.path,
+        title: artifact.title,
+        text: artifact.text,
+        continuationOf: previous.mode === 'continue' ? previous.parentNodeId : '',
+        referenceOf: previous.mode === 'reference' ? previous.referencedNodeId : '',
+        parentNodeId: previous.parentNodeId || '',
+        schemaId: previous.schemaId || '',
+        editorMode: 'rich'
+      };
+      render();
+      return;
+    }
+
+    if (action === 'continue' || action === 'continue-node' || (label === 'continue' && hasNodeContext)) {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      const node = ws?.nodeById?.get?.(event.currentTarget.dataset.node || '');
+      if (!ws || !node) return toast('No node selected to continue.', 'warn');
+      openArtifactWizardV6158(ws, { mode: 'continue', parentNodeId: node.id, schemaId: node.currentSchemaText || node.currentSchema || 'tiinex.topic.v1' });
+      return;
+    }
+
+    if ((action === 'reference' || action === 'open-reference' || action === 'add-reference' || (label === 'reference' && hasNodeContext)) && hasNodeContext) {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      const node = ws?.nodeById?.get?.(event.currentTarget.dataset.node || '');
+      if (!ws || !node) return toast('No node selected to reference.', 'warn');
+      enterReferenceParentPickerV6158(ws, node);
+      return;
+    }
+
+    if (action === 'select-reference-parent') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      const parent = ws?.nodeById?.get?.(event.currentTarget.dataset.node || '');
+      const referenced = wizardNodeByIdV6158(ws, app.parentPickerV6158?.referencedNodeId);
+      if (!ws || !parent || !referenced) return toast('Could not resolve reference parent.', 'warn');
+      const same = parent.id === referenced.id;
+      app.parentPickerV6158 = null;
+      openArtifactWizardV6158(ws, {
+        mode: same ? 'continue' : 'reference',
+        parentNodeId: parent.id,
+        referencedNodeId: same ? '' : referenced.id,
+        schemaId: same ? (parent.currentSchemaText || parent.currentSchema || 'tiinex.topic.v1') : 'tiinex.evidence.v1',
+        title: same ? `${parent.title || 'Selected artifact'} continuation` : `${referenced.title || 'Selected artifact'} reference`
+      });
+      return;
+    }
+
+    if (action === 'cancel-parent-picker') {
+      event.preventDefault();
+      event.stopPropagation();
+      app.parentPickerV6158 = null;
+      render();
+      return;
+    }
+
+    return onActionV645BeforeWizardV6158(event);
+  };
+
+
+
+
+  // ===== v6.159 paged Tiinex artifact wizard =====
+  function wizardStepV6159(modal) {
+    const step = modal?.wizardStep || 'type';
+    return step === 'describe' ? 'describe' : 'type';
+  }
+
+  function wizardStepIndicatorV6159(step) {
+    const steps = [
+      ['type', 'Type'],
+      ['describe', 'Details'],
+      ['content', 'Content']
+    ];
+    return `<div class="artifact-wizard-progress" aria-label="Wizard progress">
+      ${steps.map(([id, label], index) => {
+        const active = id === step;
+        const done = (step === 'describe' && id === 'type') || (id === 'content' && false);
+        return `<span class="${active ? 'active' : done ? 'done' : ''}"><b>${index + 1}</b>${escapeHtml(label)}</span>`;
+      }).join('')}
+    </div>`;
+  }
+
+  function wizardTypeStepV6159(ws, modal, options, selectedId) {
+    return `<section class="wizard-step wizard-step-page wizard-type-step">
+      <div class="wizard-step-head"><span>1</span><div><strong>Choose Tiinex artifact type</strong><p>Human-authored artifact shapes only. Runtime-oriented schemas stay hidden here.</p></div></div>
+      <div class="wizard-schema-grid paged">
+        ${options.map((option) => `<button type="button" class="wizard-schema-card ${option.id === selectedId ? 'selected' : ''}" data-action="wizard-select-schema" data-schema="${escapeAttr(option.id)}" data-ws="${escapeAttr(ws.id)}" title="Use ${escapeAttr(option.label)}">
+          <i class="fa-solid ${escapeAttr(option.icon)}"></i>
+          <strong>${escapeHtml(option.label)}</strong>
+          <small>${escapeHtml(option.suffix)}</small>
+          <p>${escapeHtml(option.summary)}</p>
+        </button>`).join('')}
+      </div>
+    </section>`;
+  }
+
+  function wizardDescribeStepV6159(ws, modal, selected, title, summary, body) {
+    return `<section class="wizard-step wizard-step-page wizard-describe-step">
+      <div class="wizard-step-head"><span>2</span><div><strong>Describe the leaf</strong><p>Small fields seed the generated Tiinex artifact. You can refine content in the next step.</p></div></div>
+      <div class="wizard-selected-type-strip">
+        <i class="fa-solid ${escapeAttr(selected.icon)}"></i>
+        <div><strong>${escapeHtml(selected.label)}</strong><span>${escapeHtml(selected.id === 'raw' ? 'tiinex.topic.v1 fallback' : selected.id)}</span></div>
+        <button class="tv-btn tiny subtle" data-action="wizard-set-step" data-step="type"><i class="fa-solid fa-rotate-left"></i>Change</button>
+      </div>
+      <div class="wizard-fields paged">
+        <label class="field-label">Title<input class="form-control tv-input" data-field="wizardTitle" value="${escapeAttr(title)}"></label>
+        <label class="field-label">Summary<input class="form-control tv-input" data-field="wizardSummary" value="${escapeAttr(summary)}"></label>
+        <label class="field-label wizard-body-field">${escapeHtml(selected.bodyLabel || 'Body')}<textarea class="form-control tv-textarea wizard-body-textarea paged" data-field="wizardBody" spellcheck="true">${escapeHtml(body)}</textarea></label>
+      </div>
+    </section>`;
+  }
+
+  renderArtifactWizardModalV6158 = function renderArtifactWizardModalV6159(modal) {
+    const ws = getWorkspace(modal.wsId);
+    if (!ws) return '';
+    const options = humanSchemaOptionsV6158();
+    const selectedId = modal.schemaId || options[0].id;
+    const selected = schemaOptionByIdV6158(selectedId);
+    const copy = wizardModeCopyV6158(modal);
+    const title = defaultWizardTitleV6158(ws, modal, selected);
+    const summary = defaultWizardSummaryV6158(modal, selected);
+    const body = typeof modal.body === 'string' ? modal.body : selected.body;
+    const step = wizardStepV6159(modal);
+    const stepTitle = step === 'type' ? 'Choose type' : 'Describe leaf';
+    const primaryAction = step === 'type' ? 'wizard-next-step' : 'wizard-open-editor';
+    const primaryText = step === 'type' ? 'Continue to details' : copy.button;
+    const primaryIcon = step === 'type' ? 'fa-arrow-right' : 'fa-pen-nib';
+
+    return `<div class="modal-backdrop-custom focus-modal artifact-wizard-backdrop" role="dialog" aria-modal="true" aria-labelledby="artifact-wizard-title">
+      <div class="modal-panel artifact-wizard-panel paged">
+        <div class="modal-header-lite artifact-wizard-head">
+          <div>
+            <p class="kicker">${escapeHtml(copy.kicker)}</p>
+            <h2 class="modal-title-lite" id="artifact-wizard-title"><i class="fa-solid ${escapeAttr(copy.icon)}"></i>${escapeHtml(copy.title)}</h2>
+            <p class="text-secondary mb-0">${escapeHtml(copy.lead)}</p>
+          </div>
+          <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="artifact-wizard-body paged">
+          ${wizardStepIndicatorV6159(step)}
+          ${step === 'type' ? wizardRelationCardV6158(ws, modal) : ''}
+          ${step === 'type'
+            ? wizardTypeStepV6159(ws, modal, options, selectedId)
+            : wizardDescribeStepV6159(ws, modal, selected, title, summary, body)}
+        </div>
+        <div class="modal-footer-actions artifact-wizard-actions paged">
+          ${step === 'describe' ? `<button class="tv-btn subtle" data-action="wizard-set-step" data-step="type"><i class="fa-solid fa-arrow-left"></i>Back</button>` : ''}
+          <button class="tv-btn primary" data-action="${escapeAttr(primaryAction)}" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid ${escapeAttr(primaryIcon)}"></i>${escapeHtml(primaryText)}</button>
+          <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+  };
+
+  const openArtifactWizardBeforePagedV6159 = openArtifactWizardV6158;
+  openArtifactWizardV6158 = function openArtifactWizardPagedV6159(ws, options = {}) {
+    openArtifactWizardBeforePagedV6159(ws, options);
+    if (app.modal?.type === 'artifact-wizard') {
+      app.modal.wizardStep = options.wizardStep || 'type';
+    }
+  };
+
+  const onActionV645BeforePagedWizardV6159 = onActionV645;
+  onActionV645 = async function pagedWizardActionV6159(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+
+    if (action === 'wizard-set-step') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'artifact-wizard') return;
+      app.modal.wizardStep = event.currentTarget.dataset.step === 'describe' ? 'describe' : 'type';
+      render();
+      return;
+    }
+
+    if (action === 'wizard-next-step') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'artifact-wizard') return;
+      app.modal.wizardStep = 'describe';
+      render();
+      return;
+    }
+
+    if (action === 'wizard-select-schema') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'artifact-wizard') return;
+      const option = schemaOptionByIdV6158(event.currentTarget.dataset.schema || 'tiinex.topic.v1');
+      app.modal.schemaId = option.id;
+      app.modal.body = option.body;
+      // Selection advances: the Back button makes changing type cheap, and this
+      // removes one click on mobile.
+      app.modal.wizardStep = 'describe';
+      render();
+      return;
+    }
+
+    return onActionV645BeforePagedWizardV6159(event);
+  };
+
+
+
+
+  // ===== v6.161 place Tiinex artifact as first Add choice only =====
+  function stripHeaderArtifactLauncherV6161(html) {
+    return String(html || '').replace(/<button\b[^>]*\badd-artifact-launcher\b[\s\S]*?<\/button>/g, '');
+  }
+
+  function tiinexArtifactChoiceCardV6161(wsId) {
+    return `<button type="button" class="add-choice-card tiinex-artifact-choice" data-action="open-artifact-wizard" data-ws="${escapeAttr(wsId || '')}" title="Create a new Tiinex artifact">
+      <span class="add-choice-icon"><i class="fa-solid fa-file-circle-plus"></i></span>
+      <span class="add-choice-copy"><strong>New Tiinex artifact</strong><small>Create a human-authored Tiinex leaf with the artifact wizard.</small></span>
+      <i class="fa-solid fa-arrow-right"></i>
+    </button>`;
+  }
+
+  const renderModalBeforeArtifactChoiceV6161 = renderModal;
+  renderModal = function renderModalWithArtifactChoiceV6161(modal) {
+    let html = renderModalBeforeArtifactChoiceV6161(modal);
+    if (!modal || modal.type !== 'source') return html;
+
+    // The artifact creator is a peer add-choice on the first Add screen only.
+    // It should not appear in Git source / URLs / drop substeps where it looks
+    // like a completion or secondary submit action.
+    html = stripHeaderArtifactLauncherV6161(html);
+
+    if (modal.addMode) return html;
+
+    const wsId = modal.wsId || app.activeWorkspaceId || '';
+    const choice = tiinexArtifactChoiceCardV6161(wsId);
+    if (html.includes('tiinex-artifact-choice')) return html;
+    return html.replace('<div class="add-choice-grid">', `<div class="add-choice-grid">${choice}`);
+  };
+
+
+
+
+  // ===== v6.162 schema-grounded artifact wizard templates =====
+  function knownHumanSchemaIdsV6162() {
+    return new Set([
+      'tiinex.topic.v1',
+      'tiinex.evidence.v1',
+      'tiinex.feedback.v1',
+      'tiinex.reduction.v1',
+      'tiinex.task.v1',
+      'tiinex.decision.v1',
+      'tiinex.pointer.v1',
+      'tiinex.lineage.upgrade.deferral.v1'
+    ]);
+  }
+
+  function schemaArtifactPathV6162(schemaId) {
+    const id = String(schemaId || '').trim();
+    if (!knownHumanSchemaIdsV6162().has(id) && id !== 'tiinex.root.v1') return '';
+    return `.topics/.schemas/${id}.schema.md`;
+  }
+
+  function schemaReferenceForPathV6162(schemaId, artifactPath) {
+    const id = String(schemaId || '').trim() || 'tiinex.topic.v1';
+    const schemaPath = schemaArtifactPathV6162(id);
+    if (!schemaPath || !artifactPath) return id;
+    const relative = relativePathFromToV6155(artifactPath, schemaPath);
+    return `[${id}](${relative || schemaPath})`;
+  }
+
+  function envelopeSchemaReferenceV6162(artifactPath) {
+    return schemaReferenceForPathV6162('tiinex.root.v1', artifactPath);
+  }
+
+  function currentBlockForPathV6162(schemaValue, summary, artifactPath, why = '') {
+    const created = rootTimestampV6155();
+    const schemaId = schemaIdFromTextV6155(schemaValue, 'tiinex.topic.v1');
+    const schema = schemaReferenceForPathV6162(schemaId, artifactPath);
+    return `- Current
+  - Current Schema: ${schema}
+  - Created At: ${created}
+${why ? `  - Why: ${why}\n` : ''}${summary ? `  - Summary: ${summary}\n` : ''}`;
+  }
+
+  function parentSchemaReferenceForPathV6162(node, childPath) {
+    const id = schemaIdFromTextV6155(node?.currentSchemaText || node?.currentSchema || '', 'tiinex.topic.v1');
+    return schemaReferenceForPathV6162(id, childPath);
+  }
+
+  function parentTraceReferenceForPathV6162(node, childPath) {
+    const rel = relativePathFromToV6155(childPath, node?.path || '');
+    return linkForPathV6155(displayFileNameV6155(node?.path || 'parent'), rel || node?.path || '');
+  }
+
+  parentBlockV6155 = function parentBlockV6162(node, childPath) {
+    if (!node) return '';
+    const trace = parentTraceReferenceForPathV6162(node, childPath);
+    const schema = parentSchemaReferenceForPathV6162(node, childPath);
+    const created = node.createdAt || node.created || '';
+    const rel = relativePathFromToV6155(childPath, node.path || '');
+    const originLines = [];
+    if (rel) originLines.push(`    - [relative](${rel})`);
+    if (node.browseUrl) originLines.push(`    - [browse + git](${node.browseUrl})`);
+    else if (node.rawUrl) originLines.push(`    - [raw](${node.rawUrl})`);
+    return `- Parent
+  - Parent Schema: ${schema}
+${created ? `  - Created At: ${created}\n` : ''}  - Trace: ${trace}
+${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
+  };
+
+  function integrityFooterForPathV6162(parent, childPath) {
+    const towards = parent ? parentTraceReferenceForPathV6162(parent, childPath) : 'self';
+    return integrityFooterV6155(towards, 'pending');
+  }
+
+  function bodyTemplatesV6162() {
+    return {
+      'tiinex.topic.v1': {
+        bodyLabel: 'Topic body',
+        body: 'This topic captures the current direction for the work.\n\n## Current Read\n\nDescribe the present topic state.\n\n## Design Direction\n\nState where this topic should move next.\n\n## Next Artifacts\n\n- '
+      },
+      'tiinex.evidence.v1': {
+        bodyLabel: 'Evidence body',
+        body: '## Supported Claim\n\n- State what this evidence bears on.\n\n## Provenance\n\n- Source: \n- Representation: \n\n## Evidence Material\n\nPreserve the readable supporting material here.\n\n## Interpretation Limits\n\n- State fidelity, scope, excerpting, transformation, or uncertainty limits.'
+      },
+      'tiinex.feedback.v1': {
+        bodyLabel: 'Feedback body',
+        body: '## Feedback Target\n\n- Target: \n\n## Feedback Received\n\n- Preserve or summarize the feedback.\n\n## Disposition\n\n- State: pending\n- Follow-Up: \n\n## Limits\n\n- State fidelity, scope, or interpretation limits.'
+      },
+      'tiinex.reduction.v1': {
+        bodyLabel: 'Reduction body',
+        body: '## Source Context\n\n- Source: \n\n## Carry-Forward State\n\n- State what later work may rely on.\n\n## Loss And Uncertainty\n\n- State what was omitted, compressed, degraded, or remains uncertain.\n\n## Validation\n\n- State human review, runtime validation, source checks, or explicit limits.'
+      },
+      'tiinex.task.v1': {
+        bodyLabel: 'Task body',
+        body: '## Objective\n\nDescribe the concrete work being asked for.\n\n## Done Criteria\n\n- \n\n## Scope\n\n- In scope: \n- Out of scope: \n\n## Dependencies\n\n- '
+      },
+      'tiinex.decision.v1': {
+        bodyLabel: 'Decision body',
+        body: 'This decision records what now governs.\n\n## Decision\n\n- State: accepted\n- Subject: \n- Decision: \n\n## Basis\n\n- \n\n## Consequences\n\n- '
+      },
+      'tiinex.pointer.v1': {
+        bodyLabel: 'Pointer body',
+        body: 'This pointer keeps one thin hop toward the current target.\n\n## Current Read\n\nExplain what this pointer currently points toward.\n\n## Destinations\n\n- Target: \n\n## Next Artifacts\n\n- '
+      },
+      'tiinex.lineage.upgrade.deferral.v1': {
+        bodyLabel: 'Deferral body',
+        body: '## Decision\n\n- State: accepted\n- Decision: do not adopt the known upstream repair or latest replacement for this local range yet\n\n## Deferral\n\n- Deferral Type: lineage-upgrade\n- Known Issue: \n- Deferred Upgrade: \n- Affected Local Range: \n- Adoption Decision: deferred\n- Material Impact: unknown\n- Warning Policy: keep-warning\n- Review Condition: \n\n## Basis\n\n- \n\n## Consequences\n\n- '
+      },
+      'tiinex.workspace.v1': {
+        bodyLabel: 'Workspace body',
+        body: '## Workspace Scope\n\nWhat this workspace contains.\n\n## Sources\n\n- \n\n## Notes\n\nWhat the next reader should know.'
+      },
+      raw: {
+        bodyLabel: 'Raw body',
+        body: 'Draft body.'
+      }
+    };
+  }
+
+  function schemaTemplateV6162(id) {
+    return bodyTemplatesV6162()[id] || bodyTemplatesV6162().raw;
+  }
+
+  humanSchemaOptionsV6158 = function humanSchemaOptionsV6162() {
+    const defs = [
+      ['tiinex.topic.v1', 'Topic', 'fa-diagram-project', '.trace.md', 'A bounded topic thread with current read, design direction, and next artifacts.'],
+      ['tiinex.evidence.v1', 'Evidence', 'fa-paperclip', '.trace.md', 'Preserved supporting material with claim, provenance, evidence, and limits.'],
+      ['tiinex.feedback.v1', 'Feedback', 'fa-comment-dots', '.trace.md', 'Directed feedback with target, received feedback, disposition, and limits.'],
+      ['tiinex.reduction.v1', 'Reduction', 'fa-compress', '.trace.md', 'Observable reduction with source, carry-forward state, loss, and validation.'],
+      ['tiinex.task.v1', 'Task', 'fa-list-check', '.trace.md', 'Bounded work with objective, done criteria, scope, and dependencies.'],
+      ['tiinex.decision.v1', 'Decision', 'fa-scale-balanced', '.trace.md', 'Landed decision with operative outcome, basis, and consequences.'],
+      ['tiinex.pointer.v1', 'Pointer', 'fa-link', '.trace.md', 'Thin redirect or destination-list artifact with a clear next hop.'],
+      ['tiinex.lineage.upgrade.deferral.v1', 'Lineage Upgrade Deferral', 'fa-clock-rotate-left', '.trace.md', 'Decision to acknowledge but defer a lineage repair or latest upgrade.'],
+      ['tiinex.workspace.v1', 'Workspace', 'fa-folder-tree', '.workspace.md', 'Markdown-first local/review workspace description.'],
+      ['raw', 'Raw Tiinex Artifact', 'fa-code', '.trace.md', 'Fallback authoring surface for unusual or not-yet-modeled human artifacts.']
+    ];
+    return defs.map(([id, label, icon, suffix, summary]) => {
+      const t = schemaTemplateV6162(id);
+      return { id, label, icon, suffix, summary, bodyLabel: t.bodyLabel, body: t.body };
+    });
+  };
+
+  function wizardKindForSchemaV6158(schemaId) {
+    return schemaId === 'tiinex.workspace.v1' ? 'workspace' : 'trace';
+  }
+
+  function wizardSchemaIdV6162(option) {
+    return option.id === 'raw' ? 'tiinex.topic.v1' : option.id;
+  }
+
+  defaultWizardSummaryV6158 = function defaultWizardSummaryV6162(modal, option) {
+    if (modal?.summary) return modal.summary;
+    const label = String(option?.label || 'artifact').toLowerCase();
+    if (modal?.mode === 'continue') return `Continuation ${label} created in Tiinex Viewer.`;
+    if (modal?.mode === 'reference') return `Reference ${label} created in Tiinex Viewer.`;
+    return `Draft ${label} created in Tiinex Viewer.`;
+  };
+
+  defaultArtifactTemplateV6143 = function defaultArtifactTemplateV6162(kind, path, title) {
+    const safeTitle = title || (kind === 'schema' ? 'New Schema' : kind === 'workspace' ? 'New Workspace' : 'New Trace');
+    const schema = kind === 'schema'
+      ? 'tiinex.root.v1'
+      : kind === 'workspace'
+        ? 'tiinex.workspace.v1'
+        : 'tiinex.topic.v1';
+    const body = kind === 'workspace' ? schemaTemplateV6162('tiinex.workspace.v1').body : schemaTemplateV6162(schema).body;
+    return `# Continuity Context
+
+- Envelope Schema: ${envelopeSchemaReferenceV6162(path)}
+${currentBlockForPathV6162(schema, 'Draft created in Tiinex Viewer.', path)}
+---
+
+# ${safeTitle}
+
+${body}
+
+---
+
+${integrityFooterV6155('self', 'pending')}`;
+  };
+
+  continuationTemplateV6145 = function continuationTemplateV6162(ws, node, path) {
+    const title = `${node?.title || 'Selected artifact'} continuation`;
+    const schema = schemaIdFromTextV6155(node?.currentSchemaText || node?.currentSchema || '', 'tiinex.topic.v1');
+    const body = schemaTemplateV6162(schema).body || schemaTemplateV6162('tiinex.topic.v1').body;
+    const parent = node || null;
+    return `# Continuity Context
+
+- Envelope Schema: ${envelopeSchemaReferenceV6162(path)}
+${parent ? parentBlockV6155(parent, path) : ''}${currentBlockForPathV6162(schema, 'Draft continuation created in Tiinex Viewer.', path)}
+---
+
+# ${title}
+
+${body}
+
+---
+
+${integrityFooterForPathV6162(parent, path)}`;
+  };
+
+  referenceTemplateV6146 = function referenceTemplateV6162(ws, node, path) {
+    const title = `${node?.title || 'Selected artifact'} reference`;
+    const targetRel = relativePathFromToV6155(path, node?.path || '');
+    const targetHref = targetRel || node?.browseUrl || node?.rawUrl || node?.path || '';
+    const targetLabel = displayFileNameV6155(node?.path || 'reference target');
+    return `# Continuity Context
+
+- Envelope Schema: ${envelopeSchemaReferenceV6162(path)}
+${currentBlockForPathV6162('tiinex.evidence.v1', 'Draft reference created in Tiinex Viewer.', path)}
+---
+
+# ${title}
+
+## Supported Claim
+
+- This artifact preserves a reference to selected source material.
+
+## Provenance
+
+- Source: ${linkForPathV6155(targetLabel, targetHref)}
+- Representation: reference target
+
+## Evidence Material
+
+- Reference target: ${linkForPathV6155(targetLabel, targetHref)}
+
+## Interpretation Limits
+
+- This artifact points at source material but does not by itself validate the target content.
+
+---
+
+${integrityFooterV6155('self', 'pending')}`;
+  };
+
+  function relationReferenceBodyV6158(ws, modal, path) {
+    const referenced = wizardNodeByIdV6158(ws, modal.referencedNodeId);
+    if (!referenced) return '';
+    const targetRel = relativePathFromToV6155(path, referenced.path || '');
+    const href = targetRel || referenced.browseUrl || referenced.rawUrl || referenced.path || '';
+    const label = displayFileNameV6155(referenced.path || 'reference target');
+    return `\n## Linked Artifacts\n\n- Referenced artifact: ${linkForPathV6155(label, href)}\n`;
+  }
+
+  function wizardTemplateV6158(ws, modal) {
+    const option = schemaOptionByIdV6158(modal.schemaId || 'tiinex.topic.v1');
+    const schema = wizardSchemaIdV6162(option);
+    const title = defaultWizardTitleV6158(ws, modal, option);
+    const summary = defaultWizardSummaryV6158(modal, option);
+    const body = typeof modal.body === 'string' ? modal.body : schemaTemplateV6162(option.id).body;
+    const path = wizardPathForV6158(ws, modal, option, title);
+    const parent = wizardNodeByIdV6158(ws, modal.parentNodeId);
+    const parentBlock = parent ? parentBlockV6155(parent, path) : '';
+    const referenceBlock = modal.mode === 'reference' ? relationReferenceBodyV6158(ws, modal, path) : '';
+    return {
+      kind: wizardKindForSchemaV6158(option.id),
+      path,
+      title,
+      schema,
+      text: `# Continuity Context
+
+- Envelope Schema: ${envelopeSchemaReferenceV6162(path)}
+${parentBlock}${currentBlockForPathV6162(schema, summary, path)}
+---
+
+# ${title}
+
+${body}${referenceBlock}
+
+---
+
+${integrityFooterForPathV6162(parent, path)}`
+    };
+  }
+
+  addModalCopyV6149 = function addModalCopyV6162(modal) {
+    const mode = addModalModeV6149(modal);
+    if (mode === 'continue') {
+      return {
+        kicker: 'Continue',
+        title: 'Create continuation leaf',
+        lead: 'Create a new local child leaf that continues the selected lineage.',
+        button: 'Create continuation',
+        icon: 'fa-code-branch',
+        className: 'mode-continue'
+      };
+    }
+    if (mode === 'reference') {
+      return {
+        kicker: 'Reference',
+        title: 'Create reference leaf',
+        lead: 'Create a new local leaf that points at the selected artifact without becoming its child.',
+        button: 'Create reference',
+        icon: 'fa-link',
+        className: 'mode-reference'
+      };
+    }
+    return {
+      kicker: 'Add',
+      title: 'New Tiinex artifact',
+      lead: 'Create a local Tiinex artifact. This does not commit to Git.',
+      button: 'Add artifact',
+      icon: 'fa-plus',
+      className: 'mode-new'
+    };
+  };
+
+
+
+
+  // ===== v6.163 schema-aware low-friction artifact forms =====
+  function schemaFormDefinitionsV6163() {
+    return {
+      'tiinex.topic.v1': [
+        { key: 'currentRead', label: 'Current read', type: 'textarea', placeholder: 'What is true or useful to know right now?', required: true },
+        { key: 'designDirection', label: 'Design direction', type: 'textarea', placeholder: 'Where should this thread move next?' },
+        { key: 'nextArtifacts', label: 'Next artifacts', type: 'list', placeholder: 'One continuation or artifact idea per line' }
+      ],
+      'tiinex.evidence.v1': [
+        { key: 'supportedClaim', label: 'Supported claim', type: 'textarea', placeholder: 'What does this evidence bear on?', required: true },
+        { key: 'source', label: 'Source', type: 'input', placeholder: 'URL, path, file, screenshot, or local source' },
+        { key: 'representation', label: 'Representation', type: 'input', placeholder: 'quote, screenshot, generated image, observation, etc.' },
+        { key: 'evidenceMaterial', label: 'Evidence material', type: 'textarea', placeholder: 'Paste or summarize the material to preserve.' },
+        { key: 'interpretationLimits', label: 'Interpretation limits', type: 'list', placeholder: 'One limit per line' }
+      ],
+      'tiinex.feedback.v1': [
+        { key: 'feedbackTarget', label: 'Feedback target', type: 'input', placeholder: 'What artifact, claim, UI, or action is this feedback about?', required: true },
+        { key: 'feedbackReceived', label: 'Feedback received', type: 'textarea', placeholder: 'What was said or observed?' },
+        { key: 'dispositionState', label: 'Disposition', type: 'select', options: ['pending', 'accepted', 'rejected', 'deferred', 'narrowed'] },
+        { key: 'followUp', label: 'Follow-up', type: 'textarea', placeholder: 'Smallest next correction or continuation.' },
+        { key: 'limits', label: 'Limits', type: 'list', placeholder: 'One uncertainty or scope limit per line' }
+      ],
+      'tiinex.reduction.v1': [
+        { key: 'sourceContext', label: 'Source context', type: 'textarea', placeholder: 'What was reduced, summarized, or carried forward?' },
+        { key: 'carryForwardState', label: 'Carry-forward state', type: 'textarea', placeholder: 'What later work may rely on?', required: true },
+        { key: 'lossAndUncertainty', label: 'Loss and uncertainty', type: 'list', placeholder: 'What was omitted, compressed, degraded, or remains uncertain?' },
+        { key: 'validation', label: 'Validation', type: 'list', placeholder: 'How can a later reader check this reduction?' }
+      ],
+      'tiinex.task.v1': [
+        { key: 'objective', label: 'Objective', type: 'textarea', placeholder: 'What concrete work is being asked for?', required: true },
+        { key: 'doneCriteria', label: 'Done criteria', type: 'list', placeholder: 'One completion signal per line' },
+        { key: 'inScope', label: 'In scope', type: 'list', placeholder: 'What is allowed or expected?' },
+        { key: 'outOfScope', label: 'Out of scope', type: 'list', placeholder: 'What should not be changed?' },
+        { key: 'dependencies', label: 'Dependencies', type: 'list', placeholder: 'Required inputs, constraints, or blockers' }
+      ],
+      'tiinex.decision.v1': [
+        { key: 'state', label: 'State', type: 'select', options: ['accepted', 'pending', 'rejected', 'deferred'] },
+        { key: 'subject', label: 'Subject', type: 'input', placeholder: 'What does this decision govern?', required: true },
+        { key: 'decision', label: 'Decision', type: 'textarea', placeholder: 'What is the selected path?' },
+        { key: 'basis', label: 'Basis', type: 'list', placeholder: 'Why this decision is justified' },
+        { key: 'consequences', label: 'Consequences', type: 'list', placeholder: 'What follows from this decision?' }
+      ],
+      'tiinex.pointer.v1': [
+        { key: 'currentRead', label: 'Current read', type: 'textarea', placeholder: 'What does this pointer currently tell the reader?' },
+        { key: 'destinations', label: 'Destinations', type: 'list', placeholder: 'One target URL/path/artifact per line', required: true },
+        { key: 'nextArtifacts', label: 'Next artifacts', type: 'list', placeholder: 'Suggested next hops or follow-ups' }
+      ],
+      'tiinex.lineage.upgrade.deferral.v1': [
+        { key: 'knownIssue', label: 'Known issue', type: 'textarea', placeholder: 'What lineage repair or upgrade is known?', required: true },
+        { key: 'deferredUpgrade', label: 'Deferred upgrade', type: 'textarea', placeholder: 'What would be adopted later?' },
+        { key: 'affectedRange', label: 'Affected local range', type: 'input', placeholder: 'Path, branch, node range, or lineage segment' },
+        { key: 'reviewCondition', label: 'Review condition', type: 'textarea', placeholder: 'When or why should this be revisited?' },
+        { key: 'basis', label: 'Basis', type: 'list', placeholder: 'Why deferral is acceptable for now' },
+        { key: 'consequences', label: 'Consequences', type: 'list', placeholder: 'What warning or limitation remains?' }
+      ],
+      'tiinex.workspace.v1': [
+        { key: 'workspaceScope', label: 'Workspace scope', type: 'textarea', placeholder: 'What does this workspace contain?', required: true },
+        { key: 'sources', label: 'Sources', type: 'list', placeholder: 'One source per line' },
+        { key: 'notes', label: 'Notes', type: 'textarea', placeholder: 'What should the next reader know?' }
+      ]
+    };
+  }
+
+  function schemaFormForV6163(schemaId) {
+    return schemaFormDefinitionsV6163()[schemaId] || null;
+  }
+
+  function wizardFormStateV6163(modal) {
+    if (!modal.formFieldsV6163 || typeof modal.formFieldsV6163 !== 'object') modal.formFieldsV6163 = {};
+    return modal.formFieldsV6163;
+  }
+
+  function formLinesV6163(value) {
+    return String(value || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  }
+
+  function listBlockV6163(value, fallback = '') {
+    const lines = formLinesV6163(value);
+    if (!lines.length) return fallback ? `- ${fallback}` : '- ';
+    return lines.map((line) => line.startsWith('- ') ? line : `- ${line}`).join('\n');
+  }
+
+  function paragraphV6163(value, fallback = '') {
+    return String(value || '').trim() || fallback;
+  }
+
+  function defaultFormValuesV6163(schemaId, modal, option) {
+    const summary = defaultWizardSummaryV6158(modal || {}, option || schemaOptionByIdV6158(schemaId));
+    return {
+      'tiinex.topic.v1': { currentRead: '', designDirection: '', nextArtifacts: '' },
+      'tiinex.evidence.v1': { supportedClaim: summary, source: '', representation: '', evidenceMaterial: '', interpretationLimits: '' },
+      'tiinex.feedback.v1': { feedbackTarget: '', feedbackReceived: '', dispositionState: 'pending', followUp: '', limits: '' },
+      'tiinex.reduction.v1': { sourceContext: '', carryForwardState: '', lossAndUncertainty: '', validation: '' },
+      'tiinex.task.v1': { objective: '', doneCriteria: '', inScope: '', outOfScope: '', dependencies: '' },
+      'tiinex.decision.v1': { state: 'accepted', subject: '', decision: '', basis: '', consequences: '' },
+      'tiinex.pointer.v1': { currentRead: '', destinations: '', nextArtifacts: '' },
+      'tiinex.lineage.upgrade.deferral.v1': { knownIssue: '', deferredUpgrade: '', affectedRange: '', reviewCondition: '', basis: '', consequences: '' },
+      'tiinex.workspace.v1': { workspaceScope: '', sources: '', notes: '' }
+    }[schemaId] || {};
+  }
+
+  function ensureWizardFormDefaultsV6163(modal, option) {
+    const schemaId = wizardSchemaIdV6162(option);
+    if (!schemaFormForV6163(schemaId)) return;
+    const state = wizardFormStateV6163(modal);
+    const defaults = defaultFormValuesV6163(schemaId, modal, option);
+    for (const [key, value] of Object.entries(defaults)) {
+      if (typeof state[key] !== 'string') state[key] = value;
+    }
+  }
+
+  function bodyFromFormV6163(schemaId, f) {
+    f = f || {};
+    switch (schemaId) {
+      case 'tiinex.topic.v1':
+        return `${paragraphV6163(f.currentRead, 'Describe the present topic state.')}
+
+## Design Direction
+
+${paragraphV6163(f.designDirection, 'State where this topic should move next.')}
+
+## Next Artifacts
+
+${listBlockV6163(f.nextArtifacts)}`;
+      case 'tiinex.evidence.v1':
+        return `## Supported Claim
+
+${listBlockV6163(f.supportedClaim)}
+
+## Provenance
+
+- Source: ${paragraphV6163(f.source)}
+- Representation: ${paragraphV6163(f.representation)}
+
+## Evidence Material
+
+${paragraphV6163(f.evidenceMaterial, 'Preserve the readable supporting material here.')}
+
+## Interpretation Limits
+
+${listBlockV6163(f.interpretationLimits, 'State fidelity, scope, excerpting, transformation, or uncertainty limits.')}`;
+      case 'tiinex.feedback.v1':
+        return `## Feedback Target
+
+- Target: ${paragraphV6163(f.feedbackTarget)}
+
+## Feedback Received
+
+${paragraphV6163(f.feedbackReceived, 'Preserve or summarize the feedback.')}
+
+## Disposition
+
+- State: ${paragraphV6163(f.dispositionState, 'pending')}
+- Follow-Up: ${paragraphV6163(f.followUp)}
+
+## Limits
+
+${listBlockV6163(f.limits, 'State fidelity, scope, or interpretation limits.')}`;
+      case 'tiinex.reduction.v1':
+        return `## Source Context
+
+${paragraphV6163(f.sourceContext, '- Source: ')}
+
+## Carry-Forward State
+
+${paragraphV6163(f.carryForwardState, '- State what later work may rely on.')}
+
+## Loss And Uncertainty
+
+${listBlockV6163(f.lossAndUncertainty, 'State what was omitted, compressed, degraded, or remains uncertain.')}
+
+## Validation
+
+${listBlockV6163(f.validation, 'State human review, runtime validation, source checks, or explicit limits.')}`;
+      case 'tiinex.task.v1':
+        return `## Objective
+
+${paragraphV6163(f.objective, 'Describe the concrete work being asked for.')}
+
+## Done Criteria
+
+${listBlockV6163(f.doneCriteria)}
+
+## Scope
+
+- In scope:
+${listBlockV6163(f.inScope).split('\n').map((line) => `  ${line}`).join('\n')}
+- Out of scope:
+${listBlockV6163(f.outOfScope).split('\n').map((line) => `  ${line}`).join('\n')}
+
+## Dependencies
+
+${listBlockV6163(f.dependencies)}`;
+      case 'tiinex.decision.v1':
+        return `This decision records what now governs.
+
+## Decision
+
+- State: ${paragraphV6163(f.state, 'accepted')}
+- Subject: ${paragraphV6163(f.subject)}
+- Decision: ${paragraphV6163(f.decision)}
+
+## Basis
+
+${listBlockV6163(f.basis)}
+
+## Consequences
+
+${listBlockV6163(f.consequences)}`;
+      case 'tiinex.pointer.v1':
+        return `This pointer keeps one thin hop toward the current target.
+
+## Current Read
+
+${paragraphV6163(f.currentRead, 'Explain what this pointer currently points toward.')}
+
+## Destinations
+
+${listBlockV6163(f.destinations)}
+
+## Next Artifacts
+
+${listBlockV6163(f.nextArtifacts)}`;
+      case 'tiinex.lineage.upgrade.deferral.v1':
+        return `## Decision
+
+- State: accepted
+- Decision: do not adopt the known upstream repair or latest replacement for this local range yet
+
+## Deferral
+
+- Deferral Type: lineage-upgrade
+- Known Issue: ${paragraphV6163(f.knownIssue)}
+- Deferred Upgrade: ${paragraphV6163(f.deferredUpgrade)}
+- Affected Local Range: ${paragraphV6163(f.affectedRange)}
+- Adoption Decision: deferred
+- Material Impact: unknown
+- Warning Policy: keep-warning
+- Review Condition: ${paragraphV6163(f.reviewCondition)}
+
+## Basis
+
+${listBlockV6163(f.basis)}
+
+## Consequences
+
+${listBlockV6163(f.consequences)}`;
+      case 'tiinex.workspace.v1':
+        return `## Workspace Scope
+
+${paragraphV6163(f.workspaceScope, 'What this workspace contains.')}
+
+## Sources
+
+${listBlockV6163(f.sources)}
+
+## Notes
+
+${paragraphV6163(f.notes, 'What the next reader should know.')}`;
+      default:
+        return '';
+    }
+  }
+
+  function renderWizardFieldV6163(field, value) {
+    const id = `wizard-field-${field.key}`;
+    const required = field.required ? `<span class="wizard-required">required</span>` : '';
+    const label = `<span>${escapeHtml(field.label)}${required}</span>`;
+    if (field.type === 'select') {
+      return `<label class="field-label schema-aware-field" for="${escapeAttr(id)}">${label}<select id="${escapeAttr(id)}" class="form-control tv-input" data-wizard-form-field="${escapeAttr(field.key)}">${(field.options || []).map((o) => `<option value="${escapeAttr(o)}" ${String(value || '') === o ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}</select></label>`;
+    }
+    if (field.type === 'input') {
+      return `<label class="field-label schema-aware-field" for="${escapeAttr(id)}">${label}<input id="${escapeAttr(id)}" class="form-control tv-input" data-wizard-form-field="${escapeAttr(field.key)}" value="${escapeAttr(value || '')}" placeholder="${escapeAttr(field.placeholder || '')}"></label>`;
+    }
+    return `<label class="field-label schema-aware-field" for="${escapeAttr(id)}">${label}<textarea id="${escapeAttr(id)}" class="form-control tv-textarea schema-aware-textarea ${field.type === 'list' ? 'list-field' : ''}" data-wizard-form-field="${escapeAttr(field.key)}" placeholder="${escapeAttr(field.placeholder || '')}" spellcheck="true">${escapeHtml(value || '')}</textarea>${field.type === 'list' ? '<small>One item per line. Tiinex formats it as a markdown list.</small>' : ''}</label>`;
+  }
+
+  function wizardDescribeStepV6159(ws, modal, selected, title, summary, body) {
+    const schemaId = wizardSchemaIdV6162(selected);
+    const fields = schemaFormForV6163(schemaId);
+    ensureWizardFormDefaultsV6163(modal, selected);
+    const state = wizardFormStateV6163(modal);
+    return `<section class="wizard-step wizard-step-page wizard-describe-step schema-aware-describe">
+      <div class="wizard-step-head"><span>2</span><div><strong>Describe the leaf</strong><p>${fields ? 'Fill only the fields that matter. The viewer assembles the Tiinex markdown.' : 'Use raw markdown for this not-yet-modeled shape.'}</p></div></div>
+      <div class="wizard-selected-type-strip">
+        <i class="fa-solid ${escapeAttr(selected.icon)}"></i>
+        <div><strong>${escapeHtml(selected.label)}</strong><span>${escapeHtml(schemaId)}</span></div>
+        <button class="tv-btn tiny subtle" data-action="wizard-set-step" data-step="type"><i class="fa-solid fa-rotate-left"></i>Change</button>
+      </div>
+      <div class="wizard-fields paged schema-aware-fields">
+        <label class="field-label">Title<input class="form-control tv-input" data-field="wizardTitle" value="${escapeAttr(title)}"></label>
+        <label class="field-label">Summary<input class="form-control tv-input" data-field="wizardSummary" value="${escapeAttr(summary)}"></label>
+        ${fields ? `<div class="schema-aware-form-grid">${fields.map((field) => renderWizardFieldV6163(field, state[field.key] || '')).join('')}</div>` : `<label class="field-label wizard-body-field">${escapeHtml(selected.bodyLabel || 'Body')}<textarea class="form-control tv-textarea wizard-body-textarea paged" data-field="wizardBody" spellcheck="true">${escapeHtml(body)}</textarea></label>`}
+      </div>
+    </section>`;
+  }
+
+  function wizardBodyForModalV6163(modal, option) {
+    const schemaId = wizardSchemaIdV6162(option);
+    const fields = schemaFormForV6163(schemaId);
+    if (!fields) return typeof modal.body === 'string' ? modal.body : schemaTemplateV6162(option.id).body;
+    ensureWizardFormDefaultsV6163(modal, option);
+    return bodyFromFormV6163(schemaId, wizardFormStateV6163(modal));
+  }
+
+  function wizardTemplateV6158(ws, modal) {
+    const option = schemaOptionByIdV6158(modal.schemaId || 'tiinex.topic.v1');
+    const schema = wizardSchemaIdV6162(option);
+    const title = defaultWizardTitleV6158(ws, modal, option);
+    const summary = defaultWizardSummaryV6158(modal, option);
+    const body = wizardBodyForModalV6163(modal, option);
+    const path = wizardPathForV6158(ws, modal, option, title);
+    const parent = wizardNodeByIdV6158(ws, modal.parentNodeId);
+    const parentBlock = parent ? parentBlockV6155(parent, path) : '';
+    const referenceBlock = modal.mode === 'reference' ? relationReferenceBodyV6158(ws, modal, path) : '';
+    return {
+      kind: wizardKindForSchemaV6158(option.id),
+      path,
+      title,
+      schema,
+      text: `# Continuity Context
+
+- Envelope Schema: ${envelopeSchemaReferenceV6162(path)}
+${parentBlock}${currentBlockForPathV6162(schema, summary, path)}
+---
+
+# ${title}
+
+${body}${referenceBlock}
+
+---
+
+${integrityFooterForPathV6162(parent, path)}`
+    };
+  }
+
+  function handleWizardFormInputV6163(event) {
+    const key = event.target?.dataset?.wizardFormField || '';
+    if (!key || !app.modal || app.modal.type !== 'artifact-wizard') return;
+    wizardFormStateV6163(app.modal)[key] = event.target.value;
+  }
+
+  window.addEventListener('input', handleWizardFormInputV6163, true);
+  window.addEventListener('change', handleWizardFormInputV6163, true);
+
+
+
+
+  // ===== v6.164 Evidence attachment collector =====
+  function evidenceAttachmentsV6164(modal = app.modal) {
+    if (!modal) return [];
+    if (!Array.isArray(modal.evidenceAttachmentsV6164)) modal.evidenceAttachmentsV6164 = [];
+    return modal.evidenceAttachmentsV6164;
+  }
+
+  function evidenceAttachmentIdV6164() {
+    return `att-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  }
+
+  function safeFileSlugV6164(name) {
+    return String(name || 'attachment')
+      .replace(/[\\/:*?"<>|]+/g, '-')
+      .replace(/\s+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 96) || 'attachment';
+  }
+
+  function evidenceAttachmentPathV6164(artifactPath, attachment) {
+    const baseDir = dirname(artifactPath || '.topics/evidence.trace.md') || '.topics';
+    const fileName = safeFileSlugV6164(attachment.name || attachment.label || 'attachment');
+    return joinPath(baseDir, 'assets', fileName);
+  }
+
+  function evidenceAttachmentHrefV6164(artifactPath, attachment) {
+    if (attachment.kind === 'url') return attachment.url || '';
+    const path = attachment.path || evidenceAttachmentPathV6164(artifactPath, attachment);
+    return relativePathFromToV6155(artifactPath, path) || path;
+  }
+
+  function evidenceAttachmentLabelV6164(attachment) {
+    return attachment.label || attachment.name || attachment.url || 'attachment';
+  }
+
+  function evidenceAttachmentLineV6164(artifactPath, attachment) {
+    const href = evidenceAttachmentHrefV6164(artifactPath, attachment);
+    const label = evidenceAttachmentLabelV6164(attachment);
+    if (!href) return `- ${label}`;
+    return `- ${linkForPathV6155(label, href)}`;
+  }
+
+  function evidenceAttachmentsMarkdownV6164(artifactPath, attachments) {
+    const items = (attachments || []).filter((attachment) => attachment && (attachment.url || attachment.name || attachment.label));
+    if (!items.length) {
+      return {
+        provenance: '- Source: \n- Representation: ',
+        material: 'Preserve the readable supporting material here.',
+        limits: '- State fidelity, scope, excerpting, transformation, or uncertainty limits.'
+      };
+    }
+
+    const provenance = items.map((attachment) => {
+      const line = evidenceAttachmentLineV6164(artifactPath, attachment);
+      const representation = attachment.representation ? `\n  - Representation: ${attachment.representation}` : '';
+      return `${line}${representation}`;
+    }).join('\n');
+
+    const material = items.map((attachment) => {
+      const line = evidenceAttachmentLineV6164(artifactPath, attachment);
+      const notes = attachment.notes ? `\n  - Notes: ${attachment.notes}` : '';
+      return `${line}${notes}`;
+    }).join('\n');
+
+    const limits = items
+      .flatMap((attachment) => formLinesV6163(attachment.limits || ''))
+      .map((line) => `- ${line}`)
+      .join('\n') || '- State fidelity, scope, excerpting, transformation, or uncertainty limits.';
+
+    return { provenance, material, limits };
+  }
+
+  const bodyFromFormBeforeEvidenceAttachmentsV6164 = bodyFromFormV6163;
+  bodyFromFormV6163 = function bodyFromFormWithEvidenceAttachmentsV6164(schemaId, fields, context = {}) {
+    if (schemaId !== 'tiinex.evidence.v1') return bodyFromFormBeforeEvidenceAttachmentsV6164(schemaId, fields);
+    const artifactPath = context.path || app.modal?.path || '.topics/evidence.trace.md';
+    const attachments = evidenceAttachmentsV6164(context.modal || app.modal);
+    const blocks = evidenceAttachmentsMarkdownV6164(artifactPath, attachments);
+    return `## Supported Claim
+
+${listBlockV6163(fields?.supportedClaim)}
+
+## Provenance
+
+${blocks.provenance}
+
+## Evidence Material
+
+${blocks.material}
+
+## Interpretation Limits
+
+${blocks.limits}`;
+  };
+
+  function renderEvidenceAttachmentCardV6164(attachment) {
+    const id = attachment.id || '';
+    const isUrl = attachment.kind === 'url';
+    const icon = isUrl ? 'fa-link' : 'fa-file-arrow-up';
+    const kindLabel = isUrl ? 'URL' : 'File';
+    return `<article class="evidence-attachment-card" data-attachment-id="${escapeAttr(id)}">
+      <div class="evidence-attachment-top">
+        <span class="evidence-attachment-icon"><i class="fa-solid ${icon}"></i></span>
+        <div>
+          <strong>${escapeHtml(evidenceAttachmentLabelV6164(attachment))}</strong>
+          <small>${escapeHtml(kindLabel)}${attachment.size ? ` · ${Math.round(attachment.size / 1024)} KB` : ''}</small>
+        </div>
+        <button type="button" class="tv-btn tiny subtle evidence-remove-attachment" data-action="evidence-remove-attachment" data-attachment-id="${escapeAttr(id)}" title="Remove attachment" aria-label="Remove attachment"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="evidence-attachment-fields">
+        ${isUrl ? `<label class="field-label">URL<input class="form-control tv-input" data-evidence-attachment-field="url" data-attachment-id="${escapeAttr(id)}" value="${escapeAttr(attachment.url || '')}" placeholder="https://..."></label>` : ''}
+        <label class="field-label">Label<input class="form-control tv-input" data-evidence-attachment-field="label" data-attachment-id="${escapeAttr(id)}" value="${escapeAttr(attachment.label || '')}" placeholder="${escapeAttr(isUrl ? 'Readable source name' : attachment.name || 'Attachment label')}"></label>
+        <label class="field-label">Representation<input class="form-control tv-input" data-evidence-attachment-field="representation" data-attachment-id="${escapeAttr(id)}" value="${escapeAttr(attachment.representation || '')}" placeholder="screenshot, quote, image, file, observation"></label>
+        <label class="field-label evidence-wide">Notes<textarea class="form-control tv-textarea evidence-mini-textarea" data-evidence-attachment-field="notes" data-attachment-id="${escapeAttr(id)}" placeholder="What should this attachment preserve or show?">${escapeHtml(attachment.notes || '')}</textarea></label>
+        <label class="field-label evidence-wide">Limits<textarea class="form-control tv-textarea evidence-mini-textarea" data-evidence-attachment-field="limits" data-attachment-id="${escapeAttr(id)}" placeholder="One fidelity or interpretation limit per line">${escapeHtml(attachment.limits || '')}</textarea></label>
+      </div>
+    </article>`;
+  }
+
+  function renderEvidenceAttachmentCollectorV6164(modal) {
+    const attachments = evidenceAttachmentsV6164(modal);
+    return `<section class="evidence-collector-v6164">
+      <div class="evidence-collector-head">
+        <div>
+          <strong>Evidence attachments</strong>
+          <p>Add the material first; Tiinex will turn it into provenance markdown.</p>
+        </div>
+        <div class="evidence-collector-actions">
+          <button type="button" class="tv-btn tiny subtle" data-action="evidence-add-url"><i class="fa-solid fa-link"></i>Add URL</button>
+          <button type="button" class="tv-btn tiny subtle" data-action="evidence-pick-file"><i class="fa-solid fa-file-arrow-up"></i>Add file</button>
+          <input class="visually-hidden evidence-file-input-v6164" type="file" multiple data-evidence-file-input="1" aria-hidden="true" tabindex="-1">
+        </div>
+      </div>
+      ${attachments.length ? `<div class="evidence-attachment-grid">${attachments.map(renderEvidenceAttachmentCardV6164).join('')}</div>` : `<div class="evidence-empty-drop-v6164"><i class="fa-solid fa-paperclip"></i><strong>No attachments yet</strong><span>Add a URL or file. File copies are preserved in the local workspace when the artifact is saved.</span></div>`}
+    </section>`;
+  }
+
+  const wizardDescribeStepBeforeEvidenceCollectorV6164 = wizardDescribeStepV6159;
+  wizardDescribeStepV6159 = function wizardDescribeStepWithEvidenceCollectorV6164(ws, modal, selected, title, summary, body) {
+    const schemaId = wizardSchemaIdV6162(selected);
+    if (schemaId !== 'tiinex.evidence.v1') return wizardDescribeStepBeforeEvidenceCollectorV6164(ws, modal, selected, title, summary, body);
+    ensureWizardFormDefaultsV6163(modal, selected);
+    const state = wizardFormStateV6163(modal);
+    return `<section class="wizard-step wizard-step-page wizard-describe-step schema-aware-describe evidence-describe-v6164">
+      <div class="wizard-step-head"><span>2</span><div><strong>Collect the evidence</strong><p>Keep focus on what the material supports. Attachments can be URLs or files.</p></div></div>
+      <div class="wizard-selected-type-strip">
+        <i class="fa-solid ${escapeAttr(selected.icon)}"></i>
+        <div><strong>${escapeHtml(selected.label)}</strong><span>${escapeHtml(schemaId)}</span></div>
+        <button class="tv-btn tiny subtle" data-action="wizard-set-step" data-step="type"><i class="fa-solid fa-rotate-left"></i>Change</button>
+      </div>
+      <div class="wizard-fields paged schema-aware-fields evidence-fields-v6164">
+        <label class="field-label">Title<input class="form-control tv-input" data-field="wizardTitle" value="${escapeAttr(title)}"></label>
+        <label class="field-label">Summary<input class="form-control tv-input" data-field="wizardSummary" value="${escapeAttr(summary)}"></label>
+        <label class="field-label evidence-claim-field">Supported claim <span class="wizard-required">required</span><textarea class="form-control tv-textarea evidence-claim-textarea" data-wizard-form-field="supportedClaim" placeholder="What does this evidence show or support?">${escapeHtml(state.supportedClaim || '')}</textarea></label>
+        ${renderEvidenceAttachmentCollectorV6164(modal)}
+      </div>
+    </section>`;
+  };
+
+  function updateEvidenceAttachmentFieldV6164(id, field, value) {
+    const attachment = evidenceAttachmentsV6164().find((item) => item.id === id);
+    if (!attachment) return;
+    attachment[field] = value;
+  }
+
+  function addEvidenceUrlAttachmentV6164() {
+    evidenceAttachmentsV6164().push({
+      id: evidenceAttachmentIdV6164(),
+      kind: 'url',
+      url: '',
+      label: '',
+      representation: 'web page',
+      notes: '',
+      limits: ''
+    });
+  }
+
+  function addEvidenceFileAttachmentV6164(file) {
+    if (!file) return;
+    evidenceAttachmentsV6164().push({
+      id: evidenceAttachmentIdV6164(),
+      kind: 'file',
+      name: file.name || 'attachment',
+      label: file.name || 'attachment',
+      representation: file.type?.startsWith('image/') ? 'image file' : 'file',
+      notes: '',
+      limits: '',
+      size: file.size || 0,
+      type: file.type || '',
+      file
+    });
+  }
+
+  function storeEvidenceAttachmentFilesV6164(ws, modal, artifactPath) {
+    for (const attachment of evidenceAttachmentsV6164(modal)) {
+      if (attachment.kind !== 'file' || !attachment.file) continue;
+      const path = evidenceAttachmentPathV6164(artifactPath, attachment);
+      attachment.path = path;
+      storeWorkspaceAsset(ws, path, attachment.file, {
+        type: attachment.type || attachment.file.type || '',
+        size: attachment.size || attachment.file.size || 0,
+        source: 'evidence-attachment'
+      });
+    }
+  }
+
+  const wizardTemplateBeforeEvidenceAttachmentsV6164 = wizardTemplateV6158;
+  wizardTemplateV6158 = function wizardTemplateWithEvidenceAttachmentsV6164(ws, modal) {
+    const option = schemaOptionByIdV6158(modal.schemaId || 'tiinex.topic.v1');
+    if (wizardSchemaIdV6162(option) !== 'tiinex.evidence.v1') return wizardTemplateBeforeEvidenceAttachmentsV6164(ws, modal);
+    const schema = wizardSchemaIdV6162(option);
+    const title = defaultWizardTitleV6158(ws, modal, option);
+    const summary = defaultWizardSummaryV6158(modal, option);
+    const path = wizardPathForV6158(ws, modal, option, title);
+    const parent = wizardNodeByIdV6158(ws, modal.parentNodeId);
+    const parentBlock = parent ? parentBlockV6155(parent, path) : '';
+    const body = bodyFromFormV6163(schema, wizardFormStateV6163(modal), { modal, path });
+    const referenceBlock = modal.mode === 'reference' ? relationReferenceBodyV6158(ws, modal, path) : '';
+    return {
+      kind: wizardKindForSchemaV6158(option.id),
+      path,
+      title,
+      schema,
+      text: `# Continuity Context
+
+- Envelope Schema: ${envelopeSchemaReferenceV6162(path)}
+${parentBlock}${currentBlockForPathV6162(schema, summary, path)}
+---
+
+# ${title}
+
+${body}${referenceBlock}
+
+---
+
+${integrityFooterForPathV6162(parent, path)}`,
+      evidenceAttachmentsV6164: evidenceAttachmentsV6164(modal)
+    };
+  };
+
+  const onActionBeforeEvidenceAttachmentsV6164 = onActionV645;
+  onActionV645 = async function evidenceAttachmentActionV6164(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+
+    if (action === 'evidence-add-url') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'artifact-wizard') return;
+      addEvidenceUrlAttachmentV6164();
+      render();
+      return;
+    }
+
+    if (action === 'evidence-pick-file') {
+      event.preventDefault();
+      event.stopPropagation();
+      const input = document.querySelector('.evidence-file-input-v6164');
+      if (input) input.click();
+      return;
+    }
+
+    if (action === 'evidence-remove-attachment') {
+      event.preventDefault();
+      event.stopPropagation();
+      const id = event.currentTarget.dataset.attachmentId || '';
+      if (!app.modal) return;
+      app.modal.evidenceAttachmentsV6164 = evidenceAttachmentsV6164().filter((item) => item.id !== id);
+      render();
+      return;
+    }
+
+    if (action === 'wizard-open-editor' && app.modal?.type === 'artifact-wizard') {
+      const option = schemaOptionByIdV6158(app.modal.schemaId || 'tiinex.topic.v1');
+      if (wizardSchemaIdV6162(option) === 'tiinex.evidence.v1') {
+        event.preventDefault();
+        event.stopPropagation();
+        const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
+        if (!ws) return toast('No workspace selected.', 'warn');
+        const artifact = wizardTemplateV6158(ws, app.modal);
+        const previous = app.modal;
+        app.modal = {
+          type: 'add-artifact',
+          wsId: ws.id,
+          kind: artifact.kind,
+          path: artifact.path,
+          title: artifact.title,
+          text: artifact.text,
+          continuationOf: previous.mode === 'continue' ? previous.parentNodeId : '',
+          referenceOf: previous.mode === 'reference' ? previous.referencedNodeId : '',
+          parentNodeId: previous.parentNodeId || '',
+          schemaId: previous.schemaId || '',
+          editorMode: 'rich',
+          evidenceAttachmentsV6164: artifact.evidenceAttachmentsV6164 || []
+        };
+        render();
+        return;
+      }
+    }
+
+    if (action === 'save-new-artifact' && app.modal?.type === 'add-artifact' && Array.isArray(app.modal.evidenceAttachmentsV6164)) {
+      const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
+      if (ws) storeEvidenceAttachmentFilesV6164(ws, app.modal, canonicalWorkspacePath(app.modal.path || ''));
+      return onActionBeforeEvidenceAttachmentsV6164(event);
+    }
+
+    return onActionBeforeEvidenceAttachmentsV6164(event);
+  };
+
+  function handleEvidenceAttachmentInputV6164(event) {
+    const id = event.target?.dataset?.attachmentId || '';
+    const field = event.target?.dataset?.evidenceAttachmentField || '';
+    if (id && field) {
+      updateEvidenceAttachmentFieldV6164(id, field, event.target.value);
+      return;
+    }
+    if (event.target?.dataset?.evidenceFileInput === '1' && app.modal?.type === 'artifact-wizard') {
+      Array.from(event.target.files || []).forEach(addEvidenceFileAttachmentV6164);
+      event.target.value = '';
+      render();
+    }
+  }
+
+  window.addEventListener('input', handleEvidenceAttachmentInputV6164, true);
+  window.addEventListener('change', handleEvidenceAttachmentInputV6164, true);
+
+
+
+
+  // ===== v6.165 compact Evidence collector + global drop target =====
+  function evidenceWizardActiveV6165() {
+    if (!app.modal || app.modal.type !== 'artifact-wizard') return false;
+    const option = schemaOptionByIdV6158(app.modal.schemaId || 'tiinex.topic.v1');
+    return wizardSchemaIdV6162(option) === 'tiinex.evidence.v1';
+  }
+
+  renderEvidenceAttachmentCollectorV6164 = function renderEvidenceAttachmentCollectorCompactV6165(modal) {
+    const attachments = evidenceAttachmentsV6164(modal);
+    return `<section class="evidence-collector-v6164 compact-v6165" data-evidence-drop-target="1">
+      <div class="evidence-collector-head compact-v6165">
+        <div><strong>Evidence attachments</strong><p>URLs or files become provenance material.</p></div>
+        <div class="evidence-collector-actions">
+          <button type="button" class="tv-btn tiny subtle" data-action="evidence-add-url"><i class="fa-solid fa-link"></i>Add URL</button>
+          <button type="button" class="tv-btn tiny subtle" data-action="evidence-pick-file"><i class="fa-solid fa-file-arrow-up"></i>Add file</button>
+          <input class="visually-hidden evidence-file-input-v6164" type="file" multiple data-evidence-file-input="1" aria-hidden="true" tabindex="-1">
+        </div>
+      </div>
+      ${attachments.length ? `<div class="evidence-attachment-grid compact-v6165">${attachments.map(renderEvidenceAttachmentCardV6164).join('')}</div>` : `<div class="evidence-empty-drop-v6164 compact-v6165"><i class="fa-solid fa-paperclip"></i><strong>Drop evidence here</strong><span>or add URL/file manually</span></div>`}
+    </section>`;
+  };
+
+  const wizardDescribeStepBeforeCompactEvidenceV6165 = wizardDescribeStepV6159;
+  wizardDescribeStepV6159 = function wizardDescribeStepCompactEvidenceV6165(ws, modal, selected, title, summary, body) {
+    const schemaId = wizardSchemaIdV6162(selected);
+    if (schemaId !== 'tiinex.evidence.v1') return wizardDescribeStepBeforeCompactEvidenceV6165(ws, modal, selected, title, summary, body);
+    ensureWizardFormDefaultsV6163(modal, selected);
+    const state = wizardFormStateV6163(modal);
+    return `<section class="wizard-step wizard-step-page wizard-describe-step schema-aware-describe evidence-describe-v6164 compact-v6165">
+      <div class="wizard-step-head compact-v6165"><span>2</span><div><strong>Collect evidence</strong><p>Claim first. Add URLs/files as supporting material.</p></div></div>
+      <div class="wizard-selected-type-strip compact-v6165">
+        <i class="fa-solid ${escapeAttr(selected.icon)}"></i>
+        <div><strong>${escapeHtml(selected.label)}</strong><span>${escapeHtml(schemaId)}</span></div>
+        <button class="tv-btn tiny subtle" data-action="wizard-set-step" data-step="type"><i class="fa-solid fa-rotate-left"></i>Change</button>
+      </div>
+      <div class="wizard-fields paged schema-aware-fields evidence-fields-v6164 compact-v6165">
+        <label class="field-label">Title<input class="form-control tv-input compact-v6165" data-field="wizardTitle" value="${escapeAttr(title)}"></label>
+        <label class="field-label">Summary<input class="form-control tv-input compact-v6165" data-field="wizardSummary" value="${escapeAttr(summary)}"></label>
+        <label class="field-label evidence-claim-field compact-v6165">Supported claim <span class="wizard-required">required</span><textarea class="form-control tv-textarea evidence-claim-textarea compact-v6165" data-wizard-form-field="supportedClaim" placeholder="What does this evidence show or support?">${escapeHtml(state.supportedClaim || '')}</textarea></label>
+        ${renderEvidenceAttachmentCollectorV6164(modal)}
+      </div>
+      <p class="evidence-global-drop-hint-v6165"><i class="fa-solid fa-cloud-arrow-up"></i> Drop files anywhere on this dialog to attach evidence.</p>
+    </section>`;
+  };
+
+  function addEvidenceDroppedFilesV6165(files) {
+    const list = Array.from(files || []).filter(Boolean);
+    if (!list.length || !evidenceWizardActiveV6165()) return false;
+    list.forEach(addEvidenceFileAttachmentV6164);
+    render();
+    toast(`${list.length} evidence attachment${list.length === 1 ? '' : 's'} added.`, 'ok');
+    return true;
+  }
+
+  function evidenceDropIsFileTransferV6165(event) {
+    return Array.from(event.dataTransfer?.types || []).includes('Files');
+  }
+
+  function handleGlobalEvidenceDragV6165(event) {
+    if (!evidenceWizardActiveV6165() || !evidenceDropIsFileTransferV6165(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    document.body.classList.add('evidence-drag-active-v6165');
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+  }
+
+  function handleGlobalEvidenceDragLeaveV6165(event) {
+    if (!evidenceWizardActiveV6165()) return;
+    if (event.relatedTarget) return;
+    document.body.classList.remove('evidence-drag-active-v6165');
+  }
+
+  function handleGlobalEvidenceDropV6165(event) {
+    if (!evidenceWizardActiveV6165() || !evidenceDropIsFileTransferV6165(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    document.body.classList.remove('evidence-drag-active-v6165');
+    addEvidenceDroppedFilesV6165(event.dataTransfer?.files || []);
+  }
+
+  window.addEventListener('dragenter', handleGlobalEvidenceDragV6165, true);
+  window.addEventListener('dragover', handleGlobalEvidenceDragV6165, true);
+  window.addEventListener('dragleave', handleGlobalEvidenceDragLeaveV6165, true);
+  window.addEventListener('drop', handleGlobalEvidenceDropV6165, true);
+
+
+
+
+  // ===== v6.166 Evidence details polish =====
+  function evidenceDetailsActiveV6166() {
+    if (!app.modal || app.modal.type !== 'artifact-wizard') return false;
+    const option = schemaOptionByIdV6158(app.modal.schemaId || 'tiinex.topic.v1');
+    return wizardSchemaIdV6162(option) === 'tiinex.evidence.v1' && wizardStepV6159(app.modal) === 'describe';
+  }
+
+  const renderBeforeEvidenceDetailsClassV6166 = render;
+  render = function renderWithEvidenceDetailsClassV6166() {
+    const result = renderBeforeEvidenceDetailsClassV6166();
+    document.body.classList.toggle('evidence-details-active-v6166', evidenceDetailsActiveV6166());
+    return result;
+  };
+
+  const renderEvidenceAttachmentCollectorBeforePolishV6166 = renderEvidenceAttachmentCollectorV6164;
+  renderEvidenceAttachmentCollectorV6164 = function renderEvidenceAttachmentCollectorPolishedV6166(modal) {
+    const attachments = evidenceAttachmentsV6164(modal);
+    const count = attachments.length;
+    return `<section class="evidence-collector-v6164 compact-v6165 polished-v6166" data-evidence-drop-target="1">
+      <div class="evidence-collector-head compact-v6165 polished-v6166">
+        <div>
+          <strong>Attachments ${count ? `<span class="evidence-count-v6166">${count}</span>` : ''}</strong>
+          <p>Drop files here or add URLs.</p>
+        </div>
+        <div class="evidence-collector-actions polished-v6166">
+          <button type="button" class="tv-btn tiny subtle" data-action="evidence-add-url"><i class="fa-solid fa-link"></i>URL</button>
+          <button type="button" class="tv-btn tiny subtle" data-action="evidence-pick-file"><i class="fa-solid fa-file-arrow-up"></i>File</button>
+          <input class="visually-hidden evidence-file-input-v6164" type="file" multiple data-evidence-file-input="1" aria-hidden="true" tabindex="-1">
+        </div>
+      </div>
+      ${count ? `<div class="evidence-attachment-grid compact-v6165 polished-v6166">${attachments.map(renderEvidenceAttachmentCardV6164).join('')}</div>` : `<div class="evidence-empty-drop-v6164 compact-v6165 polished-v6166"><i class="fa-solid fa-cloud-arrow-up"></i><strong>Drop files</strong><span>or add URL/file</span></div>`}
+    </section>`;
+  };
+
+  const wizardDescribeStepBeforeEvidencePolishV6166 = wizardDescribeStepV6159;
+  wizardDescribeStepV6159 = function wizardDescribeStepEvidencePolishV6166(ws, modal, selected, title, summary, body) {
+    const schemaId = wizardSchemaIdV6162(selected);
+    if (schemaId !== 'tiinex.evidence.v1') return wizardDescribeStepBeforeEvidencePolishV6166(ws, modal, selected, title, summary, body);
+    ensureWizardFormDefaultsV6163(modal, selected);
+    const state = wizardFormStateV6163(modal);
+    return `<section class="wizard-step wizard-step-page wizard-describe-step schema-aware-describe evidence-describe-v6164 compact-v6165 polished-v6166">
+      <div class="wizard-step-head compact-v6165 polished-v6166"><span>2</span><div><strong>Collect evidence</strong><p>State the claim, then attach the material.</p></div></div>
+      <div class="wizard-selected-type-strip compact-v6165 polished-v6166">
+        <i class="fa-solid ${escapeAttr(selected.icon)}"></i>
+        <div><strong>${escapeHtml(selected.label)}</strong><span>${escapeHtml(schemaId)}</span></div>
+        <button class="tv-btn tiny subtle" data-action="wizard-set-step" data-step="type"><i class="fa-solid fa-rotate-left"></i>Change</button>
+      </div>
+      <div class="wizard-fields paged schema-aware-fields evidence-fields-v6164 compact-v6165 polished-v6166">
+        <label class="field-label">Title<input class="form-control tv-input compact-v6165" data-field="wizardTitle" value="${escapeAttr(title)}"></label>
+        <label class="field-label">Summary<input class="form-control tv-input compact-v6165" data-field="wizardSummary" value="${escapeAttr(summary)}"></label>
+        <label class="field-label evidence-claim-field compact-v6165 polished-v6166">Supported claim <span class="wizard-required">required</span><textarea class="form-control tv-textarea evidence-claim-textarea compact-v6165 polished-v6166" data-wizard-form-field="supportedClaim" placeholder="What does this evidence show or support?">${escapeHtml(state.supportedClaim || '')}</textarea></label>
+        ${renderEvidenceAttachmentCollectorV6164(modal)}
+      </div>
+    </section>`;
+  };
+
+
+
+
+  // ===== v6.167 Evidence attachments simplified + draft wording cleanup =====
+  defaultWizardSummaryV6158 = function defaultWizardSummaryV6167(modal, option) {
+    if (modal?.summary) return modal.summary;
+    const label = String(option?.label || 'artifact').toLowerCase();
+    if (modal?.mode === 'continue') return `Continuation ${label} created in Tiinex Viewer.`;
+    if (modal?.mode === 'reference') return `Reference ${label} created in Tiinex Viewer.`;
+    return `${option?.label || 'Tiinex'} artifact created in Tiinex Viewer.`;
+  };
+
+  function defaultAttachmentLimitV6167(attachment) {
+    if (attachment.kind === 'url') return 'Source availability may change; this artifact preserves the provided URL and notes.';
+    return 'Attachment is preserved as provided; interpretation depends on the selected supported claim and readable file content.';
+  }
+
+  function attachmentLimitsMarkdownV6167(items) {
+    const explicit = items.flatMap((attachment) => formLinesV6163(attachment.limits || ''));
+    if (explicit.length) return explicit.map((line) => `- ${line}`).join('\n');
+    if (!items.length) return '- No supporting material has been attached yet.';
+    return items.map((attachment) => `- ${defaultAttachmentLimitV6167(attachment)}`).join('\n');
+  }
+
+  function evidenceAttachmentsMarkdownV6164(artifactPath, attachments) {
+    const items = (attachments || []).filter((attachment) => attachment && (attachment.url || attachment.name || attachment.label));
+    if (!items.length) {
+      return {
+        provenance: '- Source: \n- Representation: ',
+        material: 'Preserve the readable supporting material here.',
+        limits: '- No supporting material has been attached yet.'
+      };
+    }
+
+    const provenance = items.map((attachment) => {
+      const line = evidenceAttachmentLineV6164(artifactPath, attachment);
+      const representation = attachment.representation ? `\n  - Representation: ${attachment.representation}` : '';
+      return `${line}${representation}`;
+    }).join('\n');
+
+    const material = items.map((attachment) => {
+      const line = evidenceAttachmentLineV6164(artifactPath, attachment);
+      const notes = attachment.notes ? `\n  - Notes: ${attachment.notes}` : '';
+      return `${line}${notes}`;
+    }).join('\n');
+
+    return {
+      provenance,
+      material,
+      limits: attachmentLimitsMarkdownV6167(items)
+    };
+  }
+
+  function renderEvidenceAttachmentCardV6164(attachment) {
+    const id = attachment.id || '';
+    const isUrl = attachment.kind === 'url';
+    const icon = isUrl ? 'fa-link' : 'fa-file-arrow-up';
+    const kindLabel = isUrl ? 'URL' : 'File';
+    const label = evidenceAttachmentLabelV6164(attachment);
+    const expanded = Boolean(attachment.expandedV6167);
+
+    return `<article class="evidence-attachment-card simplified-v6167" data-attachment-id="${escapeAttr(id)}">
+      <div class="evidence-attachment-top simplified-v6167">
+        <span class="evidence-attachment-icon"><i class="fa-solid ${icon}"></i></span>
+        <div>
+          <strong>${escapeHtml(label)}</strong>
+          <small>${escapeHtml(kindLabel)}${attachment.size ? ` · ${Math.round(attachment.size / 1024)} KB` : ''}</small>
+        </div>
+        <button type="button" class="tv-btn tiny subtle evidence-remove-attachment" data-action="evidence-remove-attachment" data-attachment-id="${escapeAttr(id)}" title="Remove attachment" aria-label="Remove attachment"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+
+      <div class="evidence-simple-fields-v6167">
+        ${isUrl ? `<label class="field-label">URL<input class="form-control tv-input" data-evidence-attachment-field="url" data-attachment-id="${escapeAttr(id)}" value="${escapeAttr(attachment.url || '')}" placeholder="https://..."></label>` : `<div class="evidence-file-name-v6167"><span>File</span><strong>${escapeHtml(attachment.name || label)}</strong></div>`}
+        <label class="field-label evidence-wide">Notes<textarea class="form-control tv-textarea evidence-mini-textarea simplified-v6167" data-evidence-attachment-field="notes" data-attachment-id="${escapeAttr(id)}" placeholder="What should this evidence preserve or show?">${escapeHtml(attachment.notes || '')}</textarea></label>
+      </div>
+
+      <button type="button" class="tv-btn tiny subtle evidence-advanced-toggle-v6167" data-action="evidence-toggle-advanced" data-attachment-id="${escapeAttr(id)}">
+        <i class="fa-solid ${expanded ? 'fa-chevron-up' : 'fa-sliders'}"></i>${expanded ? 'Hide details' : 'More details'}
+      </button>
+
+      ${expanded ? `<div class="evidence-attachment-fields advanced-v6167">
+        <label class="field-label">Label<input class="form-control tv-input" data-evidence-attachment-field="label" data-attachment-id="${escapeAttr(id)}" value="${escapeAttr(attachment.label || '')}" placeholder="${escapeAttr(isUrl ? 'Readable source name' : attachment.name || 'Attachment label')}"></label>
+        <label class="field-label">Representation<input class="form-control tv-input" data-evidence-attachment-field="representation" data-attachment-id="${escapeAttr(id)}" value="${escapeAttr(attachment.representation || '')}" placeholder="file, image, screenshot, quote, web page"></label>
+        <label class="field-label evidence-wide">Limits<textarea class="form-control tv-textarea evidence-mini-textarea" data-evidence-attachment-field="limits" data-attachment-id="${escapeAttr(id)}" placeholder="${escapeAttr(defaultAttachmentLimitV6167(attachment))}">${escapeHtml(attachment.limits || '')}</textarea></label>
+      </div>` : ''}
+    </article>`;
+  }
+
+  const onActionBeforeEvidenceSimplifyV6167 = onActionV645;
+  onActionV645 = async function evidenceSimplifyActionV6167(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'evidence-toggle-advanced') {
+      event.preventDefault();
+      event.stopPropagation();
+      const id = event.currentTarget.dataset.attachmentId || '';
+      const item = evidenceAttachmentsV6164().find((attachment) => attachment.id === id);
+      if (item) item.expandedV6167 = !item.expandedV6167;
+      render();
+      return;
+    }
+    return onActionBeforeEvidenceSimplifyV6167(event);
+  };
+
+
+
+
+  // ===== v6.168 Evidence attachment metadata chips =====
+  function fileExtensionV6168(name) {
+    const m = String(name || '').match(/\.([a-z0-9]{1,12})$/i);
+    return m ? m[1].toUpperCase() : '';
+  }
+
+  function humanSizeV6168(bytes) {
+    const n = Number(bytes || 0);
+    if (!n) return '';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(n < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+  }
+
+  function shortMimeV6168(type, name = '') {
+    const ext = fileExtensionV6168(name);
+    const t = String(type || '').toLowerCase();
+    if (t.startsWith('image/')) return ext || t.replace('image/', '').toUpperCase();
+    if (t.includes('html')) return 'HTML';
+    if (t.includes('markdown')) return 'MD';
+    if (t.includes('json')) return 'JSON';
+    if (t.includes('pdf')) return 'PDF';
+    if (t.includes('text')) return 'TEXT';
+    return ext || 'FILE';
+  }
+
+  function attachmentMetaChipsV6168(attachment) {
+    const chips = [];
+    if (attachment.kind === 'file') {
+      const kind = shortMimeV6168(attachment.type, attachment.name);
+      if (kind) chips.push(kind);
+      const size = humanSizeV6168(attachment.size);
+      if (size) chips.push(size);
+      if (attachment.width && attachment.height) chips.push(`${attachment.width}×${attachment.height}`);
+    } else if (attachment.kind === 'url') {
+      chips.push('URL');
+      try {
+        if (attachment.url) chips.push(new URL(attachment.url).hostname.replace(/^www\./, ''));
+      } catch (_) {}
+    }
+    return chips;
+  }
+
+  function attachmentMetaMarkdownV6168(attachment) {
+    const lines = [];
+    if (attachment.kind === 'file') {
+      if (attachment.type) lines.push(`  - Media Type: ${attachment.type}`);
+      const size = humanSizeV6168(attachment.size);
+      if (size) lines.push(`  - Size: ${size}`);
+      if (attachment.width && attachment.height) lines.push(`  - Dimensions: ${attachment.width}×${attachment.height}`);
+    }
+    return lines.join('\n');
+  }
+
+  function readImageMetadataV6168(attachment) {
+    if (!attachment?.file || !String(attachment.type || '').startsWith('image/')) return;
+    try {
+      const url = URL.createObjectURL(attachment.file);
+      const img = new Image();
+      img.onload = () => {
+        attachment.width = img.naturalWidth || img.width || 0;
+        attachment.height = img.naturalHeight || img.height || 0;
+        URL.revokeObjectURL(url);
+        if (evidenceWizardActiveV6165?.()) render();
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+      };
+      img.src = url;
+    } catch (_) {}
+  }
+
+  addEvidenceFileAttachmentV6164 = function addEvidenceFileAttachmentWithMetadataV6168(file) {
+    if (!file) return;
+    const attachment = {
+      id: evidenceAttachmentIdV6164(),
+      kind: 'file',
+      name: file.name || 'attachment',
+      label: file.name || 'attachment',
+      representation: file.type?.startsWith('image/') ? 'image file' : 'file',
+      notes: '',
+      limits: '',
+      size: file.size || 0,
+      type: file.type || '',
+      file
+    };
+    evidenceAttachmentsV6164().push(attachment);
+    readImageMetadataV6168(attachment);
+  };
+
+  function evidenceAttachmentsMarkdownV6164(artifactPath, attachments) {
+    const items = (attachments || []).filter((attachment) => attachment && (attachment.url || attachment.name || attachment.label));
+    if (!items.length) {
+      return {
+        provenance: '- Source: \n- Representation: ',
+        material: 'Preserve the readable supporting material here.',
+        limits: '- No supporting material has been attached yet.'
+      };
+    }
+
+    const provenance = items.map((attachment) => {
+      const line = evidenceAttachmentLineV6164(artifactPath, attachment);
+      const representation = attachment.representation ? `\n  - Representation: ${attachment.representation}` : '';
+      const meta = attachmentMetaMarkdownV6168(attachment);
+      return `${line}${representation}${meta ? `\n${meta}` : ''}`;
+    }).join('\n');
+
+    const material = items.map((attachment) => {
+      const line = evidenceAttachmentLineV6164(artifactPath, attachment);
+      const notes = attachment.notes ? `\n  - Notes: ${attachment.notes}` : '';
+      const meta = attachmentMetaMarkdownV6168(attachment);
+      return `${line}${notes}${meta ? `\n${meta}` : ''}`;
+    }).join('\n');
+
+    return {
+      provenance,
+      material,
+      limits: attachmentLimitsMarkdownV6167(items)
+    };
+  }
+
+  function renderEvidenceAttachmentCardV6164(attachment) {
+    const id = attachment.id || '';
+    const isUrl = attachment.kind === 'url';
+    const icon = isUrl ? 'fa-link' : 'fa-file-arrow-up';
+    const kindLabel = isUrl ? 'URL' : 'File';
+    const label = evidenceAttachmentLabelV6164(attachment);
+    const expanded = Boolean(attachment.expandedV6167);
+    const chips = attachmentMetaChipsV6168(attachment);
+
+    return `<article class="evidence-attachment-card simplified-v6167 meta-v6168" data-attachment-id="${escapeAttr(id)}">
+      <div class="evidence-attachment-top simplified-v6167 meta-v6168">
+        <span class="evidence-attachment-icon"><i class="fa-solid ${icon}"></i></span>
+        <div>
+          <strong>${escapeHtml(label)}</strong>
+          <small>${escapeHtml(kindLabel)}</small>
+          ${chips.length ? `<div class="evidence-meta-chips-v6168">${chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('')}</div>` : ''}
+        </div>
+        <button type="button" class="tv-btn tiny subtle evidence-remove-attachment" data-action="evidence-remove-attachment" data-attachment-id="${escapeAttr(id)}" title="Remove attachment" aria-label="Remove attachment"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+
+      <div class="evidence-simple-fields-v6167">
+        ${isUrl ? `<label class="field-label">URL<input class="form-control tv-input" data-evidence-attachment-field="url" data-attachment-id="${escapeAttr(id)}" value="${escapeAttr(attachment.url || '')}" placeholder="https://..."></label>` : ''}
+        <label class="field-label evidence-wide">Notes<textarea class="form-control tv-textarea evidence-mini-textarea simplified-v6167" data-evidence-attachment-field="notes" data-attachment-id="${escapeAttr(id)}" placeholder="What should this evidence preserve or show?">${escapeHtml(attachment.notes || '')}</textarea></label>
+      </div>
+
+      <button type="button" class="tv-btn tiny subtle evidence-advanced-toggle-v6167" data-action="evidence-toggle-advanced" data-attachment-id="${escapeAttr(id)}">
+        <i class="fa-solid ${expanded ? 'fa-chevron-up' : 'fa-sliders'}"></i>${expanded ? 'Hide details' : 'More details'}
+      </button>
+
+      ${expanded ? `<div class="evidence-attachment-fields advanced-v6167">
+        <label class="field-label">Label<input class="form-control tv-input" data-evidence-attachment-field="label" data-attachment-id="${escapeAttr(id)}" value="${escapeAttr(attachment.label || '')}" placeholder="${escapeAttr(isUrl ? 'Readable source name' : attachment.name || 'Attachment label')}"></label>
+        <label class="field-label">Representation<input class="form-control tv-input" data-evidence-attachment-field="representation" data-attachment-id="${escapeAttr(id)}" value="${escapeAttr(attachment.representation || '')}" placeholder="file, image, screenshot, quote, web page"></label>
+        <label class="field-label evidence-wide">Limits<textarea class="form-control tv-textarea evidence-mini-textarea" data-evidence-attachment-field="limits" data-attachment-id="${escapeAttr(id)}" placeholder="${escapeAttr(defaultAttachmentLimitV6167(attachment))}">${escapeHtml(attachment.limits || '')}</textarea></label>
+      </div>` : ''}
+    </article>`;
+  }
+
+
+
+
+  // ===== v6.170 Evidence representation is derived, not user-edited =====
+  function representationChipV6170(attachment) {
+    const value = String(attachment?.representation || '').trim();
+    if (!value) return '';
+    return `<span title="Derived representation">${escapeHtml(value)}</span>`;
+  }
+
+  const attachmentMetaChipsBeforeRepresentationV6170 = attachmentMetaChipsV6168;
+  attachmentMetaChipsV6168 = function attachmentMetaChipsWithRepresentationV6170(attachment) {
+    const chips = attachmentMetaChipsBeforeRepresentationV6170(attachment);
+    const rep = String(attachment?.representation || '').trim();
+    if (rep && !chips.map((x) => String(x).toLowerCase()).includes(rep.toLowerCase())) {
+      chips.unshift(rep);
+    }
+    return chips;
+  };
+
+  function renderEvidenceAttachmentCardV6164(attachment) {
+    const id = attachment.id || '';
+    const isUrl = attachment.kind === 'url';
+    const icon = isUrl ? 'fa-link' : 'fa-file-arrow-up';
+    const kindLabel = isUrl ? 'URL' : 'File';
+    const label = evidenceAttachmentLabelV6164(attachment);
+    const expanded = Boolean(attachment.expandedV6167);
+    const chips = attachmentMetaChipsV6168(attachment);
+
+    return `<article class="evidence-attachment-card simplified-v6167 meta-v6168 truthy-v6170" data-attachment-id="${escapeAttr(id)}">
+      <div class="evidence-attachment-top simplified-v6167 meta-v6168">
+        <span class="evidence-attachment-icon"><i class="fa-solid ${icon}"></i></span>
+        <div>
+          <strong>${escapeHtml(label)}</strong>
+          <small>${escapeHtml(kindLabel)}</small>
+          ${chips.length ? `<div class="evidence-meta-chips-v6168">${chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('')}</div>` : ''}
+        </div>
+        <button type="button" class="tv-btn tiny subtle evidence-remove-attachment" data-action="evidence-remove-attachment" data-attachment-id="${escapeAttr(id)}" title="Remove attachment" aria-label="Remove attachment"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+
+      <div class="evidence-simple-fields-v6167">
+        ${isUrl ? `<label class="field-label">URL<input class="form-control tv-input" data-evidence-attachment-field="url" data-attachment-id="${escapeAttr(id)}" value="${escapeAttr(attachment.url || '')}" placeholder="https://..."></label>` : ''}
+        <label class="field-label evidence-wide">Notes<textarea class="form-control tv-textarea evidence-mini-textarea simplified-v6167" data-evidence-attachment-field="notes" data-attachment-id="${escapeAttr(id)}" placeholder="What should this evidence preserve or show?">${escapeHtml(attachment.notes || '')}</textarea></label>
+      </div>
+
+      <button type="button" class="tv-btn tiny subtle evidence-advanced-toggle-v6167" data-action="evidence-toggle-advanced" data-attachment-id="${escapeAttr(id)}">
+        <i class="fa-solid ${expanded ? 'fa-chevron-up' : 'fa-sliders'}"></i>${expanded ? 'Hide details' : 'More details'}
+      </button>
+
+      ${expanded ? `<div class="evidence-attachment-fields advanced-v6167 truthy-v6170">
+        <label class="field-label evidence-wide">Label<input class="form-control tv-input" data-evidence-attachment-field="label" data-attachment-id="${escapeAttr(id)}" value="${escapeAttr(attachment.label || '')}" placeholder="${escapeAttr(isUrl ? 'Readable source name' : attachment.name || 'Attachment label')}"></label>
+        <div class="evidence-derived-row-v6170 evidence-wide">
+          <span>Representation</span>
+          <strong>${escapeHtml(attachment.representation || kindLabel.toLowerCase())}</strong>
+          <small>Derived from attachment type. Not user-editable.</small>
+        </div>
+        <label class="field-label evidence-wide">Limits<textarea class="form-control tv-textarea evidence-mini-textarea" data-evidence-attachment-field="limits" data-attachment-id="${escapeAttr(id)}" placeholder="${escapeAttr(defaultAttachmentLimitV6167(attachment))}">${escapeHtml(attachment.limits || '')}</textarea></label>
+      </div>` : ''}
+    </article>`;
+  }
+
+
+
+
+  // ===== v6.171 Evidence image thumbnails and overlay preview =====
+  function evidenceAttachmentIsImageV6171(attachment) {
+    return attachment?.kind === 'file' && (
+      String(attachment.type || '').startsWith('image/') ||
+      /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(String(attachment.name || ''))
+    );
+  }
+
+  function evidenceAttachmentObjectUrlV6171(attachment) {
+    if (!attachment || !attachment.file) return '';
+    if (attachment.previewUrlV6171) return attachment.previewUrlV6171;
+    try {
+      attachment.previewUrlV6171 = URL.createObjectURL(attachment.file);
+      return attachment.previewUrlV6171;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function evidenceAttachmentThumbV6171(attachment, icon) {
+    if (!evidenceAttachmentIsImageV6171(attachment)) {
+      return `<span class="evidence-attachment-icon"><i class="fa-solid ${icon}"></i></span>`;
+    }
+    const src = evidenceAttachmentObjectUrlV6171(attachment);
+    if (!src) return `<span class="evidence-attachment-icon"><i class="fa-solid ${icon}"></i></span>`;
+    return `<button type="button" class="evidence-image-thumb-v6171" data-action="evidence-preview-attachment" data-attachment-id="${escapeAttr(attachment.id || '')}" title="Preview image" aria-label="Preview image">
+      <img src="${escapeAttr(src)}" alt="${escapeAttr(evidenceAttachmentLabelV6164(attachment))}" loading="lazy">
+    </button>`;
+  }
+
+  function renderEvidenceAttachmentCardV6164(attachment) {
+    const id = attachment.id || '';
+    const isUrl = attachment.kind === 'url';
+    const icon = isUrl ? 'fa-link' : 'fa-file-arrow-up';
+    const kindLabel = isUrl ? 'URL' : 'File';
+    const label = evidenceAttachmentLabelV6164(attachment);
+    const expanded = Boolean(attachment.expandedV6167);
+    const chips = attachmentMetaChipsV6168(attachment);
+
+    return `<article class="evidence-attachment-card simplified-v6167 meta-v6168 truthy-v6170 preview-v6171" data-attachment-id="${escapeAttr(id)}">
+      <div class="evidence-attachment-top simplified-v6167 meta-v6168">
+        ${evidenceAttachmentThumbV6171(attachment, icon)}
+        <div>
+          <strong>${escapeHtml(label)}</strong>
+          <small>${escapeHtml(kindLabel)}</small>
+          ${chips.length ? `<div class="evidence-meta-chips-v6168">${chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('')}</div>` : ''}
+        </div>
+        <button type="button" class="tv-btn tiny subtle evidence-remove-attachment" data-action="evidence-remove-attachment" data-attachment-id="${escapeAttr(id)}" title="Remove attachment" aria-label="Remove attachment"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+
+      <div class="evidence-simple-fields-v6167">
+        ${isUrl ? `<label class="field-label">URL<input class="form-control tv-input" data-evidence-attachment-field="url" data-attachment-id="${escapeAttr(id)}" value="${escapeAttr(attachment.url || '')}" placeholder="https://..."></label>` : ''}
+        <label class="field-label evidence-wide">Notes<textarea class="form-control tv-textarea evidence-mini-textarea simplified-v6167" data-evidence-attachment-field="notes" data-attachment-id="${escapeAttr(id)}" placeholder="What should this evidence preserve or show?">${escapeHtml(attachment.notes || '')}</textarea></label>
+      </div>
+
+      <button type="button" class="tv-btn tiny subtle evidence-advanced-toggle-v6167" data-action="evidence-toggle-advanced" data-attachment-id="${escapeAttr(id)}">
+        <i class="fa-solid ${expanded ? 'fa-chevron-up' : 'fa-sliders'}"></i>${expanded ? 'Hide details' : 'More details'}
+      </button>
+
+      ${expanded ? `<div class="evidence-attachment-fields advanced-v6167 truthy-v6170">
+        <label class="field-label evidence-wide">Label<input class="form-control tv-input" data-evidence-attachment-field="label" data-attachment-id="${escapeAttr(id)}" value="${escapeAttr(attachment.label || '')}" placeholder="${escapeAttr(isUrl ? 'Readable source name' : attachment.name || 'Attachment label')}"></label>
+        <div class="evidence-derived-row-v6170 evidence-wide">
+          <span>Representation</span>
+          <strong>${escapeHtml(attachment.representation || kindLabel.toLowerCase())}</strong>
+          <small>Derived from attachment type. Not user-editable.</small>
+        </div>
+        <label class="field-label evidence-wide">Limits<textarea class="form-control tv-textarea evidence-mini-textarea" data-evidence-attachment-field="limits" data-attachment-id="${escapeAttr(id)}" placeholder="${escapeAttr(defaultAttachmentLimitV6167(attachment))}">${escapeHtml(attachment.limits || '')}</textarea></label>
+      </div>` : ''}
+    </article>`;
+  }
+
+  function evidencePreviewAttachmentV6171() {
+    const id = app.evidencePreviewAttachmentIdV6171 || '';
+    if (!id) return null;
+    const attachments = evidenceAttachmentsV6164(app.modal);
+    return attachments.find((attachment) => attachment.id === id) || null;
+  }
+
+  function evidencePreviewOverlayHtmlV6171(attachment) {
+    if (!attachment || !evidenceAttachmentIsImageV6171(attachment)) return '';
+    const src = evidenceAttachmentObjectUrlV6171(attachment);
+    if (!src) return '';
+    const label = evidenceAttachmentLabelV6164(attachment);
+    const chips = attachmentMetaChipsV6168(attachment);
+    return `<div class="evidence-preview-overlay-v6171" role="dialog" aria-modal="true" aria-label="Evidence image preview">
+      <div class="evidence-preview-panel-v6171">
+        <div class="evidence-preview-head-v6171">
+          <div>
+            <p class="kicker">Evidence image preview</p>
+            <h2>${escapeHtml(label)}</h2>
+            ${chips.length ? `<div class="evidence-meta-chips-v6168">${chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('')}</div>` : ''}
+          </div>
+          <button type="button" class="tv-btn small subtle" data-action="evidence-close-preview" aria-label="Close preview"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="evidence-preview-body-v6171">
+          <img src="${escapeAttr(src)}" alt="${escapeAttr(label)}">
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function renderEvidencePreviewOverlayV6171() {
+    document.querySelectorAll('.evidence-preview-overlay-v6171').forEach((node) => node.remove());
+    const html = evidencePreviewOverlayHtmlV6171(evidencePreviewAttachmentV6171());
+    if (html) document.body.insertAdjacentHTML('beforeend', html);
+  }
+
+  const renderBeforeEvidencePreviewV6171 = render;
+  render = function renderWithEvidencePreviewV6171() {
+    const result = renderBeforeEvidencePreviewV6171();
+    renderEvidencePreviewOverlayV6171();
+    return result;
+  };
+
+  const onActionBeforeEvidencePreviewV6171 = onActionV645;
+  onActionV645 = async function evidencePreviewActionV6171(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+
+    if (action === 'evidence-preview-attachment') {
+      event.preventDefault();
+      event.stopPropagation();
+      app.evidencePreviewAttachmentIdV6171 = event.currentTarget.dataset.attachmentId || '';
+      render();
+      return;
+    }
+
+    if (action === 'evidence-close-preview') {
+      event.preventDefault();
+      event.stopPropagation();
+      app.evidencePreviewAttachmentIdV6171 = '';
+      render();
+      return;
+    }
+
+    return onActionBeforeEvidencePreviewV6171(event);
+  };
+
+  function closeEvidencePreviewOnEscapeV6171(event) {
+    if (event.key !== 'Escape' || !app.evidencePreviewAttachmentIdV6171) return;
+    app.evidencePreviewAttachmentIdV6171 = '';
+    render();
+  }
+
+  window.addEventListener('keydown', closeEvidencePreviewOnEscapeV6171, true);
+
+
+
+
+  // ===== v6.172 restore Discovery search after display-options override =====
+  filteredDiscoveryNodes = function filteredDiscoveryNodesWithSearchRestoredV6172(ws) {
+    const filter = typeof normalizeDiscoveryFilterForWorkspaceV6100 === 'function'
+      ? normalizeDiscoveryFilterForWorkspaceV6100(ws)
+      : (ws.discoveryFilterSchema || ws.filterSchema || 'all');
+    const query = ws.discoverySearch || '';
+    const opts = typeof workspaceDisplayOptionsV6134 === 'function'
+      ? workspaceDisplayOptionsV6134(ws)
+      : { leavesOnly: true };
+
+    let base = opts.leavesOnly ? ((ws.leaves && ws.leaves.length) ? ws.leaves : ws.nodes) : ws.nodes;
+    if (typeof displayOptionAllowsNodeV6134 === 'function') {
+      base = base.filter((node) => displayOptionAllowsNodeV6134(ws, node));
+    }
+
+    if (filter === 'draft') {
+      base = (ws.nodes || []).filter((node) => node.isGenerated && (!displayOptionAllowsNodeV6134 || displayOptionAllowsNodeV6134(ws, node)));
+    } else if (filter !== 'all') {
+      base = base.filter((node) => schemaKey(node.currentSchemaText || node.currentSchema) === filter);
+    }
+
+    if (normalizeSearchText(query)) {
+      base = base.filter((node) => nodeMatchesSearch(node, query));
+    }
+
+    return base;
+  };
+
+
+
+
+  // ===== v6.173 keep Tree toolbar stable when search has no matches =====
+  renderTreeAllControlV6138 = function renderTreeAllControlStableV6173(ws, nodes) {
+    const discoveryView = ws.discoveryView || 'feed';
+    if (discoveryView !== 'tree') return '';
+    const state = treeAllControlStateV6138(ws, nodes);
+    if (!state.paths.length) {
+      return `<button class="tv-btn tiny subtle tree-all-toggle disabled-placeholder-v6173" type="button" disabled aria-disabled="true" title="No tree folders in current result">
+        <i class="fa-solid fa-expand"></i>
+      </button>`;
+    }
+    const collapse = state.action === 'collapse';
+    return `<button class="tv-btn tiny subtle tree-all-toggle" data-action="toggle-tree-all" data-ws="${escapeAttr(ws.id)}" data-mode="${collapse ? 'collapse' : 'expand'}" title="${collapse ? 'Collapse all folders' : 'Expand all folders'}" aria-label="${collapse ? 'Collapse all folders' : 'Expand all folders'}">
+      <i class="fa-solid ${collapse ? 'fa-compress' : 'fa-expand'}"></i>
+    </button>`;
+  };
+
+
+
+
+  // ===== v6.175 allow wizard Details to create without markdown review =====
+  function wizardDirectButtonTextV6175(modal) {
+    const mode = modal?.mode || 'new';
+    if (mode === 'continue') return 'Create continuation';
+    if (mode === 'reference') return 'Create reference';
+    return 'Create artifact';
+  }
+
+  function wizardDirectArtifactAvailableV6175(modal) {
+    if (!modal || modal.type !== 'artifact-wizard') return false;
+    const option = schemaOptionByIdV6158(modal.schemaId || 'tiinex.topic.v1');
+    return option && option.id !== 'raw';
+  }
+
+  const renderArtifactWizardModalBeforeDirectCreateV6175 = renderArtifactWizardModalV6158;
+  renderArtifactWizardModalV6158 = function renderArtifactWizardModalWithDirectCreateV6175(modal) {
+    let html = renderArtifactWizardModalBeforeDirectCreateV6175(modal);
+    if (!modal || modal.type !== 'artifact-wizard' || wizardStepV6159(modal) !== 'describe' || !wizardDirectArtifactAvailableV6175(modal)) return html;
+
+    const ws = getWorkspace(modal.wsId);
+    if (!ws) return html;
+    const direct = `<button class="tv-btn primary wizard-direct-create-v6175" data-action="wizard-create-direct" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-circle-check"></i>${escapeHtml(wizardDirectButtonTextV6175(modal))}</button>`;
+    const review = `<button class="tv-btn subtle wizard-review-markdown-v6175" data-action="wizard-open-editor" data-ws="${escapeAttr(ws.id)}"><i class="fa-brands fa-markdown"></i>Review markdown</button>`;
+
+    html = html.replace(
+      /<button class="tv-btn primary" data-action="wizard-open-editor" data-ws="[^"]*"><i class="fa-solid fa-pen-nib"><\/i>[\s\S]*?<\/button>/,
+      `${direct}${review}`
+    );
+    return html;
+  };
+
+  function createArtifactFromWizardV6175(ws, modal) {
+    const artifact = wizardTemplateV6158(ws, modal);
+    const kind = artifact.kind || 'trace';
+    const path = canonicalWorkspacePath(artifact.path || '');
+    const error = validateNewArtifactPathV6143(path, kind);
+    if (error) {
+      toast(error, 'warn');
+      return false;
+    }
+    if (workspaceHasPathInSource(ws, 'local', path)) {
+      toast('That local path already exists. Edit or remove it first.', 'warn');
+      return false;
+    }
+
+    if (artifact.evidenceAttachmentsV6164 && typeof storeEvidenceAttachmentFilesV6164 === 'function') {
+      const stash = { evidenceAttachmentsV6164: artifact.evidenceAttachmentsV6164 };
+      storeEvidenceAttachmentFilesV6164(ws, stash, path);
+    }
+
+    upsertWorkspaceTextFileV6143(ws, path, artifact.text, 'local');
+    computeWorkspaceIndex(ws);
+    const node = Array.from(ws.nodeById?.values?.() || []).find((candidate) => sameImportedPathV6137(candidate.path, path));
+    if (node) ws.selectedNodeId = node.id;
+
+    app.modal = null;
+    if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
+    if (typeof setRouteState === 'function') setRouteState('replace');
+    render();
+    toast(`${wizardDirectButtonTextV6175(modal)} added.`, 'ok');
+    return true;
+  }
+
+  const onActionBeforeWizardDirectCreateV6175 = onActionV645;
+  onActionV645 = async function wizardDirectCreateActionV6175(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'wizard-create-direct') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
+      if (!ws || !app.modal || app.modal.type !== 'artifact-wizard') return toast('No workspace selected.', 'warn');
+      createArtifactFromWizardV6175(ws, app.modal);
+      return;
+    }
+    return onActionBeforeWizardDirectCreateV6175(event);
+  };
+
+
+
+
+  // ===== v6.176 repair local text/content mismatch for generated artifacts =====
+  function repairTextBackedWorkspaceFilesV6176(ws) {
+    if (!ws?.files) return;
+    for (const file of ws.files.values()) {
+      if (!file) continue;
+      const text = typeof file.text === 'string' ? file.text : '';
+      const content = typeof file.content === 'string' ? file.content : '';
+      if (!content && text) file.content = normalizeNewlines(text);
+      if (!file.text && content) file.text = normalizeNewlines(content);
+      if (!file.workspaceId) file.workspaceId = ws.id;
+      if (!file.name) file.name = fileNameFromPath(file.path || file.storageKey || 'artifact.md');
+    }
+  }
+
+  upsertWorkspaceTextFileV6143 = function upsertWorkspaceTextFileWithContentV6176(ws, path, text, sourceId = 'local') {
+    ensureWorkspaceSources(ws);
+    const source = ws.sources.get(sourceId) || localSource(ws);
+    const cleanPath = canonicalWorkspacePath(path || '');
+    const storageKey = sourceFileKey(source.id, cleanPath, false);
+    const normalized = normalizeNewlines(text || '');
+    const file = {
+      workspaceId: ws.id,
+      path: cleanPath,
+      name: fileNameFromPath(cleanPath),
+      content: normalized,
+      text: normalized,
+      sourceId: source.id,
+      sourceKind: source.kind,
+      sourceLabel: source.label,
+      storageKey,
+      isGenerated: false
+    };
+    ws.files.set(storageKey, file);
+    return file;
+  };
+
+  const computeWorkspaceIndexBeforeTextContentRepairV6176 = computeWorkspaceIndex;
+  computeWorkspaceIndex = function computeWorkspaceIndexWithTextContentRepairV6176(ws) {
+    repairTextBackedWorkspaceFilesV6176(ws);
+    return computeWorkspaceIndexBeforeTextContentRepairV6176(ws);
+  };
+
+
+
+
+  // ===== v6.177 schema-aware edit for local known artifacts =====
+  function schemaIdForNodeV6177(node) {
+    return schemaIdFromTextV6155(node?.currentSchemaText || node?.currentSchema || '', '');
+  }
+
+  function schemaAwareEditAvailableV6177(ws, node) {
+    if (!ws || !node || !canEditNodeV6143(ws, node)) return false;
+    const schemaId = schemaIdForNodeV6177(node);
+    return Boolean(schemaId && knownHumanSchemaIdsV6162().has(schemaId) && schemaFormForV6163(schemaId));
+  }
+
+  function stripBodyTitleV6177(body) {
+    return String(body || '').replace(/^\s*#\s+.+(?:\n+|$)/, '').trim();
+  }
+
+  function sectionMapV6177(body) {
+    const text = stripBodyTitleV6177(body);
+    const re = /^##\s+(.+?)\s*$/gm;
+    const matches = Array.from(text.matchAll(re));
+    const map = { _intro: '' };
+    if (!matches.length) {
+      map._intro = text.trim();
+      return map;
+    }
+    map._intro = text.slice(0, matches[0].index).trim();
+    for (let i = 0; i < matches.length; i++) {
+      const key = matches[i][1].trim().toLowerCase();
+      const start = matches[i].index + matches[i][0].length;
+      const end = i + 1 < matches.length ? matches[i + 1].index : text.length;
+      map[key] = text.slice(start, end).trim();
+    }
+    return map;
+  }
+
+  function plainBlockV6177(value) {
+    return String(value || '')
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^\s*-\s?/, '').trimEnd())
+      .join('\n')
+      .trim();
+  }
+
+  function singleFieldFromBulletV6177(block, label) {
+    const re = new RegExp(`^\\s*-\\s*${label}\\s*:\\s*(.*)$`, 'im');
+    const m = String(block || '').match(re);
+    return m ? m[1].trim() : '';
+  }
+
+  function formStateFromNodeV6177(node) {
+    const schemaId = schemaIdForNodeV6177(node);
+    const sections = sectionMapV6177(node?.body || '');
+    switch (schemaId) {
+      case 'tiinex.topic.v1':
+        return {
+          currentRead: plainBlockV6177(sections._intro || sections['current read'] || ''),
+          designDirection: plainBlockV6177(sections['design direction'] || ''),
+          nextArtifacts: plainBlockV6177(sections['next artifacts'] || '')
+        };
+      case 'tiinex.evidence.v1':
+        return {
+          supportedClaim: plainBlockV6177(sections['supported claim'] || ''),
+          evidenceMaterial: plainBlockV6177(sections['evidence material'] || ''),
+          interpretationLimits: plainBlockV6177(sections['interpretation limits'] || '')
+        };
+      case 'tiinex.feedback.v1':
+        return {
+          feedbackTarget: singleFieldFromBulletV6177(sections['feedback target'] || '', 'Target'),
+          feedbackReceived: plainBlockV6177(sections['feedback received'] || ''),
+          dispositionState: singleFieldFromBulletV6177(sections.disposition || '', 'State') || 'pending',
+          followUp: singleFieldFromBulletV6177(sections.disposition || '', 'Follow-Up'),
+          limits: plainBlockV6177(sections.limits || '')
+        };
+      case 'tiinex.reduction.v1':
+        return {
+          sourceContext: plainBlockV6177(sections['source context'] || ''),
+          carryForwardState: plainBlockV6177(sections['carry-forward state'] || ''),
+          lossAndUncertainty: plainBlockV6177(sections['loss and uncertainty'] || ''),
+          validation: plainBlockV6177(sections.validation || '')
+        };
+      case 'tiinex.task.v1':
+        return {
+          objective: plainBlockV6177(sections.objective || ''),
+          doneCriteria: plainBlockV6177(sections['done criteria'] || ''),
+          inScope: plainBlockV6177((sections.scope || '').match(/In scope:\s*([\s\S]*?)(?:\n\s*-\s*Out of scope:|$)/i)?.[1] || ''),
+          outOfScope: plainBlockV6177((sections.scope || '').match(/Out of scope:\s*([\s\S]*)$/i)?.[1] || ''),
+          dependencies: plainBlockV6177(sections.dependencies || '')
+        };
+      case 'tiinex.decision.v1':
+        return {
+          state: singleFieldFromBulletV6177(sections.decision || '', 'State') || 'accepted',
+          subject: singleFieldFromBulletV6177(sections.decision || '', 'Subject'),
+          decision: singleFieldFromBulletV6177(sections.decision || '', 'Decision'),
+          basis: plainBlockV6177(sections.basis || ''),
+          consequences: plainBlockV6177(sections.consequences || '')
+        };
+      case 'tiinex.pointer.v1':
+        return {
+          currentRead: plainBlockV6177(sections['current read'] || sections._intro || ''),
+          destinations: plainBlockV6177(sections.destinations || ''),
+          nextArtifacts: plainBlockV6177(sections['next artifacts'] || '')
+        };
+      case 'tiinex.lineage.upgrade.deferral.v1':
+        return {
+          knownIssue: singleFieldFromBulletV6177(sections.deferral || '', 'Known Issue'),
+          deferredUpgrade: singleFieldFromBulletV6177(sections.deferral || '', 'Deferred Upgrade'),
+          affectedRange: singleFieldFromBulletV6177(sections.deferral || '', 'Affected Local Range'),
+          reviewCondition: singleFieldFromBulletV6177(sections.deferral || '', 'Review Condition'),
+          basis: plainBlockV6177(sections.basis || ''),
+          consequences: plainBlockV6177(sections.consequences || '')
+        };
+      case 'tiinex.workspace.v1':
+        return {
+          workspaceScope: plainBlockV6177(sections['workspace scope'] || ''),
+          sources: plainBlockV6177(sections.sources || ''),
+          notes: plainBlockV6177(sections.notes || '')
+        };
+      default:
+        return {};
+    }
+  }
+
+  function openSchemaAwareEditWizardV6177(ws, node) {
+    const schemaId = schemaIdForNodeV6177(node);
+    app.modal = {
+      type: 'artifact-wizard',
+      mode: 'edit',
+      wsId: ws.id,
+      editNodeId: node.id,
+      schemaId,
+      title: node.title || node.bodyTitle || node.topHeading || '',
+      summary: node.summary || '',
+      path: node.path || node.file?.path || '',
+      parentNodeId: node.parentNode?.id || '',
+      wizardStep: 'describe',
+      formFieldsV6163: formStateFromNodeV6177(node)
+    };
+    render();
+  }
+
+  const wizardModeCopyBeforeEditV6177 = wizardModeCopyV6158;
+  wizardModeCopyV6158 = function wizardModeCopyWithEditV6177(modal) {
+    if (modal?.mode === 'edit') {
+      return {
+        kicker: 'Local edit',
+        title: 'Edit Tiinex artifact',
+        lead: 'Edit this local artifact through its schema-aware form.',
+        icon: 'fa-pen-to-square',
+        button: 'Save local edit'
+      };
+    }
+    return wizardModeCopyBeforeEditV6177(modal);
+  };
+
+  const wizardPathForBeforeEditV6177 = wizardPathForV6158;
+  wizardPathForV6158 = function wizardPathForWithEditV6177(ws, modal, option, title) {
+    if (modal?.mode === 'edit' && modal.path) return canonicalWorkspacePath(modal.path);
+    return wizardPathForBeforeEditV6177(ws, modal, option, title);
+  };
+
+  const wizardDirectButtonTextBeforeEditV6177 = wizardDirectButtonTextV6175;
+  wizardDirectButtonTextV6175 = function wizardDirectButtonTextWithEditV6177(modal) {
+    if (modal?.mode === 'edit') return 'Save local edit';
+    return wizardDirectButtonTextBeforeEditV6177(modal);
+  };
+
+  function saveSchemaAwareEditWizardV6177(ws, modal) {
+    const node = ws?.nodeById?.get?.(modal.editNodeId || '');
+    if (!ws || !node) {
+      toast('No editable node selected.', 'warn');
+      return false;
+    }
+    const artifact = wizardTemplateV6158(ws, modal);
+    if (artifact.evidenceAttachmentsV6164 && typeof storeEvidenceAttachmentFilesV6164 === 'function') {
+      const stash = { evidenceAttachmentsV6164: artifact.evidenceAttachmentsV6164 };
+      storeEvidenceAttachmentFilesV6164(ws, stash, artifact.path || node.path || '');
+    }
+    saveNodeEditV6143(ws, node, artifact.text);
+    app.modal = null;
+    if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
+    if (typeof setRouteState === 'function') setRouteState('replace');
+    render();
+    toast('Saved local schema edit.', 'ok');
+    return true;
+  }
+
+  const onActionBeforeSchemaAwareEditV6177 = onActionV645;
+  onActionV645 = async function schemaAwareEditActionV6177(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+
+    if (action === 'open-node-edit') {
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      const node = ws?.nodeById?.get?.(event.currentTarget.dataset.node || '');
+      if (schemaAwareEditAvailableV6177(ws, node)) {
+        event.preventDefault();
+        event.stopPropagation();
+        openSchemaAwareEditWizardV6177(ws, node);
+        return;
+      }
+    }
+
+    if (action === 'wizard-create-direct' && app.modal?.mode === 'edit') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
+      saveSchemaAwareEditWizardV6177(ws, app.modal);
+      return;
+    }
+
+    if (action === 'wizard-open-editor' && app.modal?.mode === 'edit') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
+      const node = ws?.nodeById?.get?.(app.modal?.editNodeId || '');
+      if (!ws || !node) return toast('No editable node selected.', 'warn');
+      const artifact = wizardTemplateV6158(ws, app.modal);
+      app.modal = { type: 'edit-node', wsId: ws.id, nodeId: node.id, text: artifact.text };
+      render();
+      return;
+    }
+
+    return onActionBeforeSchemaAwareEditV6177(event);
+  };
+
+
+
+
+  // ===== v6.178 trim body separator before integrity during parsing/edit extraction =====
+  function stripTrailingBodySeparatorV6178(value) {
+    return String(value || '')
+      .replace(/\n\s*---\s*$/m, '')
+      .replace(/^\s*---\s*$/gm, '')
+      .trim();
+  }
+
+  const parseTraceFileBeforeBodyTrimV6178 = parseTraceFile;
+  parseTraceFile = function parseTraceFileWithBodyTrimV6178(file) {
+    const node = parseTraceFileBeforeBodyTrimV6178(file);
+    if (node && typeof node.body === 'string') {
+      node.body = stripTrailingBodySeparatorV6178(node.body);
+    }
+    return node;
+  };
+
+  const stripBodyTitleBeforeSeparatorTrimV6178 = stripBodyTitleV6177;
+  stripBodyTitleV6177 = function stripBodyTitleAndSeparatorsV6178(body) {
+    return stripTrailingBodySeparatorV6178(stripBodyTitleBeforeSeparatorTrimV6178(body));
+  };
+
+  const plainBlockBeforeSeparatorTrimV6178 = plainBlockV6177;
+  plainBlockV6177 = function plainBlockAndSeparatorTrimV6178(value) {
+    return stripTrailingBodySeparatorV6178(plainBlockBeforeSeparatorTrimV6178(value));
+  };
+
+
+
+
+  // ===== v6.179 folder-scoped Add and unique root artifact paths =====
+  function normalizedFolderPathV6179(path) {
+    return canonicalWorkspacePath(path || '').replace(/\/+$/g, '') || '.topics';
+  }
+
+  function defaultArtifactFolderV6179(ws, modal) {
+    const roots = typeof discoveryRootsForWorkspace === 'function' ? discoveryRootsForWorkspace(ws) : ['.topics'];
+    return normalizedFolderPathV6179(modal?.folderPathV6179 || roots?.[0] || '.topics');
+  }
+
+  function treeFolderActualPathV6179(ws, folderPath = '') {
+    const roots = typeof discoveryRootsForWorkspace === 'function' ? discoveryRootsForWorkspace(ws) : ['.topics'];
+    const root = normalizedFolderPathV6179(roots?.[0] || '.topics');
+    const relative = canonicalWorkspacePath(folderPath || '').replace(/^\.?\//, '').replace(/\/+$/g, '');
+    return relative ? joinPath(root, relative) : root;
+  }
+
+  function workspaceAnyHasPathV6179(ws, path) {
+    const clean = canonicalWorkspacePath(path || '');
+    return Array.from(ws?.files?.values?.() || []).some((file) => sameImportedPathV6137(file.path || file.storageKey || '', clean));
+  }
+
+  function directChildFileNamesV6179(ws, folderPath, suffixRe) {
+    const folder = normalizedFolderPathV6179(folderPath);
+    return Array.from(ws?.files?.values?.() || [])
+      .map((file) => canonicalWorkspacePath(file.path || file.storageKey || ''))
+      .filter((path) => dirname(path) === folder && suffixRe.test(path))
+      .map((path) => fileNameFromPath(path));
+  }
+
+  function nextNumericTracePathV6179(ws, folderPath) {
+    const names = directChildFileNamesV6179(ws, folderPath, /\.trace\.md$/i);
+    const nums = names
+      .map((name) => String(name).match(/^(\d+)(?=(?:[-.]|$))/))
+      .filter(Boolean)
+      .map((m) => ({ n: Number(m[1]), width: m[1].length }))
+      .filter((item) => Number.isFinite(item.n));
+    if (!nums.length) return '';
+    const max = nums.reduce((a, b) => b.n > a.n ? b : a, nums[0]);
+    const width = Math.max(3, max.width || 3);
+    let next = max.n + 1;
+    for (let i = 0; i < 9999; i++, next++) {
+      const name = String(next).padStart(width, '0');
+      const candidate = joinPath(folderPath, `${name}.trace.md`);
+      if (!workspaceAnyHasPathV6179(ws, candidate)) return candidate;
+    }
+    return '';
+  }
+
+  function uniquePathInFolderV6179(ws, folderPath, baseSlug, suffix) {
+    const folder = normalizedFolderPathV6179(folderPath);
+    const slug = slugifyTitleV6158(baseSlug || 'new-artifact');
+    const first = joinPath(folder, `${slug}${suffix}`);
+    if (!workspaceAnyHasPathV6179(ws, first)) return first;
+    for (let i = 2; i < 10000; i++) {
+      const candidate = joinPath(folder, `${slug}-${i}${suffix}`);
+      if (!workspaceAnyHasPathV6179(ws, candidate)) return candidate;
+    }
+    return joinPath(folder, `${slug}-${Date.now().toString(36)}${suffix}`);
+  }
+
+  function uniqueWizardRootPathV6179(ws, modal, option, title) {
+    const kind = wizardKindForSchemaV6158(option.id);
+    const folder = defaultArtifactFolderV6179(ws, modal);
+    if (kind === 'workspace') return uniquePathInFolderV6179(ws, folder, title || option.label || 'workspace', '.workspace.md');
+    const numeric = nextNumericTracePathV6179(ws, folder);
+    if (numeric) return numeric;
+    return uniquePathInFolderV6179(ws, folder, title || option.label || 'artifact', '.trace.md');
+  }
+
+  const wizardPathForBeforeUniqueRootV6179 = wizardPathForV6158;
+  wizardPathForV6158 = function wizardPathForUniqueRootV6179(ws, modal, option, title) {
+    if (modal?.mode === 'edit') return wizardPathForBeforeUniqueRootV6179(ws, modal, option, title);
+    if (modal?.mode === 'continue' || modal?.mode === 'reference') return wizardPathForBeforeUniqueRootV6179(ws, modal, option, title);
+    return uniqueWizardRootPathV6179(ws, modal, option, title);
+  };
+
+  const openArtifactWizardBeforeFolderV6179 = openArtifactWizardV6158;
+  openArtifactWizardV6158 = function openArtifactWizardWithFolderV6179(ws, options = {}) {
+    openArtifactWizardBeforeFolderV6179(ws, options);
+    if (app.modal?.type === 'artifact-wizard' && options.folderPathV6179) {
+      app.modal.folderPathV6179 = normalizedFolderPathV6179(options.folderPathV6179);
+    }
+  };
+
+  function folderAddButtonV6179(ws, folderPath, label = 'Add artifact in folder') {
+    return `<button type="button" class="tree-folder-add-v6179" data-action="open-artifact-wizard-folder" data-ws="${escapeAttr(ws.id)}" data-folder="${escapeAttr(folderPath || '')}" title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}">
+      <i class="fa-solid fa-plus"></i>
+    </button>`;
+  }
+
+  const renderDiscoveryTreeBeforeFolderAddV6179 = renderDiscoveryTree;
+  renderDiscoveryTree = function renderDiscoveryTreeWithFolderAddV6179(ws, nodes) {
+    const tree = buildDiscoveryTree(ws, nodes);
+    const roots = discoveryRootsForWorkspace(ws);
+    const rootFolder = normalizedFolderPathV6179(roots?.[0] || '.topics');
+    return `<div class="discovery-tree has-folder-add-v6179">
+      <div class="tree-root-note root-add-v6179">
+        <span><i class="fa-solid fa-folder-tree"></i> Root${roots.length === 1 ? '' : 's'}: ${escapeHtml(roots.join(', '))}</span>
+        ${folderAddButtonV6179(ws, rootFolder, `Add local artifact in ${rootFolder}`)}
+      </div>
+      ${renderTreeFolderChildren(ws, tree, 0)}
+    </div>`;
+  };
+
+  renderTreeFolder = function renderTreeFolderWithAddV6179(ws, folder, depth) {
+    const expanded = treeFolderExpanded(ws, folder.path);
+    const actualPath = treeFolderActualPathV6179(ws, folder.path);
+    return `<div class="tree-folder" style="--tree-depth:${depth}">
+      <div class="tree-row tree-folder-row folder-add-row-v6179">
+        <button class="tree-folder-toggle-v6179" data-action="toggle-tree-folder" data-ws="${escapeAttr(ws.id)}" data-folder="${escapeAttr(folder.path)}" title="${expanded ? 'Collapse folder' : 'Expand folder'}">
+          <i class="fa-solid ${expanded ? 'fa-chevron-down' : 'fa-chevron-right'}"></i>
+          <i class="fa-regular fa-folder"></i>
+          <span class="tree-name">${escapeHtml(folder.name)}</span>
+          <span class="tree-count">${folder.traceCount} traces</span>
+          <span class="tree-count">${folder.leafCount} leaves</span>
+        </button>
+        ${folderAddButtonV6179(ws, actualPath, `Add local artifact in ${actualPath}`)}
+      </div>
+      ${expanded ? `<div class="tree-children">${renderTreeFolderChildren(ws, folder, depth + 1)}</div>` : ''}
+    </div>`;
+  };
+
+  const onActionBeforeFolderAddV6179 = onActionV645;
+  onActionV645 = async function folderAddActionV6179(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'open-artifact-wizard-folder') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || app.activeWorkspaceId || '');
+      if (!ws) return toast('No workspace selected.', 'warn');
+      const folder = normalizedFolderPathV6179(event.currentTarget.dataset.folder || '.topics');
+      openArtifactWizardV6158(ws, { mode: 'new', folderPathV6179: folder });
+      return;
+    }
+    return onActionBeforeFolderAddV6179(event);
+  };
+
+
+
+
+
+
+  // ===== v6.181 export active workspace compatibility helper =====
+  function getActiveWorkspace() {
+    return getWorkspace(app.activeWorkspaceId || '') || app.workspaces?.[0] || null;
+  }
+
+
+
+
+  // ===== v6.183 robust URL scroll lens + focus preservation =====
+  function editableElementActiveV6183() {
+    const el = document.activeElement;
+    return Boolean(el && el !== document.body && el.matches?.('input, textarea, select, [contenteditable="true"]'));
+  }
+
+  function scrollCacheKeyV6183(ws) {
+    const label = ws?.label || ws?.id || 'workspace';
+    const selected = selectedNode(ws);
+    const sourceSig = typeof workspaceSourceUrls === 'function' ? workspaceSourceUrls(ws).join('|') : '';
+    return `tiinex-scroll-v6183:${location.pathname}:${location.search}:${label}:${sourceSig}:${selected?.path || 'discovery'}`;
+  }
+
+  function routeScrollContainerCandidatesV6183(ws) {
+    if (!ws) return [];
+    const id = CSS.escape(ws.id);
+    const selected = selectedNode(ws);
+    const candidates = [];
+    if (selected) candidates.push(`.post-feed.lineage[data-ws="${id}"][data-selected="${CSS.escape(selected.id)}"]`);
+    candidates.push(`.post-feed.discovery[data-ws="${id}"]`);
+    candidates.push(`.post-feed[data-ws="${id}"]`);
+    candidates.push(`.workspace[data-ws="${id}"]`);
+    candidates.push(`.workspace[data-ws="${id}"] .workspace-body`);
+    candidates.push(`.workspace[data-ws="${id}"] .feed-pane`);
+    candidates.push(`.workspace[data-ws="${id}"] .detail-pane`);
+    return candidates
+      .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+      .filter((el, index, arr) => el && arr.indexOf(el) === index);
+  }
+
+  function bestScrollContainerForWorkspaceV6183(ws) {
+    const candidates = routeScrollContainerCandidatesV6183(ws);
+    const scrollable = candidates.filter((el) => (el.scrollHeight - el.clientHeight) > 8);
+    return scrollable[0] || candidates[0] || null;
+  }
+
+  function currentScrollTopForWorkspaceV6183(ws) {
+    const el = bestScrollContainerForWorkspaceV6183(ws);
+    if (el && (el.scrollTop || (el.scrollHeight - el.clientHeight) > 8)) return Math.max(0, Math.round(el.scrollTop || 0));
+    return Math.max(0, Math.round(ws?.routeScrollTopV6183 || ws?.routeScrollTopV6182 || 0));
+  }
+
+  function rememberWorkspaceScrollV6183(ws, el = null) {
+    if (!ws) return;
+    const selected = selectedNode(ws);
+    const top = Math.max(0, Math.round((el?.scrollTop ?? currentScrollTopForWorkspaceV6183(ws)) || 0));
+    ws.routeScrollTopV6183 = top;
+    ws.routeScrollTopV6182 = top;
+    ws.routeScrollModeV6183 = selected ? 'lineage' : 'discovery';
+    ws.routeScrollModeV6182 = ws.routeScrollModeV6183;
+    ws.routeScrollSelectedPathV6183 = selected?.path || '';
+    ws.routeScrollSelectedPathV6182 = ws.routeScrollSelectedPathV6183;
+    try {
+      localStorage.setItem(scrollCacheKeyV6183(ws), JSON.stringify({
+        top,
+        mode: ws.routeScrollModeV6183,
+        selectedPath: ws.routeScrollSelectedPathV6183,
+        at: Date.now()
+      }));
+    } catch (_) {}
+  }
+
+  function restoreCachedWorkspaceScrollV6183(ws) {
+    if (!ws || ws.routeScrollTopV6183 || ws.routeScrollTopV6182) return;
+    try {
+      const saved = JSON.parse(localStorage.getItem(scrollCacheKeyV6183(ws)) || 'null');
+      if (!saved || !Number.isFinite(Number(saved.top))) return;
+      const selected = selectedNode(ws);
+      if (saved.selectedPath && selected?.path && saved.selectedPath !== selected.path) return;
+      ws.routeScrollTopV6183 = Number(saved.top) || 0;
+      ws.routeScrollTopV6182 = ws.routeScrollTopV6183;
+      ws.routeScrollModeV6183 = saved.mode || (selected ? 'lineage' : 'discovery');
+      ws.routeScrollModeV6182 = ws.routeScrollModeV6183;
+      ws.routeScrollSelectedPathV6183 = saved.selectedPath || '';
+      ws.routeScrollSelectedPathV6182 = ws.routeScrollSelectedPathV6183;
+    } catch (_) {}
+  }
+
+  const routeScrollStateForWorkspaceBeforeRobustV6183 = routeScrollStateForWorkspaceV6182;
+  routeScrollStateForWorkspaceV6182 = function routeScrollStateForWorkspaceRobustV6183(ws) {
+    if (ws) rememberWorkspaceScrollV6183(ws);
+    const selected = selectedNode(ws);
+    return {
+      scrollTop: Math.max(0, Math.round(ws?.routeScrollTopV6183 || ws?.routeScrollTopV6182 || 0)),
+      scrollMode: selected ? 'lineage' : 'discovery',
+      scrollSelectedPath: selected?.path || ''
+    };
+  };
+
+  const applyRouteScrollStateBeforeRobustV6183 = applyRouteScrollStateToWorkspaceV6182;
+  applyRouteScrollStateToWorkspaceV6182 = function applyRouteScrollStateRobustV6183(ws, source) {
+    applyRouteScrollStateBeforeRobustV6183(ws, source);
+    if (!ws || !source) return;
+    ws.routeScrollTopV6183 = Number(source.scrollTop || source.feedScrollTop || ws.routeScrollTopV6182 || 0) || 0;
+    ws.routeScrollModeV6183 = source.scrollMode || ws.routeScrollModeV6182 || '';
+    ws.routeScrollSelectedPathV6183 = source.scrollSelectedPath || source.selectedPath || ws.routeScrollSelectedPathV6182 || '';
+  };
+
+  function applyScrollTopToWorkspaceV6183(ws) {
+    if (!ws) return;
+    restoreCachedWorkspaceScrollV6183(ws);
+    const top = Math.max(0, Math.round(ws.routeScrollTopV6183 || ws.routeScrollTopV6182 || 0));
+    if (!top) return;
+    const selected = selectedNode(ws);
+    const expectedMode = selected ? 'lineage' : 'discovery';
+    const mode = ws.routeScrollModeV6183 || ws.routeScrollModeV6182 || expectedMode;
+    if (mode !== expectedMode) return;
+    const selectedPath = ws.routeScrollSelectedPathV6183 || ws.routeScrollSelectedPathV6182 || '';
+    if (expectedMode === 'lineage' && selectedPath && selected?.path && selectedPath !== selected.path) return;
+
+    for (const el of routeScrollContainerCandidatesV6183(ws)) {
+      if (!el) continue;
+      if ((el.scrollHeight - el.clientHeight) <= 8) continue;
+      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+      el.scrollTop = Math.min(top, maxTop);
+    }
+  }
+
+  function restoreAllRouteScrollV6183() {
+    const run = () => app.workspaces.forEach((ws) => applyScrollTopToWorkspaceV6183(ws));
+    requestAnimationFrame(() => {
+      run();
+      requestAnimationFrame(run);
+      setTimeout(run, 80);
+      setTimeout(run, 260);
+      setTimeout(run, 700);
+    });
+  }
+
+  function captureActiveFocusV6183() {
+    const el = document.activeElement;
+    if (!el || el === document.body || !el.matches?.('input, textarea, select, [contenteditable="true"]')) return null;
+    const modalType = app.modal?.type || '';
+    const attrs = ['data-field', 'data-wizard-form-field', 'data-evidence-attachment-field', 'data-attachment-id', 'data-subfield', 'name', 'id'];
+    const parts = [];
+    for (const attr of attrs) {
+      const value = el.getAttribute?.(attr);
+      if (value) parts.push(`[${attr}="${CSS.escape(value)}"]`);
+    }
+    const selector = parts.length
+      ? `${el.tagName.toLowerCase()}${parts.join('')}`
+      : (el.id ? `#${CSS.escape(el.id)}` : '');
+    if (!selector) return null;
+    return {
+      selector,
+      modalType,
+      start: typeof el.selectionStart === 'number' ? el.selectionStart : null,
+      end: typeof el.selectionEnd === 'number' ? el.selectionEnd : null
+    };
+  }
+
+  function restoreActiveFocusV6183(info) {
+    if (!info) return;
+    if ((app.modal?.type || '') !== info.modalType) return;
+    requestAnimationFrame(() => {
+      const el = document.querySelector(info.selector);
+      if (!el) return;
+      try {
+        el.focus({ preventScroll: true });
+        if (typeof info.start === 'number' && typeof el.setSelectionRange === 'function') {
+          el.setSelectionRange(info.start, info.end ?? info.start);
+        }
+      } catch (_) {}
+    });
+  }
+
+  const renderBeforeRobustScrollV6183 = render;
+  render = function renderWithRobustScrollAndFocusV6183() {
+    app.workspaces.forEach((ws) => rememberWorkspaceScrollV6183(ws));
+    const focus = captureActiveFocusV6183();
+    const result = renderBeforeRobustScrollV6183();
+    restoreAllRouteScrollV6183();
+    restoreActiveFocusV6183(focus);
+    return result;
+  };
+
+  function scrollEventWorkspaceV6183(el) {
+    if (!el) return null;
+    const postFeed = el.closest?.('.post-feed[data-ws]');
+    if (postFeed) return getWorkspace(postFeed.dataset.ws || '');
+    const workspace = el.closest?.('.workspace[data-ws]');
+    if (workspace) return getWorkspace(workspace.dataset.ws || '');
+    return null;
+  }
+
+  function onAnyWorkspaceScrollV6183(event) {
+    const el = event.target;
+    if (!el || el === document || el === window) return;
+    if (editableElementActiveV6183() && (el.matches?.('input, textarea, select, [contenteditable="true"]') || el.closest?.('.modal-panel'))) return;
+    const ws = scrollEventWorkspaceV6183(el);
+    if (!ws) return;
+    rememberWorkspaceScrollV6183(ws, el);
+    if (editableElementActiveV6183()) return;
+    clearTimeout(app.routeScrollSaveTimerV6183);
+    app.routeScrollSaveTimerV6183 = setTimeout(() => setRouteState('replace'), 90);
+  }
+
+  document.removeEventListener('scroll', onFeedScrollRouteStateV6182, true);
+  document.addEventListener('scroll', onAnyWorkspaceScrollV6183, true);
+
+  const copyShareLinkBeforeRobustScrollV6183 = copyShareLink;
+  copyShareLink = function copyShareLinkWithRobustScrollV6183() {
+    app.workspaces.forEach((ws) => rememberWorkspaceScrollV6183(ws));
+    setRouteState('replace');
+    return copyShareLinkBeforeRobustScrollV6183();
+  };
+
+
+  // ===== v6.180 Export dialog v1 =====
+  function exportSourceEntriesV6180(ws) {
+    ensureWorkspaceSources(ws);
+    const sources = Array.from(ws.sources?.values?.() || []);
+    const seen = new Set();
+    for (const file of ws.files?.values?.() || []) {
+      const id = file.sourceId || 'local';
+      if (!seen.has(id) && !sources.find((source) => source.id === id)) {
+        sources.push({ id, kind: file.sourceKind || 'local', label: file.sourceLabel || id, origin: file.rawUrl || file.browseUrl || '' });
+      }
+      seen.add(id);
+    }
+    if (!sources.length) sources.push(localSource(ws));
+    return sources;
+  }
+
+  function defaultExportModalV6180(wsId) {
+    return {
+      type: 'export-workspace',
+      wsId,
+      mode: 'all',
+      includeAssets: true,
+      sourceIds: []
+    };
+  }
+
+  saveWorkspace = async function saveWorkspaceOpensExportDialogV6180(wsId) {
+    const ws = getWorkspace(wsId);
+    if (!ws) return toast('No workspace selected.', 'warn');
+    app.modal = defaultExportModalV6180(ws.id);
+    render();
+  };
+
+  function renderExportModeButtonV6180(modal, mode, label, icon, help) {
+    const active = (modal.mode || 'all') === mode;
+    return `<button type="button" class="export-mode-card-v6180 ${active ? 'active' : ''}" data-action="export-set-mode" data-mode="${escapeAttr(mode)}">
+      <span><i class="fa-solid ${escapeAttr(icon)}"></i></span>
+      <strong>${escapeHtml(label)}</strong>
+      <small>${escapeHtml(help)}</small>
+    </button>`;
+  }
+
+  function fileSourceIdV6180(file) {
+    return file?.sourceId || 'local';
+  }
+
+  function exportIncludedFilesV6180(ws, modal) {
+    const files = Array.from(ws.files?.values?.() || []);
+    const mode = modal.mode || 'all';
+    if (mode === 'local') return files.filter((file) => fileSourceIdV6180(file) === 'local' || file.sourceKind === 'local');
+    if (mode === 'sources') {
+      const selected = new Set(modal.sourceIds || []);
+      return files.filter((file) => selected.has(fileSourceIdV6180(file)));
+    }
+    return files;
+  }
+
+  function exportIncludedAssetsV6180(ws, modal) {
+    if (!modal.includeAssets) return [];
+    const assets = Array.from(ws.assets?.values?.() || []);
+    if ((modal.mode || 'all') !== 'sources') return assets;
+    // Asset source ids are currently less consistently available than file
+    // source ids. Include assets for source exports so Evidence attachments
+    // are not silently lost.
+    return assets;
+  }
+
+  function renderExportModalV6180(modal) {
+    const ws = getWorkspace(modal.wsId);
+    if (!ws) return '';
+    const sources = exportSourceEntriesV6180(ws);
+    const files = exportIncludedFilesV6180(ws, modal);
+    const assets = exportIncludedAssetsV6180(ws, modal);
+    const selected = new Set(modal.sourceIds || []);
+    const sourceRows = sources.map((source) => {
+      const count = Array.from(ws.files?.values?.() || []).filter((file) => fileSourceIdV6180(file) === source.id).length;
+      return `<label class="export-source-row-v6180">
+        <input type="checkbox" data-action="export-toggle-source" data-source="${escapeAttr(source.id)}" ${selected.has(source.id) ? 'checked' : ''}>
+        <span>
+          <strong>${escapeHtml(source.label || source.id)}</strong>
+          <small>${escapeHtml(source.kind || 'source')} · ${count} file${count === 1 ? '' : 's'}${source.repo ? ` · ${source.repo}${source.ref ? '@' + source.ref : ''}` : ''}</small>
+        </span>
+      </label>`;
+    }).join('');
+
+    return `<div class="modal-backdrop-custom focus-modal export-backdrop-v6180" role="dialog" aria-modal="true" aria-labelledby="export-title">
+      <div class="modal-panel export-panel-v6180">
+        <div class="modal-header-lite export-head-v6180">
+          <div>
+            <p class="kicker">Export</p>
+            <h2 class="modal-title-lite" id="export-title"><i class="fa-solid fa-file-zipper"></i>Export workspace</h2>
+            <p class="text-secondary mb-0">Write portable files out of Tiinex without mutating the loaded sources.</p>
+          </div>
+          <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="export-body-v6180">
+          <div class="export-mode-grid-v6180">
+            ${renderExportModeButtonV6180(modal, 'all', 'All', 'fa-layer-group', 'Export every loaded file.')}
+            ${renderExportModeButtonV6180(modal, 'local', 'Local', 'fa-pen-to-square', 'Export local edits and created artifacts.')}
+            ${renderExportModeButtonV6180(modal, 'sources', 'Sources', 'fa-code-merge', 'Pick one or more sources.')}
+          </div>
+
+          ${modal.mode === 'sources' ? `<section class="export-section-v6180">
+            <h3>Sources</h3>
+            <div class="export-source-list-v6180">${sourceRows}</div>
+          </section>` : ''}
+
+          <section class="export-section-v6180 compact">
+            <label class="export-toggle-row-v6180">
+              <input type="checkbox" data-action="export-toggle-assets" ${modal.includeAssets ? 'checked' : ''}>
+              <span><strong>Assets</strong><small>Include preserved images, evidence files, and local attachments when available.</small></span>
+            </label>
+          </section>
+
+          <section class="export-summary-v6180">
+            <div><strong>${files.length}</strong><span>markdown/file entries</span></div>
+            <div><strong>${assets.length}</strong><span>asset entries</span></div>
+            <div><strong>${escapeHtml(modal.mode || 'all')}</strong><span>mode</span></div>
+          </section>
+        </div>
+        <div class="modal-footer-actions export-actions-v6180">
+          <button class="tv-btn primary" data-action="export-run" data-ws="${escapeAttr(ws.id)}" ${files.length || assets.length ? '' : 'disabled'}><i class="fa-solid fa-download"></i>Export</button>
+          <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  const renderModalBeforeExportDialogV6180 = renderModal;
+  renderModal = function renderModalWithExportDialogV6180(modal) {
+    if (modal?.type === 'export-workspace') return renderExportModalV6180(modal);
+    return renderModalBeforeExportDialogV6180(modal);
+  };
+
+  function exportFileOutputPathV6180(file, collisions) {
+    const path = normalizeAssetPath(file.path || file.name || 'artifact.md');
+    if (!collisions.has(path)) return path;
+    const source = sourceSafe(file.sourceLabel || file.sourceId || file.sourceKind || 'source').replace(/[^a-z0-9_.-]+/gi, '-').replace(/^-+|-+$/g, '') || 'source';
+    return normalizeAssetPath(`_sources/${source}/${path}`);
+  }
+
+  function exportAssetOutputPathV6180(asset, collisions) {
+    const path = normalizeAssetPath(asset.path || asset.name || 'asset');
+    if (!collisions.has(path)) return path;
+    return normalizeAssetPath(`_assets/${path}`);
+  }
+
+  async function exportBlobForEntryV6180(entry) {
+    if (entry.blob instanceof Blob) return entry.blob;
+    if (typeof entry.content === 'string') return new Blob([entry.content], { type: entry.type || 'text/plain;charset=utf-8' });
+    if (typeof entry.text === 'string') return new Blob([entry.text], { type: entry.type || 'text/plain;charset=utf-8' });
+    return new Blob([''], { type: 'application/octet-stream' });
+  }
+
+  async function exportWorkspaceZipV6180(ws, modal) {
+    const files = exportIncludedFilesV6180(ws, modal);
+    const assets = exportIncludedAssetsV6180(ws, modal);
+    if (!files.length && !assets.length) return toast('Nothing selected for export.', 'warn');
+
+    if (!window.JSZip) {
+      for (const file of files) {
+        downloadText(normalizeAssetPath(file.path || file.name || 'artifact.md'), file.content || file.text || '', 'text/markdown;charset=utf-8');
+      }
+      toast('JSZip unavailable. Downloaded markdown files individually.', 'warn');
+      return;
+    }
+
+    const pathCounts = new Map();
+    for (const item of [...files, ...assets]) {
+      const path = normalizeAssetPath(item.path || item.name || '');
+      pathCounts.set(path, (pathCounts.get(path) || 0) + 1);
+    }
+    const collisions = new Set(Array.from(pathCounts.entries()).filter(([, count]) => count > 1).map(([path]) => path));
+
+    const zip = new window.JSZip();
+    const manifest = {
+      schema: 'tiinex.export.v1',
+      createdAt: new Date().toISOString(),
+      workspace: {
+        label: ws.label || '',
+        sourceNote: ws.sourceNote || ''
+      },
+      export: {
+        mode: modal.mode || 'all',
+        includeAssets: Boolean(modal.includeAssets),
+        selectedSources: modal.sourceIds || []
+      },
+      sources: exportSourceEntriesV6180(ws).map(sourceSerializable),
+      files: [],
+      assets: []
+    };
+
+    for (const file of files) {
+      const outPath = exportFileOutputPathV6180(file, collisions);
+      const content = file.content || file.text || '';
+      zip.file(outPath, content);
+      manifest.files.push({
+        path: file.path || '',
+        outputPath: outPath,
+        sourceId: file.sourceId || '',
+        sourceLabel: file.sourceLabel || '',
+        rawUrl: file.rawUrl || '',
+        browseUrl: file.browseUrl || '',
+        repo: file.repo || '',
+        ref: file.ref || '',
+        isGenerated: Boolean(file.isGenerated)
+      });
+    }
+
+    for (const asset of assets) {
+      const outPath = exportAssetOutputPathV6180(asset, collisions);
+      const blob = await exportBlobForEntryV6180(asset);
+      zip.file(outPath, blob);
+      manifest.assets.push({
+        path: asset.path || '',
+        outputPath: outPath,
+        type: asset.type || '',
+        size: asset.size || blob.size || 0,
+        source: asset.source || ''
+      });
+    }
+
+    zip.file('_tiinex/export.manifest.json', JSON.stringify(manifest, null, 2));
+    zip.file('_tiinex/README.md', `# Tiinex Export
+
+- Workspace: ${ws.label || 'workspace'}
+- Mode: ${modal.mode || 'all'}
+- Files: ${files.length}
+- Assets: ${assets.length}
+- Created At: ${manifest.createdAt}
+
+This export preserves selected workspace files without mutating the loaded source workspaces.
+
+See _tiinex/export.manifest.json for source and output path metadata.
+`);
+
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const zipName = `${slugify(ws.label) || 'tiinex-workspace'}-${modal.mode || 'all'}-export.zip`;
+    downloadBlob(zipName, blob);
+    app.modal = null;
+    render();
+    toast(`Downloaded ${zipName}.`, 'ok');
+  }
+
+  const onActionBeforeExportDialogV6180 = onActionV645;
+  onActionV645 = async function exportDialogActionV6180(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+
+    if (action === 'export-set-mode') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      app.modal.mode = event.currentTarget.dataset.mode || 'all';
+      if (app.modal.mode === 'sources' && !(app.modal.sourceIds || []).length) {
+        const ws = getWorkspace(app.modal.wsId);
+        app.modal.sourceIds = exportSourceEntriesV6180(ws).slice(0, 1).map((source) => source.id);
+      }
+      render();
+      return;
+    }
+
+    if (action === 'export-toggle-source') {
+      event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      const id = event.currentTarget.dataset.source || '';
+      const selected = new Set(app.modal.sourceIds || []);
+      if (event.currentTarget.checked) selected.add(id);
+      else selected.delete(id);
+      app.modal.sourceIds = Array.from(selected);
+      render();
+      return;
+    }
+
+    if (action === 'export-toggle-assets') {
+      event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      app.modal.includeAssets = Boolean(event.currentTarget.checked);
+      render();
+      return;
+    }
+
+    if (action === 'export-run') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
+      if (!ws || !app.modal || app.modal.type !== 'export-workspace') return toast('No workspace selected.', 'warn');
+      await exportWorkspaceZipV6180(ws, app.modal);
+      return;
+    }
+
+    return onActionBeforeExportDialogV6180(event);
+  };
+
+  const renderBeforeEnableExportV6180 = render;
+  render = function renderWithEnabledExportV6180() {
+    const result = renderBeforeEnableExportV6180();
+    document.querySelectorAll('[data-action="save-workspace"]').forEach((button) => {
+      const ws = getWorkspace(button.dataset.ws || '');
+      if (ws && ((ws.files && ws.files.size) || (ws.assets && ws.assets.size))) {
+        button.removeAttribute('disabled');
+        button.setAttribute('title', 'Export workspace');
+        if (!button.textContent.trim()) button.setAttribute('aria-label', 'Export workspace');
+      }
+    });
+    return result;
+  };
+
+
+
+
+  // ===== v6.184 encrypted Tiinex export package + import =====
+  const TIINEX_ENC_MAGIC_V6184 = 'TIINEX-ENC-ZIP-V1';
+  const TIINEX_ENC_ITERATIONS_V6184 = 210000;
+
+  function bytesToBase64V6184(bytes) {
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+
+  function base64ToBytesV6184(text) {
+    const binary = atob(text || '');
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+
+  async function deriveTiinexExportKeyV6184(password, salt, usages) {
+    if (!crypto?.subtle) throw new Error('Web Crypto is not available in this browser.');
+    const base = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(password),
+      'PBKDF2',
+      false,
+      ['deriveKey']
+    );
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt, iterations: TIINEX_ENC_ITERATIONS_V6184, hash: 'SHA-256' },
+      base,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      usages
+    );
+  }
+
+  async function encryptTiinexZipBlobV6184(blob, password, innerName) {
+    if (!password) throw new Error('Password is required.');
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const key = await deriveTiinexExportKeyV6184(password, salt, ['encrypt']);
+    const plain = await blob.arrayBuffer();
+    const cipher = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plain));
+    const header = {
+      schema: 'tiinex.encrypted-zip.v1',
+      kdf: 'PBKDF2-SHA256',
+      iterations: TIINEX_ENC_ITERATIONS_V6184,
+      cipher: 'AES-GCM-256',
+      salt: bytesToBase64V6184(salt),
+      iv: bytesToBase64V6184(iv),
+      innerName: innerName || 'tiinex-export.zip',
+      createdAt: new Date().toISOString()
+    };
+    const prefix = new TextEncoder().encode(`${TIINEX_ENC_MAGIC_V6184}\n${JSON.stringify(header)}\n\n`);
+    return new Blob([prefix, cipher], { type: 'application/octet-stream' });
+  }
+
+  async function isTiinexEncryptedPackageV6184(file) {
+    try {
+      const head = await file.slice(0, TIINEX_ENC_MAGIC_V6184.length + 8).text();
+      return head.startsWith(TIINEX_ENC_MAGIC_V6184);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function parseEncryptedPackageHeaderV6184(bytes) {
+    const maxHeader = Math.min(bytes.length, 16384);
+    let sep = -1;
+    for (let i = 0; i < maxHeader - 1; i++) {
+      if (bytes[i] === 10 && bytes[i + 1] === 10) {
+        sep = i;
+        break;
+      }
+    }
+    if (sep < 0) throw new Error('Encrypted Tiinex package header was not found.');
+    const headerText = new TextDecoder().decode(bytes.slice(0, sep));
+    const lines = headerText.split('\n');
+    if (lines[0] !== TIINEX_ENC_MAGIC_V6184) throw new Error('Unsupported encrypted Tiinex package.');
+    const header = JSON.parse(lines.slice(1).join('\n'));
+    return { header, cipherOffset: sep + 2 };
+  }
+
+  async function decryptTiinexZipPackageV6184(file, password) {
+    if (!password) throw new Error('Password is required.');
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const { header, cipherOffset } = parseEncryptedPackageHeaderV6184(bytes);
+    if (header.schema !== 'tiinex.encrypted-zip.v1') throw new Error('Unsupported encrypted Tiinex schema.');
+    if (header.cipher !== 'AES-GCM-256') throw new Error('Unsupported encrypted Tiinex cipher.');
+    const salt = base64ToBytesV6184(header.salt);
+    const iv = base64ToBytesV6184(header.iv);
+    const key = await deriveTiinexExportKeyV6184(password, salt, ['decrypt']);
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, bytes.slice(cipherOffset));
+    return new File([plain], header.innerName || 'tiinex-export.zip', { type: 'application/zip' });
+  }
+
+  function encryptedExportPasswordInputV6184() {
+    return document.querySelector('[data-export-password-v6184]')?.value || '';
+  }
+
+  const renderExportModalBeforeEncryptionV6184 = renderExportModalV6180;
+  renderExportModalV6180 = function renderExportModalWithEncryptionV6184(modal) {
+    let html = renderExportModalBeforeEncryptionV6184(modal);
+    const checked = modal.encryptV6184 ? 'checked' : '';
+    const passwordBlock = modal.encryptV6184 ? `<label class="field-label export-password-field-v6184">Password<input class="form-control tv-input" type="password" autocomplete="new-password" data-export-password-v6184 placeholder="Password for this encrypted Tiinex package"></label>
+      <p class="export-encryption-note-v6184">This creates a Tiinex-encrypted zip package. Drag it back into Tiinex to be prompted for the password.</p>` : '';
+    const section = `<section class="export-section-v6180 compact export-encryption-v6184">
+      <label class="export-toggle-row-v6180">
+        <input type="checkbox" data-action="export-toggle-encryption" ${checked}>
+        <span><strong>Password</strong><small>Encrypt this export as a Tiinex package.</small></span>
+      </label>
+      ${passwordBlock}
+    </section>`;
+
+    if (html.includes('export-encryption-v6184')) return html;
+    return html.replace('<section class="export-summary-v6180">', `${section}\n          <section class="export-summary-v6180">`);
+  };
+
+  async function exportWorkspaceZipEncryptedV6184(ws, modal) {
+    const password = encryptedExportPasswordInputV6184();
+    if (!password) {
+      toast('Enter an export password first.', 'warn');
+      document.querySelector('[data-export-password-v6184]')?.focus();
+      return;
+    }
+
+    const originalDownloadBlob = downloadBlob;
+    const originalToast = toast;
+    let intercepted = false;
+
+    downloadBlob = function encryptedDownloadBlobV6184(name, blob) {
+      intercepted = true;
+      (async () => {
+        const encrypted = await encryptTiinexZipBlobV6184(blob, password, name);
+        const encryptedName = String(name || 'tiinex-export.zip').replace(/\.zip$/i, '.tiinex.enc.zip');
+        originalDownloadBlob(encryptedName, encrypted);
+        originalToast(`Downloaded encrypted ${encryptedName}.`, 'ok');
+      })().catch((error) => originalToast(`Could not encrypt export: ${error.message}`, 'warn'));
+    };
+
+    toast = function suppressPlainExportToastV6184(message, type) {
+      if (/^Downloaded\b/i.test(String(message || ''))) return;
+      return originalToast(message, type);
+    };
+
+    try {
+      await exportWorkspaceZipV6180(ws, modal);
+      if (!intercepted) originalToast('No export blob was produced.', 'warn');
+    } finally {
+      downloadBlob = originalDownloadBlob;
+      toast = originalToast;
+    }
+  }
+
+  const onActionBeforeEncryptionV6184 = onActionV645;
+  onActionV645 = async function encryptedExportActionV6184(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+
+    if (action === 'export-toggle-encryption') {
+      event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      app.modal.encryptV6184 = Boolean(event.currentTarget.checked);
+      render();
+      return;
+    }
+
+    if (action === 'export-run' && app.modal?.type === 'export-workspace' && app.modal.encryptV6184) {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
+      if (!ws) return toast('No workspace selected.', 'warn');
+      await exportWorkspaceZipEncryptedV6184(ws, app.modal);
+      return;
+    }
+
+    return onActionBeforeEncryptionV6184(event);
+  };
+
+  const fileToImportEntriesBeforeEncryptionV6184 = fileToImportEntries;
+  fileToImportEntries = async function fileToImportEntriesWithEncryptedTiinexV6184(file) {
+    if (await isTiinexEncryptedPackageV6184(file)) {
+      const password = window.prompt(`Password for ${file.name || 'encrypted Tiinex package'}`);
+      if (!password) throw new Error('Password required for encrypted Tiinex package.');
+      const decrypted = await decryptTiinexZipPackageV6184(file, password);
+      return fileToImportEntriesBeforeEncryptionV6184(decrypted);
+    }
+    return fileToImportEntriesBeforeEncryptionV6184(file);
+  };
+
+
+
+
+  // ===== v6.185 archive format + encryption choices =====
+  function exportArchiveFormatV6185(modal) {
+    return modal?.archiveFormatV6185 || 'zip';
+  }
+
+  function exportPasswordModeV6185(modal) {
+    return modal?.passwordModeV6185 || (modal?.encryptV6184 ? 'tiinex' : 'none');
+  }
+
+  function exportBaseSlugV6185(ws, modal) {
+    return `${slugify(ws?.label || 'tiinex-workspace') || 'tiinex-workspace'}-${modal?.mode || 'all'}-export`;
+  }
+
+  function safeSourceSerializableV6185(source) {
+    if (typeof sourceSerializable === 'function') return sourceSerializable(source);
+    return {
+      id: source?.id || '',
+      kind: source?.kind || '',
+      label: source?.label || '',
+      repo: source?.repo || '',
+      ref: source?.ref || '',
+      origin: source?.origin || source?.url || ''
+    };
+  }
+
+  async function exportPayloadV6185(ws, modal) {
+    const files = exportIncludedFilesV6180(ws, modal);
+    const assets = exportIncludedAssetsV6180(ws, modal);
+    if (!files.length && !assets.length) throw new Error('Nothing selected for export.');
+
+    const pathCounts = new Map();
+    for (const item of [...files, ...assets]) {
+      const path = normalizeAssetPath(item.path || item.name || '');
+      pathCounts.set(path, (pathCounts.get(path) || 0) + 1);
+    }
+    const collisions = new Set(Array.from(pathCounts.entries()).filter(([, count]) => count > 1).map(([path]) => path));
+
+    const entries = [];
+    const manifest = {
+      schema: 'tiinex.export.v1',
+      createdAt: new Date().toISOString(),
+      workspace: { label: ws.label || '', sourceNote: ws.sourceNote || '' },
+      export: {
+        mode: modal.mode || 'all',
+        archiveFormat: exportArchiveFormatV6185(modal),
+        passwordMode: exportPasswordModeV6185(modal),
+        includeAssets: Boolean(modal.includeAssets),
+        selectedSources: modal.sourceIds || []
+      },
+      sources: exportSourceEntriesV6180(ws).map(safeSourceSerializableV6185),
+      files: [],
+      assets: []
+    };
+
+    for (const file of files) {
+      const outPath = exportFileOutputPathV6180(file, collisions);
+      const content = normalizeNewlines(file.content || file.text || '');
+      entries.push({ path: outPath, bytes: new TextEncoder().encode(content), type: 'text/markdown;charset=utf-8' });
+      manifest.files.push({
+        path: file.path || '', outputPath: outPath, sourceId: file.sourceId || '', sourceLabel: file.sourceLabel || '',
+        rawUrl: file.rawUrl || '', browseUrl: file.browseUrl || '', repo: file.repo || '', ref: file.ref || '', isGenerated: Boolean(file.isGenerated)
+      });
+    }
+
+    for (const asset of assets) {
+      const outPath = exportAssetOutputPathV6180(asset, collisions);
+      const blob = await exportBlobForEntryV6180(asset);
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      entries.push({ path: outPath, bytes, type: asset.type || blob.type || 'application/octet-stream' });
+      manifest.assets.push({
+        path: asset.path || '', outputPath: outPath, type: asset.type || blob.type || '',
+        size: asset.size || blob.size || bytes.byteLength || 0, source: asset.source || ''
+      });
+    }
+
+    const readme = `# Tiinex Export\n\n- Workspace: ${ws.label || 'workspace'}\n- Mode: ${modal.mode || 'all'}\n- Archive: ${exportArchiveFormatV6185(modal)}\n- Password Mode: ${exportPasswordModeV6185(modal)}\n- Files: ${files.length}\n- Assets: ${assets.length}\n- Created At: ${manifest.createdAt}\n\nThis export preserves selected workspace files without mutating the loaded source workspaces.\n\nContent remains rooted where the user expects it, such as .topics/. The _tiinex/ folder contains export metadata only.\n`;
+
+    entries.push({ path: '_tiinex/export.manifest.json', bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 2)), type: 'application/json' });
+    entries.push({ path: '_tiinex/README.md', bytes: new TextEncoder().encode(readme), type: 'text/markdown;charset=utf-8' });
+    return { entries, manifest, files, assets };
+  }
+
+  async function archiveZipBlobV6185(entries) {
+    if (!window.JSZip) throw new Error('JSZip CDN was not available.');
+    const zip = new window.JSZip();
+    for (const entry of entries) zip.file(entry.path, entry.bytes);
+    return zip.generateAsync({ type: 'blob' });
+  }
+
+  function octalStringV6185(value, width) {
+    const text = Math.max(0, Number(value) || 0).toString(8);
+    return text.padStart(width - 1, '0').slice(-(width - 1)) + '\0';
+  }
+
+  function tarNameFieldsV6185(path) {
+    const clean = normalizeAssetPath(path || 'file').replace(/^\/+/, '');
+    const enc = new TextEncoder();
+    if (enc.encode(clean).length <= 100) return { name: clean, prefix: '' };
+    const parts = clean.split('/');
+    for (let i = 1; i < parts.length; i++) {
+      const prefix = parts.slice(0, i).join('/');
+      const name = parts.slice(i).join('/');
+      if (enc.encode(prefix).length <= 155 && enc.encode(name).length <= 100) return { name, prefix };
+    }
+    throw new Error(`Path too long for tar header: ${clean}`);
+  }
+
+  function writeAsciiV6185(buf, offset, width, text) {
+    const bytes = new TextEncoder().encode(String(text || ''));
+    buf.set(bytes.slice(0, width), offset);
+  }
+
+  function tarHeaderV6185(path, size, mtime) {
+    const header = new Uint8Array(512);
+    const { name, prefix } = tarNameFieldsV6185(path);
+    writeAsciiV6185(header, 0, 100, name);
+    writeAsciiV6185(header, 100, 8, octalStringV6185(0o644, 8));
+    writeAsciiV6185(header, 108, 8, octalStringV6185(0, 8));
+    writeAsciiV6185(header, 116, 8, octalStringV6185(0, 8));
+    writeAsciiV6185(header, 124, 12, octalStringV6185(size, 12));
+    writeAsciiV6185(header, 136, 12, octalStringV6185(Math.floor(mtime || Date.now() / 1000), 12));
+    for (let i = 148; i < 156; i++) header[i] = 32;
+    header[156] = 48;
+    writeAsciiV6185(header, 257, 6, 'ustar');
+    header[263] = 0;
+    writeAsciiV6185(header, 263, 2, '00');
+    writeAsciiV6185(header, 345, 155, prefix);
+    let sum = 0;
+    for (const byte of header) sum += byte;
+    writeAsciiV6185(header, 148, 8, sum.toString(8).padStart(6, '0') + '\0 ');
+    return header;
+  }
+
+  function archiveTarBlobV6185(entries) {
+    const parts = [];
+    const mtime = Math.floor(Date.now() / 1000);
+    for (const entry of entries) {
+      const bytes = entry.bytes instanceof Uint8Array ? entry.bytes : new Uint8Array(entry.bytes || []);
+      parts.push(tarHeaderV6185(entry.path, bytes.byteLength, mtime));
+      parts.push(bytes);
+      const pad = (512 - (bytes.byteLength % 512)) % 512;
+      if (pad) parts.push(new Uint8Array(pad));
+    }
+    parts.push(new Uint8Array(512));
+    parts.push(new Uint8Array(512));
+    return new Blob(parts, { type: 'application/x-tar' });
+  }
+
+  async function gzipBlobV6185(blob) {
+    if (typeof CompressionStream !== 'function') throw new Error('gzip CompressionStream is not available in this browser.');
+    const stream = blob.stream().pipeThrough(new CompressionStream('gzip'));
+    return await new Response(stream).blob();
+  }
+
+  async function archiveBlobV6185(entries, format) {
+    if (format === 'tar') return archiveTarBlobV6185(entries);
+    if (format === 'tgz') return gzipBlobV6185(archiveTarBlobV6185(entries));
+    return archiveZipBlobV6185(entries);
+  }
+
+  function archiveExtensionV6185(format) {
+    if (format === 'tar') return 'tar';
+    if (format === 'tgz') return 'tar.gz';
+    return 'zip';
+  }
+
+  const CRC_TABLE_V6185 = (() => {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      table[n] = c >>> 0;
+    }
+    return table;
+  })();
+
+  function crc32UpdateV6185(crc, byte) {
+    return (CRC_TABLE_V6185[(crc ^ byte) & 0xff] ^ (crc >>> 8)) >>> 0;
+  }
+
+  function crc32BytesV6185(bytes) {
+    let crc = 0xffffffff;
+    for (const byte of bytes) crc = crc32UpdateV6185(crc, byte);
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  function dosDateTimeV6185(date = new Date()) {
+    const year = Math.max(1980, date.getFullYear());
+    const time = ((date.getHours() & 0x1f) << 11) | ((date.getMinutes() & 0x3f) << 5) | (Math.floor(date.getSeconds() / 2) & 0x1f);
+    const day = ((year - 1980) << 9) | (((date.getMonth() + 1) & 0x0f) << 5) | (date.getDate() & 0x1f);
+    return { time, day };
+  }
+
+  function pushU16V6185(out, value) { out.push(value & 0xff, (value >>> 8) & 0xff); }
+  function pushU32V6185(out, value) { out.push(value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff); }
+
+  function zipCryptoKeysV6185(password) {
+    const keys = { k0: 0x12345678 >>> 0, k1: 0x23456789 >>> 0, k2: 0x34567890 >>> 0 };
+    const bytes = new TextEncoder().encode(password || '');
+    for (const byte of bytes) zipCryptoUpdateKeysV6185(keys, byte);
+    return keys;
+  }
+
+  function zipCryptoUpdateKeysV6185(keys, byte) {
+    keys.k0 = crc32UpdateV6185(keys.k0, byte);
+    keys.k1 = (((keys.k1 + (keys.k0 & 0xff)) * 134775813 + 1) >>> 0);
+    keys.k2 = crc32UpdateV6185(keys.k2, (keys.k1 >>> 24) & 0xff);
+  }
+
+  function zipCryptoDecryptByteV6185(keys) {
+    const temp = (keys.k2 | 2) >>> 0;
+    return (((temp * (temp ^ 1)) >>> 8) & 0xff) >>> 0;
+  }
+
+  function zipCryptoEncryptBytesV6185(bytes, password) {
+    const keys = zipCryptoKeysV6185(password);
+    const out = new Uint8Array(bytes.byteLength);
+    for (let i = 0; i < bytes.byteLength; i++) {
+      const plain = bytes[i];
+      out[i] = plain ^ zipCryptoDecryptByteV6185(keys);
+      zipCryptoUpdateKeysV6185(keys, plain);
+    }
+    return out;
+  }
+
+  function archiveZipCryptoBlobV6185(entries, password) {
+    if (!password) throw new Error('Password is required.');
+    const fileParts = [];
+    const centralParts = [];
+    let offset = 0;
+    const { time, day } = dosDateTimeV6185();
+    const flag = 0x0801;
+
+    for (const entry of entries) {
+      const nameBytes = new TextEncoder().encode(normalizeAssetPath(entry.path || 'file'));
+      const data = entry.bytes instanceof Uint8Array ? entry.bytes : new Uint8Array(entry.bytes || []);
+      const crc = crc32BytesV6185(data);
+      const header = crypto.getRandomValues(new Uint8Array(12));
+      header[11] = (crc >>> 24) & 0xff;
+      const allPlain = new Uint8Array(header.byteLength + data.byteLength);
+      allPlain.set(header, 0);
+      allPlain.set(data, header.byteLength);
+      const encrypted = zipCryptoEncryptBytesV6185(allPlain, password);
+      const compSize = encrypted.byteLength;
+      const uncompSize = data.byteLength;
+
+      const local = [];
+      pushU32V6185(local, 0x04034b50); pushU16V6185(local, 20); pushU16V6185(local, flag); pushU16V6185(local, 0);
+      pushU16V6185(local, time); pushU16V6185(local, day); pushU32V6185(local, crc); pushU32V6185(local, compSize); pushU32V6185(local, uncompSize);
+      pushU16V6185(local, nameBytes.byteLength); pushU16V6185(local, 0);
+      const localBytes = new Uint8Array([...local, ...nameBytes, ...encrypted]);
+      fileParts.push(localBytes);
+
+      const central = [];
+      pushU32V6185(central, 0x02014b50); pushU16V6185(central, 20); pushU16V6185(central, 20); pushU16V6185(central, flag); pushU16V6185(central, 0);
+      pushU16V6185(central, time); pushU16V6185(central, day); pushU32V6185(central, crc); pushU32V6185(central, compSize); pushU32V6185(central, uncompSize);
+      pushU16V6185(central, nameBytes.byteLength); pushU16V6185(central, 0); pushU16V6185(central, 0); pushU16V6185(central, 0); pushU16V6185(central, 0);
+      pushU32V6185(central, 0); pushU32V6185(central, offset);
+      centralParts.push(new Uint8Array([...central, ...nameBytes]));
+      offset += localBytes.byteLength;
+    }
+
+    const centralOffset = offset;
+    const centralSize = centralParts.reduce((sum, part) => sum + part.byteLength, 0);
+    const end = [];
+    pushU32V6185(end, 0x06054b50); pushU16V6185(end, 0); pushU16V6185(end, 0); pushU16V6185(end, entries.length); pushU16V6185(end, entries.length);
+    pushU32V6185(end, centralSize); pushU32V6185(end, centralOffset); pushU16V6185(end, 0);
+    return new Blob([...fileParts, ...centralParts, new Uint8Array(end)], { type: 'application/zip' });
+  }
+
+  function renderArchiveButtonV6185(modal, format, label, help) {
+    const active = exportArchiveFormatV6185(modal) === format;
+    return `<button type="button" class="export-choice-pill-v6185 ${active ? 'active' : ''}" data-action="export-set-archive" data-format="${escapeAttr(format)}"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(help)}</small></button>`;
+  }
+
+  function renderPasswordButtonV6185(modal, mode, label, help) {
+    const active = exportPasswordModeV6185(modal) === mode;
+    const disabled = mode === 'zip' && exportArchiveFormatV6185(modal) !== 'zip';
+    return `<button type="button" class="export-choice-pill-v6185 ${active ? 'active' : ''}" data-action="export-set-password-mode" data-mode="${escapeAttr(mode)}" ${disabled ? 'disabled' : ''}><strong>${escapeHtml(label)}</strong><small>${escapeHtml(help)}</small></button>`;
+  }
+
+  function renderExportChoicesV6185(modal) {
+    const needsPassword = exportPasswordModeV6185(modal) !== 'none';
+    return `<section class="export-section-v6180 export-format-v6185"><h3>Archive</h3><div class="export-choice-row-v6185">
+        ${renderArchiveButtonV6185(modal, 'zip', 'zip', 'Common default.')}
+        ${renderArchiveButtonV6185(modal, 'tar', 'tar', 'Plain archive.')}
+        ${renderArchiveButtonV6185(modal, 'tgz', 'tar.gz', 'Compressed tar when browser supports gzip.')}
+      </div></section>
+      <section class="export-section-v6180 export-password-v6185"><h3>Password</h3><div class="export-choice-row-v6185">
+        ${renderPasswordButtonV6185(modal, 'none', 'None', 'No encryption.')}
+        ${renderPasswordButtonV6185(modal, 'tiinex', 'Tiinex', 'Stronger app package.')}
+        ${renderPasswordButtonV6185(modal, 'zip', 'Zip', 'Windows-compatible zip.')}
+      </div>
+      ${needsPassword ? `<label class="field-label export-password-field-v6184">Password<input class="form-control tv-input" type="password" autocomplete="new-password" data-export-password-v6184 placeholder="Password for this export"></label>` : ''}
+      <p class="export-encryption-note-v6184">${exportPasswordModeV6185(modal) === 'zip' ? 'Compatibility mode uses traditional ZIP password encryption. Use Tiinex mode for stronger app-level encryption.' : exportPasswordModeV6185(modal) === 'tiinex' ? 'Tiinex mode encrypts the selected archive as a local app package and can be imported back into Tiinex.' : 'Choose an archive format and optional password mode.'}</p>
+      </section>`;
+  }
+
+  const renderExportModalBeforeArchiveChoicesV6185 = renderExportModalV6180;
+  renderExportModalV6180 = function renderExportModalWithArchiveChoicesV6185(modal) {
+    if (!modal.archiveFormatV6185) modal.archiveFormatV6185 = 'zip';
+    if (!modal.passwordModeV6185) modal.passwordModeV6185 = modal.encryptV6184 ? 'tiinex' : 'none';
+    let html = renderExportModalBeforeArchiveChoicesV6185(modal);
+    html = html.replace(/<section class="export-section-v6180 compact export-encryption-v6184">[\s\S]*?<\/section>\s*/g, '');
+    html = html.replace('<section class="export-summary-v6180">', `${renderExportChoicesV6185(modal)}\n          <section class="export-summary-v6180">`);
+    return html;
+  };
+
+  async function exportWorkspaceArchiveV6185(ws, modal) {
+    const format = exportArchiveFormatV6185(modal);
+    const passwordMode = exportPasswordModeV6185(modal);
+    const password = encryptedExportPasswordInputV6184();
+    if (passwordMode !== 'none' && !password) {
+      toast('Enter an export password first.', 'warn');
+      document.querySelector('[data-export-password-v6184]')?.focus();
+      return;
+    }
+    const payload = await exportPayloadV6185(ws, modal);
+    const base = exportBaseSlugV6185(ws, modal);
+    const ext = archiveExtensionV6185(format);
+    if (passwordMode === 'zip') {
+      if (format !== 'zip') return toast('Windows zip password mode requires archive format zip.', 'warn');
+      const blob = archiveZipCryptoBlobV6185(payload.entries, password);
+      downloadBlob(`${base}.zip`, blob);
+      app.modal = null; render(); toast(`Downloaded password zip ${base}.zip.`, 'ok'); return;
+    }
+    const blob = await archiveBlobV6185(payload.entries, format);
+    if (passwordMode === 'tiinex') {
+      const encrypted = await encryptTiinexZipBlobV6184(blob, password, `${base}.${ext}`);
+      downloadBlob(`${base}.${ext}.tiinex.enc.zip`, encrypted);
+      app.modal = null; render(); toast(`Downloaded encrypted ${base}.${ext}.tiinex.enc.zip.`, 'ok'); return;
+    }
+    downloadBlob(`${base}.${ext}`, blob);
+    app.modal = null; render(); toast(`Downloaded ${base}.${ext}.`, 'ok');
+  }
+
+  const onActionBeforeArchiveChoicesV6185 = onActionV645;
+  onActionV645 = async function archiveChoiceActionV6185(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'export-set-archive') {
+      event.preventDefault(); event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      app.modal.archiveFormatV6185 = event.currentTarget.dataset.format || 'zip';
+      if (app.modal.archiveFormatV6185 !== 'zip' && exportPasswordModeV6185(app.modal) === 'zip') app.modal.passwordModeV6185 = 'none';
+      render(); return;
+    }
+    if (action === 'export-set-password-mode') {
+      event.preventDefault(); event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      const mode = event.currentTarget.dataset.mode || 'none';
+      if (mode === 'zip' && exportArchiveFormatV6185(app.modal) !== 'zip') return toast('Zip password mode requires archive format zip.', 'warn');
+      app.modal.passwordModeV6185 = mode;
+      app.modal.encryptV6184 = mode === 'tiinex';
+      render(); return;
+    }
+    if (action === 'export-run' && app.modal?.type === 'export-workspace') {
+      event.preventDefault(); event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
+      if (!ws) return toast('No workspace selected.', 'warn');
+      try { await exportWorkspaceArchiveV6185(ws, app.modal); }
+      catch (error) { toast(`Could not export: ${error.message}`, 'warn'); }
+      return;
+    }
+    return onActionBeforeArchiveChoicesV6185(event);
+  };
+
+
+
+
+  // ===== v6.187 transparent encryption labels + export header polish =====
+  function renderExportChoicesV6185(modal) {
+    const needsPassword = exportPasswordModeV6185(modal) !== 'none';
+    const mode = exportPasswordModeV6185(modal);
+    return `<section class="export-section-v6180 export-format-v6185">
+      <h3>Archive</h3>
+      <div class="export-choice-row-v6185">
+        ${renderArchiveButtonV6185(modal, 'zip', 'zip', 'Common default.')}
+        ${renderArchiveButtonV6185(modal, 'tar', 'tar', 'Plain archive.')}
+        ${renderArchiveButtonV6185(modal, 'tgz', 'tar.gz', 'Compressed tar when browser supports gzip.')}
+      </div>
+    </section>
+    <section class="export-section-v6180 export-password-v6185">
+      <h3>Password</h3>
+      <div class="export-choice-row-v6185">
+        ${renderPasswordButtonV6185(modal, 'none', 'None', 'No encryption.')}
+        ${renderPasswordButtonV6185(modal, 'tiinex', 'AES-GCM', 'PBKDF2 + AES-GCM package.')}
+        ${renderPasswordButtonV6185(modal, 'zip', 'ZipCrypto', 'Legacy ZIP compatibility.')}
+      </div>
+      ${needsPassword ? `<label class="field-label export-password-field-v6184">Password<input class="form-control tv-input" type="password" autocomplete="new-password" data-export-password-v6184 placeholder="Password for this export"></label>` : ''}
+      <p class="export-encryption-note-v6184">${mode === 'zip'
+        ? 'ZipCrypto is Windows/legacy ZIP compatible, but weaker. Use AES-GCM for stronger app-level encryption.'
+        : mode === 'tiinex'
+          ? 'AES-GCM mode uses PBKDF2-SHA256 + AES-GCM-256 inside a Tiinex encrypted package container.'
+          : 'Choose an archive format and optional password mode.'}</p>
+    </section>`;
+  };
+
+  const renderExportModalBeforeHeaderPolishV6187 = renderExportModalV6180;
+  renderExportModalV6180 = function renderExportModalWithHeaderPolishV6187(modal) {
+    const html = renderExportModalBeforeHeaderPolishV6187(modal);
+    return html
+      .replace('class="modal-header-lite export-head-v6180"', 'class="modal-header-lite export-head-v6180 export-head-v6187"')
+      .replace('<h2 class="modal-title-lite" id="export-title"><i class="fa-solid fa-file-zipper"></i>Export workspace</h2>', '<h2 class="modal-title-lite export-title-v6187" id="export-title"><span class="export-title-icon-v6187"><i class="fa-solid fa-file-zipper"></i></span><span>Export workspace</span></h2>');
+  };
+
+
+
+
+  // ===== v6.188 visible assets + stable discovery search width =====
+  function workspaceAssetEntriesV6188(ws) {
+    return Array.from(ws?.assets?.values?.() || [])
+      .filter(Boolean)
+      .sort((a, b) => String(a.path || a.name || '').localeCompare(String(b.path || b.name || '')));
+  }
+
+  function assetDisplayNameV6188(asset) {
+    return asset?.name || fileNameFromPath(asset?.path || '') || 'asset';
+  }
+
+  function assetKindV6188(asset) {
+    const type = String(asset?.type || '');
+    const name = String(asset?.name || asset?.path || '');
+    if (type.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(name)) return 'image';
+    if (type.startsWith('text/') || /\.(md|txt|json|csv|log|xml|html|css|js)$/i.test(name)) return 'text';
+    if (/\.pdf$/i.test(name) || type === 'application/pdf') return 'pdf';
+    if (/\.zip$/i.test(name) || type.includes('zip')) return 'zip';
+    return 'file';
+  }
+
+  function assetIconV6188(asset) {
+    const kind = assetKindV6188(asset);
+    if (kind === 'image') return 'fa-image';
+    if (kind === 'text') return 'fa-align-left';
+    if (kind === 'pdf') return 'fa-file-pdf';
+    if (kind === 'zip') return 'fa-file-zipper';
+    return 'fa-paperclip';
+  }
+
+  function assetSizeLabelV6188(size) {
+    const n = Number(size || 0);
+    if (!n) return '';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(n < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+  }
+
+  function assetMatchesSearchV6188(asset, query) {
+    const q = normalizeSearchText(query || '');
+    if (!q) return true;
+    const text = normalizeSearchText([
+      asset?.path,
+      asset?.name,
+      asset?.type,
+      asset?.source,
+      assetKindV6188(asset)
+    ].filter(Boolean).join(' '));
+    return text.includes(q);
+  }
+
+  function visibleAssetsV6188(ws) {
+    const opts = workspaceDisplayOptionsV6134(ws);
+    if (!opts.showAssets) return [];
+    return workspaceAssetEntriesV6188(ws).filter((asset) => assetMatchesSearchV6188(asset, ws.discoverySearch || ''));
+  }
+
+  const workspaceDisplayOptionsBeforeAssetsV6188 = workspaceDisplayOptionsV6134;
+  workspaceDisplayOptionsV6134 = function workspaceDisplayOptionsWithAssetsV6188(ws) {
+    const opts = workspaceDisplayOptionsBeforeAssetsV6188(ws);
+    if (typeof opts.showAssets !== 'boolean') opts.showAssets = false;
+    return opts;
+  };
+
+  const displayOptionsActiveCountBeforeAssetsV6188 = displayOptionsActiveCountV6134;
+  displayOptionsActiveCountV6134 = function displayOptionsActiveCountWithAssetsV6188(ws) {
+    const opts = workspaceDisplayOptionsV6134(ws);
+    return displayOptionsActiveCountBeforeAssetsV6188(ws) + (opts.showAssets ? 1 : 0);
+  };
+
+  function assetCardHtmlV6188(ws, asset) {
+    const path = normalizeAssetPath(asset.path || asset.name || 'asset');
+    const kind = assetKindV6188(asset);
+    const size = assetSizeLabelV6188(asset.size);
+    const previewable = kind === 'image' || kind === 'text';
+    return `<article class="lineage-post asset-post-v6188" data-asset="${escapeAttr(path)}">
+      <div class="post-main asset-main-v6188">
+        <div class="post-chips">
+          <span class="badge-soft muted-chip"><i class="fa-solid fa-box-archive"></i>asset</span>
+          <span class="badge-soft muted-chip">${escapeHtml(kind)}</span>
+          ${size ? `<span class="badge-soft muted-chip">${escapeHtml(size)}</span>` : ''}
+          ${asset.source ? `<span class="badge-soft muted-chip">${escapeHtml(asset.source)}</span>` : ''}
+        </div>
+        <h3 class="post-title"><i class="fa-solid ${assetIconV6188(asset)}"></i>${escapeHtml(assetDisplayNameV6188(asset))}</h3>
+        <p class="post-summary">${escapeHtml(path)}</p>
+      </div>
+      <div class="post-actions asset-actions-v6188">
+        ${previewable ? `<button class="icon-action" data-action="open-asset-preview" data-ws="${escapeAttr(ws.id)}" data-asset="${escapeAttr(path)}" title="Preview asset"><i class="fa-regular fa-window-maximize"></i><span>Open</span></button>` : ''}
+        <button class="icon-action" data-action="download-asset" data-ws="${escapeAttr(ws.id)}" data-asset="${escapeAttr(path)}" title="Download asset"><i class="fa-solid fa-download"></i><span>Download</span></button>
+        <button class="icon-action danger-action" data-action="remove-asset" data-ws="${escapeAttr(ws.id)}" data-asset="${escapeAttr(path)}" title="Remove asset"><i class="fa-regular fa-trash-can"></i><span>Remove</span></button>
+      </div>
+    </article>`;
+  }
+
+  function hiddenAssetNoticeV6188(ws) {
+    const assets = workspaceAssetEntriesV6188(ws);
+    const opts = workspaceDisplayOptionsV6134(ws);
+    if (!assets.length || opts.showAssets) return '';
+    if (ws.nodes?.length) return '';
+    return `<div class="asset-hidden-notice-v6188">
+      <i class="fa-solid fa-box-archive"></i>
+      <span>${assets.length} asset${assets.length === 1 ? '' : 's'} imported but hidden.</span>
+      <button class="tv-btn tiny subtle" data-action="enable-assets-display" data-ws="${escapeAttr(ws.id)}">Show assets</button>
+    </div>`;
+  }
+
+  function assetSectionHtmlV6188(ws) {
+    const assets = visibleAssetsV6188(ws);
+    if (!assets.length) return hiddenAssetNoticeV6188(ws);
+    return `<div class="asset-section-v6188">
+      <div class="feed-section-title asset-section-title-v6188"><span>Assets</span><span>${assets.length}</span></div>
+      ${assets.map((asset) => assetCardHtmlV6188(ws, asset)).join('')}
+    </div>`;
+  }
+
+  const renderWorkspaceFeedBeforeAssetsV6188 = renderWorkspaceFeed;
+  renderWorkspaceFeed = function renderWorkspaceFeedWithAssetsV6188(ws, selected) {
+    const html = renderWorkspaceFeedBeforeAssetsV6188(ws, selected);
+    if (selected) return html;
+    const assetHtml = assetSectionHtmlV6188(ws);
+    if (!assetHtml) return html;
+    return html.replace(/\s*<\/div>\s*$/, `${assetHtml}</div>`);
+  };
+
+  const renderDisplayOptionsModalBeforeAssetsV6188 = renderDisplayOptionsModalV6134;
+  renderDisplayOptionsModalV6134 = function renderDisplayOptionsModalWithAssetsV6188(modal) {
+    let html = renderDisplayOptionsModalBeforeAssetsV6188(modal);
+    const ws = getWorkspace(modal.wsId);
+    if (!ws || html.includes('showAssets')) return html;
+    const opts = workspaceDisplayOptionsV6134(ws);
+    const row = `<label class="display-option-row">
+        <span>
+          <strong>Show assets</strong>
+          <small>Imported non-lineage files such as images, PDFs, zip files, and supporting material.</small>
+        </span>
+        <input type="checkbox" data-action="toggle-display-option" data-ws="${escapeAttr(ws.id)}" data-key="showAssets" ${opts.showAssets ? 'checked' : ''}>
+      </label>`;
+    if (html.includes('</div>\n        </div>\n      </div>')) {
+      return html.replace('</div>\n        </div>\n      </div>', `${row}\n          </div>\n        </div>\n      </div>`);
+    }
+    return html;
+  };
+
+  function assetByPathV6188(ws, path) {
+    const clean = normalizeAssetPath(path || '');
+    return ws?.assets?.get?.(clean)
+      || Array.from(ws?.assets?.values?.() || []).find((asset) => sameImportedPathV6137(asset.path || asset.name || '', clean));
+  }
+
+  function renderAssetPreviewModalV6188(modal) {
+    const ws = getWorkspace(modal.wsId);
+    const asset = assetByPathV6188(ws, modal.assetPath);
+    if (!ws || !asset) return '';
+    const kind = assetKindV6188(asset);
+    const path = normalizeAssetPath(asset.path || asset.name || 'asset');
+    const url = assetObjectUrl(ws, asset);
+    const isText = kind === 'text';
+    const isImage = kind === 'image';
+    const text = typeof asset.content === 'string' ? asset.content : '';
+    return `<div class="modal-backdrop-custom focus-modal" role="dialog" aria-modal="true" aria-labelledby="asset-preview-title">
+      <div class="modal-panel read-modal-panel asset-preview-panel-v6188">
+        <div class="modal-header-lite sticky-modal-head">
+          <div>
+            <p class="kicker">Asset</p>
+            <h2 class="modal-title-lite" id="asset-preview-title"><i class="fa-solid ${assetIconV6188(asset)}"></i>${escapeHtml(assetDisplayNameV6188(asset))}</h2>
+            <p class="text-secondary mb-0">${escapeHtml(path)}</p>
+          </div>
+          <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-read-body asset-preview-body-v6188">
+          ${isImage ? `<img src="${escapeAttr(url)}" alt="${escapeAttr(assetDisplayNameV6188(asset))}" data-attachment-preview>` : ''}
+          ${isText ? `<pre class="source-block modal-source"><code>${escapeHtml(text || 'Text preview unavailable for this imported asset.')}</code></pre>` : ''}
+          ${!isImage && !isText ? `<div class="empty-state">Preview unavailable for this asset type. Use Download instead.</div>` : ''}
+        </div>
+        <div class="modal-footer-actions">
+          <button class="tv-btn subtle" data-action="download-asset" data-ws="${escapeAttr(ws.id)}" data-asset="${escapeAttr(path)}"><i class="fa-solid fa-download"></i>Download</button>
+          <button class="tv-btn subtle" data-action="close-modal">Close</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  const renderModalBeforeAssetsV6188 = renderModal;
+  renderModal = function renderModalWithAssetsV6188(modal) {
+    if (modal?.type === 'asset-preview') return renderAssetPreviewModalV6188(modal);
+    return renderModalBeforeAssetsV6188(modal);
+  };
+
+  const onActionBeforeAssetsV6188 = onActionV645;
+  onActionV645 = async function assetActionsV6188(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+
+    if (action === 'enable-assets-display') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      workspaceDisplayOptionsV6134(ws).showAssets = true;
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      render();
+      return;
+    }
+
+    if (action === 'open-asset-preview') {
+      event.preventDefault();
+      event.stopPropagation();
+      app.modal = {
+        type: 'asset-preview',
+        wsId: event.currentTarget.dataset.ws || '',
+        assetPath: event.currentTarget.dataset.asset || ''
+      };
+      render();
+      return;
+    }
+
+    if (action === 'download-asset') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
+      const asset = assetByPathV6188(ws, event.currentTarget.dataset.asset || app.modal?.assetPath || '');
+      if (!asset) return toast('Asset not found.', 'warn');
+      const blob = asset.blob || new Blob([asset.content || ''], { type: asset.type || 'application/octet-stream' });
+      downloadBlob(assetDisplayNameV6188(asset), blob);
+      return;
+    }
+
+    if (action === 'remove-asset') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      const path = normalizeAssetPath(event.currentTarget.dataset.asset || '');
+      if (!ws || !path) return;
+      ws.assets?.delete?.(path);
+      if (ws.assetUrls?.has?.(path)) {
+        try { URL.revokeObjectURL(ws.assetUrls.get(path)); } catch (_) {}
+        ws.assetUrls.delete(path);
+      }
+      if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
+      render();
+      return;
+    }
+
+    return onActionBeforeAssetsV6188(event);
+  };
+
+  const routeStateBeforeAssetsV6188 = routeState;
+  routeState = function routeStateWithDisplayAssetsV6188() {
+    const state = routeStateBeforeAssetsV6188();
+    if (state && Array.isArray(state.sources)) {
+      state.sources.forEach((source, index) => {
+        const ws = app.workspaces[index];
+        if (ws?.displayOptions) source.displayOptions = Object.assign({}, ws.displayOptions);
+      });
+    }
+    return state;
+  };
+
+  const viewRouteStateBeforeAssetsV6188 = viewRouteStateV695;
+  viewRouteStateV695 = function viewRouteStateWithDisplayAssetsV6188() {
+    const state = viewRouteStateBeforeAssetsV6188();
+    if (state && Array.isArray(state.workspaces)) {
+      state.workspaces.forEach((source, index) => {
+        const ws = app.workspaces[index];
+        if (ws?.displayOptions) source.displayOptions = Object.assign({}, ws.displayOptions);
+      });
+    }
+    return state;
+  };
+
+  const applyViewStateBeforeAssetsV6188 = applyViewStateToWorkspace;
+  applyViewStateToWorkspace = function applyViewStateWithDisplayAssetsV6188(ws, source) {
+    applyViewStateBeforeAssetsV6188(ws, source);
+    if (source?.displayOptions) ws.displayOptions = Object.assign({}, ws.displayOptions || {}, source.displayOptions);
+  };
+
+  const applyViewRouteStateBeforeAssetsV6188 = applyViewRouteStateV695;
+  applyViewRouteStateV695 = function applyViewRouteStateWithDisplayAssetsV6188(state) {
+    const ok = applyViewRouteStateBeforeAssetsV6188(state);
+    if (ok && Array.isArray(state?.workspaces)) {
+      state.workspaces.forEach((source, index) => {
+        const ws = app.workspaces[index];
+        if (ws && source?.displayOptions) ws.displayOptions = Object.assign({}, ws.displayOptions || {}, source.displayOptions);
+      });
+    }
+    return ok;
+  };
+
+
+
+
+  // ===== v6.192 responsive discovery loading + feed windowing =====
+  app.settings = Object.assign({
+    repoDiscoveryFetchConcurrencyV6192: 6,
+    repoDiscoveryBatchRenderEveryV6192: 0,
+    discoveryFeedInitialCountV6192: 48,
+    discoveryFeedGrowCountV6192: 48
+  }, app.settings || {});
+
+  function microYieldV6192() {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  function discoveryWindowSignatureV6192(ws) {
+    return [
+      ws?.discoveryView || 'feed',
+      ws?.discoveryFilterSchema || ws?.filterSchema || 'all',
+      ws?.discoverySearch || '',
+      workspaceDisplayOptionsV6134(ws).leavesOnly ? 'leaf' : 'all',
+      workspaceDisplayOptionsV6134(ws).showTrace ? 'trace' : '',
+      workspaceDisplayOptionsV6134(ws).showSchema ? 'schema' : '',
+      workspaceDisplayOptionsV6134(ws).showWorkspace ? 'workspace' : '',
+      workspaceDisplayOptionsV6134(ws).showAssets ? 'assets' : ''
+    ].join('|');
+  }
+
+  function discoveryVisibleCountV6192(ws) {
+    const sig = discoveryWindowSignatureV6192(ws);
+    if (ws.discoveryWindowSigV6192 !== sig) {
+      ws.discoveryWindowSigV6192 = sig;
+      ws.discoveryVisibleCountV6192 = Number(app.settings.discoveryFeedInitialCountV6192 || 48);
+    }
+    return Math.max(8, Number(ws.discoveryVisibleCountV6192 || app.settings.discoveryFeedInitialCountV6192 || 48));
+  }
+
+  const filteredDiscoveryNodesBeforeWindowV6192 = filteredDiscoveryNodes;
+  filteredDiscoveryNodes = function filteredDiscoveryNodesWithWindowV6192(ws) {
+    const nodes = filteredDiscoveryNodesBeforeWindowV6192(ws);
+    const context = app.discoveryWindowContextV6192;
+    if (!context || context.wsId !== ws?.id) return nodes;
+    if ((ws.discoveryView || 'feed') !== 'feed') return nodes;
+    return nodes.slice(0, context.limit);
+  };
+
+  function discoveryLoadMoreFooterV6192(ws, total, shown) {
+    if (shown >= total) return '';
+    const remaining = total - shown;
+    return `<div class="lineage-loader discovery-window-loader-v6192">
+      <button class="tv-btn small" data-action="load-more-discovery" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-arrow-down"></i>Show more</button>
+      <span>${shown} / ${total} shown · ${remaining} more</span>
+    </div>`;
+  }
+
+  function loadingProgressNoticeV6192(ws) {
+    if (!ws?.loading) return '';
+    const p = ws.discoveryProgressV6192 || {};
+    const total = Number(p.total || 0);
+    const loaded = Number(p.loaded || 0);
+    const failed = Number(p.failed || 0);
+    const label = total ? `${loaded}/${total} loaded${failed ? ` · ${failed} failed` : ''}` : 'Loading source…';
+    return `<div class="loading-progress-v6192">
+      <i class="fa-solid fa-spinner fa-spin"></i>
+      <span>${escapeHtml(label)}</span>
+      <small>Discovery is running in the background. You can keep using the workspace.</small>
+    </div>`;
+  }
+
+  const renderWorkspaceFeedBeforeWindowV6192 = renderWorkspaceFeed;
+  renderWorkspaceFeed = function renderWorkspaceFeedWindowedV6192(ws, selected) {
+    if (selected || (ws.discoveryView || 'feed') !== 'feed') {
+      const html = renderWorkspaceFeedBeforeWindowV6192(ws, selected);
+      if (!selected && ws?.loading && html.includes('<div class="post-feed')) {
+        return html.replace('<div class="post-feed', `${loadingProgressNoticeV6192(ws)}<div class="post-feed`);
+      }
+      return html;
+    }
+
+    const all = filteredDiscoveryNodesBeforeWindowV6192(ws);
+    const limit = discoveryVisibleCountV6192(ws);
+    app.discoveryWindowContextV6192 = { wsId: ws.id, limit };
+    let html = renderWorkspaceFeedBeforeWindowV6192(ws, selected);
+    app.discoveryWindowContextV6192 = null;
+
+    const shown = Math.min(limit, all.length);
+    const footer = discoveryLoadMoreFooterV6192(ws, all.length, shown);
+    if (footer) html = html.replace(/\s*<\/div>\s*$/, `${footer}</div>`);
+    if (ws.loading && html.includes('<div class="post-feed')) {
+      html = html.replace('<div class="post-feed', `${loadingProgressNoticeV6192(ws)}<div class="post-feed`);
+    }
+    return html;
+  };
+
+  const onActionBeforeDiscoveryWindowV6192 = onActionV645;
+  onActionV645 = async function discoveryWindowActionV6192(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'load-more-discovery') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      discoveryVisibleCountV6192(ws);
+      ws.discoveryVisibleCountV6192 += Number(app.settings.discoveryFeedGrowCountV6192 || 48);
+      render();
+      return;
+    }
+    return onActionBeforeDiscoveryWindowV6192(event);
+  };
+
+  async function discoverGitHubRepoIntoWorkspaceResponsiveV6192(ws, options) {
+    const repo = options.repo;
+    const ref = options.ref || '';
+    const rootPaths = Array.isArray(options.rootPaths) ? options.rootPaths : parseRootPaths(options.rootPath || '.topics');
+    const key = repoDiscoveryKey(repo, ref, rootPaths);
+
+    if (ws.discoverySource?.kind === 'github-tree'
+      && repoDiscoveryKey(ws.discoverySource.repo, ws.discoverySource.ref || '', ws.discoverySource.rootPaths || ws.discoverySource.rootPath || '.topics') === key
+      && ws.nodes.length) {
+      toast(`${ws.label} already has discovery results for ${key}.`, 'warn');
+      return;
+    }
+
+    if (app.repoDiscoveryInFlight?.has?.(key)) {
+      toast(`Discovery already running for ${key}.`, 'warn');
+      return;
+    }
+
+    app.repoDiscoveryInFlight = app.repoDiscoveryInFlight || new Set();
+    app.repoDiscoveryInFlight.add(key);
+    ws.loading = true;
+    ws.repo = repo;
+    if (ref) ws.ref = ref;
+    ws.discoverySource = { kind: 'github-tree', repo, ref: ref || '', rootPath: rootPaths[0] || '.topics', rootPaths };
+    ws.sourceNote = `GitHub repo discovery: ${repo}${ref ? '@' + ref : ''} / ${rootPathsLabel(rootPaths)}`;
+    ws.discoveryProgressV6192 = { phase: 'tree', loaded: 0, total: 0, failed: 0 };
+    ws.logs.push(`Discovering ${repo}${ref ? '@' + ref : ''} under ${rootPaths.join(', ')} via GitHub tree API.`);
+    render();
+    await microYieldV6192();
+
+    let count = 0;
+    let failed = 0;
+
+    try {
+      const discovery = await discoverGitHubTracePaths(repo, ref, rootPaths);
+      ws.repo = repo;
+      ws.ref = discovery.ref;
+      ws.discoverySource.ref = discovery.ref;
+      ws.discoverySource.rootPath = discovery.rootPath;
+      ws.discoverySource.rootPaths = discovery.rootPaths;
+      ws.logs.push(`Tree discovery found ${discovery.tracePaths.length} .trace.md file(s).`);
+      if (discovery.truncated) {
+        ws.logs.push('GitHub tree response was truncated. Results may be incomplete; use a manifest for this repo.');
+        toast(`Tree response for ${repo} was truncated; discovery may be incomplete.`, 'warn');
+      }
+
+      const paths = discovery.tracePaths.filter((path) => {
+        const rawUrl = githubRawUrl(repo, discovery.ref, path);
+        return !Array.from(ws.files.values()).some((file) => file.rawUrl === rawUrl || file.path === path);
+      });
+
+      ws.discoveryProgressV6192 = { phase: 'fetch', loaded: 0, total: paths.length, failed: 0 };
+      requestBufferedRender('repo-discovery-start', 60);
+      await microYieldV6192();
+
+      const concurrency = Math.max(1, Number(app.settings.repoDiscoveryFetchConcurrencyV6192 || 6));
+      const batchEvery = Math.max(0, Number(app.settings.repoDiscoveryBatchRenderEveryV6192 || 0));
+      const batchDelay = 120;
+
+      await runWithConcurrency(paths, concurrency, async (path) => {
+        const rawUrl = githubRawUrl(repo, discovery.ref, path);
+        try {
+          const content = await fetchText(rawUrl);
+          addFileToWorkspace(ws, {
+            path,
+            content,
+            rawUrl,
+            browseUrl: githubBrowseUrl(repo, discovery.ref, path),
+            repo,
+            ref: discovery.ref
+          });
+          count += 1;
+          ws.discoveryProgressV6192.loaded = count;
+          if (batchEvery > 0 && count % batchEvery === 0) {
+            computeWorkspaceIndex(ws);
+            requestBufferedRender('repo-discovery-batch', batchDelay);
+            await microYieldV6192();
+          }
+        } catch (error) {
+          failed += 1;
+          ws.discoveryProgressV6192.failed = failed;
+          ws.logs.push(`Could not fetch discovered trace ${path}: ${error.message}`);
+        }
+      });
+
+      ws.discoveryProgressV6192.phase = 'index';
+      await microYieldV6192();
+      computeWorkspaceIndex(ws);
+      await microYieldV6192();
+      await discoverWorkspacePolicy(ws);
+
+      if (!count && !failed) toast(`No new trace files loaded from ${repo}.`, 'warn');
+      if (failed) toast(`${failed} trace file(s) could not be fetched from ${repo}.`, 'warn');
+    } catch (error) {
+      ws.logs.push(`Repo discovery failed for ${repo}: ${error.message}`);
+      toast(`Repo discovery failed for ${repo}: ${error.message}`, 'warn');
+    } finally {
+      app.repoDiscoveryInFlight.delete(key);
+      ws.loading = false;
+      ws.discoveryProgressV6192 = null;
+      computeWorkspaceIndex(ws);
+      render();
+    }
+  }
+
+  discoverGitHubRepoIntoWorkspace = discoverGitHubRepoIntoWorkspaceResponsiveV6192;
+
+
+
+
+  // ===== v6.193 lightweight discovery progress bar =====
+  function discoveryProgressPercentV6193(ws) {
+    const p = ws?.discoveryProgressV6192 || {};
+    const total = Math.max(0, Number(p.total || 0));
+    const loaded = Math.max(0, Number(p.loaded || 0));
+    const failed = Math.max(0, Number(p.failed || 0));
+    if (!total) return p.phase === 'tree' ? 5 : 0;
+    return Math.max(2, Math.min(100, Math.round(((loaded + failed) / total) * 100)));
+  }
+
+  function discoveryProgressTitleV6193(ws) {
+    const p = ws?.discoveryProgressV6192 || {};
+    const total = Math.max(0, Number(p.total || 0));
+    const loaded = Math.max(0, Number(p.loaded || 0));
+    const failed = Math.max(0, Number(p.failed || 0));
+    if (p.phase === 'tree') return 'Discovering file list';
+    if (p.phase === 'index') return 'Indexing workspace';
+    if (!total) return 'Loading';
+    return `${loaded + failed}/${total}`;
+  }
+
+  loadingProgressNoticeV6192 = function loadingProgressNoticeV6193(ws) {
+    if (!ws?.loading) return '';
+    const pct = discoveryProgressPercentV6193(ws);
+    return `<div class="loading-progress-v6192 loading-progress-v6193" data-discovery-progress="${escapeAttr(ws.id)}" data-progress="${pct}">
+      <div class="progress-head-v6193">
+        <span><i class="fa-solid fa-spinner fa-spin"></i>${escapeHtml(discoveryProgressTitleV6193(ws))}</span>
+        <small data-progress-label>${pct}%</small>
+      </div>
+      <div class="progress-track-v6193" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}">
+        <span class="progress-fill-v6193" data-progress-fill style="width:${pct}%"></span>
+      </div>
+    </div>`;
+  };
+
+  function updateDiscoveryProgressDomV6193(ws) {
+    if (!ws) return;
+    const el = document.querySelector(`[data-discovery-progress="${CSS.escape(ws.id)}"]`);
+    if (!el) return;
+    const pct = discoveryProgressPercentV6193(ws);
+    const label = el.querySelector('[data-progress-label]');
+    const fill = el.querySelector('[data-progress-fill]');
+    const head = el.querySelector('.progress-head-v6193 span');
+    const bar = el.querySelector('[role="progressbar"]');
+    el.dataset.progress = String(pct);
+    if (label) label.textContent = `${pct}%`;
+    if (fill) fill.style.width = `${pct}%`;
+    if (head) head.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i>${escapeHtml(discoveryProgressTitleV6193(ws))}`;
+    if (bar) bar.setAttribute('aria-valuenow', String(pct));
+  }
+
+  function progressYieldV6193(ws) {
+    updateDiscoveryProgressDomV6193(ws);
+    return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  }
+
+  async function discoverGitHubRepoIntoWorkspaceProgressV6193(ws, options) {
+    const repo = options.repo;
+    const ref = options.ref || '';
+    const rootPaths = Array.isArray(options.rootPaths) ? options.rootPaths : parseRootPaths(options.rootPath || '.topics');
+    const key = repoDiscoveryKey(repo, ref, rootPaths);
+
+    if (ws.discoverySource?.kind === 'github-tree'
+      && repoDiscoveryKey(ws.discoverySource.repo, ws.discoverySource.ref || '', ws.discoverySource.rootPaths || ws.discoverySource.rootPath || '.topics') === key
+      && ws.nodes.length) {
+      toast(`${ws.label} already has discovery results for ${key}.`, 'warn');
+      return;
+    }
+
+    if (app.repoDiscoveryInFlight?.has?.(key)) {
+      toast(`Discovery already running for ${key}.`, 'warn');
+      return;
+    }
+
+    app.repoDiscoveryInFlight = app.repoDiscoveryInFlight || new Set();
+    app.repoDiscoveryInFlight.add(key);
+    ws.loading = true;
+    ws.repo = repo;
+    if (ref) ws.ref = ref;
+    ws.discoverySource = { kind: 'github-tree', repo, ref: ref || '', rootPath: rootPaths[0] || '.topics', rootPaths };
+    ws.sourceNote = `GitHub repo discovery: ${repo}${ref ? '@' + ref : ''} / ${rootPathsLabel(rootPaths)}`;
+    ws.discoveryProgressV6192 = { phase: 'tree', loaded: 0, total: 0, failed: 0 };
+    ws.logs.push(`Discovering ${repo}${ref ? '@' + ref : ''} under ${rootPaths.join(', ')} via GitHub tree API.`);
+    render();
+    await progressYieldV6193(ws);
+
+    let count = 0;
+    let failed = 0;
+
+    try {
+      const discovery = await discoverGitHubTracePaths(repo, ref, rootPaths);
+      ws.repo = repo;
+      ws.ref = discovery.ref;
+      ws.discoverySource.ref = discovery.ref;
+      ws.discoverySource.rootPath = discovery.rootPath;
+      ws.discoverySource.rootPaths = discovery.rootPaths;
+      ws.logs.push(`Tree discovery found ${discovery.tracePaths.length} .trace.md file(s).`);
+      if (discovery.truncated) {
+        ws.logs.push('GitHub tree response was truncated. Results may be incomplete; use a manifest for this repo.');
+        toast(`Tree response for ${repo} was truncated; discovery may be incomplete.`, 'warn');
+      }
+
+      const paths = discovery.tracePaths.filter((path) => {
+        const rawUrl = githubRawUrl(repo, discovery.ref, path);
+        return !Array.from(ws.files.values()).some((file) => file.rawUrl === rawUrl || file.path === path);
+      });
+
+      ws.discoveryProgressV6192 = { phase: 'fetch', loaded: 0, total: paths.length, failed: 0 };
+      render();
+      await progressYieldV6193(ws);
+
+      const concurrency = Math.max(1, Number(app.settings.repoDiscoveryFetchConcurrencyV6192 || 6));
+      const progressEvery = Math.max(1, Number(app.settings.repoDiscoveryProgressEveryV6193 || 1));
+
+      await runWithConcurrency(paths, concurrency, async (path) => {
+        const rawUrl = githubRawUrl(repo, discovery.ref, path);
+        try {
+          const content = await fetchText(rawUrl);
+          addFileToWorkspace(ws, {
+            path,
+            content,
+            rawUrl,
+            browseUrl: githubBrowseUrl(repo, discovery.ref, path),
+            repo,
+            ref: discovery.ref
+          });
+          count += 1;
+          ws.discoveryProgressV6192.loaded = count;
+        } catch (error) {
+          failed += 1;
+          ws.discoveryProgressV6192.failed = failed;
+          ws.logs.push(`Could not fetch discovered trace ${path}: ${error.message}`);
+        }
+
+        if (((count + failed) % progressEvery) === 0) {
+          await progressYieldV6193(ws);
+        }
+      });
+
+      ws.discoveryProgressV6192.phase = 'index';
+      updateDiscoveryProgressDomV6193(ws);
+      await progressYieldV6193(ws);
+
+      computeWorkspaceIndex(ws);
+      await progressYieldV6193(ws);
+      await discoverWorkspacePolicy(ws);
+
+      if (!count && !failed) toast(`No new trace files loaded from ${repo}.`, 'warn');
+      if (failed) toast(`${failed} trace file(s) could not be fetched from ${repo}.`, 'warn');
+    } catch (error) {
+      ws.logs.push(`Repo discovery failed for ${repo}: ${error.message}`);
+      toast(`Repo discovery failed for ${repo}: ${error.message}`, 'warn');
+    } finally {
+      app.repoDiscoveryInFlight.delete(key);
+      ws.loading = false;
+      ws.discoveryProgressV6192 = null;
+      computeWorkspaceIndex(ws);
+      render();
+    }
+  }
+
+  discoverGitHubRepoIntoWorkspace = discoverGitHubRepoIntoWorkspaceProgressV6193;
+
+
+
+
+  // ===== v6.195 Feed Preview mode for referenced material / attachments =====
+  function nodeMaterialRefsV6195(ws, node) {
+    if (!ws || !node || typeof extractMaterialRefs !== 'function') return [];
+    try {
+      return extractMaterialRefs(ws, node) || [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function materialKindKeyV6195(ref) {
+    const kind = String(ref?.kind || 'file').toLowerCase();
+    if (kind === 'markdown') return 'text';
+    if (kind === 'image') return 'image';
+    if (kind === 'trace') return 'trace';
+    if (kind === 'text') return 'text';
+    if (kind === 'url' || kind === 'link') return 'url';
+    return kind || 'file';
+  }
+
+  function materialKindLabelV6195(kind) {
+    if (typeof materialKindLabel === 'function') return materialKindLabel(kind);
+    const labels = { all: 'All', image: 'Images', trace: 'Traces', text: 'Text', url: 'URLs', file: 'Files' };
+    return labels[kind] || String(kind || 'file').replace(/[-_]+/g, ' ');
+  }
+
+  function previewMaterialKindV6195(ws) {
+    return ws?.previewMaterialKindV6195 || 'all';
+  }
+
+  function previewMaterialActiveV6195(ws) {
+    return Boolean(ws?.previewMaterialModeV6195);
+  }
+
+  function materialRefsForPreviewV6195(ws, node) {
+    const kind = previewMaterialKindV6195(ws);
+    const refs = nodeMaterialRefsV6195(ws, node);
+    if (kind === 'all') return refs;
+    return refs.filter((ref) => materialKindKeyV6195(ref) === kind);
+  }
+
+  function nodeHasPreviewMaterialV6195(ws, node) {
+    return materialRefsForPreviewV6195(ws, node).length > 0;
+  }
+
+  function previewMaterialKindsForWorkspaceV6195(ws) {
+    const counts = new Map();
+    for (const node of ws?.nodes || []) {
+      for (const ref of nodeMaterialRefsV6195(ws, node)) {
+        const kind = materialKindKeyV6195(ref);
+        counts.set(kind, (counts.get(kind) || 0) + 1);
+      }
+    }
+    const order = ['image', 'trace', 'text', 'url', 'file'];
+    return Array.from(counts.entries())
+      .sort((a, b) => {
+        const ai = order.indexOf(a[0]); const bi = order.indexOf(b[0]);
+        if (ai !== bi) return (ai < 0 ? 999 : ai) - (bi < 0 ? 999 : bi);
+        return a[0].localeCompare(b[0]);
+      })
+      .map(([kind, count]) => ({ kind, count }));
+  }
+
+  function renderPreviewToggleV6195(ws) {
+    const active = previewMaterialActiveV6195(ws);
+    return `<button class="tree-all-toggle preview-toggle-v6195 ${active ? 'active' : ''}" data-action="toggle-material-preview" data-ws="${escapeAttr(ws.id)}" title="${active ? 'Show regular feed' : 'Preview referenced material'}" aria-label="${active ? 'Show regular feed' : 'Preview referenced material'}">
+      <i class="fa-solid ${active ? 'fa-eye' : 'fa-images'}"></i>
+    </button>`;
+  }
+
+  function renderPreviewFilterBarV6195(ws) {
+    if (!previewMaterialActiveV6195(ws)) return '';
+    const kinds = previewMaterialKindsForWorkspaceV6195(ws);
+    const total = kinds.reduce((sum, item) => sum + item.count, 0);
+    const active = previewMaterialKindV6195(ws);
+    const chips = [
+      { kind: 'all', count: total },
+      ...kinds
+    ].map((item) => `<button class="preview-kind-chip-v6195 ${active === item.kind ? 'active' : ''}" data-action="set-material-preview-kind" data-ws="${escapeAttr(ws.id)}" data-kind="${escapeAttr(item.kind)}">
+      <span>${escapeHtml(materialKindLabelV6195(item.kind))}</span><small>${item.count}</small>
+    </button>`).join('');
+    return `<div class="preview-filter-bar-v6195">
+      <div class="preview-filter-title-v6195"><i class="fa-solid fa-images"></i><span>Preview attachments</span></div>
+      <div class="preview-filter-chips-v6195">${chips}</div>
+    </div>`;
+  }
+
+  function renderPreviewMaterialSectionV6195(ws, node) {
+    const refs = materialRefsForPreviewV6195(ws, node);
+    if (!refs.length) return '';
+    const groups = typeof groupMaterialRefs === 'function' ? groupMaterialRefs(refs) : [{ kind: 'material', items: refs }];
+    const summary = typeof materialSummary === 'function' ? materialSummary(refs).join(' · ') : `${refs.length} refs`;
+    return `<section class="material-section full preview-material-section-v6195">
+      <div class="material-head">
+        <h4><i class="fa-solid fa-paperclip"></i>Preview material</h4>
+        <span class="material-count">${escapeHtml(summary || 'references')}</span>
+      </div>
+      <div class="material-groups">
+        ${groups.map((group) => `
+          <div class="material-group">
+            <div class="material-group-title">${escapeHtml(materialKindLabelV6195(group.kind))}</div>
+            <div class="material-items">
+              ${group.items.map((ref) => typeof renderMaterialItem === 'function' ? renderMaterialItem(ws, node, ref, false) : `<div class="material-item">${escapeHtml(ref.path || ref.href || ref.label || 'material')}</div>`).join('')}
+            </div>
+          </div>`).join('')}
+      </div>
+    </section>`;
+  }
+
+  const filteredDiscoveryNodesBeforePreviewV6195 = filteredDiscoveryNodes;
+  filteredDiscoveryNodes = function filteredDiscoveryNodesWithPreviewV6195(ws) {
+    const nodes = filteredDiscoveryNodesBeforePreviewV6195(ws);
+    if (!previewMaterialActiveV6195(ws)) return nodes;
+    if ((ws?.discoveryView || 'feed') !== 'feed') return nodes;
+    return nodes.filter((node) => nodeHasPreviewMaterialV6195(ws, node));
+  };
+
+  const renderNodePostBeforePreviewV6195 = renderNodePost;
+  renderNodePost = function renderNodePostWithPreviewMaterialV6195(ws, node, options = {}) {
+    let html = renderNodePostBeforePreviewV6195(ws, node, options);
+    if (!previewMaterialActiveV6195(ws) || options.lineage) return html;
+    if ((ws?.discoveryView || 'feed') !== 'feed') return html;
+    const material = renderPreviewMaterialSectionV6195(ws, node);
+    if (!material) return html;
+    html = html.replace('class="lineage-post ', 'class="lineage-post preview-post-v6195 ');
+    const insertAfterMain = html.indexOf('</div>');
+    if (insertAfterMain < 0) return html;
+    return html.slice(0, insertAfterMain + 6) + material + html.slice(insertAfterMain + 6);
+  };
+
+  const renderWorkspaceFeedBeforePreviewV6195 = renderWorkspaceFeed;
+  renderWorkspaceFeed = function renderWorkspaceFeedWithPreviewModeV6195(ws, selected) {
+    let html = renderWorkspaceFeedBeforePreviewV6195(ws, selected);
+    if (selected || (ws?.discoveryView || 'feed') !== 'feed') return html;
+
+    const toggle = renderPreviewToggleV6195(ws);
+    html = html.replace(/(<div class="discovery-tools[^"]*">)\s*/m, `$1\n            ${toggle}\n            `);
+
+    if (previewMaterialActiveV6195(ws)) {
+      html = html.replace('<div class="post-feed', `${renderPreviewFilterBarV6195(ws)}<div class="post-feed preview-feed-v6195`);
+      if (html.includes('<div class="empty-state">No nodes match this view.</div>')) {
+        const label = previewMaterialKindV6195(ws) === 'all' ? 'attachments' : materialKindLabelV6195(previewMaterialKindV6195(ws)).toLowerCase();
+        html = html.replace('<div class="empty-state">No nodes match this view.</div>', `<div class="empty-state">No cards with ${escapeHtml(label)} match this view.</div>`);
+      }
+    }
+
+    return html;
+  };
+
+  const onActionBeforePreviewV6195 = onActionV645;
+  onActionV645 = async function previewModeActionV6195(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+
+    if (action === 'toggle-material-preview') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      ws.discoveryView = 'feed';
+      ws.previewMaterialModeV6195 = !ws.previewMaterialModeV6195;
+      if (!ws.previewMaterialKindV6195) ws.previewMaterialKindV6195 = 'all';
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      render();
+      return;
+    }
+
+    if (action === 'set-material-preview-kind') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      ws.previewMaterialKindV6195 = event.currentTarget.dataset.kind || 'all';
+      ws.previewMaterialModeV6195 = true;
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      render();
+      return;
+    }
+
+    return onActionBeforePreviewV6195(event);
+  };
+
+  const routeStateBeforePreviewV6195 = routeState;
+  routeState = function routeStateWithPreviewModeV6195() {
+    const state = routeStateBeforePreviewV6195();
+    if (state && Array.isArray(state.sources)) {
+      state.sources.forEach((source, index) => {
+        const ws = app.workspaces[index];
+        if (!ws) return;
+        source.previewMaterialMode = Boolean(ws.previewMaterialModeV6195);
+        source.previewMaterialKind = ws.previewMaterialKindV6195 || 'all';
+      });
+    }
+    return state;
+  };
+
+  const viewRouteStateBeforePreviewV6195 = viewRouteStateV695;
+  viewRouteStateV695 = function viewRouteStateWithPreviewModeV6195() {
+    const state = viewRouteStateBeforePreviewV6195();
+    if (state && Array.isArray(state.workspaces)) {
+      state.workspaces.forEach((source, index) => {
+        const ws = app.workspaces[index];
+        if (!ws) return;
+        source.previewMaterialMode = Boolean(ws.previewMaterialModeV6195);
+        source.previewMaterialKind = ws.previewMaterialKindV6195 || 'all';
+      });
+    }
+    return state;
+  };
+
+  const applyViewStateBeforePreviewV6195 = applyViewStateToWorkspace;
+  applyViewStateToWorkspace = function applyViewStateWithPreviewModeV6195(ws, source) {
+    applyViewStateBeforePreviewV6195(ws, source);
+    if (!ws || !source) return;
+    ws.previewMaterialModeV6195 = Boolean(source.previewMaterialMode);
+    ws.previewMaterialKindV6195 = source.previewMaterialKind || 'all';
+  };
+
+  const applyViewRouteStateBeforePreviewV6195 = applyViewRouteStateV695;
+  applyViewRouteStateV695 = function applyViewRouteStateWithPreviewModeV6195(state) {
+    const ok = applyViewRouteStateBeforePreviewV6195(state);
+    if (ok && Array.isArray(state?.workspaces)) {
+      state.workspaces.forEach((source, index) => {
+        const ws = app.workspaces[index];
+        if (!ws || !source) return;
+        ws.previewMaterialModeV6195 = Boolean(source.previewMaterialMode);
+        ws.previewMaterialKindV6195 = source.previewMaterialKind || 'all';
+      });
+    }
+    return ok;
+  };
+
+
+
+
+  // ===== v6.196 multi-select preview filters + lineage preview =====
+  function previewMaterialKindSetV6196(ws) {
+    if (!ws) return new Set();
+    if (Array.isArray(ws.previewMaterialKindsV6196)) return new Set(ws.previewMaterialKindsV6196.filter(Boolean));
+    const single = ws.previewMaterialKindV6195 || 'all';
+    return single && single !== 'all' ? new Set(String(single).split(',').filter(Boolean)) : new Set();
+  }
+
+  function previewMaterialKindV6195(ws) {
+    const set = previewMaterialKindSetV6196(ws);
+    return set.size ? Array.from(set).join(',') : 'all';
+  }
+
+  function previewKindMatchesV6196(ws, ref) {
+    const set = previewMaterialKindSetV6196(ws);
+    return !set.size || set.has(materialKindKeyV6195(ref));
+  }
+
+  function materialRefsForPreviewV6195(ws, node) {
+    return nodeMaterialRefsV6195(ws, node).filter((ref) => previewKindMatchesV6196(ws, ref));
+  }
+
+  function previewFilterLabelV6196(ws) {
+    const set = previewMaterialKindSetV6196(ws);
+    if (!set.size) return 'attachments';
+    return Array.from(set).map((kind) => materialKindLabelV6195(kind).toLowerCase()).join(', ');
+  }
+
+  function renderPreviewFilterBarV6195(ws) {
+    if (!previewMaterialActiveV6195(ws)) return '';
+    const kinds = previewMaterialKindsForWorkspaceV6195(ws);
+    const total = kinds.reduce((sum, item) => sum + item.count, 0);
+    const active = previewMaterialKindSetV6196(ws);
+    const allActive = active.size === 0;
+    const chips = [
+      `<button class="preview-kind-chip-v6195 ${allActive ? 'active' : ''}" data-action="set-material-preview-kind" data-ws="${escapeAttr(ws.id)}" data-kind="all">
+        <span>All</span><small>${total}</small>
+      </button>`,
+      ...kinds.map((item) => `<button class="preview-kind-chip-v6195 ${active.has(item.kind) ? 'active' : ''}" data-action="toggle-material-preview-kind" data-ws="${escapeAttr(ws.id)}" data-kind="${escapeAttr(item.kind)}">
+        <span>${escapeHtml(materialKindLabelV6195(item.kind))}</span><small>${item.count}</small>
+      </button>`)
+    ].join('');
+    return `<div class="preview-filter-bar-v6195">
+      <div class="preview-filter-title-v6195"><i class="fa-solid fa-images"></i><span>Preview attachments</span></div>
+      <div class="preview-filter-chips-v6195">${chips}</div>
+    </div>`;
+  }
+
+  const renderNodePostBeforePreviewLineageV6196 = renderNodePost;
+  renderNodePost = function renderNodePostWithPreviewLineageV6196(ws, node, options = {}) {
+    let html = renderNodePostBeforePreviewLineageV6196(ws, node, options);
+    if (!previewMaterialActiveV6195(ws)) return html;
+    if ((ws?.discoveryView || 'feed') !== 'feed' && !options.lineage) return html;
+
+    const material = renderPreviewMaterialSectionV6195(ws, node);
+    if (!material) return html;
+
+    if (!html.includes('preview-post-v6195')) {
+      html = html.replace('class="lineage-post ', 'class="lineage-post preview-post-v6195 ');
+    }
+
+    const firstClose = html.indexOf('</div>');
+    if (firstClose < 0 || html.includes('preview-material-section-v6195')) return html;
+    return html.slice(0, firstClose + 6) + material + html.slice(firstClose + 6);
+  };
+
+  const renderWorkspaceFeedBeforePreviewLineageV6196 = renderWorkspaceFeed;
+  renderWorkspaceFeed = function renderWorkspaceFeedWithPreviewLineageV6196(ws, selected) {
+    let html = renderWorkspaceFeedBeforePreviewLineageV6196(ws, selected);
+    if (!ws) return html;
+
+    if (selected) {
+      const toggle = renderPreviewToggleV6195(ws);
+      html = html.replace(/(<div class="lineage-search-wrap">)\s*/m, `$1\n            ${toggle}\n            `);
+      if (previewMaterialActiveV6195(ws)) {
+        html = html.replace('<div class="post-feed lineage', `${renderPreviewFilterBarV6195(ws)}<div class="post-feed lineage preview-feed-v6196`);
+      }
+    }
+
+    return html;
+  };
+
+  const onActionBeforePreviewMultiV6196 = onActionV645;
+  onActionV645 = async function previewMultiActionV6196(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+
+    if (action === 'set-material-preview-kind') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      const kind = event.currentTarget.dataset.kind || 'all';
+      ws.previewMaterialModeV6195 = true;
+      ws.previewMaterialKindsV6196 = kind === 'all' ? [] : [kind];
+      ws.previewMaterialKindV6195 = kind;
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      render();
+      return;
+    }
+
+    if (action === 'toggle-material-preview-kind') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      const kind = event.currentTarget.dataset.kind || '';
+      const set = previewMaterialKindSetV6196(ws);
+      if (set.has(kind)) set.delete(kind);
+      else set.add(kind);
+      ws.previewMaterialModeV6195 = true;
+      ws.previewMaterialKindsV6196 = Array.from(set);
+      ws.previewMaterialKindV6195 = ws.previewMaterialKindsV6196.length ? ws.previewMaterialKindsV6196.join(',') : 'all';
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      render();
+      return;
+    }
+
+    return onActionBeforePreviewMultiV6196(event);
+  };
+
+  const routeStateBeforePreviewMultiV6196 = routeState;
+  routeState = function routeStateWithPreviewMultiV6196() {
+    const state = routeStateBeforePreviewMultiV6196();
+    const apply = (source, ws) => {
+      if (!ws || !source) return;
+      source.previewMaterialMode = Boolean(ws.previewMaterialModeV6195);
+      source.previewMaterialKind = previewMaterialKindV6195(ws);
+      source.previewMaterialKinds = Array.from(previewMaterialKindSetV6196(ws));
+    };
+    if (state && Array.isArray(state.sources)) state.sources.forEach((source, index) => apply(source, app.workspaces[index]));
+    return state;
+  };
+
+  const viewRouteStateBeforePreviewMultiV6196 = viewRouteStateV695;
+  viewRouteStateV695 = function viewRouteStateWithPreviewMultiV6196() {
+    const state = viewRouteStateBeforePreviewMultiV6196();
+    const apply = (source, ws) => {
+      if (!ws || !source) return;
+      source.previewMaterialMode = Boolean(ws.previewMaterialModeV6195);
+      source.previewMaterialKind = previewMaterialKindV6195(ws);
+      source.previewMaterialKinds = Array.from(previewMaterialKindSetV6196(ws));
+    };
+    if (state && Array.isArray(state.workspaces)) state.workspaces.forEach((source, index) => apply(source, app.workspaces[index]));
+    return state;
+  };
+
+  const applyViewStateBeforePreviewMultiV6196 = applyViewStateToWorkspace;
+  applyViewStateToWorkspace = function applyViewStateWithPreviewMultiV6196(ws, source) {
+    applyViewStateBeforePreviewMultiV6196(ws, source);
+    if (!ws || !source) return;
+    ws.previewMaterialModeV6195 = Boolean(source.previewMaterialMode);
+    if (Array.isArray(source.previewMaterialKinds)) {
+      ws.previewMaterialKindsV6196 = source.previewMaterialKinds;
+    } else {
+      const single = source.previewMaterialKind || 'all';
+      ws.previewMaterialKindsV6196 = single && single !== 'all' ? String(single).split(',').filter(Boolean) : [];
+    }
+    ws.previewMaterialKindV6195 = ws.previewMaterialKindsV6196.length ? ws.previewMaterialKindsV6196.join(',') : 'all';
+  };
+
+  const applyViewRouteStateBeforePreviewMultiV6196 = applyViewRouteStateV695;
+  applyViewRouteStateV695 = function applyViewRouteStateWithPreviewMultiV6196(state) {
+    const ok = applyViewRouteStateBeforePreviewMultiV6196(state);
+    if (ok && Array.isArray(state?.workspaces)) {
+      state.workspaces.forEach((source, index) => {
+        const ws = app.workspaces[index];
+        if (!ws || !source) return;
+        ws.previewMaterialModeV6195 = Boolean(source.previewMaterialMode);
+        if (Array.isArray(source.previewMaterialKinds)) {
+          ws.previewMaterialKindsV6196 = source.previewMaterialKinds;
+        } else {
+          const single = source.previewMaterialKind || 'all';
+          ws.previewMaterialKindsV6196 = single && single !== 'all' ? String(single).split(',').filter(Boolean) : [];
+        }
+        ws.previewMaterialKindV6195 = ws.previewMaterialKindsV6196.length ? ws.previewMaterialKindsV6196.join(',') : 'all';
+      });
+    }
+    return ok;
+  };
+
+
+
+
+  // ===== v6.197 compact Preview filter tray =====
+  function previewKindCountMapV6197(ws) {
+    const map = new Map();
+    for (const item of previewMaterialKindsForWorkspaceV6195(ws)) map.set(item.kind, item.count);
+    return map;
+  }
+
+  function renderPreviewSelectedChipsV6197(ws) {
+    const counts = previewKindCountMapV6197(ws);
+    const total = Array.from(counts.values()).reduce((sum, n) => sum + n, 0);
+    const active = previewMaterialKindSetV6196(ws);
+
+    if (!active.size) {
+      return `<button class="preview-selected-chip-v6197 active" data-action="set-material-preview-kind" data-ws="${escapeAttr(ws.id)}" data-kind="all" title="Showing all attachment types">
+        <span>All</span><small>${total}</small>
+      </button>`;
+    }
+
+    return Array.from(active).map((kind) => `<button class="preview-selected-chip-v6197 active removable" data-action="toggle-material-preview-kind" data-ws="${escapeAttr(ws.id)}" data-kind="${escapeAttr(kind)}" title="Remove ${escapeAttr(materialKindLabelV6195(kind))} filter">
+      <span>${escapeHtml(materialKindLabelV6195(kind))}</span><small>${counts.get(kind) || 0}</small><i class="fa-solid fa-xmark"></i>
+    </button>`).join('');
+  }
+
+  function renderPreviewAllTypeOptionsV6197(ws) {
+    const kinds = previewMaterialKindsForWorkspaceV6195(ws);
+    const total = kinds.reduce((sum, item) => sum + item.count, 0);
+    const active = previewMaterialKindSetV6196(ws);
+    const allActive = active.size === 0;
+    return [
+      `<button class="preview-kind-chip-v6195 ${allActive ? 'active' : ''}" data-action="set-material-preview-kind" data-ws="${escapeAttr(ws.id)}" data-kind="all">
+        <span>All</span><small>${total}</small>
+      </button>`,
+      ...kinds.map((item) => `<button class="preview-kind-chip-v6195 ${active.has(item.kind) ? 'active' : ''}" data-action="toggle-material-preview-kind" data-ws="${escapeAttr(ws.id)}" data-kind="${escapeAttr(item.kind)}">
+        <span>${escapeHtml(materialKindLabelV6195(item.kind))}</span><small>${item.count}</small>
+      </button>`)
+    ].join('');
+  }
+
+  function renderPreviewFilterBarV6195(ws) {
+    if (!previewMaterialActiveV6195(ws)) return '';
+    const open = Boolean(ws.previewFilterOpenV6197);
+    return `<div class="preview-filter-bar-v6195 preview-filter-bar-v6197 ${open ? 'open' : ''}">
+      <div class="preview-filter-compact-v6197">
+        <div class="preview-filter-title-v6195"><i class="fa-solid fa-images"></i><span>Preview</span></div>
+        <div class="preview-selected-chips-v6197">${renderPreviewSelectedChipsV6197(ws)}</div>
+        <button class="preview-filter-toggle-v6197" data-action="toggle-preview-filter-tray" data-ws="${escapeAttr(ws.id)}" title="${open ? 'Hide attachment type filters' : 'Show attachment type filters'}">
+          <i class="fa-solid fa-sliders"></i><span>Types</span>
+        </button>
+      </div>
+      ${open ? `<div class="preview-filter-tray-v6197">${renderPreviewAllTypeOptionsV6197(ws)}</div>` : ''}
+    </div>`;
+  }
+
+  const onActionBeforePreviewTrayV6197 = onActionV645;
+  onActionV645 = async function previewTrayActionV6197(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'toggle-preview-filter-tray') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      ws.previewFilterOpenV6197 = !ws.previewFilterOpenV6197;
+      render();
+      return;
+    }
+    return onActionBeforePreviewTrayV6197(event);
+  };
+
+  const routeStateBeforePreviewTrayV6197 = routeState;
+  routeState = function routeStateWithPreviewTrayV6197() {
+    const state = routeStateBeforePreviewTrayV6197();
+    if (state && Array.isArray(state.sources)) {
+      state.sources.forEach((source, index) => {
+        const ws = app.workspaces[index];
+        if (ws) source.previewFilterOpen = Boolean(ws.previewFilterOpenV6197);
+      });
+    }
+    return state;
+  };
+
+  const viewRouteStateBeforePreviewTrayV6197 = viewRouteStateV695;
+  viewRouteStateV695 = function viewRouteStateWithPreviewTrayV6197() {
+    const state = viewRouteStateBeforePreviewTrayV6197();
+    if (state && Array.isArray(state.workspaces)) {
+      state.workspaces.forEach((source, index) => {
+        const ws = app.workspaces[index];
+        if (ws) source.previewFilterOpen = Boolean(ws.previewFilterOpenV6197);
+      });
+    }
+    return state;
+  };
+
+  const applyViewStateBeforePreviewTrayV6197 = applyViewStateToWorkspace;
+  applyViewStateToWorkspace = function applyViewStateWithPreviewTrayV6197(ws, source) {
+    applyViewStateBeforePreviewTrayV6197(ws, source);
+    if (ws && source) ws.previewFilterOpenV6197 = Boolean(source.previewFilterOpen);
+  };
+
+  const applyViewRouteStateBeforePreviewTrayV6197 = applyViewRouteStateV695;
+  applyViewRouteStateV695 = function applyViewRouteStateWithPreviewTrayV6197(state) {
+    const ok = applyViewRouteStateBeforePreviewTrayV6197(state);
+    if (ok && Array.isArray(state?.workspaces)) {
+      state.workspaces.forEach((source, index) => {
+        const ws = app.workspaces[index];
+        if (ws && source) ws.previewFilterOpenV6197 = Boolean(source.previewFilterOpen);
+      });
+    }
+    return ok;
+  };
+
+
+
+
+  // ===== v6.199 mobile scroll chrome compression =====
+  function mobileChromeWorkspaceFromFeedV6199(el) {
+    const feed = el?.closest?.('.post-feed[data-ws]') || (el?.classList?.contains('post-feed') ? el : null);
+    return feed ? getWorkspace(feed.dataset.ws || '') : null;
+  }
+
+  function setWorkspaceChromeCompactV6199(ws, compact) {
+    if (!ws) return;
+    if (ws.mobileChromeCompactV6199 === compact) return;
+    ws.mobileChromeCompactV6199 = compact;
+    document.querySelectorAll(`.workspace[data-ws="${CSS.escape(ws.id)}"]`).forEach((el) => {
+      el.classList.toggle('mobile-chrome-compact-v6199', compact);
+    });
+  }
+
+  function syncMobileChromeCompactDomV6199() {
+    if (!window.matchMedia?.('(max-width: 640px)').matches) return;
+    for (const ws of app.workspaces || []) {
+      document.querySelectorAll(`.workspace[data-ws="${CSS.escape(ws.id)}"]`).forEach((el) => {
+        el.classList.toggle('mobile-chrome-compact-v6199', Boolean(ws.mobileChromeCompactV6199));
+      });
+    }
+  }
+
+  let lastScrollTopV6199 = new WeakMap();
+  function onMobileFeedScrollV6199(event) {
+    if (!window.matchMedia?.('(max-width: 640px)').matches) return;
+    const el = event.target;
+    if (!el?.classList?.contains('post-feed')) return;
+    const ws = mobileChromeWorkspaceFromFeedV6199(el);
+    if (!ws) return;
+    const top = Math.max(0, el.scrollTop || 0);
+    const prev = lastScrollTopV6199.get(el) || 0;
+    lastScrollTopV6199.set(el, top);
+    if (top < 24) return setWorkspaceChromeCompactV6199(ws, false);
+    if (top > prev + 4) return setWorkspaceChromeCompactV6199(ws, true);
+    if (top < prev - 8) return setWorkspaceChromeCompactV6199(ws, false);
+  }
+
+  document.addEventListener('scroll', onMobileFeedScrollV6199, true);
+
+  const renderBeforeMobileChromeV6199 = render;
+  render = function renderWithMobileChromeCompressionV6199() {
+    const result = renderBeforeMobileChromeV6199();
+    requestAnimationFrame(syncMobileChromeCompactDomV6199);
+    return result;
+  };
 
 
 window.addEventListener('popstate', () => {

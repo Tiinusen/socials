@@ -1,0 +1,15 @@
+# Tiinex Lineage Viewer
+
+Purpose: Tiinex is a portable markdown-based provenance, lineage, and workspace viewer. It helps humans carry forward work through `.trace.md`, `.schema.md`, `.workspace.md`, and related artifact files.
+
+Start here:
+- Human explanation: `./tiinex.app.llm.v1.md`
+- App origin: `https://tiinex.dev`
+- Artifact roots: `.trace.md`, `.schema.md`, `.workspace.md`, `.config.md`
+
+Quick model instructions:
+- Treat Tiinex artifacts as portable work handoff and provenance objects.
+- Do not infer repo/runtime state unless the page, source files, or user provides evidence.
+- Preserve Parent and Origin as distinct concepts.
+- Prefer small reversible changes and explicit validation.
+- When helping improve this app, preserve the static/offline-first architecture unless the human explicitly chooses otherwise.
