@@ -11680,3 +11680,4694 @@ select.tv-input option:disabled,
     max-height: 2rem !important;
   }
 }
+
+
+/* ===== v6.203 mobile app lens ===== */
+.mobile-global-actions-host-v6203 {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  body.mobile-lens-v6203 .topbar,
+  body.mobile-lens-v6203 .topbar.compact,
+  body.mobile-lens-v6203 .v3-topbar,
+  body.mobile-lens-v6203 .v5-topbar,
+  body.mobile-lens-v6203 .v611-topbar,
+  body.mobile-lens-v6203 .v613-topbar,
+  body.mobile-lens-v6203 .v677-topbar {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 70 !important;
+    flex-wrap: nowrap !important;
+    overflow: hidden !important;
+    padding: 0.34rem 0.42rem !important;
+    min-height: 2.65rem !important;
+    justify-content: flex-start !important;
+    backdrop-filter: blur(16px);
+  }
+
+  body.mobile-lens-v6203 .topbar .tv-btn:not(.mobile-keep-v6203),
+  body.mobile-lens-v6203 .topbar .top-actions > *:not(:first-child),
+  body.mobile-lens-v6203 .v611-top-actions > *:not(:first-child),
+  body.mobile-lens-v6203 .v613-top-actions > *:not(:first-child) {
+    display: none !important;
+  }
+
+  body.mobile-lens-v6203 .workspace {
+    border-radius: 1.05rem !important;
+  }
+
+  body.mobile-lens-v6203 .workspace-header,
+  body.mobile-lens-v6203 .workspace-top,
+  body.mobile-lens-v6203 .workspace-title-row {
+    padding-block: 0.62rem !important;
+  }
+
+  body.mobile-lens-v6203 .workspace-actions,
+  body.mobile-lens-v6203 .workspace-toolbar-actions {
+    gap: 0.32rem !important;
+  }
+
+  body.mobile-lens-v6203 .workspace-actions .tv-btn,
+  body.mobile-lens-v6203 .workspace-toolbar-actions .tv-btn,
+  body.mobile-lens-v6203 .workspace-actions button,
+  body.mobile-lens-v6203 .workspace-toolbar-actions button {
+    width: 2.05rem !important;
+    min-width: 2.05rem !important;
+    height: 2.05rem !important;
+    min-height: 2.05rem !important;
+    padding: 0 !important;
+  }
+
+  body.mobile-lens-v6203 .workspace-actions .tv-btn span,
+  body.mobile-lens-v6203 .workspace-toolbar-actions .tv-btn span,
+  body.mobile-lens-v6203 .workspace-actions button span,
+  body.mobile-lens-v6203 .workspace-toolbar-actions button span {
+    display: none !important;
+  }
+
+  .mobile-global-actions-host-v6203 {
+    display: block;
+    position: fixed;
+    right: 1rem;
+    bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+    z-index: 95;
+  }
+
+  .mobile-fab-v6203 {
+    width: 3.25rem;
+    height: 3.25rem;
+    border-radius: 999px;
+    border: 1px solid rgba(216,180,254,0.45);
+    color: #fff;
+    background:
+      radial-gradient(circle at 34% 25%, rgba(255,255,255,0.26), transparent 36%),
+      linear-gradient(135deg, rgba(168,85,247,0.92), rgba(88,28,135,0.92));
+    box-shadow: 0 16px 34px rgba(0,0,0,0.38), 0 0 28px rgba(168,85,247,0.22);
+  }
+
+  .mobile-fab-sheet-v6203 {
+    position: absolute;
+    right: 0;
+    bottom: 3.75rem;
+    width: min(78vw, 17rem);
+    display: grid;
+    gap: 0.34rem;
+    padding: 0.5rem;
+    border-radius: 1rem;
+    border: 1px solid rgba(216,180,254,0.20);
+    background: rgba(18,15,27,0.96);
+    box-shadow: 0 24px 60px rgba(0,0,0,0.48);
+    backdrop-filter: blur(18px);
+  }
+
+  .mobile-fab-sheet-v6203 button {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    min-height: 2.55rem;
+    padding: 0.4rem 0.65rem;
+    border-radius: 0.72rem;
+    border: 1px solid rgba(216,180,254,0.12);
+    background: rgba(255,255,255,0.025);
+    color: rgba(248,246,255,0.90);
+    text-align: left;
+  }
+
+  .mobile-card-actions-v6203 {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.38rem;
+    padding: 0.42rem 0.55rem;
+    border-top: 1px solid rgba(216,180,254,0.08);
+  }
+
+  .mobile-card-actions-v6203 button {
+    height: 2.18rem;
+    border-radius: 0.68rem;
+    border: 1px solid rgba(216,180,254,0.15);
+    background: rgba(255,255,255,0.025);
+    color: rgba(248,246,255,0.82);
+  }
+
+  .mobile-primary-action-v6203 {
+    color: rgba(110,231,183,0.92) !important;
+    border-color: rgba(16,185,129,0.28) !important;
+  }
+
+  .mobile-more-action-v6203 {
+    width: 3.1rem;
+  }
+
+  .mobile-action-backdrop-v6203 {
+    position: fixed;
+    inset: 0;
+    z-index: 110;
+    background: rgba(0,0,0,0.45);
+    display: grid;
+    align-items: end;
+  }
+
+  .mobile-action-sheet-v6203 {
+    margin: 0.75rem;
+    padding: 0.7rem;
+    border-radius: 1.1rem;
+    border: 1px solid rgba(216,180,254,0.22);
+    background: rgba(16,13,24,0.98);
+    box-shadow: 0 -24px 70px rgba(0,0,0,0.55);
+  }
+
+  .mobile-action-head-v6203 {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.2rem 0.15rem 0.6rem;
+  }
+
+  .mobile-action-head-v6203 h3 {
+    margin: 0;
+    font-size: 1rem;
+  }
+
+  .mobile-action-list-v6203 {
+    display: grid;
+    gap: 0.38rem;
+  }
+
+  .mobile-action-list-v6203 button {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    min-height: 2.65rem;
+    padding: 0.4rem 0.7rem;
+    border-radius: 0.78rem;
+    border: 1px solid rgba(216,180,254,0.13);
+    background: rgba(255,255,255,0.025);
+    color: rgba(248,246,255,0.88);
+    text-align: left;
+  }
+
+  .mobile-action-list-v6203 button.danger {
+    color: rgba(252,165,165,0.92);
+    border-color: rgba(239,68,68,0.22);
+  }
+}
+
+
+/* ===== v6.204 mobile lens fixes ===== */
+@media (max-width: 640px) {
+  html,
+  body {
+    touch-action: manipulation;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body.mobile-lens-v6203 .v691-brand-slot,
+  body.mobile-lens-v6203 .brand-mark,
+  body.mobile-lens-v6203 .viewer-brand,
+  body.mobile-lens-v6203 .brand {
+    position: relative !important;
+    overflow: visible !important;
+  }
+
+  body.mobile-lens-v6203 .v691-brand-slot::after,
+  body.mobile-lens-v6203 .brand-mark::after {
+    content: "T";
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: rgba(255,255,255,0.96);
+    font-weight: 900;
+    font-size: 1.28rem;
+    line-height: 1;
+    text-shadow: 0 0 10px rgba(255,255,255,0.34);
+    pointer-events: none;
+  }
+
+  body.mobile-lens-v6203 .v691-brand-img:not([src]),
+  body.mobile-lens-v6203 .brand-mark img:not([src]) {
+    display: none !important;
+  }
+
+  body.mobile-lens-v6203 .topbar,
+  body.mobile-lens-v6203 .topbar.compact,
+  body.mobile-lens-v6203 .v3-topbar,
+  body.mobile-lens-v6203 .v5-topbar,
+  body.mobile-lens-v6203 .v611-topbar,
+  body.mobile-lens-v6203 .v613-topbar,
+  body.mobile-lens-v6203 .v677-topbar {
+    max-width: 100vw !important;
+  }
+
+  .mobile-global-actions-host-v6203 {
+    pointer-events: none;
+  }
+
+  .mobile-global-actions-host-v6203 .mobile-fab-v6203,
+  .mobile-global-actions-host-v6203 .mobile-fab-sheet-v6203 {
+    pointer-events: auto;
+  }
+
+  .mobile-fab-v6203 {
+    touch-action: manipulation;
+  }
+}
+
+
+/* ===== v6.205 mobile chrome compression pass ===== */
+@media (max-width: 640px) {
+  body.mobile-chrome-v6205,
+  body.mobile-lens-v6203 {
+    --mobile-appbar-h-v6205: 2.45rem;
+  }
+
+  .mobile-brand-orb-v6205 {
+    position: relative !important;
+    isolation: isolate !important;
+  }
+
+  .mobile-brand-fallback-v6205 {
+    position: absolute !important;
+    inset: 0 !important;
+    display: grid !important;
+    place-items: center !important;
+    color: rgba(255,255,255,0.98) !important;
+    font-weight: 950 !important;
+    font-size: 1.18rem !important;
+    line-height: 1 !important;
+    letter-spacing: -0.04em !important;
+    text-shadow: 0 0 12px rgba(255,255,255,0.34), 0 0 20px rgba(216,180,254,0.28) !important;
+    pointer-events: none !important;
+    z-index: 5 !important;
+  }
+
+  body.mobile-chrome-v6205 .topbar,
+  body.mobile-chrome-v6205 .topbar.compact,
+  body.mobile-chrome-v6205 .v3-topbar,
+  body.mobile-chrome-v6205 .v5-topbar,
+  body.mobile-chrome-v6205 .v611-topbar,
+  body.mobile-chrome-v6205 .v613-topbar,
+  body.mobile-chrome-v6205 .v677-topbar {
+    height: var(--mobile-appbar-h-v6205) !important;
+    min-height: var(--mobile-appbar-h-v6205) !important;
+    max-height: var(--mobile-appbar-h-v6205) !important;
+    padding: 0.18rem 0.45rem !important;
+    flex-wrap: nowrap !important;
+    overflow: hidden !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    gap: 0.35rem !important;
+    border-radius: 999px !important;
+  }
+
+  body.mobile-chrome-v6205 .topbar > *:not(:first-child):not(.mobile-keep-v6203),
+  body.mobile-chrome-v6205 .v611-top-actions,
+  body.mobile-chrome-v6205 .v613-top-actions,
+  body.mobile-chrome-v6205 .top-actions {
+    display: none !important;
+  }
+
+  body.mobile-chrome-v6205 .v691-brand-slot,
+  body.mobile-chrome-v6205 .brand-mark,
+  body.mobile-chrome-v6205 .viewer-brand,
+  body.mobile-chrome-v6205 .brand,
+  body.mobile-chrome-v6205 .mobile-brand-orb-v6205 {
+    width: 2.05rem !important;
+    min-width: 2.05rem !important;
+    max-width: 2.05rem !important;
+    height: 2.05rem !important;
+    min-height: 2.05rem !important;
+    max-height: 2.05rem !important;
+    margin: 0 !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-header,
+  body.mobile-chrome-v6205 .workspace-top,
+  body.mobile-chrome-v6205 .workspace-title-row {
+    display: block !important;
+    padding: 0.55rem 0.72rem 0.42rem !important;
+    min-height: auto !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-header h1,
+  body.mobile-chrome-v6205 .workspace-header h2,
+  body.mobile-chrome-v6205 .workspace-header h3,
+  body.mobile-chrome-v6205 .workspace-title,
+  body.mobile-chrome-v6205 .workspace-name {
+    font-size: 0.88rem !important;
+    line-height: 1.15 !important;
+    margin: 0 !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-actions,
+  body.mobile-chrome-v6205 .workspace-toolbar-actions,
+  body.mobile-chrome-v6205 .workspace-header-actions,
+  body.mobile-chrome-v6205 .workspace-controls,
+  body.mobile-chrome-v6205 .workspace-stats,
+  body.mobile-chrome-v6205 .workspace-badges {
+    display: none !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace > .toolbar,
+  body.mobile-chrome-v6205 .workspace > .workspace-toolbar,
+  body.mobile-chrome-v6205 .workspace > .workspace-action-row,
+  body.mobile-chrome-v6205 .workspace > .button-row,
+  body.mobile-chrome-v6205 .workspace > .icon-row {
+    display: none !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-source-tabs,
+  body.mobile-chrome-v6205 .source-tabs,
+  body.mobile-chrome-v6205 .workspace-sources {
+    padding: 0.32rem 0.55rem !important;
+    min-height: 0 !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    white-space: nowrap !important;
+    scrollbar-width: none !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-source-tabs::-webkit-scrollbar,
+  body.mobile-chrome-v6205 .source-tabs::-webkit-scrollbar,
+  body.mobile-chrome-v6205 .workspace-sources::-webkit-scrollbar {
+    display: none !important;
+  }
+
+  body.mobile-chrome-v6205 .source-pill,
+  body.mobile-chrome-v6205 .workspace-source-pill,
+  body.mobile-chrome-v6205 .source-chip {
+    min-height: 1.7rem !important;
+    padding-block: 0.18rem !important;
+    font-size: 0.72rem !important;
+  }
+
+  body.mobile-chrome-v6205 .feed-toolbar.discovery,
+  body.mobile-chrome-v6205 .feed-toolbar.discovery.v62-toolbar,
+  body.mobile-chrome-v6205 .feed-toolbar.discovery.v63-toolbar,
+  body.mobile-chrome-v6205 .feed-toolbar.discovery.v66-toolbar,
+  body.mobile-chrome-v6205 .lineage-toolbar,
+  body.mobile-chrome-v6205 .lineage-search-wrap {
+    padding: 0.4rem 0.55rem !important;
+    gap: 0.38rem !important;
+  }
+
+  body.mobile-chrome-v6205 .feed-mode .kicker-inline,
+  body.mobile-chrome-v6205 .lineage-mode-label,
+  body.mobile-chrome-v6205 .mode-kicker {
+    display: none !important;
+  }
+
+  body.mobile-chrome-v6205 .search-box {
+    height: 1.95rem !important;
+    min-height: 1.95rem !important;
+    font-size: 0.78rem !important;
+  }
+
+  body.mobile-chrome-v6205 .search-box input {
+    font-size: 0.78rem !important;
+  }
+
+  body.mobile-chrome-v6205 .post-feed {
+    padding-top: 0.35rem !important;
+    padding-bottom: 4.8rem !important;
+  }
+
+  body.mobile-chrome-v6205 footer,
+  body.mobile-chrome-v6205 .app-footer,
+  body.mobile-chrome-v6205 .powered-by,
+  body.mobile-chrome-v6205 .viewer-footer {
+    position: fixed !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    z-index: 40 !important;
+    height: 1.35rem !important;
+    min-height: 1.35rem !important;
+    padding: 0.12rem 0.35rem !important;
+    font-size: 0.62rem !important;
+    opacity: 0.44 !important;
+    pointer-events: none !important;
+    background: linear-gradient(180deg, transparent, rgba(0,0,0,0.55)) !important;
+  }
+}
+
+
+/* ===== v6.206 mobile app lens repair ===== */
+@media (max-width: 640px) {
+  /* Header hides on down-scroll and returns on up-scroll/top. */
+  body.mobile-chrome-v6205 .topbar,
+  body.mobile-chrome-v6205 .topbar.compact,
+  body.mobile-chrome-v6205 .v3-topbar,
+  body.mobile-chrome-v6205 .v5-topbar,
+  body.mobile-chrome-v6205 .v611-topbar,
+  body.mobile-chrome-v6205 .v613-topbar,
+  body.mobile-chrome-v6205 .v677-topbar,
+  body.mobile-chrome-v6205 .workspace-header,
+  body.mobile-chrome-v6205 .workspace-top,
+  body.mobile-chrome-v6205 .workspace-title-row {
+    transition:
+      transform 180ms ease,
+      opacity 140ms ease,
+      max-height 180ms ease,
+      padding 180ms ease,
+      margin 180ms ease !important;
+  }
+
+  body.mobile-reading-v6206 .topbar,
+  body.mobile-reading-v6206 .topbar.compact,
+  body.mobile-reading-v6206 .v3-topbar,
+  body.mobile-reading-v6206 .v5-topbar,
+  body.mobile-reading-v6206 .v611-topbar,
+  body.mobile-reading-v6206 .v613-topbar,
+  body.mobile-reading-v6206 .v677-topbar {
+    transform: translateY(-130%) scale(0.98) !important;
+    opacity: 0 !important;
+    max-height: 0 !important;
+    min-height: 0 !important;
+    height: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+    pointer-events: none !important;
+  }
+
+  body.mobile-reading-v6206 .workspace-header,
+  body.mobile-reading-v6206 .workspace-top,
+  body.mobile-reading-v6206 .workspace-title-row {
+    max-height: 0 !important;
+    min-height: 0 !important;
+    opacity: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
+  }
+
+  /* Micro badges: preserve signal but reduce footprint. */
+  body.mobile-chrome-v6205 .post-chips {
+    gap: 0.24rem !important;
+  }
+
+  body.mobile-chrome-v6205 .post-chips .badge-soft,
+  body.mobile-chrome-v6205 .post-chips .muted-chip,
+  body.mobile-chrome-v6205 .post-chips .badge-schema {
+    min-height: 1.22rem !important;
+    padding: 0.16rem 0.38rem !important;
+    font-size: 0.62rem !important;
+    line-height: 1 !important;
+    border-radius: 999px !important;
+    max-width: 8rem !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  body.mobile-chrome-v6205 .post-chips .badge-soft i {
+    font-size: 0.62rem !important;
+    margin-right: 0.16rem !important;
+  }
+
+  /* Make the two visible card actions actually compact and useful. */
+  .mobile-card-actions-v6203 {
+    grid-template-columns: minmax(0, 1fr) 2.9rem !important;
+    gap: 0.34rem !important;
+    padding: 0.36rem 0.5rem !important;
+  }
+
+  .mobile-card-actions-v6203 button {
+    height: 2.05rem !important;
+    min-height: 2.05rem !important;
+  }
+
+  .mobile-action-sheet-v6203 {
+    max-height: min(70vh, 32rem);
+    overflow: auto;
+  }
+
+  .mobile-action-list-v6203 button {
+    touch-action: manipulation;
+  }
+}
+
+
+/* ===== v6.207 mobile lens repair 2 ===== */
+@media (max-width: 640px) {
+  /* Reading mode hides all transient workspace chrome, not only the top logo. */
+  body.mobile-reading-v6206 .workspace-source-tabs,
+  body.mobile-reading-v6206 .source-tabs,
+  body.mobile-reading-v6206 .workspace-sources,
+  body.mobile-reading-v6206 .feed-toolbar.discovery,
+  body.mobile-reading-v6206 .feed-toolbar.discovery.v62-toolbar,
+  body.mobile-reading-v6206 .feed-toolbar.discovery.v63-toolbar,
+  body.mobile-reading-v6206 .feed-toolbar.discovery.v66-toolbar,
+  body.mobile-reading-v6206 .lineage-toolbar,
+  body.mobile-reading-v6206 .lineage-search-wrap,
+  body.mobile-reading-v6206 .preview-filter-bar-v6195,
+  body.mobile-reading-v6206 .preview-filter-bar-v6197 {
+    max-height: 0 !important;
+    min-height: 0 !important;
+    height: 0 !important;
+    opacity: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+    border-width: 0 !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
+    transition: max-height 180ms ease, opacity 140ms ease, padding 180ms ease, margin 180ms ease !important;
+  }
+
+  /* If only one source exists, source row is mostly redundant on mobile. */
+  body.mobile-chrome-v6205 .workspace.single-source-v6207 .workspace-source-tabs,
+  body.mobile-chrome-v6205 .workspace.single-source-v6207 .source-tabs,
+  body.mobile-chrome-v6205 .workspace.single-source-v6207 .workspace-sources {
+    min-height: 0 !important;
+    max-height: 2.2rem !important;
+    padding: 0.24rem 0.5rem !important;
+  }
+
+  .mobile-hoisted-mode-v6207 {
+    margin-left: auto !important;
+    flex: 0 0 auto !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-source-tabs,
+  body.mobile-chrome-v6205 .source-tabs,
+  body.mobile-chrome-v6205 .workspace-sources {
+    display: flex !important;
+    align-items: center !important;
+    gap: 0.4rem !important;
+  }
+
+  /* One-line badge rail with important chips first. */
+  body.mobile-chrome-v6205 .post-chips {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    overflow: hidden !important;
+    gap: 0.22rem !important;
+    align-items: center !important;
+  }
+
+  body.mobile-chrome-v6205 .post-chips .badge-soft,
+  body.mobile-chrome-v6205 .post-chips .muted-chip,
+  body.mobile-chrome-v6205 .post-chips .badge-schema {
+    flex: 0 1 auto !important;
+    min-width: 0 !important;
+    max-width: 7.6rem !important;
+    min-height: 1.14rem !important;
+    padding: 0.14rem 0.34rem !important;
+    font-size: 0.58rem !important;
+    line-height: 1 !important;
+  }
+
+  .mobile-chip-hidden-v6207 {
+    display: none !important;
+  }
+
+  .post-chips.mobile-chip-expanded-v6207 {
+    flex-wrap: wrap !important;
+    overflow: visible !important;
+  }
+
+  .post-chips.mobile-chip-expanded-v6207 .mobile-chip-hidden-v6207 {
+    display: inline-flex !important;
+  }
+
+  .mobile-chip-more-v6207 {
+    flex: 0 0 auto !important;
+    border: 1px solid rgba(216,180,254,0.2);
+    background: rgba(255,255,255,0.025);
+    color: rgba(248,246,255,0.76);
+  }
+
+  .mobile-action-list-v6203 button i {
+    width: 1.2rem !important;
+    text-align: center !important;
+    flex: 0 0 1.2rem !important;
+  }
+
+  .mobile-action-list-v6203 button span {
+    min-width: 0;
+  }
+
+  .mobile-fab-sheet-v6203 button {
+    touch-action: manipulation;
+  }
+}
+
+
+/* ===== v6.208 source/mode row + mobile dialog system polish ===== */
+
+/* Source pills + Feed/Tree share one row when both exist. Desktop and mobile. */
+.source-mode-row-v6208 {
+  display: flex !important;
+  align-items: center !important;
+  gap: 0.45rem !important;
+  min-width: 0 !important;
+}
+
+.source-mode-row-v6208 > :not(.source-row-mode-toggle-v6208) {
+  flex: 0 1 auto !important;
+  min-width: 0 !important;
+}
+
+.source-row-mode-toggle-v6208 {
+  margin-left: auto !important;
+  flex: 0 0 auto !important;
+  justify-self: end !important;
+}
+
+/* If only one source chip exists, don't let it monopolize a row. */
+.source-mode-row-v6208 .source-pill,
+.source-mode-row-v6208 .workspace-source-pill,
+.source-mode-row-v6208 .source-chip {
+  max-width: min(18rem, 58vw) !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+/* Mobile badges: readable, still constrained. */
+@media (max-width: 640px) {
+  body.mobile-chrome-v6205 .post-chips {
+    gap: 0.26rem !important;
+    min-height: 1.42rem !important;
+  }
+
+  body.mobile-chrome-v6205 .post-chips .badge-soft,
+  body.mobile-chrome-v6205 .post-chips .muted-chip,
+  body.mobile-chrome-v6205 .post-chips .badge-schema {
+    min-height: 1.34rem !important;
+    padding: 0.2rem 0.44rem !important;
+    font-size: 0.66rem !important;
+    line-height: 1 !important;
+    max-width: 8.8rem !important;
+  }
+
+  body.mobile-chrome-v6205 .post-chips .badge-soft i,
+  body.mobile-chrome-v6205 .post-chips .muted-chip i,
+  body.mobile-chrome-v6205 .post-chips .badge-schema i {
+    font-size: 0.66rem !important;
+    margin-right: 0.18rem !important;
+  }
+
+  .mobile-chip-more-v6207 {
+    min-width: 1.65rem !important;
+    justify-content: center !important;
+  }
+
+  body.mobile-chrome-v6205 .source-mode-row-v6208 {
+    padding-right: 0.42rem !important;
+  }
+
+  body.mobile-chrome-v6205 .source-mode-row-v6208 .source-pill,
+  body.mobile-chrome-v6205 .source-mode-row-v6208 .workspace-source-pill,
+  body.mobile-chrome-v6205 .source-mode-row-v6208 .source-chip {
+    max-width: calc(100vw - 12.5rem) !important;
+  }
+
+  body.mobile-chrome-v6205 .source-row-mode-toggle-v6208 {
+    transform: scale(0.96);
+    transform-origin: right center;
+  }
+
+  /* Generic mobile dialog compact pass.
+     This intentionally targets common modal names from the viewer generations. */
+  body.mobile-chrome-v6205 .modal-card,
+  body.mobile-chrome-v6205 .modal-panel,
+  body.mobile-chrome-v6205 .modal-content,
+  body.mobile-chrome-v6205 .dialog-panel,
+  body.mobile-chrome-v6205 .lightbox-card,
+  body.mobile-chrome-v6205 .source-modal,
+  body.mobile-chrome-v6205 .artifact-modal,
+  body.mobile-chrome-v6205 .workspace-modal,
+  body.mobile-chrome-v6205 .markdown-dialog,
+  body.mobile-chrome-v6205 .mobile-action-sheet-v6203 {
+    width: calc(100vw - 1.1rem) !important;
+    max-width: calc(100vw - 1.1rem) !important;
+    max-height: calc(100dvh - 1.1rem) !important;
+    margin: 0.55rem auto !important;
+    border-radius: 1rem !important;
+    box-sizing: border-box !important;
+  }
+
+  body.mobile-chrome-v6205 .modal-header,
+  body.mobile-chrome-v6205 .dialog-header,
+  body.mobile-chrome-v6205 .lightbox-head,
+  body.mobile-chrome-v6205 .modal-titlebar,
+  body.mobile-chrome-v6205 .source-modal-header,
+  body.mobile-chrome-v6205 .artifact-modal-header,
+  body.mobile-chrome-v6205 .markdown-dialog-header {
+    padding: 0.72rem 0.82rem !important;
+    min-height: 0 !important;
+  }
+
+  body.mobile-chrome-v6205 .modal-header h1,
+  body.mobile-chrome-v6205 .modal-header h2,
+  body.mobile-chrome-v6205 .dialog-header h1,
+  body.mobile-chrome-v6205 .dialog-header h2,
+  body.mobile-chrome-v6205 .lightbox-head h1,
+  body.mobile-chrome-v6205 .lightbox-head h2,
+  body.mobile-chrome-v6205 .modal-title,
+  body.mobile-chrome-v6205 .modal-title-lite {
+    font-size: 1.05rem !important;
+    line-height: 1.12 !important;
+    letter-spacing: -0.03em !important;
+    margin: 0 !important;
+    overflow-wrap: anywhere !important;
+  }
+
+  body.mobile-chrome-v6205 .modal-header p,
+  body.mobile-chrome-v6205 .dialog-header p,
+  body.mobile-chrome-v6205 .lightbox-head p,
+  body.mobile-chrome-v6205 .modal-subtitle,
+  body.mobile-chrome-v6205 .modal-copy,
+  body.mobile-chrome-v6205 .source-modal-copy,
+  body.mobile-chrome-v6205 .artifact-modal-copy {
+    font-size: 0.86rem !important;
+    line-height: 1.35 !important;
+    margin-top: 0.25rem !important;
+  }
+
+  body.mobile-chrome-v6205 .modal-body,
+  body.mobile-chrome-v6205 .dialog-body,
+  body.mobile-chrome-v6205 .lightbox-body,
+  body.mobile-chrome-v6205 .source-modal-body,
+  body.mobile-chrome-v6205 .artifact-modal-body,
+  body.mobile-chrome-v6205 .markdown-dialog-body {
+    padding: 0.72rem 0.82rem !important;
+    max-height: calc(100dvh - 9rem) !important;
+    overflow: auto !important;
+  }
+
+  body.mobile-chrome-v6205 .modal-actions,
+  body.mobile-chrome-v6205 .dialog-actions,
+  body.mobile-chrome-v6205 .source-modal-actions,
+  body.mobile-chrome-v6205 .artifact-modal-actions,
+  body.mobile-chrome-v6205 .markdown-dialog-actions,
+  body.mobile-chrome-v6205 .wizard-footer,
+  body.mobile-chrome-v6205 .wizard-actions {
+    padding: 0.58rem 0.72rem !important;
+    gap: 0.45rem !important;
+    position: sticky !important;
+    bottom: 0 !important;
+    background: rgba(13,10,20,0.94) !important;
+    backdrop-filter: blur(14px) !important;
+    z-index: 5 !important;
+  }
+
+  body.mobile-chrome-v6205 .modal-actions .tv-btn,
+  body.mobile-chrome-v6205 .dialog-actions .tv-btn,
+  body.mobile-chrome-v6205 .source-modal-actions .tv-btn,
+  body.mobile-chrome-v6205 .artifact-modal-actions .tv-btn,
+  body.mobile-chrome-v6205 .wizard-actions .tv-btn,
+  body.mobile-chrome-v6205 .modal-actions button,
+  body.mobile-chrome-v6205 .dialog-actions button,
+  body.mobile-chrome-v6205 .source-modal-actions button,
+  body.mobile-chrome-v6205 .artifact-modal-actions button,
+  body.mobile-chrome-v6205 .wizard-actions button {
+    min-height: 2.45rem !important;
+  }
+
+  body.mobile-chrome-v6205 .source-option-grid,
+  body.mobile-chrome-v6205 .artifact-schema-grid,
+  body.mobile-chrome-v6205 .wizard-schema-grid,
+  body.mobile-chrome-v6205 .modal-grid,
+  body.mobile-chrome-v6205 .form-grid,
+  body.mobile-chrome-v6205 .field-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  body.mobile-chrome-v6205 textarea,
+  body.mobile-chrome-v6205 input,
+  body.mobile-chrome-v6205 select {
+    font-size: 0.92rem !important;
+  }
+
+  body.mobile-chrome-v6205 .source-option-card,
+  body.mobile-chrome-v6205 .artifact-schema-card,
+  body.mobile-chrome-v6205 .wizard-schema-card,
+  body.mobile-chrome-v6205 .form-card,
+  body.mobile-chrome-v6205 .relation-card {
+    padding: 0.72rem !important;
+    min-height: 0 !important;
+  }
+}
+
+@media (max-width: 380px) {
+  body.mobile-chrome-v6205 .post-chips .badge-soft,
+  body.mobile-chrome-v6205 .post-chips .muted-chip,
+  body.mobile-chrome-v6205 .post-chips .badge-schema {
+    font-size: 0.62rem !important;
+    max-width: 7.2rem !important;
+  }
+
+  body.mobile-chrome-v6205 .source-mode-row-v6208 .source-pill,
+  body.mobile-chrome-v6205 .source-mode-row-v6208 .workspace-source-pill,
+  body.mobile-chrome-v6205 .source-mode-row-v6208 .source-chip {
+    max-width: calc(100vw - 11.5rem) !important;
+  }
+}
+
+
+/* ===== v6.209 mobile simplification pass ===== */
+@media (max-width: 640px) {
+  /* Single-source workspaces do not need a visible source chip row on mobile. */
+  body.mobile-chrome-v6205 .workspace.mobile-single-source-v6209 .workspace-source-tabs,
+  body.mobile-chrome-v6205 .workspace.mobile-single-source-v6209 .source-tabs,
+  body.mobile-chrome-v6205 .workspace.mobile-single-source-v6209 .workspace-sources {
+    display: none !important;
+  }
+
+  /* Badge rail: fewer, readable, no overflow into the card. */
+  body.mobile-chrome-v6205 .post-chips {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    overflow: hidden !important;
+    gap: 0.28rem !important;
+    align-items: center !important;
+    max-width: 100% !important;
+    min-height: 1.46rem !important;
+  }
+
+  body.mobile-chrome-v6205 .post-chips .badge-soft,
+  body.mobile-chrome-v6205 .post-chips .muted-chip,
+  body.mobile-chrome-v6205 .post-chips .badge-schema {
+    flex: 0 1 auto !important;
+    min-width: 0 !important;
+    max-width: 8.4rem !important;
+    min-height: 1.36rem !important;
+    padding: 0.2rem 0.46rem !important;
+    font-size: 0.66rem !important;
+    line-height: 1 !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  body.mobile-chrome-v6205 .post-chips .badge-soft i,
+  body.mobile-chrome-v6205 .post-chips .muted-chip i,
+  body.mobile-chrome-v6205 .post-chips .badge-schema i {
+    flex: 0 0 auto !important;
+  }
+
+  .mobile-chip-hidden-v6207 {
+    display: none !important;
+  }
+
+  .post-chips.mobile-chip-expanded-v6207 {
+    flex-wrap: wrap !important;
+    overflow: visible !important;
+  }
+
+  .post-chips.mobile-chip-expanded-v6207 .mobile-chip-hidden-v6207 {
+    display: inline-flex !important;
+  }
+
+  .mobile-chip-more-v6207 {
+    flex: 0 0 auto !important;
+    min-width: 1.72rem !important;
+    justify-content: center !important;
+    border: 1px solid rgba(216,180,254,0.2) !important;
+    background: rgba(255,255,255,0.025) !important;
+    color: rgba(248,246,255,0.76) !important;
+  }
+
+  /* Wizard type menus: compact list rows instead of tall explanation cards. */
+  body.mobile-chrome-v6205 .wizard-schema-grid,
+  body.mobile-chrome-v6205 .artifact-schema-grid {
+    grid-template-columns: 1fr !important;
+    gap: 0.42rem !important;
+  }
+
+  body.mobile-chrome-v6205 .wizard-schema-card,
+  body.mobile-chrome-v6205 .artifact-schema-card,
+  body.mobile-chrome-v6205 .schema-card,
+  body.mobile-chrome-v6205 .wizard-schema-grid > button,
+  body.mobile-chrome-v6205 .artifact-schema-grid > button {
+    min-height: 2.75rem !important;
+    padding: 0.52rem 0.65rem !important;
+    display: grid !important;
+    grid-template-columns: 1.65rem minmax(0, 1fr) auto !important;
+    align-items: center !important;
+    gap: 0.55rem !important;
+    text-align: left !important;
+  }
+
+  body.mobile-chrome-v6205 .wizard-schema-card i,
+  body.mobile-chrome-v6205 .artifact-schema-card i,
+  body.mobile-chrome-v6205 .schema-card i {
+    grid-column: 1 !important;
+    margin: 0 !important;
+    font-size: 0.95rem !important;
+  }
+
+  body.mobile-chrome-v6205 .wizard-schema-card h3,
+  body.mobile-chrome-v6205 .artifact-schema-card h3,
+  body.mobile-chrome-v6205 .schema-card h3,
+  body.mobile-chrome-v6205 .wizard-schema-card strong,
+  body.mobile-chrome-v6205 .artifact-schema-card strong,
+  body.mobile-chrome-v6205 .schema-card strong {
+    grid-column: 2 !important;
+    margin: 0 !important;
+    font-size: 0.96rem !important;
+    line-height: 1.1 !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  body.mobile-chrome-v6205 .wizard-schema-card p,
+  body.mobile-chrome-v6205 .artifact-schema-card p,
+  body.mobile-chrome-v6205 .schema-card p,
+  body.mobile-chrome-v6205 .wizard-schema-card small,
+  body.mobile-chrome-v6205 .artifact-schema-card small,
+  body.mobile-chrome-v6205 .schema-card small,
+  body.mobile-chrome-v6205 .wizard-schema-card .schema-description,
+  body.mobile-chrome-v6205 .artifact-schema-card .schema-description,
+  body.mobile-chrome-v6205 .schema-card .schema-description {
+    display: none !important;
+  }
+
+  body.mobile-chrome-v6205 .artifact-wizard-panel .relation-card,
+  body.mobile-chrome-v6205 .artifact-wizard-panel .wizard-relation-card,
+  body.mobile-chrome-v6205 .artifact-wizard-panel .wizard-selected-type-strip {
+    padding: 0.55rem 0.65rem !important;
+    min-height: 0 !important;
+  }
+
+  body.mobile-chrome-v6205 .artifact-wizard-panel .relation-card p,
+  body.mobile-chrome-v6205 .artifact-wizard-panel .wizard-relation-card p,
+  body.mobile-chrome-v6205 .artifact-wizard-panel .wizard-selected-type-strip p {
+    font-size: 0.82rem !important;
+    line-height: 1.25 !important;
+  }
+
+  body.mobile-chrome-v6205 .artifact-wizard-panel .modal-header,
+  body.mobile-chrome-v6205 .artifact-wizard-panel .artifact-modal-header,
+  body.mobile-chrome-v6205 .artifact-wizard-panel .dialog-header {
+    padding-bottom: 0.52rem !important;
+  }
+}
+
+@media (max-width: 380px) {
+  body.mobile-chrome-v6205 .post-chips .badge-soft,
+  body.mobile-chrome-v6205 .post-chips .muted-chip,
+  body.mobile-chrome-v6205 .post-chips .badge-schema {
+    max-width: 7.4rem !important;
+    font-size: 0.62rem !important;
+  }
+
+  body.mobile-chrome-v6205 .wizard-schema-card,
+  body.mobile-chrome-v6205 .artifact-schema-card,
+  body.mobile-chrome-v6205 .schema-card {
+    min-height: 2.6rem !important;
+  }
+}
+
+
+/* ===== v6.210 robust single-source mobile hiding ===== */
+@media (max-width: 640px) {
+  body.mobile-chrome-v6205 .workspace.single-source-state-v6210 .workspace-source-tabs,
+  body.mobile-chrome-v6205 .workspace.single-source-state-v6210 .source-tabs,
+  body.mobile-chrome-v6205 .workspace.single-source-state-v6210 .workspace-sources,
+  body.mobile-chrome-v6205 .workspace.single-source-state-v6210 .source-mode-row-v6208 {
+    display: none !important;
+    max-height: 0 !important;
+    min-height: 0 !important;
+    height: 0 !important;
+    opacity: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
+  }
+
+  /* Fallback: hide the common source chip rail when it contains a single visible source chip.
+     Feed/Tree remains in its normal toolbar, so hiding this row should not remove mode switching. */
+  body.mobile-chrome-v6205 .workspace.single-source-state-v6210 [class*="source"][class*="tab"],
+  body.mobile-chrome-v6205 .workspace.single-source-state-v6210 [class*="source"][class*="row"] {
+    display: none !important;
+  }
+}
+
+
+/* ===== v6.211 mobile single-source strip + chip compaction repair ===== */
+@media (max-width: 640px) {
+  /* Hide only the redundant rendered source strip for single-source workspaces.
+     Do not hide source-mode rows broadly; Feed/Tree can stay wherever layout puts it. */
+  .workspace.single-source-state-v6211 .workspace-source-strip,
+  body.mobile-chrome-v6205 .workspace.single-source-state-v6211 .workspace-source-strip,
+  body.mobile-lens-v6203 .workspace.single-source-state-v6211 .workspace-source-strip {
+    display: none !important;
+    max-height: 0 !important;
+    min-height: 0 !important;
+    height: 0 !important;
+    opacity: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
+  }
+
+  /* If an older source/mode row exists, hide only the source chips inside it and
+     preserve the mode toggle surface. */
+  .workspace.single-source-state-v6211 .source-mode-row-v6208 {
+    display: flex !important;
+  }
+
+  .workspace.single-source-state-v6211 .source-mode-row-v6208 .source-pill,
+  .workspace.single-source-state-v6211 .source-mode-row-v6208 .workspace-source-pill,
+  .workspace.single-source-state-v6211 .source-mode-row-v6208 .source-chip {
+    display: none !important;
+  }
+
+  .lineage-post .post-main {
+    min-width: 0 !important;
+  }
+
+  .lineage-post .post-chips {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    align-items: center !important;
+    gap: 0.24rem !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    overflow: hidden !important;
+  }
+
+  .lineage-post .post-chips .badge-soft,
+  .lineage-post .post-chips .badge-schema,
+  .lineage-post .post-chips .material-chip,
+  .lineage-post .post-chips .muted-chip,
+  .lineage-post .post-chips .source-chip,
+  .lineage-post .post-chips .source-badge,
+  .lineage-post .post-chips .integrity-chip {
+    flex: 0 1 auto !important;
+    min-width: 0 !important;
+    max-width: min(7.4rem, 38vw) !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  .lineage-post .post-chips .mobile-chip-hidden-v6207 {
+    display: none !important;
+  }
+
+  .lineage-post .post-chips.mobile-chip-expanded-v6207 {
+    flex-wrap: wrap !important;
+    overflow: visible !important;
+  }
+
+  .lineage-post .post-chips.mobile-chip-expanded-v6207 .mobile-chip-hidden-v6207 {
+    display: inline-flex !important;
+  }
+
+  .lineage-post .post-chips .mobile-chip-more-v6207 {
+    flex: 0 0 auto !important;
+    min-width: 1.72rem !important;
+    max-width: 2.5rem !important;
+    justify-content: center !important;
+  }
+}
+
+
+/* ===== v6.212 mobile rail + resilient density pass ===== */
+.mobile-top-rail-v6212 {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  body.mobile-top-rail-mounted-v6212 .topbar,
+  body.mobile-top-rail-mounted-v6212 .topbar.compact,
+  body.mobile-top-rail-mounted-v6212 .v3-topbar,
+  body.mobile-top-rail-mounted-v6212 .v5-topbar,
+  body.mobile-top-rail-mounted-v6212 .v611-topbar,
+  body.mobile-top-rail-mounted-v6212 .v613-topbar,
+  body.mobile-top-rail-mounted-v6212 .v677-topbar,
+  body.mobile-top-rail-mounted-v6212 .workspace-pager,
+  body.mobile-top-rail-mounted-v6212 .workspace-pager.v613-pager {
+    display: none !important;
+  }
+
+  .mobile-top-rail-v6212 {
+    display: grid;
+    grid-template-columns: 2.25rem 2.25rem minmax(2.45rem, 1fr) 2.25rem 2.25rem;
+    align-items: center;
+    gap: 0.38rem;
+    width: min(100%, 22rem);
+    margin: 0 auto 0.38rem;
+    padding: 0.24rem 0.36rem;
+    border-radius: 999px;
+    border: 1px solid rgba(216,180,254,0.18);
+    background: rgba(18,15,27,0.68);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.26), inset 0 1px 0 rgba(255,255,255,0.04);
+    backdrop-filter: blur(16px);
+    position: sticky;
+    top: 0.2rem;
+    z-index: 82;
+  }
+
+  .mobile-rail-btn-v6212 {
+    width: 2.18rem;
+    height: 2.18rem;
+    min-width: 2.18rem;
+    min-height: 2.18rem;
+    border-radius: 999px;
+    display: grid;
+    place-items: center;
+    border: 1px solid rgba(216,180,254,0.20);
+    background: rgba(255,255,255,0.035);
+    color: rgba(248,246,255,0.86);
+    padding: 0;
+    touch-action: manipulation;
+  }
+
+  .mobile-rail-btn-v6212[disabled] {
+    opacity: 0.33;
+    pointer-events: none;
+  }
+
+  .mobile-rail-create-v6212 {
+    color: rgba(255,255,255,0.96);
+    border-color: rgba(168,85,247,0.52);
+    background: linear-gradient(135deg, rgba(168,85,247,0.34), rgba(88,28,135,0.24));
+  }
+
+  .mobile-rail-copy-v6212 {
+    border-color: rgba(216,180,254,0.22);
+  }
+
+  .mobile-rail-brand-v6212 {
+    display: grid;
+    place-items: center;
+    min-width: 0;
+    overflow: visible;
+  }
+
+  .mobile-rail-brand-v6212 .viewer-brand,
+  .mobile-rail-brand-v6212 .brand-inline,
+  .mobile-rail-brand-v6212 .v691-brand {
+    display: inline-grid !important;
+    place-items: center !important;
+    width: 2.55rem !important;
+    min-width: 2.55rem !important;
+    height: 2.55rem !important;
+    min-height: 2.55rem !important;
+    margin: 0 auto !important;
+    overflow: visible !important;
+  }
+
+  .mobile-rail-brand-v6212 .v691-brand-slot,
+  .mobile-rail-brand-v6212 .brand-icon-slot,
+  .mobile-rail-brand-v6212 .mobile-brand-orb-v6205 {
+    width: 2.55rem !important;
+    min-width: 2.55rem !important;
+    max-width: 2.55rem !important;
+    height: 2.55rem !important;
+    min-height: 2.55rem !important;
+    max-height: 2.55rem !important;
+    margin: 0 !important;
+  }
+
+  .mobile-rail-brand-v6212 .brand-label {
+    display: none !important;
+  }
+
+  .workspace.single-source-state-v6212 .workspace-source-strip,
+  body.mobile-chrome-v6205 .workspace.single-source-state-v6212 .workspace-source-strip,
+  body.mobile-lens-v6203 .workspace.single-source-state-v6212 .workspace-source-strip {
+    display: none !important;
+    max-height: 0 !important;
+    min-height: 0 !important;
+    height: 0 !important;
+    opacity: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
+  }
+
+  .lineage-post .post-chips .mobile-chip-hidden-v6212 {
+    display: none !important;
+  }
+
+  .lineage-post .post-chips.mobile-chip-expanded-v6207 .mobile-chip-hidden-v6212 {
+    display: inline-flex !important;
+  }
+}
+
+
+/* ===== v6.213 mobile rail centering + width-aware badge packing ===== */
+@media (max-width: 640px) {
+  .mobile-top-rail-v6212 {
+    grid-template-columns: minmax(2.2rem, 1fr) 2.18rem 2.55rem 2.18rem minmax(2.2rem, 1fr) !important;
+    gap: 0.24rem !important;
+    padding-inline: 0.48rem !important;
+  }
+
+  .mobile-rail-page-v6212:first-child {
+    justify-self: start !important;
+  }
+
+  .mobile-rail-create-v6212 {
+    justify-self: end !important;
+  }
+
+  .mobile-rail-copy-v6212 {
+    justify-self: start !important;
+  }
+
+  .mobile-rail-page-v6212:last-child {
+    justify-self: end !important;
+  }
+
+  .lineage-post .post-chips {
+    flex-wrap: nowrap !important;
+    overflow: hidden !important;
+  }
+
+  .lineage-post .post-chips.mobile-chip-expanded-v6207 {
+    flex-wrap: wrap !important;
+    overflow: visible !important;
+  }
+
+  .lineage-post .post-chips .mobile-chip-hidden-v6213 {
+    display: none !important;
+  }
+
+  .lineage-post .post-chips.mobile-chip-expanded-v6207 .mobile-chip-hidden-v6213 {
+    display: inline-flex !important;
+  }
+
+  .lineage-post .post-chips.mobile-chip-expanded-v6207 .mobile-chip-more-v6207,
+  .lineage-post .post-chips.mobile-chip-expanded-v6207 .mobile-chip-more-v6212,
+  .lineage-post .post-chips.mobile-chip-expanded-v6207 .mobile-chip-more-v6213 {
+    display: none !important;
+  }
+
+  .lineage-post .post-chips .mobile-chip-more-v6213 {
+    flex: 0 0 auto !important;
+    min-width: 1.72rem !important;
+    max-width: 2.5rem !important;
+    justify-content: center !important;
+  }
+}
+
+
+/* ===== v6.214 mobile source/mode row + scroll-away sources ===== */
+@media (max-width: 640px) {
+  .mobile-source-mode-row-v6214 {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.42rem 0.62rem 0.12rem;
+  }
+
+  .mobile-source-mode-row-v6214 .workspace-source-strip {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    gap: 0.34rem !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+  }
+
+  .mobile-source-mode-row-v6214 .workspace-source-pill {
+    max-width: min(10.5rem, 56vw) !important;
+  }
+
+  .mobile-source-mode-row-v6214 .workspace-source-pill > span {
+    min-width: 0 !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  .mobile-source-mode-row-v6214 .feed-mode {
+    justify-self: end !important;
+    justify-content: flex-end !important;
+    min-width: max-content !important;
+    width: auto !important;
+  }
+
+  .feed-toolbar.discovery.mobile-tools-only-v6214,
+  .feed-toolbar.mobile-tools-only-v6214 {
+    grid-template-columns: minmax(0, 1fr) !important;
+    padding-top: 0.32rem !important;
+  }
+
+  .feed-toolbar.discovery.mobile-tools-only-v6214 .discovery-tools,
+  .feed-toolbar.discovery.mobile-tools-only-v6214 .v63-discovery-tools,
+  .feed-toolbar.discovery.mobile-tools-only-v6214 .v66-discovery-tools,
+  .feed-toolbar.discovery.mobile-tools-only-v6214 .tree-toolbar-tools {
+    grid-column: 1 !important;
+    width: 100% !important;
+    max-width: none !important;
+    justify-self: stretch !important;
+  }
+
+  .workspace.mobile-chrome-compact-v6199 .workspace-source-strip,
+  .workspace.mobile-chrome-compact-v6199 .mobile-source-mode-row-v6214 .workspace-source-strip {
+    display: none !important;
+    max-height: 0 !important;
+    min-height: 0 !important;
+    height: 0 !important;
+    opacity: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
+  }
+
+  .workspace.mobile-chrome-compact-v6199 .mobile-source-mode-row-v6214 {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding-top: 0.18rem !important;
+    padding-bottom: 0 !important;
+  }
+
+  .workspace.mobile-chrome-compact-v6199 .mobile-source-mode-row-v6214 .feed-mode {
+    grid-column: 2;
+  }
+}
+
+/* ===== v6.215 mobile chrome stabilization ===== */
+@media (max-width: 640px) {
+  /* Smaller visual chrome while preserving tap targets through spacing. */
+  .mobile-top-rail-v6212 {
+    width: min(100%, 21.25rem) !important;
+    grid-template-columns: minmax(2.05rem, 1fr) 2rem 2.32rem 2rem minmax(2.05rem, 1fr) !important;
+    padding: 0.18rem 0.4rem !important;
+    gap: 0.2rem !important;
+  }
+
+  .mobile-rail-btn-v6212 {
+    width: 2rem !important;
+    min-width: 2rem !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+    font-size: 0.92rem !important;
+  }
+
+  .mobile-rail-brand-v6212 .viewer-brand,
+  .mobile-rail-brand-v6212 .brand-inline,
+  .mobile-rail-brand-v6212 .v691-brand,
+  .mobile-rail-brand-v6212 .v691-brand-slot,
+  .mobile-rail-brand-v6212 .brand-icon-slot,
+  .mobile-rail-brand-v6212 .mobile-brand-orb-v6205 {
+    width: 2.32rem !important;
+    min-width: 2.32rem !important;
+    max-width: 2.32rem !important;
+    height: 2.32rem !important;
+    min-height: 2.32rem !important;
+    max-height: 2.32rem !important;
+  }
+
+  /* Keep sources and Feed/Tree on one stable row. The row keeps its vertical slot
+     even when sources are hidden on scroll, so the Feed/Tree toggle does not hop
+     upward into the workspace title/header. */
+  .mobile-source-mode-row-v6214 {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    align-items: center !important;
+    gap: 0.44rem !important;
+    min-height: 2.36rem !important;
+    padding: 0.34rem 0.62rem 0.28rem !important;
+    margin: 0 !important;
+    position: relative !important;
+    z-index: 1 !important;
+    background: transparent !important;
+  }
+
+  .mobile-source-mode-row-v6214 .feed-mode {
+    grid-column: 2 !important;
+    grid-row: 1 !important;
+    align-self: center !important;
+    justify-self: end !important;
+    transform: none !important;
+    position: static !important;
+    margin: 0 !important;
+    z-index: 1 !important;
+  }
+
+  .mobile-source-mode-row-v6214 .workspace-source-strip {
+    grid-column: 1 !important;
+    grid-row: 1 !important;
+    align-self: center !important;
+    max-height: 2rem !important;
+  }
+
+  .workspace.mobile-chrome-compact-v6199 .mobile-source-mode-row-v6214 {
+    min-height: 2.36rem !important;
+    padding: 0.34rem 0.62rem 0.28rem !important;
+  }
+
+  .workspace.mobile-chrome-compact-v6199 .mobile-source-mode-row-v6214 .workspace-source-strip {
+    display: flex !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    max-height: 2rem !important;
+    min-height: 0 !important;
+    height: auto !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    pointer-events: none !important;
+  }
+
+  .workspace.mobile-chrome-compact-v6199 .mobile-source-mode-row-v6214 .feed-mode {
+    grid-column: 2 !important;
+    grid-row: 1 !important;
+  }
+
+  /* Empty mobile workspaces should use the empty-state card as the instruction
+     surface instead of stacking a separate disclaimer above it. */
+  .workspace-drop-hint.workspace-drop-hint-hidden-v6215 {
+    display: none !important;
+  }
+
+  .empty-state.empty-state-workspace-instructions-v6215 {
+    text-align: left !important;
+    line-height: 1.45 !important;
+    padding: 1rem 1.05rem !important;
+  }
+
+  /* Keep create-workspace modal actions thumb-friendly without making huge slabs. */
+  .create-workspace-panel .create-workspace-actions,
+  .create-workspace-modal .create-workspace-actions,
+  body.mobile-chrome-v6205 .create-workspace-actions {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 0.58rem !important;
+    padding-top: 0.72rem !important;
+  }
+
+  .create-workspace-panel .create-workspace-actions .tv-btn,
+  .create-workspace-modal .create-workspace-actions .tv-btn,
+  body.mobile-chrome-v6205 .create-workspace-actions .tv-btn,
+  body.mobile-chrome-v6205 .create-workspace-panel .tv-btn,
+  body.mobile-chrome-v6205 .create-workspace-modal .tv-btn {
+    min-height: 2.85rem !important;
+    max-height: 3.05rem !important;
+    padding: 0.58rem 0.9rem !important;
+    border-radius: 999px !important;
+    font-size: 0.92rem !important;
+  }
+}
+
+
+/* ===== v6.216 mobile workspace header consolidation + dialog trim ===== */
+@media (max-width: 640px) {
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    align-items: center !important;
+    gap: 0.52rem !important;
+    min-height: 2.22rem !important;
+    padding: 0.48rem 0.72rem 0.42rem !important;
+    margin: 0 !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 .workspace-identity,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 .workspace-identity {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 .workspace-title,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 .workspace-title {
+    min-width: 0 !important;
+    max-width: 100% !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode {
+    grid-column: 2 !important;
+    justify-self: end !important;
+    align-self: center !important;
+    margin: 0 !important;
+    min-width: max-content !important;
+    transform: scale(0.96) !important;
+    transform-origin: right center !important;
+    position: static !important;
+    z-index: 1 !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode .kicker-inline,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode .kicker-inline {
+    display: none !important;
+  }
+
+  /* With Feed/Tree in the title row, the toolbar becomes tools-only. It should
+     not reserve the old Feed/Tree slot, and it disappears entirely for empty workspaces. */
+  body.mobile-chrome-v6205 .feed-toolbar.mobile-tools-only-v6216,
+  body.mobile-lens-v6203 .feed-toolbar.mobile-tools-only-v6216 {
+    padding-top: 0.26rem !important;
+    padding-bottom: 0.36rem !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace.empty-mobile-workspace-v6216 > .feed-toolbar,
+  body.mobile-lens-v6203 .workspace.empty-mobile-workspace-v6216 > .feed-toolbar {
+    display: none !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace.empty-mobile-workspace-v6216 .post-feed,
+  body.mobile-lens-v6203 .workspace.empty-mobile-workspace-v6216 .post-feed {
+    padding-top: 0.58rem !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace.empty-mobile-workspace-v6216 .empty-state.empty-state-workspace-instructions-v6215,
+  body.mobile-lens-v6203 .workspace.empty-mobile-workspace-v6216 .empty-state.empty-state-workspace-instructions-v6215 {
+    margin-top: 0.38rem !important;
+    padding: 1rem 1.1rem !important;
+    line-height: 1.42 !important;
+  }
+
+  /* The previous stable source/mode slot is no longer needed once Feed/Tree moves to the title row. */
+  body.mobile-chrome-v6205 .mobile-source-mode-row-v6214:empty,
+  body.mobile-lens-v6203 .mobile-source-mode-row-v6214:empty {
+    display: none !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Create workspace: compact mobile dialog, not a desktop card squeezed into a phone. */
+  body.mobile-chrome-v6205 .create-workspace-panel,
+  body.mobile-lens-v6203 .create-workspace-panel,
+  body.mobile-chrome-v6205 .create-workspace-modal,
+  body.mobile-lens-v6203 .create-workspace-modal {
+    width: min(21.5rem, calc(100vw - 1rem)) !important;
+    max-width: min(21.5rem, calc(100vw - 1rem)) !important;
+    max-height: calc(100dvh - 1.25rem) !important;
+    border-radius: 1.05rem !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-head,
+  body.mobile-lens-v6203 .create-workspace-head {
+    padding: 0.82rem 0.92rem 0.68rem !important;
+    min-height: 0 !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-head .kicker,
+  body.mobile-lens-v6203 .create-workspace-head .kicker {
+    font-size: 0.72rem !important;
+    margin: 0 0 0.2rem !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-head .modal-title-lite,
+  body.mobile-lens-v6203 .create-workspace-head .modal-title-lite {
+    font-size: 1.08rem !important;
+    line-height: 1.08 !important;
+    margin: 0 !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-head .text-secondary,
+  body.mobile-lens-v6203 .create-workspace-head .text-secondary {
+    font-size: 0.86rem !important;
+    line-height: 1.3 !important;
+    margin-top: 0.28rem !important;
+    max-width: 17rem !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-body,
+  body.mobile-lens-v6203 .create-workspace-body {
+    padding: 0.95rem !important;
+    overflow: auto !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-body .field-label,
+  body.mobile-lens-v6203 .create-workspace-body .field-label {
+    font-size: 0.78rem !important;
+    margin-bottom: 0.38rem !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-body input,
+  body.mobile-lens-v6203 .create-workspace-body input {
+    min-height: 2.75rem !important;
+    padding: 0.7rem 0.85rem !important;
+    font-size: 0.9rem !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-body .form-text,
+  body.mobile-lens-v6203 .create-workspace-body .form-text {
+    margin-top: 0.55rem !important;
+    font-size: 0.86rem !important;
+    line-height: 1.36 !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-actions,
+  body.mobile-lens-v6203 .create-workspace-actions {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 0.55rem !important;
+    margin-top: 0.9rem !important;
+    padding-top: 0.2rem !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-actions .tv-btn,
+  body.mobile-lens-v6203 .create-workspace-actions .tv-btn,
+  body.mobile-chrome-v6205 .create-workspace-panel .create-workspace-actions .tv-btn,
+  body.mobile-lens-v6203 .create-workspace-panel .create-workspace-actions .tv-btn {
+    min-height: 2.7rem !important;
+    max-height: 2.9rem !important;
+    padding: 0.55rem 0.75rem !important;
+    border-radius: 999px !important;
+    font-size: 0.9rem !important;
+    width: auto !important;
+  }
+}
+
+
+/* ===== v6.217 mobile freeze guard and create-workspace sheet ===== */
+@media (max-width: 640px) {
+  body.mobile-chrome-v6205 .create-workspace-sheet-backdrop-v6217,
+  body.mobile-lens-v6203 .create-workspace-sheet-backdrop-v6217 {
+    align-items: flex-end !important;
+    justify-content: center !important;
+    padding: 0.75rem !important;
+    overflow: hidden !important;
+    background: rgba(3, 2, 8, 0.72) !important;
+    backdrop-filter: blur(8px) !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-sheet-v6217,
+  body.mobile-lens-v6203 .create-workspace-sheet-v6217 {
+    width: min(22rem, calc(100vw - 1.25rem)) !important;
+    max-width: min(22rem, calc(100vw - 1.25rem)) !important;
+    max-height: min(70dvh, 33rem) !important;
+    border-radius: 1.35rem !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    background:
+      linear-gradient(180deg, rgba(24, 21, 35, 0.98), rgba(14, 14, 24, 0.99)) !important;
+    box-shadow:
+      0 1.2rem 3.2rem rgba(0, 0, 0, 0.48),
+      0 0 0 1px rgba(216, 180, 254, 0.18) !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-grabber-v6217,
+  body.mobile-lens-v6203 .create-workspace-grabber-v6217 {
+    width: 2.4rem !important;
+    height: 0.25rem !important;
+    border-radius: 999px !important;
+    margin: 0.55rem auto 0.2rem !important;
+    background: rgba(216, 180, 254, 0.26) !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-sheet-v6217 .create-workspace-head,
+  body.mobile-lens-v6203 .create-workspace-sheet-v6217 .create-workspace-head {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    gap: 0.7rem !important;
+    align-items: start !important;
+    padding: 0.58rem 0.9rem 0.7rem !important;
+    border-bottom: 1px solid rgba(216, 180, 254, 0.12) !important;
+    background: transparent !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-sheet-v6217 .kicker,
+  body.mobile-lens-v6203 .create-workspace-sheet-v6217 .kicker {
+    font-size: 0.68rem !important;
+    margin: 0 0 0.22rem !important;
+    letter-spacing: 0.16em !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-sheet-v6217 .modal-title-lite,
+  body.mobile-lens-v6203 .create-workspace-sheet-v6217 .modal-title-lite {
+    font-size: 1.05rem !important;
+    line-height: 1.12 !important;
+    margin: 0 !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-sheet-v6217 .text-secondary,
+  body.mobile-lens-v6203 .create-workspace-sheet-v6217 .text-secondary {
+    font-size: 0.84rem !important;
+    line-height: 1.34 !important;
+    margin-top: 0.28rem !important;
+    max-width: 15rem !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-close-v6217,
+  body.mobile-lens-v6203 .create-workspace-close-v6217 {
+    width: 2.35rem !important;
+    min-width: 2.35rem !important;
+    height: 2.35rem !important;
+    min-height: 2.35rem !important;
+    border-radius: 999px !important;
+    padding: 0 !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-sheet-v6217 .create-workspace-body,
+  body.mobile-lens-v6203 .create-workspace-sheet-v6217 .create-workspace-body {
+    padding: 0.85rem 0.9rem 0.95rem !important;
+    overflow: auto !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-sheet-v6217 .field-label,
+  body.mobile-lens-v6203 .create-workspace-sheet-v6217 .field-label {
+    font-size: 0.78rem !important;
+    margin-bottom: 0.42rem !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-sheet-v6217 input,
+  body.mobile-lens-v6203 .create-workspace-sheet-v6217 input {
+    min-height: 2.72rem !important;
+    border-radius: 0.72rem !important;
+    padding: 0.72rem 0.82rem !important;
+    font-size: 0.92rem !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-sheet-v6217 .form-text,
+  body.mobile-lens-v6203 .create-workspace-sheet-v6217 .form-text {
+    display: flex !important;
+    align-items: center !important;
+    gap: 0.42rem !important;
+    margin: 0.52rem 0 0 !important;
+    font-size: 0.8rem !important;
+    line-height: 1.3 !important;
+    color: rgba(226, 220, 238, 0.68) !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-sheet-v6217 .create-workspace-actions,
+  body.mobile-lens-v6203 .create-workspace-sheet-v6217 .create-workspace-actions {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+    gap: 0.55rem !important;
+    margin-top: 0.85rem !important;
+    padding: 0 !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-sheet-v6217 .create-workspace-actions .tv-btn,
+  body.mobile-lens-v6203 .create-workspace-sheet-v6217 .create-workspace-actions .tv-btn {
+    width: 100% !important;
+    min-width: 0 !important;
+    min-height: 2.75rem !important;
+    max-height: 2.9rem !important;
+    border-radius: 999px !important;
+    padding: 0.58rem 0.7rem !important;
+    font-size: 0.9rem !important;
+    justify-content: center !important;
+  }
+}
+
+
+/* ===== v6.218 desktop single-source trim, tree FAB suppression, mobile create sheet ===== */
+.workspace.single-source-state-v6218 > .workspace-source-strip,
+.workspace.single-source-state-v6218 > .mobile-source-mode-row-v6214 .workspace-source-strip {
+  display: none !important;
+  max-height: 0 !important;
+  min-height: 0 !important;
+  height: 0 !important;
+  opacity: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  overflow: hidden !important;
+  pointer-events: none !important;
+}
+
+.mobile-global-actions-host-v6203.mobile-global-actions-hidden-v6218,
+body.mobile-discovery-tree-v6218 .mobile-global-actions-host-v6203 {
+  display: none !important;
+  pointer-events: none !important;
+}
+
+@media (max-width: 640px) {
+  body.mobile-chrome-v6205 .create-workspace-sheet-backdrop-v6218,
+  body.mobile-lens-v6203 .create-workspace-sheet-backdrop-v6218 {
+    align-items: flex-end !important;
+    justify-content: center !important;
+    padding: 0.5rem !important;
+    overflow: hidden !important;
+    background: rgba(3, 2, 8, 0.72) !important;
+    backdrop-filter: blur(8px) !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-sheet-v6218,
+  body.mobile-lens-v6203 .create-workspace-sheet-v6218 {
+    width: min(22rem, calc(100vw - 0.8rem)) !important;
+    max-width: min(22rem, calc(100vw - 0.8rem)) !important;
+    max-height: min(56dvh, 26rem) !important;
+    min-height: 18.5rem !important;
+    border-radius: 1.35rem 1.35rem 1rem 1rem !important;
+    display: grid !important;
+    grid-template-rows: auto auto minmax(0, 1fr) auto !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    background:
+      radial-gradient(circle at 50% 0%, rgba(168, 85, 247, 0.14), transparent 42%),
+      linear-gradient(180deg, rgba(24, 21, 35, 0.99), rgba(14, 14, 24, 0.99)) !important;
+    box-shadow:
+      0 1.3rem 3.4rem rgba(0, 0, 0, 0.5),
+      0 0 0 1px rgba(216, 180, 254, 0.18) !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-grabber-v6218,
+  body.mobile-lens-v6203 .create-workspace-grabber-v6218 {
+    width: 2.25rem !important;
+    height: 0.24rem !important;
+    border-radius: 999px !important;
+    margin: 0.5rem auto 0.12rem !important;
+    background: rgba(216, 180, 254, 0.25) !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-head-v6218,
+  body.mobile-lens-v6203 .create-workspace-head-v6218 {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    align-items: center !important;
+    gap: 0.65rem !important;
+    padding: 0.5rem 0.86rem 0.64rem !important;
+    border-bottom: 1px solid rgba(216, 180, 254, 0.12) !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-title-block-v6218 .kicker,
+  body.mobile-lens-v6203 .create-workspace-title-block-v6218 .kicker {
+    margin: 0 0 0.18rem !important;
+    font-size: 0.66rem !important;
+    letter-spacing: 0.15em !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-title-block-v6218 h2,
+  body.mobile-lens-v6203 .create-workspace-title-block-v6218 h2 {
+    margin: 0 !important;
+    font-size: 1.08rem !important;
+    line-height: 1.1 !important;
+    color: rgba(248, 246, 255, 0.96) !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-close-v6218,
+  body.mobile-lens-v6203 .create-workspace-close-v6218 {
+    width: 2.35rem !important;
+    min-width: 2.35rem !important;
+    height: 2.35rem !important;
+    min-height: 2.35rem !important;
+    border-radius: 999px !important;
+    padding: 0 !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-body-v6218,
+  body.mobile-lens-v6203 .create-workspace-body-v6218 {
+    padding: 0.85rem 0.86rem 0.3rem !important;
+    overflow: auto !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-body-v6218 .field-label,
+  body.mobile-lens-v6203 .create-workspace-body-v6218 .field-label {
+    font-size: 0.78rem !important;
+    margin-bottom: 0.42rem !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-body-v6218 input,
+  body.mobile-lens-v6203 .create-workspace-body-v6218 input {
+    min-height: 2.8rem !important;
+    border-radius: 0.78rem !important;
+    padding: 0.76rem 0.86rem !important;
+    font-size: 0.95rem !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-hint-v6218,
+  body.mobile-lens-v6203 .create-workspace-hint-v6218 {
+    margin: 0.58rem 0 0 !important;
+    font-size: 0.8rem !important;
+    line-height: 1.32 !important;
+    color: rgba(226, 220, 238, 0.62) !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-actions-v6218,
+  body.mobile-lens-v6203 .create-workspace-actions-v6218 {
+    display: grid !important;
+    grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr) !important;
+    gap: 0.55rem !important;
+    padding: 0.72rem 0.86rem calc(0.86rem + env(safe-area-inset-bottom, 0px)) !important;
+    background: linear-gradient(180deg, rgba(14,14,24,0), rgba(14,14,24,0.96) 22%) !important;
+  }
+
+  body.mobile-chrome-v6205 .create-workspace-actions-v6218 .tv-btn,
+  body.mobile-lens-v6203 .create-workspace-actions-v6218 .tv-btn {
+    width: 100% !important;
+    min-width: 0 !important;
+    min-height: 2.75rem !important;
+    max-height: 2.9rem !important;
+    border-radius: 999px !important;
+    padding: 0.56rem 0.68rem !important;
+    justify-content: center !important;
+    font-size: 0.9rem !important;
+  }
+}
+
+
+
+/* ===== v6.219 mobile polish, stable legal badges, closed tree default ===== */
+.workspace-actions .display-options-action,
+.v3-actions .display-options-action,
+.v5-actions .display-options-action,
+.v613-actions .display-options-action {
+  width: 34px !important;
+  min-width: 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  padding: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 999px !important;
+}
+
+.workspace-actions .display-options-action > i,
+.v3-actions .display-options-action > i,
+.v5-actions .display-options-action > i,
+.v613-actions .display-options-action > i {
+  font-size: 0.92rem !important;
+  line-height: 1 !important;
+  margin: 0 !important;
+}
+
+.stat-pill.policy.legal-icon-only.pending-v6219 {
+  color: rgba(226, 220, 238, 0.58) !important;
+  border-color: rgba(226, 220, 238, 0.18) !important;
+  background: rgba(255, 255, 255, 0.035) !important;
+}
+
+.stat-pill.policy.legal-icon-only.pending-v6219 i {
+  opacity: 0.82 !important;
+}
+
+@media (max-width: 640px) {
+  .create-workspace-sheet-backdrop-v6219,
+  body.mobile-chrome-v6205 .create-workspace-sheet-backdrop-v6219,
+  body.mobile-lens-v6203 .create-workspace-sheet-backdrop-v6219 {
+    align-items: flex-end !important;
+    justify-content: center !important;
+    padding: 0.55rem !important;
+    background: rgba(3, 2, 8, 0.70) !important;
+    backdrop-filter: blur(9px) !important;
+  }
+
+  .create-workspace-sheet-v6219,
+  body.mobile-chrome-v6205 .create-workspace-sheet-v6219,
+  body.mobile-lens-v6203 .create-workspace-sheet-v6219 {
+    width: min(22rem, calc(100vw - 0.9rem)) !important;
+    max-width: min(22rem, calc(100vw - 0.9rem)) !important;
+    min-height: 0 !important;
+    max-height: min(62dvh, 23rem) !important;
+    border-radius: 1.35rem 1.35rem 1rem 1rem !important;
+    display: grid !important;
+    grid-template-rows: auto auto minmax(0, 1fr) auto !important;
+    overflow: hidden !important;
+    padding: 0 !important;
+    background:
+      radial-gradient(circle at 50% 0%, rgba(168, 85, 247, 0.16), transparent 46%),
+      linear-gradient(180deg, rgba(23, 20, 34, 0.99), rgba(14, 14, 24, 0.99)) !important;
+    box-shadow: 0 1.25rem 3.2rem rgba(0, 0, 0, 0.48), 0 0 0 1px rgba(216, 180, 254, 0.18) !important;
+  }
+
+  .create-workspace-grabber-v6219 {
+    width: 2.2rem !important;
+    height: 0.24rem !important;
+    margin: 0.52rem auto 0.1rem !important;
+    border-radius: 999px !important;
+    background: rgba(216, 180, 254, 0.25) !important;
+  }
+
+  .create-workspace-head-v6219 {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 0.75rem !important;
+    padding: 0.55rem 0.88rem 0.62rem !important;
+    border-bottom: 1px solid rgba(216, 180, 254, 0.12) !important;
+  }
+
+  .create-workspace-head-v6219 .kicker {
+    margin: 0 0 0.18rem !important;
+    font-size: 0.64rem !important;
+    letter-spacing: 0.16em !important;
+  }
+
+  .create-workspace-head-v6219 h2 {
+    margin: 0 !important;
+    font-size: 1.05rem !important;
+    line-height: 1.12 !important;
+  }
+
+  .create-workspace-close-v6219 {
+    width: 2.25rem !important;
+    min-width: 2.25rem !important;
+    height: 2.25rem !important;
+    min-height: 2.25rem !important;
+    padding: 0 !important;
+    border-radius: 999px !important;
+  }
+
+  .create-workspace-body-v6219 {
+    padding: 0.9rem 0.9rem 0.45rem !important;
+    overflow: auto !important;
+  }
+
+  .create-workspace-body-v6219 .field-label {
+    margin-bottom: 0.46rem !important;
+    font-size: 0.78rem !important;
+  }
+
+  .create-workspace-body-v6219 .tv-input,
+  .create-workspace-body-v6219 input {
+    min-height: 2.85rem !important;
+    border-radius: 0.78rem !important;
+    padding: 0.78rem 0.88rem !important;
+    font-size: 0.96rem !important;
+  }
+
+  .create-workspace-hint-v6219 {
+    margin: 0.58rem 0 0 !important;
+    font-size: 0.8rem !important;
+    line-height: 1.32 !important;
+    color: rgba(226, 220, 238, 0.62) !important;
+  }
+
+  .create-workspace-actions-v6219 {
+    display: grid !important;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr) !important;
+    gap: 0.55rem !important;
+    padding: 0.72rem 0.9rem calc(0.9rem + env(safe-area-inset-bottom, 0px)) !important;
+    background: linear-gradient(180deg, rgba(14, 14, 24, 0), rgba(14, 14, 24, 0.96) 24%) !important;
+  }
+
+  .create-workspace-actions-v6219 .tv-btn {
+    width: 100% !important;
+    min-width: 0 !important;
+    min-height: 2.75rem !important;
+    border-radius: 999px !important;
+    justify-content: center !important;
+    font-size: 0.9rem !important;
+    padding: 0.55rem 0.72rem !important;
+  }
+
+  /* Fallback for older create-workspace markup when a browser keeps a stale modal node alive. */
+  .create-workspace-backdrop .create-workspace-panel:not(.create-workspace-sheet-v6219) {
+    width: min(22rem, calc(100vw - 0.9rem)) !important;
+    max-width: min(22rem, calc(100vw - 0.9rem)) !important;
+    min-height: 0 !important;
+    max-height: min(64dvh, 24rem) !important;
+    border-radius: 1.35rem 1.35rem 1rem 1rem !important;
+  }
+
+  .create-workspace-backdrop .create-workspace-panel:not(.create-workspace-sheet-v6219) .text-secondary,
+  .create-workspace-backdrop .create-workspace-panel:not(.create-workspace-sheet-v6219) .form-text:not(.create-workspace-hint-v6219) {
+    font-size: 0.82rem !important;
+    line-height: 1.34 !important;
+  }
+
+  .create-workspace-backdrop .create-workspace-panel:not(.create-workspace-sheet-v6219) .create-workspace-actions,
+  .create-workspace-backdrop .create-workspace-panel:not(.create-workspace-sheet-v6219) .modal-footer-actions {
+    display: grid !important;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr) !important;
+    gap: 0.55rem !important;
+  }
+}
+
+/* ===== v6.220 desktop workspace action sizing alignment ===== */
+@media (min-width: 761px) {
+  .workspace-actions.v5-actions,
+  .workspace-actions.v613-actions {
+    align-items: center !important;
+    gap: 5px !important;
+  }
+
+  .workspace-actions.v5-actions .stat-pill,
+  .workspace-actions.v613-actions .stat-pill,
+  .workspace-actions.v5-actions .tv-btn.small,
+  .workspace-actions.v613-actions .tv-btn.small,
+  .workspace-actions.v5-actions .stat-pill.policy.legal-icon-only,
+  .workspace-actions.v613-actions .stat-pill.policy.legal-icon-only,
+  .workspace-actions.v5-actions .display-options-action,
+  .workspace-actions.v613-actions .display-options-action {
+    min-height: 28px !important;
+    height: 28px !important;
+    font-size: 0.78rem !important;
+    line-height: 1 !important;
+  }
+
+  .workspace-actions.v5-actions .tv-btn.small,
+  .workspace-actions.v613-actions .tv-btn.small,
+  .workspace-actions.v5-actions .stat-pill.policy.legal-icon-only,
+  .workspace-actions.v613-actions .stat-pill.policy.legal-icon-only,
+  .workspace-actions.v5-actions .display-options-action,
+  .workspace-actions.v613-actions .display-options-action {
+    width: 28px !important;
+    min-width: 28px !important;
+    max-width: 28px !important;
+    padding: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 0 !important;
+    border-radius: 999px !important;
+  }
+
+  .workspace-actions.v5-actions .stat-pill,
+  .workspace-actions.v613-actions .stat-pill {
+    padding: 5px 8px !important;
+  }
+
+  .workspace-actions.v5-actions .tv-btn.small > i,
+  .workspace-actions.v613-actions .tv-btn.small > i,
+  .workspace-actions.v5-actions .stat-pill.policy.legal-icon-only > i,
+  .workspace-actions.v613-actions .stat-pill.policy.legal-icon-only > i,
+  .workspace-actions.v5-actions .display-options-action > i,
+  .workspace-actions.v613-actions .display-options-action > i {
+    font-size: 0.84rem !important;
+    line-height: 1 !important;
+    margin: 0 !important;
+  }
+
+  .workspace-actions.v5-actions .display-options-action small,
+  .workspace-actions.v613-actions .display-options-action small {
+    right: -0.18rem !important;
+    top: -0.24rem !important;
+    min-width: 0.88rem !important;
+    height: 0.88rem !important;
+    font-size: 0.52rem !important;
+  }
+}
+
+/* ===== v6.221 sources-first stats + display options beside discovery search ===== */
+.feed-toolbar.discovery .discovery-tools .toolbar-display-options-v6221,
+.feed-toolbar.discovery .v63-discovery-tools .toolbar-display-options-v6221,
+.feed-toolbar.discovery .v66-discovery-tools .toolbar-display-options-v6221 {
+  grid-column: 1 !important;
+  justify-self: center !important;
+  align-self: center !important;
+  width: 2.1rem !important;
+  min-width: 2.1rem !important;
+  height: 2.1rem !important;
+  min-height: 2.1rem !important;
+  padding: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 999px !important;
+}
+
+.feed-toolbar.discovery .discovery-tools .toolbar-display-options-v6221 > i,
+.feed-toolbar.discovery .v63-discovery-tools .toolbar-display-options-v6221 > i,
+.feed-toolbar.discovery .v66-discovery-tools .toolbar-display-options-v6221 > i {
+  font-size: 0.9rem !important;
+  line-height: 1 !important;
+  margin: 0 !important;
+}
+
+.feed-toolbar.discovery .discovery-tools:not(.tree-toolbar-tools),
+.feed-toolbar.discovery .v63-discovery-tools:not(.tree-toolbar-tools),
+.feed-toolbar.discovery .v66-discovery-tools:not(.tree-toolbar-tools) {
+  grid-template-columns: 2.1rem minmax(0, 280px) !important;
+  width: min(100%, calc(2.1rem + 0.55rem + 280px)) !important;
+  max-width: calc(2.1rem + 0.55rem + 280px) !important;
+}
+
+.feed-toolbar.discovery .discovery-tools:not(.tree-toolbar-tools) .search-box,
+.feed-toolbar.discovery .v63-discovery-tools:not(.tree-toolbar-tools) .search-box,
+.feed-toolbar.discovery .v66-discovery-tools:not(.tree-toolbar-tools) .search-box {
+  grid-column: 2 !important;
+}
+
+.feed-toolbar.discovery .tree-toolbar-tools {
+  grid-template-columns: 2.1rem 2.1rem minmax(0, 280px) !important;
+  width: min(100%, calc(2.1rem + 0.55rem + 2.1rem + 0.55rem + 280px)) !important;
+  max-width: calc(2.1rem + 0.55rem + 2.1rem + 0.55rem + 280px) !important;
+}
+
+.feed-toolbar.discovery .tree-toolbar-tools .tree-all-toggle {
+  grid-column: 1 !important;
+}
+
+.feed-toolbar.discovery .tree-toolbar-tools .toolbar-display-options-v6221 {
+  grid-column: 2 !important;
+}
+
+.feed-toolbar.discovery .tree-toolbar-tools .search-box {
+  grid-column: 3 !important;
+}
+
+@media (max-width: 640px) {
+  .feed-toolbar.discovery .discovery-tools:not(.tree-toolbar-tools),
+  .feed-toolbar.discovery .v63-discovery-tools:not(.tree-toolbar-tools),
+  .feed-toolbar.discovery .v66-discovery-tools:not(.tree-toolbar-tools) {
+    grid-template-columns: 2.1rem minmax(0, 1fr) !important;
+    width: 100% !important;
+    max-width: none !important;
+  }
+
+  .feed-toolbar.discovery .tree-toolbar-tools {
+    grid-template-columns: 2.1rem 2.1rem minmax(0, 1fr) !important;
+    width: 100% !important;
+    max-width: none !important;
+  }
+}
+
+/* ===== v6.222 rollback display-options toolbar relocation ===== */
+/* v6.221 proved the display-options/search move was not worth the toolbar
+   complexity. Restore the pre-move discovery tools grid while keeping the
+   Sources/Traces stat ordering from app.js. */
+.feed-toolbar.discovery .toolbar-display-options-v6221 {
+  display: none !important;
+}
+
+.feed-toolbar.discovery .discovery-tools:not(.tree-toolbar-tools),
+.feed-toolbar.discovery .v63-discovery-tools:not(.tree-toolbar-tools),
+.feed-toolbar.discovery .v66-discovery-tools:not(.tree-toolbar-tools),
+.feed-toolbar.discovery .tree-toolbar-tools {
+  grid-template-columns: 2.1rem minmax(0, 280px) !important;
+  width: min(100%, calc(2.1rem + 0.55rem + 280px)) !important;
+  max-width: calc(2.1rem + 0.55rem + 280px) !important;
+}
+
+.feed-toolbar.discovery .tree-toolbar-tools .tree-all-toggle,
+.feed-toolbar.discovery .discovery-tools:not(.tree-toolbar-tools) > :first-child,
+.feed-toolbar.discovery .v63-discovery-tools:not(.tree-toolbar-tools) > :first-child,
+.feed-toolbar.discovery .v66-discovery-tools:not(.tree-toolbar-tools) > :first-child {
+  grid-column: 1 !important;
+}
+
+.feed-toolbar.discovery .discovery-tools .search-box,
+.feed-toolbar.discovery .v63-discovery-tools .search-box,
+.feed-toolbar.discovery .v66-discovery-tools .search-box,
+.feed-toolbar.discovery .tree-toolbar-tools .search-box {
+  grid-column: 2 !important;
+}
+
+@media (max-width: 640px) {
+  .feed-toolbar.discovery .discovery-tools:not(.tree-toolbar-tools),
+  .feed-toolbar.discovery .v63-discovery-tools:not(.tree-toolbar-tools),
+  .feed-toolbar.discovery .v66-discovery-tools:not(.tree-toolbar-tools),
+  .feed-toolbar.discovery .tree-toolbar-tools {
+    grid-template-columns: 2.1rem minmax(0, 1fr) !important;
+    width: 100% !important;
+    max-width: none !important;
+  }
+}
+
+/* ===== v6.223 display options beside search, stable discovery grid, aligned tree add column ===== */
+.feed-toolbar.discovery .toolbar-display-options-v6221 {
+  display: none !important;
+}
+
+.feed-toolbar.discovery .toolbar-display-options-v6223 {
+  position: relative !important;
+  flex: 0 0 auto !important;
+  width: 2.1rem !important;
+  min-width: 2.1rem !important;
+  height: 2.1rem !important;
+  min-height: 2.1rem !important;
+  padding: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 999px !important;
+}
+
+.feed-toolbar.discovery .toolbar-display-options-v6223 > i {
+  font-size: 0.9rem !important;
+  line-height: 1 !important;
+  margin: 0 !important;
+}
+
+.feed-toolbar.discovery .toolbar-display-options-v6223 small {
+  right: -0.16rem !important;
+  top: -0.22rem !important;
+  min-width: 0.88rem !important;
+  height: 0.88rem !important;
+  font-size: 0.52rem !important;
+}
+
+.feed-toolbar.discovery .discovery-tools,
+.feed-toolbar.discovery .v63-discovery-tools,
+.feed-toolbar.discovery .v66-discovery-tools,
+.feed-toolbar.discovery .tree-toolbar-tools {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 0.55rem !important;
+  width: min(100%, 24rem) !important;
+  max-width: 24rem !important;
+  min-width: 0 !important;
+}
+
+.feed-toolbar.discovery .discovery-tools .search-box,
+.feed-toolbar.discovery .v63-discovery-tools .search-box,
+.feed-toolbar.discovery .v66-discovery-tools .search-box,
+.feed-toolbar.discovery .tree-toolbar-tools .search-box {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  width: auto !important;
+  max-width: none !important;
+}
+
+.feed-toolbar.discovery .tree-all-toggle,
+.feed-toolbar.discovery .preview-toggle-v6195 {
+  flex: 0 0 auto !important;
+}
+
+@media (max-width: 640px) {
+  .feed-toolbar.discovery .discovery-tools,
+  .feed-toolbar.discovery .v63-discovery-tools,
+  .feed-toolbar.discovery .v66-discovery-tools,
+  .feed-toolbar.discovery .tree-toolbar-tools {
+    width: 100% !important;
+    max-width: none !important;
+  }
+}
+
+.discovery-tree.has-folder-add-v6179 .tree-root-note.root-add-v6179,
+.discovery-tree.has-folder-add-v6179 .tree-row.folder-add-row-v6179 {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) 1.85rem !important;
+  align-items: center !important;
+  column-gap: 0.55rem !important;
+}
+
+.discovery-tree.has-folder-add-v6179 .tree-root-note.root-add-v6179 > span,
+.discovery-tree.has-folder-add-v6179 .folder-add-row-v6179 .tree-folder-toggle-v6179 {
+  min-width: 0 !important;
+  width: 100% !important;
+}
+
+.discovery-tree.has-folder-add-v6179 .tree-folder-add-v6179 {
+  grid-column: 2 !important;
+  justify-self: end !important;
+  align-self: center !important;
+  margin-left: 0 !important;
+}
+
+/* ===== v6.224 tree root add alignment nudge ===== */
+.discovery-tree.has-folder-add-v6179 .tree-root-note.root-add-v6179 .tree-folder-add-v6179 {
+  transform: translateX(-1px) !important;
+}
+
+/* ===== v6.225 tree root add nudge + stable discovery/lineage search rail ===== */
+.discovery-tree.has-folder-add-v6179 .tree-root-note.root-add-v6179 .tree-folder-add-v6179 {
+  transform: translateX(-2px) !important;
+}
+
+/* Keep the right-side search/tool group in the same slot across Discovery and Lineage.
+   Discovery has display-options + preview/tree-control + search. Lineage has a hidden
+   reserved display-options slot + preview + search, so the preview/search pair no longer
+   jumps when entering or leaving Lineage mode. */
+.feed-toolbar.discovery .discovery-tools,
+.feed-toolbar.discovery .v63-discovery-tools,
+.feed-toolbar.discovery .v66-discovery-tools,
+.feed-toolbar.discovery .tree-toolbar-tools,
+.feed-toolbar.lineage .lineage-search-wrap {
+  display: grid !important;
+  grid-template-columns: 2.1rem 2.1rem minmax(0, 280px) !important;
+  align-items: center !important;
+  gap: 0.55rem !important;
+  width: min(100%, calc(2.1rem + 0.55rem + 2.1rem + 0.55rem + 280px)) !important;
+  max-width: calc(2.1rem + 0.55rem + 2.1rem + 0.55rem + 280px) !important;
+  min-width: 0 !important;
+  justify-self: end !important;
+  margin-left: 0 !important;
+}
+
+.feed-toolbar.discovery .toolbar-display-options-v6223 {
+  grid-column: 1 !important;
+  justify-self: center !important;
+}
+
+.feed-toolbar.discovery .preview-toggle-v6195,
+.feed-toolbar.discovery .tree-all-toggle,
+.feed-toolbar.discovery .tree-all-toggle.disabled-placeholder-v6173 {
+  grid-column: 2 !important;
+  justify-self: center !important;
+}
+
+.feed-toolbar.discovery .search-box,
+.feed-toolbar.lineage .lineage-search-wrap .search-box {
+  grid-column: 3 !important;
+  justify-self: stretch !important;
+  width: 100% !important;
+  max-width: 280px !important;
+  min-width: 0 !important;
+}
+
+.feed-toolbar.lineage {
+  display: grid !important;
+  grid-template-columns: max-content minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 0.75rem !important;
+}
+
+.feed-toolbar.lineage .feed-mode {
+  grid-column: 1 !important;
+  width: auto !important;
+  min-width: max-content !important;
+  justify-self: start !important;
+  align-self: center !important;
+}
+
+.feed-toolbar.lineage .lineage-search-wrap {
+  grid-column: 2 !important;
+}
+
+.feed-toolbar.lineage .lineage-search-wrap::before {
+  content: "";
+  grid-column: 1;
+  width: 2.1rem;
+  height: 2.1rem;
+  visibility: hidden;
+}
+
+.feed-toolbar.lineage .lineage-search-wrap .preview-toggle-v6195 {
+  grid-column: 2 !important;
+  justify-self: center !important;
+}
+
+@media (max-width: 640px) {
+  .feed-toolbar.discovery .discovery-tools,
+  .feed-toolbar.discovery .v63-discovery-tools,
+  .feed-toolbar.discovery .v66-discovery-tools,
+  .feed-toolbar.discovery .tree-toolbar-tools,
+  .feed-toolbar.lineage .lineage-search-wrap {
+    grid-template-columns: 2.1rem 2.1rem minmax(0, 1fr) !important;
+    width: 100% !important;
+    max-width: none !important;
+  }
+
+  .feed-toolbar.lineage {
+    grid-template-columns: 1fr !important;
+    gap: 0.55rem !important;
+  }
+
+  .feed-toolbar.lineage .feed-mode,
+  .feed-toolbar.lineage .lineage-search-wrap {
+    grid-column: 1 !important;
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  .feed-toolbar.lineage .feed-mode {
+    justify-content: space-between !important;
+  }
+
+  .feed-toolbar.discovery .search-box,
+  .feed-toolbar.lineage .lineage-search-wrap .search-box {
+    max-width: none !important;
+  }
+}
+
+/* ===== v6.226 repair discovery/lineage toolbar grid placement ===== */
+/* v6.225 reserved matching tool slots, but older high-specificity rules still
+   forced search into the preview slot. Pin each control to its intended column
+   with equal-or-higher specificity so the buttons stay on one row. */
+.feed-toolbar.discovery .discovery-tools > .toolbar-display-options-v6223,
+.feed-toolbar.discovery .v63-discovery-tools > .toolbar-display-options-v6223,
+.feed-toolbar.discovery .v66-discovery-tools > .toolbar-display-options-v6223,
+.feed-toolbar.discovery .tree-toolbar-tools > .toolbar-display-options-v6223 {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  justify-self: center !important;
+  align-self: center !important;
+}
+
+.feed-toolbar.discovery .discovery-tools > .preview-toggle-v6195,
+.feed-toolbar.discovery .v63-discovery-tools > .preview-toggle-v6195,
+.feed-toolbar.discovery .v66-discovery-tools > .preview-toggle-v6195,
+.feed-toolbar.discovery .tree-toolbar-tools > .preview-toggle-v6195,
+.feed-toolbar.discovery .discovery-tools > .tree-all-toggle,
+.feed-toolbar.discovery .v63-discovery-tools > .tree-all-toggle,
+.feed-toolbar.discovery .v66-discovery-tools > .tree-all-toggle,
+.feed-toolbar.discovery .tree-toolbar-tools > .tree-all-toggle,
+.feed-toolbar.discovery .tree-toolbar-tools > .tree-all-toggle.disabled-placeholder-v6173 {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  justify-self: center !important;
+  align-self: center !important;
+}
+
+.feed-toolbar.discovery .discovery-tools > .search-box,
+.feed-toolbar.discovery .v63-discovery-tools > .search-box,
+.feed-toolbar.discovery .v66-discovery-tools > .search-box,
+.feed-toolbar.discovery .tree-toolbar-tools > .search-box,
+.feed-toolbar.lineage .lineage-search-wrap > .search-box {
+  grid-column: 3 !important;
+  grid-row: 1 !important;
+  justify-self: stretch !important;
+  align-self: center !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  flex: 1 1 auto !important;
+}
+
+.feed-toolbar.discovery .discovery-tools > .search-box input,
+.feed-toolbar.discovery .v63-discovery-tools > .search-box input,
+.feed-toolbar.discovery .v66-discovery-tools > .search-box input,
+.feed-toolbar.discovery .tree-toolbar-tools > .search-box input,
+.feed-toolbar.lineage .lineage-search-wrap > .search-box input {
+  display: block !important;
+  min-width: 0 !important;
+  width: 100% !important;
+}
+
+.feed-toolbar.lineage .lineage-search-wrap > .preview-toggle-v6195 {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  justify-self: center !important;
+  align-self: center !important;
+}
+
+@media (min-width: 641px) {
+  .feed-toolbar.discovery .discovery-tools,
+  .feed-toolbar.discovery .v63-discovery-tools,
+  .feed-toolbar.discovery .v66-discovery-tools,
+  .feed-toolbar.discovery .tree-toolbar-tools,
+  .feed-toolbar.lineage .lineage-search-wrap {
+    grid-template-columns: 2.1rem 2.1rem minmax(220px, 280px) !important;
+    width: min(100%, calc(2.1rem + 0.55rem + 2.1rem + 0.55rem + 280px)) !important;
+    max-width: calc(2.1rem + 0.55rem + 2.1rem + 0.55rem + 280px) !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .feed-toolbar.discovery .discovery-tools,
+  .feed-toolbar.discovery .v63-discovery-tools,
+  .feed-toolbar.discovery .v66-discovery-tools,
+  .feed-toolbar.discovery .tree-toolbar-tools,
+  .feed-toolbar.lineage .lineage-search-wrap {
+    grid-template-columns: 2.1rem 2.1rem minmax(0, 1fr) !important;
+  }
+}
+
+
+/* ===== v6.227 normalized discovery search rail ===== */
+.feed-toolbar.discovery.toolbar-normalized-v6227 {
+  display: grid !important;
+  grid-template-columns: max-content minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 0.75rem !important;
+}
+
+.feed-toolbar.discovery.toolbar-normalized-v6227 > .feed-mode {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  justify-self: start !important;
+  align-self: center !important;
+  width: auto !important;
+  min-width: max-content !important;
+}
+
+.feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  justify-self: end !important;
+  align-self: center !important;
+  display: grid !important;
+  grid-template-columns: 2rem 2rem minmax(220px, 280px) !important;
+  align-items: center !important;
+  gap: 0.55rem !important;
+  width: min(100%, calc(2rem + 0.55rem + 2rem + 0.55rem + 280px)) !important;
+  max-width: calc(2rem + 0.55rem + 2rem + 0.55rem + 280px) !important;
+  min-width: 0 !important;
+  margin-left: 0 !important;
+}
+
+.feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .toolbar-display-options-v6223,
+.feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .toolbar-display-options-v6227 {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  justify-self: center !important;
+  align-self: center !important;
+  width: 2rem !important;
+  min-width: 2rem !important;
+  max-width: 2rem !important;
+  height: 2rem !important;
+  min-height: 2rem !important;
+  max-height: 2rem !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border-radius: 999px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-sizing: border-box !important;
+}
+
+.feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .toolbar-display-options-v6223 > i,
+.feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .toolbar-display-options-v6227 > i {
+  font-size: 0.86rem !important;
+  line-height: 1 !important;
+  margin: 0 !important;
+}
+
+.feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .toolbar-display-options-v6223 small,
+.feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .toolbar-display-options-v6227 small {
+  right: -0.14rem !important;
+  top: -0.2rem !important;
+  min-width: 0.86rem !important;
+  height: 0.86rem !important;
+  font-size: 0.5rem !important;
+}
+
+.feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .preview-toggle-v6195,
+.feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .tree-all-toggle,
+.feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .tree-all-toggle.disabled-placeholder-v6173 {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  justify-self: center !important;
+  align-self: center !important;
+  width: 2rem !important;
+  min-width: 2rem !important;
+  max-width: 2rem !important;
+  height: 2rem !important;
+  min-height: 2rem !important;
+  max-height: 2rem !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  box-sizing: border-box !important;
+}
+
+.feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .search-box {
+  grid-column: 3 !important;
+  grid-row: 1 !important;
+  justify-self: stretch !important;
+  align-self: center !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  height: 2rem !important;
+  min-height: 2rem !important;
+  max-height: 2rem !important;
+}
+
+.feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .search-box input {
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+@media (max-width: 640px) {
+  .feed-toolbar.discovery.toolbar-normalized-v6227 {
+    grid-template-columns: 1fr !important;
+    gap: 0.5rem !important;
+  }
+
+  .feed-toolbar.discovery.toolbar-normalized-v6227 > .feed-mode {
+    grid-column: 1 !important;
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 {
+    grid-column: 1 !important;
+    width: 100% !important;
+    max-width: none !important;
+    grid-template-columns: 2rem 2rem minmax(0, 1fr) !important;
+  }
+}
+
+
+/* ===== v6.228 stable mobile header and desktop badge order ===== */
+@media (max-width: 640px) {
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 {
+    box-sizing: border-box !important;
+    min-height: 2.34rem !important;
+    height: 2.34rem !important;
+    max-height: 2.34rem !important;
+    padding-top: 0.42rem !important;
+    padding-bottom: 0.42rem !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 .workspace-title,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 .workspace-title {
+    line-height: 1.05 !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode {
+    box-sizing: border-box !important;
+    height: 1.76rem !important;
+    min-height: 1.76rem !important;
+    max-height: 1.76rem !important;
+    align-items: center !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode .view-toggle-btn,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode .view-toggle-btn {
+    box-sizing: border-box !important;
+    height: 1.56rem !important;
+    min-height: 1.56rem !important;
+    max-height: 1.56rem !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    line-height: 1 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+  }
+}
+
+/* ===== v6.229 mobile header lock + remove redundant mobile primary action ===== */
+@media (max-width: 640px) {
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 {
+    height: 2.42rem !important;
+    min-height: 2.42rem !important;
+    max-height: 2.42rem !important;
+    padding: 0.43rem 0.72rem !important;
+    margin: 0 !important;
+    box-sizing: border-box !important;
+    overflow: hidden !important;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    align-items: center !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 .workspace-identity,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 .workspace-identity,
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 .workspace-title,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 .workspace-title {
+    height: 1.56rem !important;
+    min-height: 1.56rem !important;
+    max-height: 1.56rem !important;
+    line-height: 1.56rem !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-sizing: border-box !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode {
+    height: 1.58rem !important;
+    min-height: 1.58rem !important;
+    max-height: 1.58rem !important;
+    line-height: 1 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    transform: none !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    align-self: center !important;
+    justify-self: end !important;
+    box-sizing: border-box !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode .view-toggle-btn,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode .view-toggle-btn {
+    height: 1.52rem !important;
+    min-height: 1.52rem !important;
+    max-height: 1.52rem !important;
+    line-height: 1 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    margin: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    box-sizing: border-box !important;
+  }
+
+  body.mobile-chrome-v6205 .mobile-card-actions-v6203,
+  body.mobile-lens-v6203 .mobile-card-actions-v6203 {
+    grid-template-columns: minmax(0, 1fr) 2.9rem !important;
+  }
+
+  body.mobile-chrome-v6205 .mobile-primary-action-v6203,
+  body.mobile-lens-v6203 .mobile-primary-action-v6203 {
+    display: none !important;
+  }
+
+  body.mobile-chrome-v6205 .mobile-more-action-v6203,
+  body.mobile-lens-v6203 .mobile-more-action-v6203 {
+    grid-column: 2 !important;
+    justify-self: stretch !important;
+    width: 2.9rem !important;
+  }
+}
+
+/* ===== v6.230 mobile Feed/Tree title-row pixel lock ===== */
+/* v6.229 still allowed a visible one-pixel change when toggling Feed/Tree on
+   narrow viewports. The prior lock used rem values, which can round
+   differently when the segmented control is re-rendered. Use integer pixel
+   geometry for this one mobile chrome row so Feed and Tree have an identical
+   measured box. */
+@media (max-width: 640px) {
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 {
+    height: 39px !important;
+    min-height: 39px !important;
+    max-height: 39px !important;
+    padding: 7px 12px !important;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) 82px !important;
+    column-gap: 8px !important;
+    align-items: center !important;
+    box-sizing: border-box !important;
+    overflow: hidden !important;
+    line-height: 1 !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 .workspace-identity,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 .workspace-identity,
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 .workspace-title,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 .workspace-title {
+    height: 24px !important;
+    min-height: 24px !important;
+    max-height: 24px !important;
+    line-height: 24px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-sizing: border-box !important;
+    align-self: center !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode,
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.view-toggle,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.view-toggle {
+    grid-column: 2 !important;
+    justify-self: end !important;
+    align-self: center !important;
+    width: 82px !important;
+    min-width: 82px !important;
+    max-width: 82px !important;
+    height: 25px !important;
+    min-height: 25px !important;
+    max-height: 25px !important;
+    margin: 0 !important;
+    padding: 2px !important;
+    gap: 2px !important;
+    transform: none !important;
+    line-height: 1 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-sizing: border-box !important;
+    contain: layout size !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode .view-toggle-btn,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode .view-toggle-btn {
+    flex: 0 0 38px !important;
+    width: 38px !important;
+    min-width: 38px !important;
+    max-width: 38px !important;
+    height: 21px !important;
+    min-height: 21px !important;
+    max-height: 21px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    line-height: 21px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-sizing: border-box !important;
+    transform: none !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode .view-toggle-btn.active,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode .view-toggle-btn.active {
+    transform: none !important;
+    border-width: 0 !important;
+    box-shadow: none !important;
+  }
+}
+
+
+/* ===== v6.234 lineage toolbar parity + mobile lineage action compacting ===== */
+.feed-toolbar.lineage.toolbar-normalized-v6234 {
+  display: grid !important;
+  grid-template-columns: max-content minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 0.75rem !important;
+}
+
+.feed-toolbar.lineage.toolbar-normalized-v6234 > .feed-mode {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  justify-self: start !important;
+  align-self: center !important;
+  width: auto !important;
+  min-width: max-content !important;
+}
+
+.feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+.feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap.toolbar-lineage-cluster-v6234 {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  justify-self: end !important;
+  align-self: center !important;
+  display: grid !important;
+  grid-template-columns: 2rem 2rem minmax(220px, 280px) !important;
+  align-items: center !important;
+  gap: 0.55rem !important;
+  width: min(100%, calc(2rem + 0.55rem + 2rem + 0.55rem + 280px)) !important;
+  max-width: calc(2rem + 0.55rem + 2rem + 0.55rem + 280px) !important;
+  min-width: 0 !important;
+  margin-left: 0 !important;
+}
+
+.feed-toolbar.lineage.toolbar-normalized-v6234 .lineage-display-spacer-v6234 {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  width: 2rem !important;
+  min-width: 2rem !important;
+  max-width: 2rem !important;
+  height: 2rem !important;
+  min-height: 2rem !important;
+  max-height: 2rem !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  display: block !important;
+  box-sizing: border-box !important;
+}
+
+.feed-toolbar.lineage.toolbar-normalized-v6234 .lineage-search-wrap > .preview-toggle-v6195,
+.feed-toolbar.lineage.toolbar-normalized-v6234 .lineage-search-wrap > .tree-all-toggle,
+.feed-toolbar.lineage.toolbar-normalized-v6234 .lineage-search-wrap > .tree-all-toggle.disabled-placeholder-v6173 {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  justify-self: center !important;
+  align-self: center !important;
+  width: 2rem !important;
+  min-width: 2rem !important;
+  max-width: 2rem !important;
+  height: 2rem !important;
+  min-height: 2rem !important;
+  max-height: 2rem !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  box-sizing: border-box !important;
+}
+
+.feed-toolbar.lineage.toolbar-normalized-v6234 .lineage-search-wrap > .search-box {
+  grid-column: 3 !important;
+  grid-row: 1 !important;
+  justify-self: stretch !important;
+  align-self: center !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  height: 2rem !important;
+  min-height: 2rem !important;
+  max-height: 2rem !important;
+}
+
+.feed-toolbar.lineage.toolbar-normalized-v6234 .lineage-search-wrap > .search-box input {
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+@media (max-width: 640px) {
+  .feed-toolbar.lineage.toolbar-normalized-v6234 {
+    grid-template-columns: 1fr !important;
+    gap: 0.5rem !important;
+  }
+
+  .feed-toolbar.lineage.toolbar-normalized-v6234 > .feed-mode {
+    grid-column: 1 !important;
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+  .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap.toolbar-lineage-cluster-v6234 {
+    grid-column: 1 !important;
+    width: 100% !important;
+    max-width: none !important;
+    grid-template-columns: 2rem 2rem minmax(0, 1fr) !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 {
+    grid-column: 2 !important;
+    justify-self: end !important;
+    align-self: center !important;
+    width: 82px !important;
+    min-width: 82px !important;
+    max-width: 82px !important;
+    height: 25px !important;
+    min-height: 25px !important;
+    max-height: 25px !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    gap: 4px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: flex-end !important;
+    box-sizing: border-box !important;
+    overflow: hidden !important;
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 .back-button,
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 .audit-lineage-btn,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 .back-button,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 .audit-lineage-btn {
+    flex: 0 0 38px !important;
+    width: 38px !important;
+    min-width: 38px !important;
+    max-width: 38px !important;
+    height: 25px !important;
+    min-height: 25px !important;
+    max-height: 25px !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-sizing: border-box !important;
+    border-radius: 999px !important;
+    font-size: 0 !important;
+    line-height: 1 !important;
+    overflow: hidden !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 .back-button i,
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 .audit-lineage-btn i,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 .back-button i,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 .audit-lineage-btn i {
+    font-size: 0.82rem !important;
+    line-height: 1 !important;
+    margin: 0 !important;
+  }
+}
+
+/* ===== v6.235 lineage toolbar visual parity ===== */
+/* v6.234 normalized the DOM order, but the Lineage left action group still had
+   a slightly different measured rhythm from Discovery. Lock the Lineage row to
+   the same 2rem control geometry and remove the legacy pseudo spacer now that
+   the real spacer element owns the reserved display-options slot. */
+.feed-toolbar.lineage.toolbar-normalized-v6234,
+.feed-toolbar.lineage.toolbar-normalized-v6235 {
+  min-height: 2rem !important;
+  align-items: center !important;
+}
+
+.feed-toolbar.lineage.toolbar-normalized-v6234 > .feed-mode,
+.feed-toolbar.lineage.toolbar-normalized-v6235 > .feed-mode {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 0.55rem !important;
+  height: 2rem !important;
+  min-height: 2rem !important;
+  max-height: 2rem !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  line-height: 1 !important;
+  box-sizing: border-box !important;
+}
+
+.feed-toolbar.lineage.toolbar-normalized-v6234 > .feed-mode .kicker-inline,
+.feed-toolbar.lineage.toolbar-normalized-v6235 > .feed-mode .kicker-inline {
+  display: inline-flex !important;
+  align-items: center !important;
+  height: 2rem !important;
+  min-height: 2rem !important;
+  max-height: 2rem !important;
+  line-height: 1 !important;
+}
+
+.feed-toolbar.lineage.toolbar-normalized-v6234 > .feed-mode .back-button,
+.feed-toolbar.lineage.toolbar-normalized-v6234 > .feed-mode .audit-lineage-btn,
+.feed-toolbar.lineage.toolbar-normalized-v6235 > .feed-mode .back-button,
+.feed-toolbar.lineage.toolbar-normalized-v6235 > .feed-mode .audit-lineage-btn {
+  height: 2rem !important;
+  min-height: 2rem !important;
+  max-height: 2rem !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  line-height: 1 !important;
+  box-sizing: border-box !important;
+}
+
+.feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap::before,
+.feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap::before {
+  content: none !important;
+  display: none !important;
+}
+
+.feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+.feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap {
+  height: 2rem !important;
+  min-height: 2rem !important;
+  max-height: 2rem !important;
+}
+
+@media (max-width: 640px) {
+  .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+  .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap {
+    height: 2rem !important;
+    min-height: 2rem !important;
+    max-height: 2rem !important;
+  }
+}
+
+/* ===== v6.236 discovery/lineage search width parity ===== */
+/* Keep Discovery and Lineage using the same desktop search-rail geometry. The
+   Lineage left action group is wider than Discovery's Feed/Tree toggle, so the
+   old 280px max input could shrink differently. Use one explicit measured
+   desktop width for both rails while preserving the full-width mobile rail. */
+@media (min-width: 641px) {
+  .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227,
+  .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+  .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap,
+  .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap.toolbar-lineage-cluster-v6234,
+  .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap.toolbar-lineage-cluster-v6234 {
+    grid-template-columns: 2rem 2rem 250px !important;
+    width: calc(2rem + 0.55rem + 2rem + 0.55rem + 250px) !important;
+    max-width: calc(2rem + 0.55rem + 2rem + 0.55rem + 250px) !important;
+  }
+
+  .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .search-box,
+  .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .search-box,
+  .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .search-box,
+  .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap.toolbar-lineage-cluster-v6234 > .search-box,
+  .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap.toolbar-lineage-cluster-v6234 > .search-box {
+    width: 250px !important;
+    min-width: 250px !important;
+    max-width: 250px !important;
+    flex: 0 0 250px !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227,
+  .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+  .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap,
+  .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap.toolbar-lineage-cluster-v6234,
+  .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap.toolbar-lineage-cluster-v6234 {
+    grid-template-columns: 2rem 2rem minmax(0, 1fr) !important;
+    width: 100% !important;
+    max-width: none !important;
+  }
+
+  .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .search-box,
+  .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .search-box,
+  .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .search-box,
+  .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap.toolbar-lineage-cluster-v6234 > .search-box,
+  .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap.toolbar-lineage-cluster-v6234 > .search-box {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    flex: 1 1 auto !important;
+  }
+}
+
+/* ===== v6.237 mobile Lineage parity + Back/Audit text restore ===== */
+/* Keep mobile Discovery and Lineage search rails on the same measured grid.
+   Lineage still uses a hidden display-options slot for geometry only; Display
+   Options itself remains absent from Lineage for now. */
+@media (max-width: 640px) {
+  .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227,
+  .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+  .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap,
+  .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap.toolbar-lineage-cluster-v6234,
+  .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap.toolbar-lineage-cluster-v6234 {
+    display: grid !important;
+    grid-template-columns: 2rem 2rem minmax(0, 1fr) !important;
+    align-items: center !important;
+    gap: 0.55rem !important;
+    width: 100% !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+    max-height: 2rem !important;
+    margin: 0 !important;
+    justify-self: stretch !important;
+  }
+
+  .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .search-box,
+  .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .search-box,
+  .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .search-box,
+  .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap.toolbar-lineage-cluster-v6234 > .search-box,
+  .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap.toolbar-lineage-cluster-v6234 > .search-box {
+    grid-column: 3 !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+    max-height: 2rem !important;
+  }
+
+  /* Back/Audit should remain readable in mobile instead of becoming a pair of
+     unlabeled icon pills. Keep the row compact, but use the desktop labels. */
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 {
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: calc(100% - 7.25rem) !important;
+    height: 25px !important;
+    min-height: 25px !important;
+    max-height: 25px !important;
+    gap: 0.35rem !important;
+    justify-content: flex-end !important;
+    overflow: visible !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 .back-button,
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 .audit-lineage-btn,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 .back-button,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 .audit-lineage-btn {
+    flex: 0 0 auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    height: 25px !important;
+    min-height: 25px !important;
+    max-height: 25px !important;
+    padding: 0 0.55rem !important;
+    gap: 0.32rem !important;
+    font-size: 0.72rem !important;
+    line-height: 1 !important;
+    white-space: nowrap !important;
+    overflow: visible !important;
+  }
+
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 .back-button i,
+  body.mobile-chrome-v6205 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 .audit-lineage-btn i,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 .back-button i,
+  body.mobile-lens-v6203 .workspace-strip.mobile-title-mode-row-v6216 > .feed-mode.mobile-lineage-actions-v6234 .audit-lineage-btn i {
+    font-size: 0.78rem !important;
+    line-height: 1 !important;
+    margin: 0 !important;
+  }
+}
+
+/* ===== v6.238 mobile Lineage toolbar parity + compact-state guard ===== */
+@media (max-width: 640px) {
+  /* Lineage inherits the same tools-only toolbar shell as Discovery, but the
+     Back/Audit title-row and hidden geometry spacer make the old bottom padding
+     read as a lower search rail. Keep the top rhythm and remove only the
+     Lineage-specific bottom reserve. */
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.mobile-tools-only-v6216,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.mobile-tools-only-v6216,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 {
+    padding-top: 0.26rem !important;
+    padding-bottom: 0 !important;
+  }
+
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap {
+    align-items: center !important;
+    align-content: center !important;
+    gap: 0.55rem !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .lineage-display-spacer-v6234,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .lineage-display-spacer-v6234,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .preview-toggle-v6195,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .preview-toggle-v6195,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .tree-all-toggle,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .tree-all-toggle,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .lineage-display-spacer-v6234,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .lineage-display-spacer-v6234,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .preview-toggle-v6195,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .preview-toggle-v6195,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .tree-all-toggle,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .tree-all-toggle {
+    align-self: center !important;
+    justify-self: center !important;
+    width: 2rem !important;
+    min-width: 2rem !important;
+    max-width: 2rem !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+    max-height: 2rem !important;
+    margin: 0 !important;
+  }
+
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .search-box,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .search-box,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .search-box,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .search-box {
+    align-self: center !important;
+    justify-self: stretch !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+    max-height: 2rem !important;
+    margin: 0 !important;
+  }
+
+  /* Do not let Discovery's scroll-down compact state hide or shrink the
+     Lineage toolbar when a user opens a lineage from a scrolled feed. */
+  .workspace.mobile-chrome-compact-v6199 .feed-toolbar.lineage,
+  .workspace.mobile-chrome-compact-v6199 .feed-toolbar.lineage.toolbar-normalized-v6234,
+  .workspace.mobile-chrome-compact-v6199 .feed-toolbar.lineage.toolbar-normalized-v6235 {
+    display: grid !important;
+    opacity: 1 !important;
+    max-height: none !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    pointer-events: auto !important;
+  }
+
+  .workspace.mobile-chrome-compact-v6199 .feed-toolbar.lineage .search-box,
+  .workspace.mobile-chrome-compact-v6199 .feed-toolbar.lineage .preview-toggle-v6195,
+  .workspace.mobile-chrome-compact-v6199 .feed-toolbar.lineage .tree-all-toggle,
+  .workspace.mobile-chrome-compact-v6199 .feed-toolbar.lineage .lineage-display-spacer-v6234 {
+    height: 2rem !important;
+    min-height: 2rem !important;
+    max-height: 2rem !important;
+  }
+}
+
+
+
+/* ===== v6.239 mobile toolbar parity + badge-row more action ===== */
+@media (max-width: 640px) {
+  /* User-verified delta: the mobile Discovery/Lineage tools-only toolbar should
+     not carry the old vertical padding reserve. The reserve made the rails read
+     at different vertical positions and caused visible mode-switch drift. */
+  body.mobile-chrome-v6205 .feed-toolbar.mobile-tools-only-v6216,
+  body.mobile-lens-v6203 .feed-toolbar.mobile-tools-only-v6216,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.mobile-tools-only-v6216,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.mobile-tools-only-v6216,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+  }
+
+  body.mobile-chrome-v6205 .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227,
+  body.mobile-lens-v6203 .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap {
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+  }
+
+  /* The mobile primary action is the card itself. Keep only a compact More chip
+     in the badge row; if an old mobile action row survives a render path, hide
+     it instead of reserving a full extra action row. */
+  body.mobile-chrome-v6205 .mobile-card-actions-v6203,
+  body.mobile-lens-v6203 .mobile-card-actions-v6203 {
+    display: none !important;
+  }
+
+  body.mobile-chrome-v6205 .post-chips .mobile-card-more-chip-v6239,
+  body.mobile-lens-v6203 .post-chips .mobile-card-more-chip-v6239 {
+    flex: 0 0 auto !important;
+    min-width: 2rem !important;
+    max-width: 2.2rem !important;
+    height: 1.34rem !important;
+    min-height: 1.34rem !important;
+    max-height: 1.34rem !important;
+    padding: 0 0.46rem !important;
+    border-radius: 999px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-size: 0.78rem !important;
+    line-height: 1 !important;
+    margin-left: auto !important;
+  }
+
+  body.mobile-chrome-v6205 .post-chips .mobile-card-more-chip-v6239 i,
+  body.mobile-lens-v6203 .post-chips .mobile-card-more-chip-v6239 i {
+    font-size: 0.76rem !important;
+    line-height: 1 !important;
+    margin: 0 !important;
+  }
+}
+
+/* ===== v6.240 mobile Lineage rail breath + always-visible card More chip ===== */
+@media (max-width: 640px) {
+  /* Keep the v6.239 no-padding fix that stopped Discovery/Lineage vertical
+     drift, but give the Lineage search rail the same visual breathing as the
+     Discovery rail through its inner measured row rather than old toolbar
+     padding. */
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap {
+    box-sizing: border-box !important;
+    min-height: 2.08rem !important;
+    height: 2.08rem !important;
+    max-height: 2.08rem !important;
+    align-items: center !important;
+    align-content: center !important;
+  }
+
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .search-box,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .search-box,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .search-box,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .search-box,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .preview-toggle-v6195,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .preview-toggle-v6195,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .preview-toggle-v6195,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .preview-toggle-v6195 {
+    align-self: center !important;
+  }
+
+  body.mobile-chrome-v6205 .post-chips > .mobile-card-more-chip-v6239,
+  body.mobile-lens-v6203 .post-chips > .mobile-card-more-chip-v6239 {
+    order: 999 !important;
+    flex: 0 0 1.86rem !important;
+    width: 1.86rem !important;
+    min-width: 1.86rem !important;
+    max-width: 1.86rem !important;
+    height: 1.36rem !important;
+    min-height: 1.36rem !important;
+    max-height: 1.36rem !important;
+    padding: 0 !important;
+    margin-left: auto !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    overflow: visible !important;
+  }
+
+  body.mobile-chrome-v6205 .post-chips > .mobile-card-more-chip-v6239 i,
+  body.mobile-lens-v6203 .post-chips > .mobile-card-more-chip-v6239 i {
+    margin: 0 !important;
+    font-size: 0.72rem !important;
+    line-height: 1 !important;
+  }
+}
+
+
+/* ===== v6.241 mobile card More visibility + Lineage search parity ===== */
+@media (max-width: 640px) {
+  /* Keep the card More control as a badge-row affordance without letting it be
+     packed away or pushed outside the nowrap chip row. The row reserves a small
+     right-side rail and the ellipsis is absolutely pinned inside it. */
+  body.mobile-chrome-v6205 .lineage-post .post-chips,
+  body.mobile-lens-v6203 .lineage-post .post-chips,
+  body.mobile-chrome-v6205 article .post-chips,
+  body.mobile-lens-v6203 article .post-chips {
+    position: relative !important;
+    padding-right: 2.18rem !important;
+    box-sizing: border-box !important;
+  }
+
+  body.mobile-chrome-v6205 .post-chips > .mobile-card-more-chip-v6239,
+  body.mobile-lens-v6203 .post-chips > .mobile-card-more-chip-v6239,
+  body.mobile-chrome-v6205 .post-chips > .mobile-card-more-chip-v6241,
+  body.mobile-lens-v6203 .post-chips > .mobile-card-more-chip-v6241 {
+    position: absolute !important;
+    right: 0 !important;
+    top: 0 !important;
+    z-index: 3 !important;
+    order: initial !important;
+    flex: none !important;
+    width: 1.88rem !important;
+    min-width: 1.88rem !important;
+    max-width: 1.88rem !important;
+    height: 1.36rem !important;
+    min-height: 1.36rem !important;
+    max-height: 1.36rem !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border-radius: 999px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    overflow: visible !important;
+  }
+
+  body.mobile-chrome-v6205 .post-chips > .mobile-card-more-chip-v6239 i,
+  body.mobile-lens-v6203 .post-chips > .mobile-card-more-chip-v6239 i,
+  body.mobile-chrome-v6205 .post-chips > .mobile-card-more-chip-v6241 i,
+  body.mobile-lens-v6203 .post-chips > .mobile-card-more-chip-v6241 i {
+    margin: 0 !important;
+    font-size: 0.72rem !important;
+    line-height: 1 !important;
+  }
+
+  /* Make Lineage use the same mobile search-rail geometry as Discovery. Do not
+     restore the old toolbar padding that caused mode-switch drift; only normalize
+     the inner rail and its children to Discovery's final measured slots. */
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.mobile-tools-only-v6216,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.mobile-tools-only-v6216,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+  }
+
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap {
+    display: grid !important;
+    grid-template-columns: 2rem 2rem minmax(0, 1fr) !important;
+    align-items: center !important;
+    align-content: center !important;
+    gap: 0.55rem !important;
+    width: 100% !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+    max-height: 2rem !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    justify-self: stretch !important;
+    box-sizing: border-box !important;
+  }
+
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .lineage-display-spacer-v6234,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .lineage-display-spacer-v6234,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .lineage-display-spacer-v6234,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .lineage-display-spacer-v6234 {
+    grid-column: 1 !important;
+    grid-row: 1 !important;
+    justify-self: center !important;
+    align-self: center !important;
+    width: 2rem !important;
+    min-width: 2rem !important;
+    max-width: 2rem !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+    max-height: 2rem !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .preview-toggle-v6195,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .preview-toggle-v6195,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .tree-all-toggle,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .tree-all-toggle,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .preview-toggle-v6195,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .preview-toggle-v6195,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .tree-all-toggle,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .tree-all-toggle {
+    grid-column: 2 !important;
+    grid-row: 1 !important;
+    justify-self: center !important;
+    align-self: center !important;
+    width: 2rem !important;
+    min-width: 2rem !important;
+    max-width: 2rem !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+    max-height: 2rem !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-sizing: border-box !important;
+  }
+
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .search-box,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .search-box,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .search-box,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .search-box {
+    grid-column: 3 !important;
+    grid-row: 1 !important;
+    justify-self: stretch !important;
+    align-self: center !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+    max-height: 2rem !important;
+    margin: 0 !important;
+    box-sizing: border-box !important;
+  }
+}
+
+
+/* ===== v6.242 mobile lineage rail parity + robust badge-row More ===== */
+@media (max-width: 640px) {
+  /* Final high-specificity parity rule: both rails use the same measured
+     tools-only geometry. Keep old padding reserves out, but do not collapse the
+     row. */
+  body.mobile-chrome-v6205 .feed-toolbar.discovery.toolbar-normalized-v6227,
+  body.mobile-lens-v6203 .feed-toolbar.discovery.toolbar-normalized-v6227,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    box-sizing: border-box !important;
+  }
+
+  body.mobile-chrome-v6205 .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227,
+  body.mobile-lens-v6203 .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap {
+    display: grid !important;
+    grid-template-columns: 2rem 2rem minmax(0, 1fr) !important;
+    align-items: center !important;
+    align-content: center !important;
+    gap: 0.55rem !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+    max-height: 2rem !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-sizing: border-box !important;
+    justify-self: stretch !important;
+  }
+
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .lineage-display-spacer-v6234,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .lineage-display-spacer-v6234,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .lineage-display-spacer-v6234,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .lineage-display-spacer-v6234,
+  body.mobile-chrome-v6205 .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .toolbar-display-options-v6223,
+  body.mobile-chrome-v6205 .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .toolbar-display-options-v6227,
+  body.mobile-lens-v6203 .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .toolbar-display-options-v6223,
+  body.mobile-lens-v6203 .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .toolbar-display-options-v6227 {
+    grid-column: 1 !important;
+    grid-row: 1 !important;
+    justify-self: center !important;
+    align-self: center !important;
+    width: 2rem !important;
+    min-width: 2rem !important;
+    max-width: 2rem !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+    max-height: 2rem !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-sizing: border-box !important;
+  }
+
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .preview-toggle-v6195,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .preview-toggle-v6195,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .preview-toggle-v6195,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .preview-toggle-v6195,
+  body.mobile-chrome-v6205 .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .preview-toggle-v6195,
+  body.mobile-chrome-v6205 .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .tree-all-toggle,
+  body.mobile-lens-v6203 .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .preview-toggle-v6195,
+  body.mobile-lens-v6203 .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .tree-all-toggle {
+    grid-column: 2 !important;
+    grid-row: 1 !important;
+    justify-self: center !important;
+    align-self: center !important;
+    width: 2rem !important;
+    min-width: 2rem !important;
+    max-width: 2rem !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+    max-height: 2rem !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-sizing: border-box !important;
+  }
+
+  body.mobile-chrome-v6205 .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .search-box,
+  body.mobile-lens-v6203 .feed-toolbar.discovery.toolbar-normalized-v6227 > .toolbar-search-cluster-v6227 > .search-box,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .search-box,
+  body.mobile-chrome-v6205 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .search-box,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6234 > .lineage-search-wrap > .search-box,
+  body.mobile-lens-v6203 .feed-toolbar.lineage.toolbar-normalized-v6235 > .lineage-search-wrap > .search-box {
+    grid-column: 3 !important;
+    grid-row: 1 !important;
+    justify-self: stretch !important;
+    align-self: center !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+    max-height: 2rem !important;
+    margin: 0 !important;
+    box-sizing: border-box !important;
+  }
+
+  body.mobile-chrome-v6205 .lineage-post .post-chips.mobile-card-more-row-v6242,
+  body.mobile-lens-v6203 .lineage-post .post-chips.mobile-card-more-row-v6242,
+  body.mobile-chrome-v6205 article .post-chips.mobile-card-more-row-v6242,
+  body.mobile-lens-v6203 article .post-chips.mobile-card-more-row-v6242 {
+    position: relative !important;
+    padding-right: 2.18rem !important;
+  }
+
+  body.mobile-chrome-v6205 .post-chips > .mobile-card-more-chip-v6242,
+  body.mobile-lens-v6203 .post-chips > .mobile-card-more-chip-v6242 {
+    position: absolute !important;
+    right: 0 !important;
+    top: 0 !important;
+    z-index: 5 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 1.88rem !important;
+    min-width: 1.88rem !important;
+    max-width: 1.88rem !important;
+    height: 1.36rem !important;
+    min-height: 1.36rem !important;
+    max-height: 1.36rem !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+  }
+}
+
+/* ===== v6.243 badge-row More click target ===== */
+@media (max-width: 640px) {
+  body.mobile-chrome-v6205 .post-chips > .mobile-card-more-chip-v6239,
+  body.mobile-lens-v6203 .post-chips > .mobile-card-more-chip-v6239,
+  body.mobile-chrome-v6205 .post-chips > .mobile-card-more-chip-v6241,
+  body.mobile-lens-v6203 .post-chips > .mobile-card-more-chip-v6241,
+  body.mobile-chrome-v6205 .post-chips > .mobile-card-more-chip-v6242,
+  body.mobile-lens-v6203 .post-chips > .mobile-card-more-chip-v6242 {
+    cursor: pointer !important;
+    touch-action: manipulation !important;
+    -webkit-tap-highlight-color: transparent !important;
+    z-index: 12 !important;
+  }
+}
+
+/* ===== v6.258 artifact wizard UX stabilization ===== */
+.artifact-wizard-backdrop-v6258 {
+  padding: 0.6rem !important;
+  overflow: hidden !important;
+  align-items: center !important;
+}
+
+.artifact-wizard-panel-v6258 {
+  width: min(960px, calc(100vw - 1.2rem)) !important;
+  height: min(92dvh, 860px) !important;
+  max-height: calc(100dvh - 1.2rem) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+.artifact-wizard-panel-v6258 .artifact-wizard-head {
+  flex: 0 0 auto !important;
+}
+
+.artifact-wizard-body-v6258 {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  overscroll-behavior: contain !important;
+  -webkit-overflow-scrolling: touch !important;
+  scrollbar-gutter: stable !important;
+}
+
+.artifact-wizard-actions-v6258 {
+  flex: 0 0 auto !important;
+  position: relative !important;
+  bottom: auto !important;
+  z-index: 3 !important;
+  border-top: 1px solid rgba(216, 180, 254, 0.14) !important;
+  box-shadow: 0 -18px 34px rgba(0, 0, 0, 0.26) !important;
+}
+
+.wizard-type-step-v6258 .wizard-step-head p {
+  max-width: 68ch;
+}
+
+.wizard-relation-card-v6258 .wizard-relation-rows:empty {
+  display: none !important;
+}
+
+.wizard-schema-grid-v6258 .wizard-schema-card {
+  min-width: 0 !important;
+}
+
+/* Keep the legacy create modal scrollable if an older route still reaches it. */
+.create-lineage-panel-v6256,
+.create-lineage-panel-v6257 {
+  max-height: calc(100dvh - 1.2rem) !important;
+  overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch !important;
+  overscroll-behavior: contain !important;
+}
+
+@media (min-width: 761px) {
+  .wizard-schema-grid-v6258 {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  .artifact-wizard-actions-v6258 {
+    display: flex !important;
+    justify-content: flex-start !important;
+    gap: 0.55rem !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .artifact-wizard-backdrop-v6258 {
+    padding: 0.34rem !important;
+    align-items: flex-end !important;
+  }
+
+  .artifact-wizard-panel-v6258 {
+    width: calc(100vw - 0.68rem) !important;
+    height: calc(100dvh - 0.68rem) !important;
+    max-height: calc(100dvh - 0.68rem) !important;
+    border-radius: 1rem !important;
+  }
+
+  .artifact-wizard-panel-v6258 .artifact-wizard-head {
+    padding: 0.72rem 0.82rem 0.58rem !important;
+  }
+
+  .artifact-wizard-panel-v6258 .artifact-wizard-head .modal-title-lite {
+    font-size: 1.02rem !important;
+    line-height: 1.12 !important;
+  }
+
+  .artifact-wizard-panel-v6258 .artifact-wizard-head .text-secondary {
+    font-size: 0.86rem !important;
+    line-height: 1.28 !important;
+  }
+
+  .artifact-wizard-body-v6258 {
+    padding: 0.62rem 0.72rem 0.7rem !important;
+  }
+
+  .artifact-wizard-progress {
+    margin-bottom: 0.58rem !important;
+  }
+
+  .artifact-wizard-progress span {
+    padding: 0.22rem 0.34rem !important;
+    font-size: 0.72rem !important;
+  }
+
+  .artifact-wizard-panel-v6258 .wizard-relation-card-v6258 {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 0.48rem !important;
+    padding: 0.62rem 0.68rem !important;
+    margin-bottom: 0.66rem !important;
+  }
+
+  .artifact-wizard-panel-v6258 .wizard-relation-icon {
+    display: none !important;
+  }
+
+  .artifact-wizard-panel-v6258 .wizard-relation-card-v6258 p {
+    font-size: 0.78rem !important;
+    line-height: 1.25 !important;
+  }
+
+  .artifact-wizard-panel-v6258 .wizard-relation-rows {
+    grid-template-columns: 1fr !important;
+    gap: 0.34rem !important;
+  }
+
+  .artifact-wizard-panel-v6258 .wizard-relation-rows div {
+    padding: 0.38rem 0.48rem !important;
+  }
+
+  .wizard-type-step-v6258 {
+    padding: 0.58rem !important;
+  }
+
+  .wizard-type-step-v6258 .wizard-step-head {
+    margin-bottom: 0.52rem !important;
+  }
+
+  .wizard-type-step-v6258 .wizard-step-head p {
+    font-size: 0.82rem !important;
+    line-height: 1.28 !important;
+  }
+
+  .wizard-schema-grid-v6258 {
+    grid-template-columns: 1fr !important;
+    gap: 0.42rem !important;
+  }
+
+  .wizard-schema-grid-v6258 .wizard-schema-card {
+    min-height: 2.55rem !important;
+    padding: 0.48rem 0.58rem !important;
+    display: grid !important;
+    grid-template-columns: 1.45rem minmax(0, 1fr) !important;
+    grid-template-areas: "icon label" !important;
+    align-items: center !important;
+    gap: 0.5rem !important;
+  }
+
+  .wizard-schema-grid-v6258 .wizard-schema-card i {
+    grid-area: icon !important;
+    font-size: 0.92rem !important;
+    margin: 0 !important;
+  }
+
+  .wizard-schema-grid-v6258 .wizard-schema-card strong {
+    grid-area: label !important;
+    font-size: 0.95rem !important;
+    line-height: 1.12 !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+  }
+
+  .wizard-schema-grid-v6258 .wizard-schema-card small,
+  .wizard-schema-grid-v6258 .wizard-schema-card p {
+    display: none !important;
+  }
+
+  .artifact-wizard-actions-v6258 {
+    padding: 0.62rem 0.72rem !important;
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 0.5rem !important;
+  }
+
+  .artifact-wizard-actions-v6258 .tv-btn {
+    width: 100% !important;
+    min-height: 2.72rem !important;
+    justify-content: center !important;
+  }
+}
+
+/* ===== v6.259 compact stepped Continue / Reference create UX ===== */
+.create-lineage-backdrop-v6259 {
+  padding: 0.65rem !important;
+  overflow: hidden !important;
+  align-items: center !important;
+}
+
+.create-lineage-panel-v6259 {
+  width: min(940px, calc(100vw - 1.3rem)) !important;
+  height: min(91dvh, 820px) !important;
+  max-height: calc(100dvh - 1.3rem) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+  padding: 0 !important;
+}
+
+.create-lineage-head-v6259 {
+  flex: 0 0 auto !important;
+  padding: 0.95rem 1.05rem 0.7rem !important;
+  border-bottom: 1px solid rgba(216, 180, 254, 0.12) !important;
+}
+
+.create-step-pills-v6259 {
+  flex: 0 0 auto !important;
+  display: flex !important;
+  gap: 0.45rem !important;
+  padding: 0.65rem 1.05rem 0.35rem !important;
+  align-items: center !important;
+}
+
+.create-step-pills-v6259 span {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 0.34rem !important;
+  padding: 0.24rem 0.55rem !important;
+  border: 1px solid rgba(216, 180, 254, 0.18) !important;
+  border-radius: 999px !important;
+  color: var(--muted) !important;
+  font-size: 0.8rem !important;
+  line-height: 1 !important;
+  background: rgba(255, 255, 255, 0.03) !important;
+}
+
+.create-step-pills-v6259 span b {
+  display: inline-grid !important;
+  place-items: center !important;
+  width: 1.2rem !important;
+  height: 1.2rem !important;
+  border-radius: 999px !important;
+  background: rgba(168, 85, 247, 0.32) !important;
+  color: #f3e8ff !important;
+  font-size: 0.74rem !important;
+}
+
+.create-step-pills-v6259 span.active {
+  color: #f4e8ff !important;
+  border-color: rgba(216, 180, 254, 0.42) !important;
+  background: rgba(168, 85, 247, 0.16) !important;
+}
+
+.create-lineage-scroll-v6259 {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  padding: 0.55rem 1.05rem 0.9rem !important;
+  overscroll-behavior: contain !important;
+  -webkit-overflow-scrolling: touch !important;
+}
+
+.create-lineage-actions-v6259 {
+  flex: 0 0 auto !important;
+  display: flex !important;
+  gap: 0.55rem !important;
+  align-items: center !important;
+  padding: 0.72rem 1.05rem !important;
+  border-top: 1px solid rgba(216, 180, 254, 0.14) !important;
+  background: rgba(7, 5, 13, 0.92) !important;
+  box-shadow: 0 -18px 34px rgba(0, 0, 0, 0.28) !important;
+  z-index: 4 !important;
+}
+
+.create-relation-compact-v6259,
+.create-type-panel-v6259,
+.create-policy-compact-v6259,
+.create-placement-compact-v6259,
+.create-selected-type-v6259 {
+  border: 1px solid rgba(216, 180, 254, 0.16) !important;
+  border-radius: 1rem !important;
+  background: rgba(255, 255, 255, 0.035) !important;
+}
+
+.create-relation-compact-v6259 {
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr) minmax(260px, 1.25fr) !important;
+  gap: 0.75rem !important;
+  align-items: center !important;
+  padding: 0.72rem 0.85rem !important;
+  margin-bottom: 0.7rem !important;
+}
+
+.create-relation-compact-v6259 > i {
+  width: 2.15rem !important;
+  height: 2.15rem !important;
+  border-radius: 999px !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  background: rgba(168, 85, 247, 0.22) !important;
+  color: #e9d5ff !important;
+}
+
+.create-relation-compact-v6259 strong,
+.create-selected-type-v6259 strong,
+.create-section-head-v6259 strong {
+  color: var(--text) !important;
+}
+
+.create-relation-compact-v6259 p,
+.create-section-head-v6259 p,
+.create-policy-compact-v6259 p,
+.create-help-v6259 {
+  margin: 0.12rem 0 0 !important;
+  color: var(--muted) !important;
+  font-size: 0.88rem !important;
+  line-height: 1.25 !important;
+}
+
+.create-relation-grid-v6259 {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 0.45rem !important;
+}
+
+.create-relation-grid-v6259 div {
+  padding: 0.42rem 0.55rem !important;
+  border-radius: 0.72rem !important;
+  background: rgba(0, 0, 0, 0.18) !important;
+  border: 1px solid rgba(216, 180, 254, 0.1) !important;
+}
+
+.create-relation-grid-v6259 small {
+  display: block !important;
+  color: var(--muted) !important;
+  font-size: 0.72rem !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.06em !important;
+}
+
+.create-relation-grid-v6259 strong {
+  display: block !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  font-size: 0.88rem !important;
+}
+
+.create-type-panel-v6259 {
+  padding: 0.75rem !important;
+}
+
+.create-section-head-v6259 {
+  display: flex !important;
+  align-items: flex-start !important;
+  gap: 0.55rem !important;
+  margin-bottom: 0.65rem !important;
+}
+
+.create-section-head-v6259 > span {
+  width: 1.45rem !important;
+  height: 1.45rem !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  border-radius: 999px !important;
+  background: rgba(168, 85, 247, 0.28) !important;
+  color: #f3e8ff !important;
+  flex: 0 0 auto !important;
+}
+
+.schema-row-list-v6259 {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 0.52rem !important;
+}
+
+.schema-row-v6259 {
+  width: 100% !important;
+  min-width: 0 !important;
+  text-align: left !important;
+  display: grid !important;
+  grid-template-columns: 1.55rem minmax(0, 1fr) !important;
+  grid-template-areas: "icon label" "icon desc" !important;
+  column-gap: 0.6rem !important;
+  row-gap: 0.15rem !important;
+  align-items: center !important;
+  min-height: 4.15rem !important;
+  padding: 0.62rem 0.72rem !important;
+  border-radius: 0.88rem !important;
+  border: 1px solid rgba(216, 180, 254, 0.16) !important;
+  background: rgba(255, 255, 255, 0.035) !important;
+  color: var(--text) !important;
+  cursor: pointer !important;
+}
+
+.schema-row-v6259:hover,
+.schema-row-v6259.selected {
+  border-color: rgba(216, 180, 254, 0.62) !important;
+  background: rgba(168, 85, 247, 0.18) !important;
+}
+
+.schema-row-v6259.disabled {
+  opacity: 0.48 !important;
+  cursor: not-allowed !important;
+}
+
+.schema-row-v6259 > i {
+  grid-area: icon !important;
+  color: #d8b4fe !important;
+  font-size: 1rem !important;
+}
+
+.schema-row-v6259 > span {
+  grid-area: label !important;
+  min-width: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 0.4rem !important;
+}
+
+.schema-row-v6259 > span strong {
+  overflow: hidden !important;
+  white-space: nowrap !important;
+  text-overflow: ellipsis !important;
+}
+
+.schema-row-v6259 > span em {
+  color: #e9d5ff !important;
+  font-style: normal !important;
+  font-size: 0.72rem !important;
+  border: 1px solid rgba(216, 180, 254, 0.2) !important;
+  border-radius: 999px !important;
+  padding: 0.05rem 0.35rem !important;
+}
+
+.schema-row-v6259 > small {
+  grid-area: desc !important;
+  color: var(--muted) !important;
+  line-height: 1.25 !important;
+  font-size: 0.8rem !important;
+}
+
+.create-warning-v6259 {
+  margin: 0.55rem 0 0 !important;
+  color: #fcd34d !important;
+  font-size: 0.83rem !important;
+}
+
+.create-selected-type-v6259 {
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr) auto !important;
+  gap: 0.65rem !important;
+  align-items: center !important;
+  padding: 0.62rem 0.72rem !important;
+  margin-bottom: 0.7rem !important;
+}
+
+.create-selected-type-v6259 > i {
+  color: #d8b4fe !important;
+}
+
+.create-selected-type-v6259 span {
+  display: block !important;
+  color: var(--muted) !important;
+  font-size: 0.78rem !important;
+}
+
+.create-policy-compact-v6259 {
+  padding: 0.62rem 0.72rem !important;
+  margin-bottom: 0.72rem !important;
+  color: var(--muted) !important;
+}
+
+.create-policy-compact-v6259 summary {
+  cursor: pointer !important;
+  color: var(--text) !important;
+  font-weight: 700 !important;
+}
+
+.create-policy-compact-v6259.danger {
+  border-color: rgba(248, 113, 113, 0.36) !important;
+}
+
+.create-policy-compact-v6259 label,
+.create-checkbox-v6259 {
+  display: flex !important;
+  gap: 0.48rem !important;
+  align-items: center !important;
+  color: var(--muted) !important;
+  margin-top: 0.45rem !important;
+}
+
+.create-placement-compact-v6259 {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 0.9fr) !important;
+  gap: 0.7rem !important;
+  padding: 0.62rem 0.72rem !important;
+  margin-bottom: 0.72rem !important;
+}
+
+.create-form-grid-v6259 {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 0.72rem !important;
+}
+
+.create-form-grid-v6259 > .field-label,
+.create-form-grid-v6259 > .col-md-6,
+.create-form-grid-v6259 > .col-md-7,
+.create-form-grid-v6259 > .col-md-5,
+.create-form-grid-v6259 > .col-12 {
+  width: auto !important;
+  max-width: none !important;
+  flex: none !important;
+  padding: 0 !important;
+}
+
+.create-form-grid-v6259 > .full,
+.create-form-grid-v6259 > .col-12 {
+  grid-column: 1 / -1 !important;
+}
+
+.create-form-grid-v6259 textarea.form-control {
+  min-height: 5.4rem !important;
+}
+
+@media (max-width: 760px) {
+  .create-lineage-backdrop-v6259 {
+    padding: 0.34rem !important;
+    align-items: flex-end !important;
+  }
+
+  .create-lineage-panel-v6259 {
+    width: calc(100vw - 0.68rem) !important;
+    height: calc(100dvh - 0.68rem) !important;
+    max-height: calc(100dvh - 0.68rem) !important;
+    border-radius: 1rem !important;
+  }
+
+  .create-lineage-head-v6259 {
+    padding: 0.64rem 0.78rem 0.48rem !important;
+  }
+
+  .create-lineage-head-v6259 .kicker {
+    font-size: 0.72rem !important;
+    margin-bottom: 0.14rem !important;
+  }
+
+  .create-lineage-head-v6259 .modal-title-lite {
+    font-size: 1rem !important;
+    line-height: 1.08 !important;
+    margin: 0 !important;
+  }
+
+  .create-lineage-head-v6259 .text-secondary {
+    max-width: 19rem !important;
+    overflow: hidden !important;
+    white-space: nowrap !important;
+    text-overflow: ellipsis !important;
+    font-size: 0.82rem !important;
+    margin-top: 0.16rem !important;
+  }
+
+  .create-step-pills-v6259 {
+    padding: 0.46rem 0.78rem 0.24rem !important;
+  }
+
+  .create-step-pills-v6259 span {
+    padding: 0.2rem 0.46rem !important;
+    font-size: 0.74rem !important;
+  }
+
+  .create-step-pills-v6259 span b {
+    width: 1.1rem !important;
+    height: 1.1rem !important;
+  }
+
+  .create-lineage-scroll-v6259 {
+    padding: 0.4rem 0.68rem 0.62rem !important;
+  }
+
+  .create-relation-compact-v6259 {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 0.4rem !important;
+    padding: 0.52rem 0.58rem !important;
+    margin-bottom: 0.52rem !important;
+  }
+
+  .create-relation-compact-v6259 > i {
+    display: none !important;
+  }
+
+  .create-relation-compact-v6259 p {
+    display: none !important;
+  }
+
+  .create-relation-grid-v6259 {
+    grid-template-columns: 1fr !important;
+    gap: 0.34rem !important;
+  }
+
+  .create-relation-grid-v6259 div {
+    padding: 0.36rem 0.48rem !important;
+  }
+
+  .create-type-panel-v6259 {
+    padding: 0.55rem !important;
+  }
+
+  .create-section-head-v6259 {
+    gap: 0.45rem !important;
+    margin-bottom: 0.48rem !important;
+  }
+
+  .create-section-head-v6259 > span {
+    width: 1.32rem !important;
+    height: 1.32rem !important;
+  }
+
+  .create-section-head-v6259 p {
+    font-size: 0.8rem !important;
+    line-height: 1.22 !important;
+  }
+
+  .schema-row-list-v6259 {
+    grid-template-columns: 1fr !important;
+    gap: 0.38rem !important;
+  }
+
+  .schema-row-v6259 {
+    min-height: 2.55rem !important;
+    grid-template-areas: "icon label" !important;
+    padding: 0.45rem 0.55rem !important;
+    border-radius: 0.78rem !important;
+  }
+
+  .schema-row-v6259 > small {
+    display: none !important;
+  }
+
+  .create-selected-type-v6259 {
+    padding: 0.5rem 0.58rem !important;
+    margin-bottom: 0.52rem !important;
+    grid-template-columns: auto minmax(0, 1fr) auto !important;
+  }
+
+  .create-policy-compact-v6259,
+  .create-placement-compact-v6259 {
+    padding: 0.5rem 0.58rem !important;
+    margin-bottom: 0.52rem !important;
+  }
+
+  .create-placement-compact-v6259,
+  .create-form-grid-v6259 {
+    grid-template-columns: 1fr !important;
+    gap: 0.58rem !important;
+  }
+
+  .create-form-grid-v6259 textarea.form-control {
+    min-height: 4.7rem !important;
+  }
+
+  .create-lineage-actions-v6259 {
+    padding: 0.56rem 0.68rem !important;
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 0.42rem !important;
+  }
+
+  .create-lineage-actions-v6259 .tv-btn {
+    width: 100% !important;
+    min-height: 2.65rem !important;
+    justify-content: center !important;
+  }
+}
+
+/* ===== v6.261 canonical artifact wizard responsiveness ===== */
+.artifact-wizard-panel-v6261 {
+  overflow: hidden !important;
+}
+
+@media (max-width: 760px) {
+  .artifact-wizard-backdrop-v6261 {
+    padding: 0.32rem !important;
+    align-items: flex-end !important;
+  }
+
+  .artifact-wizard-panel-v6261 {
+    width: calc(100vw - 0.64rem) !important;
+    height: calc(100dvh - 0.64rem) !important;
+    max-height: calc(100dvh - 0.64rem) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    border-radius: 1rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .artifact-wizard-head {
+    padding: 0.56rem 0.72rem 0.44rem !important;
+    min-height: 0 !important;
+  }
+
+  .artifact-wizard-panel-v6261 .artifact-wizard-head .kicker {
+    font-size: 0.66rem !important;
+    letter-spacing: 0.14em !important;
+    margin-bottom: 0.1rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .artifact-wizard-head .modal-title-lite {
+    font-size: 1rem !important;
+    line-height: 1.1 !important;
+    margin: 0 !important;
+  }
+
+  .artifact-wizard-panel-v6261 .artifact-wizard-head .text-secondary {
+    font-size: 0.78rem !important;
+    line-height: 1.2 !important;
+    margin-top: 0.14rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .artifact-wizard-body.paged,
+  .artifact-wizard-body-v6258.artifact-wizard-body-v6261 {
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    overflow-y: auto !important;
+    padding: 0.46rem 0.58rem 0.52rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .artifact-wizard-progress {
+    margin-bottom: 0.4rem !important;
+    gap: 0.28rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .artifact-wizard-progress span {
+    padding: 0.18rem 0.3rem !important;
+    font-size: 0.68rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .artifact-wizard-progress span b {
+    width: 1.15rem !important;
+    height: 1.15rem !important;
+    font-size: 0.66rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-relation-card,
+  .artifact-wizard-panel-v6261 .wizard-relation-card-v6258 {
+    display: block !important;
+    padding: 0.42rem 0.5rem !important;
+    margin-bottom: 0.42rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-relation-icon,
+  .artifact-wizard-panel-v6261 .wizard-relation-card p {
+    display: none !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-relation-card strong {
+    font-size: 0.78rem !important;
+    margin-bottom: 0.22rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-relation-rows {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 0.22rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-relation-rows div {
+    padding: 0.28rem 0.38rem !important;
+    display: flex !important;
+    justify-content: space-between !important;
+    gap: 0.4rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-relation-rows strong,
+  .artifact-wizard-panel-v6261 .wizard-relation-rows span {
+    font-size: 0.7rem !important;
+    line-height: 1.12 !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-step-page,
+  .artifact-wizard-panel-v6261 .wizard-type-step-v6258 {
+    padding: 0.42rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-step-head {
+    margin-bottom: 0.38rem !important;
+    gap: 0.42rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-step-head > span {
+    width: 1.28rem !important;
+    height: 1.28rem !important;
+    font-size: 0.7rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-step-head strong {
+    font-size: 0.84rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-step-head p {
+    display: none !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-schema-grid.paged,
+  .artifact-wizard-panel-v6261 .wizard-schema-grid-v6258 {
+    grid-template-columns: 1fr !important;
+    gap: 0.36rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-schema-card {
+    min-height: 2.45rem !important;
+    padding: 0.42rem 0.52rem !important;
+    display: grid !important;
+    grid-template-columns: 1.35rem minmax(0, 1fr) !important;
+    grid-template-areas: "icon label" !important;
+    align-items: center !important;
+    gap: 0.44rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-schema-card i {
+    grid-area: icon !important;
+    margin: 0 !important;
+    font-size: 0.88rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-schema-card strong {
+    grid-area: label !important;
+    font-size: 0.92rem !important;
+    line-height: 1.1 !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-schema-card small,
+  .artifact-wizard-panel-v6261 .wizard-schema-card p {
+    display: none !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-fields.paged {
+    gap: 0.55rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .field-label {
+    font-size: 0.78rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .tv-input,
+  .artifact-wizard-panel-v6261 .tv-textarea,
+  .artifact-wizard-panel-v6261 .form-control {
+    min-height: 2.35rem !important;
+    font-size: 0.9rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .wizard-body-textarea {
+    min-height: 9rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .artifact-wizard-actions.paged,
+  .artifact-wizard-panel-v6261 .artifact-wizard-actions-v6258 {
+    flex: 0 0 auto !important;
+    padding: 0.54rem 0.58rem !important;
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 0.42rem !important;
+  }
+
+  .artifact-wizard-panel-v6261 .artifact-wizard-actions .tv-btn,
+  .artifact-wizard-panel-v6261 .artifact-wizard-actions-v6258 .tv-btn {
+    width: 100% !important;
+    min-height: 2.55rem !important;
+    justify-content: center !important;
+  }
+}

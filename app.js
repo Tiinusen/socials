@@ -17764,8 +17764,12 @@ ${bodySections}
 
   // ===== v6.126 Create workspace dialog copy polish =====
   function renderCreateModal(modal) {
-    const schema = SCHEMAS[modal.schema] || SCHEMAS.topic;
-    if (modal.mode === 'workspace') {
+    // v6.257: keep this original create renderer self-contained. The earlier
+    // v6.126 wrapper captured the hoisted function declaration as its own
+    // "original", so non-workspace create modes could recurse forever. Do not
+    // delegate from this renderer; handle workspace, continue, and reference
+    // create modals explicitly here.
+    if (modal?.mode === 'workspace') {
       return `
         <div class="modal-backdrop-custom focus-modal create-workspace-backdrop" role="dialog" aria-modal="true">
           <div class="modal-panel create-workspace-panel">
@@ -17779,7 +17783,7 @@ ${bodySections}
             </div>
             <div class="create-workspace-body">
               <label class="field-label" for="workspace-name">Workspace name</label>
-              <input id="workspace-name" class="form-control tv-input" data-field="workspaceName" placeholder="Name this workspace" value="${escapeAttr(modal.workspaceName || '')}" autofocus>
+              <input id="workspace-name" class="form-control tv-input" data-field="workspaceName" placeholder="Name this workspace" value="${escapeAttr(modal?.workspaceName || '')}" autofocus>
               <p class="form-text">Stored locally in this browser unless exported.</p>
               <div class="modal-footer-actions create-workspace-actions">
                 <button class="tv-btn primary" data-action="create-workspace"><i class="fa-solid fa-plus"></i>Create</button>
@@ -17790,9 +17794,92 @@ ${bodySections}
         </div>`;
     }
 
-    return renderCreateModalOriginalV6126(modal);
-  }
+    const mode = modal?.mode === 'reference' ? 'reference' : 'continue';
+    const sourceWs = getWorkspace(modal?.sourceWsId || modal?.wsId || '');
+    const sourceNode = sourceWs?.nodeById?.get?.(modal?.sourceNodeId || modal?.nodeId || '');
+    const workspaces = Array.isArray(app?.workspaces) ? app.workspaces : [];
+    const destinationOptions = workspaces.map((ws) => `<option value="${escapeAttr(ws.id)}" ${modal?.destWsId === ws.id ? 'selected' : ''}>${escapeHtml(ws.label)}</option>`).join('');
+    const destWs = getWorkspace(modal?.destWsId || '');
+    const destNode = destWs ? selectedNode(destWs) : null;
+    const useParent = mode === 'continue' || modal?.useDestinationParent;
+    const hasParent = mode === 'continue' ? Boolean(sourceNode) : Boolean(useParent && destNode);
+    const availability = schemaAvailability(mode, hasParent, Boolean(sourceNode));
+    const needsDecision = modal?.requiresPolicyDecision;
+    const schemaKeyValue = modal?.schemaKey || modal?.schema || 'topic';
+    const fields = modal?.fields || {};
+    const fieldModal = Object.assign({}, modal || {}, { mode, schemaKey: schemaKeyValue, fields });
 
+    return `
+      <div class="modal-backdrop-custom create-lineage-backdrop-v6257" role="dialog" aria-modal="true">
+        <div class="modal-panel create-lineage-panel-v6257">
+          <div class="modal-header-lite">
+            <div>
+              <p class="kicker">${mode === 'continue' ? 'Continue lineage' : 'Reference lineage'}</p>
+              <h2 class="modal-title-lite">${mode === 'continue' ? 'Create child leaf' : 'Create reference leaf'}</h2>
+              <p class="text-secondary mb-0">${escapeHtml(sourceNode ? sourceNode.title : 'No source selected')}</p>
+            </div>
+            <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+
+          ${sourceWs ? `<div class="policy-callout ${needsDecision ? 'danger' : ''}">
+            <strong>${needsDecision ? 'Policy decision required' : 'Source policy'}</strong><br>
+            ${escapeHtml(policyTextForModal(sourceWs))}
+            ${needsDecision ? `<label class="d-flex gap-2 align-items-start mt-2"><input type="checkbox" data-field="policyDecisionAccepted" ${modal?.policyDecisionAccepted ? 'checked' : ''}> <span>Create a decision leaf first and make it the parent of the generated leaf.</span></label>` : ''}
+          </div>` : ''}
+
+          <div class="row g-3">
+            ${mode === 'reference' ? `
+              <div class="col-md-7">
+                <label class="form-label">Destination workspace</label>
+                <select class="form-select" data-field="destWsId">${destinationOptions}</select>
+                <div class="form-text text-secondary">The generated file belongs to this workspace. The viewed source becomes a reference, not the parent.</div>
+              </div>
+              <div class="col-md-5 d-flex align-items-end">
+                <label class="d-flex gap-2 align-items-center text-secondary mb-2">
+                  <input type="checkbox" data-field="useDestinationParent" ${modal?.useDestinationParent ? 'checked' : ''} ${destNode ? '' : 'disabled'}>
+                  Use selected destination node as parent
+                </label>
+              </div>` : ''}
+
+            <div class="col-12">
+              <label class="form-label">Schema</label>
+              <div class="schema-grid">
+                ${Object.entries(SCHEMAS).map(([key, schema]) => renderSchemaOption(key, schema, schemaKeyValue, availability)).join('')}
+              </div>
+              ${availability.note ? `<div class="form-text text-warning mt-2">${escapeHtml(availability.note)}</div>` : ''}
+            </div>
+
+            <div class="col-md-7">
+              <label class="form-label">Title / summary</label>
+              <input class="form-control" data-field="summary" value="${escapeAttr(modal?.summary || '')}" placeholder="Short title for the generated leaf">
+            </div>
+            <div class="col-md-5">
+              <label class="form-label">Authors</label>
+              <input class="form-control" data-field="authors" value="${escapeAttr(modal?.authors || '')}" placeholder="Your name or team">
+            </div>
+            <div class="col-12">
+              <label class="form-label">Why</label>
+              <textarea class="form-control" data-field="why" placeholder="Why this leaf exists">${escapeHtml(modal?.why || '')}</textarea>
+            </div>
+            ${renderSchemaFields(fieldModal)}
+            <div class="col-md-7">
+              <label class="form-label">Export directory</label>
+              <input class="form-control" data-field="exportDir" value="${escapeAttr(modal?.exportDir || '/')}" placeholder="/.topics">
+              <div class="form-text text-secondary">Repo-root anchored. <code>/</code> means repository root. Directories are created in the exported zip.</div>
+            </div>
+            <div class="col-md-5">
+              <label class="form-label">Filename</label>
+              <input class="form-control" data-field="filename" value="${escapeAttr(modal?.filename || '')}" placeholder="001-1.trace.md">
+              <div class="form-text text-secondary">Schema proposes this; edit only when you need a different lineage label or slug.</div>
+            </div>
+            <div class="col-12 d-flex flex-wrap gap-2 mt-2">
+              <button class="tv-btn primary" data-action="generate-trace"><i class="fa-solid fa-file-circle-plus"></i>${needsDecision ? 'Create decision + leaf' : 'Create local leaf'}</button>
+              <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }
 
 
 
@@ -26370,6 +26457,2536 @@ See _tiinex/export.manifest.json for source and output path metadata.
   };
 
 
+
+
+  // ===== v6.200 durable URL lens restore + scroll chase =====
+  function lensCacheKeyV6200() {
+    return `tiinex-lens-v6200:${location.pathname}${location.search}`;
+  }
+
+  function selectedRouteDescriptorV6200(ws) {
+    const node = selectedNode(ws);
+    const pending = ws?.pendingSelectedRouteV6156 || null;
+    if (node) {
+      return {
+        selectedNodeId: node.id || '',
+        selectedPath: node.path || '',
+        selectedTitle: node.title || '',
+        mode: 'lineage'
+      };
+    }
+    if (pending?.mode === 'lineage' || pending?.selectedPath || pending?.selectedTitle || pending?.selectedNodeId) {
+      return {
+        selectedNodeId: pending.selectedNodeId || '',
+        selectedPath: pending.selectedPath || '',
+        selectedTitle: pending.selectedTitle || '',
+        mode: 'lineage'
+      };
+    }
+    return { selectedNodeId: '', selectedPath: '', selectedTitle: '', mode: 'discovery' };
+  }
+
+  function activeScrollableFeedV6200(ws) {
+    if (!ws) return null;
+    const selected = selectedNode(ws);
+    const id = CSS.escape(ws.id);
+    if (selected) {
+      return document.querySelector(`.post-feed.lineage[data-ws="${id}"]`);
+    }
+    return document.querySelector(`.post-feed.discovery[data-ws="${id}"]`) || document.querySelector(`.post-feed[data-ws="${id}"]`);
+  }
+
+  function rememberLensScrollV6200(ws, explicitEl = null) {
+    if (!ws) return;
+    const el = explicitEl || activeScrollableFeedV6200(ws);
+    const selected = selectedRouteDescriptorV6200(ws);
+    const top = Math.max(0, Math.round((el?.scrollTop ?? ws.routeScrollTopV6200 ?? ws.routeScrollTopV6183 ?? ws.routeScrollTopV6182 ?? 0) || 0));
+    ws.routeScrollTopV6200 = top;
+    ws.routeScrollTopV6183 = top;
+    ws.routeScrollTopV6182 = top;
+    ws.routeScrollModeV6200 = selected.mode || 'discovery';
+    ws.routeScrollModeV6183 = ws.routeScrollModeV6200;
+    ws.routeScrollModeV6182 = ws.routeScrollModeV6200;
+    ws.routeScrollSelectedPathV6200 = selected.selectedPath || '';
+    ws.routeScrollSelectedPathV6183 = ws.routeScrollSelectedPathV6200;
+    ws.routeScrollSelectedPathV6182 = ws.routeScrollSelectedPathV6200;
+  }
+
+  function enhanceLensSourceV6200(source, ws) {
+    if (!source || !ws) return source;
+    rememberLensScrollV6200(ws);
+    const selected = selectedRouteDescriptorV6200(ws);
+    Object.assign(source, selected, {
+      scrollTop: Math.max(0, Math.round(ws.routeScrollTopV6200 || ws.routeScrollTopV6183 || ws.routeScrollTopV6182 || 0)),
+      scrollMode: ws.routeScrollModeV6200 || selected.mode || 'discovery',
+      scrollSelectedPath: ws.routeScrollSelectedPathV6200 || selected.selectedPath || ''
+    });
+    return source;
+  }
+
+  const routeStateBeforeDurableLensV6200 = routeState;
+  routeState = function routeStateWithDurableLensV6200() {
+    const state = routeStateBeforeDurableLensV6200();
+    if (state && Array.isArray(state.sources)) {
+      state.sources.forEach((source, index) => enhanceLensSourceV6200(source, app.workspaces[index]));
+    }
+    return state;
+  };
+
+  const viewRouteStateBeforeDurableLensV6200 = viewRouteStateV695;
+  viewRouteStateV695 = function viewRouteStateWithDurableLensV6200() {
+    const state = viewRouteStateBeforeDurableLensV6200();
+    if (state && Array.isArray(state.workspaces)) {
+      state.workspaces.forEach((source, index) => enhanceLensSourceV6200(source, app.workspaces[index]));
+    }
+    return state;
+  };
+
+  function applyLensSourceV6200(ws, source) {
+    if (!ws || !source) return;
+    ws.discoveryView = source.discoveryView || ws.discoveryView || 'feed';
+    ws.discoveryFilterSchema = source.discoveryFilterSchema || source.filterSchema || ws.discoveryFilterSchema || 'all';
+    ws.filterSchema = ws.discoveryFilterSchema;
+    ws.discoverySearch = source.discoverySearch || '';
+    ws.lineageSearch = source.lineageSearch || '';
+
+    const wantsLineage = source.mode === 'lineage' || Boolean(source.selectedNodeId || source.selectedPath || source.selectedTitle);
+    const selected = typeof resolveRouteSelectedNodeV6156 === 'function'
+      ? resolveRouteSelectedNodeV6156(ws, source)
+      : ((source.selectedPath && ws.nodes?.find?.((node) => node.path === source.selectedPath)) || null);
+
+    if (selected) {
+      ws.selectedNodeId = selected.id;
+      ws.pendingSelectedRouteV6156 = null;
+    } else if (wantsLineage) {
+      ws.pendingSelectedRouteV6156 = {
+        selectedNodeId: source.selectedNodeId || '',
+        selectedPath: source.selectedPath || '',
+        selectedTitle: source.selectedTitle || '',
+        mode: 'lineage'
+      };
+    } else {
+      ws.selectedNodeId = null;
+      ws.pendingSelectedRouteV6156 = null;
+    }
+
+    ws.routeScrollTopV6200 = Number(source.scrollTop || source.feedScrollTop || ws.routeScrollTopV6200 || 0) || 0;
+    ws.routeScrollTopV6183 = ws.routeScrollTopV6200;
+    ws.routeScrollTopV6182 = ws.routeScrollTopV6200;
+    ws.routeScrollModeV6200 = source.scrollMode || (wantsLineage ? 'lineage' : 'discovery');
+    ws.routeScrollModeV6183 = ws.routeScrollModeV6200;
+    ws.routeScrollModeV6182 = ws.routeScrollModeV6200;
+    ws.routeScrollSelectedPathV6200 = source.scrollSelectedPath || source.selectedPath || '';
+    ws.routeScrollSelectedPathV6183 = ws.routeScrollSelectedPathV6200;
+    ws.routeScrollSelectedPathV6182 = ws.routeScrollSelectedPathV6200;
+  }
+
+  const applyViewStateBeforeDurableLensV6200 = applyViewStateToWorkspace;
+  applyViewStateToWorkspace = function applyViewStateWithDurableLensV6200(ws, source) {
+    applyViewStateBeforeDurableLensV6200(ws, source);
+    applyLensSourceV6200(ws, source);
+  };
+
+  const applyViewRouteStateBeforeDurableLensV6200 = applyViewRouteStateV695;
+  applyViewRouteStateV695 = function applyViewRouteStateWithDurableLensV6200(state) {
+    const ok = applyViewRouteStateBeforeDurableLensV6200(state);
+    if (ok && Array.isArray(state?.workspaces)) {
+      state.workspaces.forEach((source, index) => applyLensSourceV6200(app.workspaces[index], source));
+    }
+    app.pendingDurableLensStateV6200 = state || null;
+    return ok;
+  };
+
+  function currentLensStateV6200() {
+    return staticDiskModeV688()
+      ? viewRouteStateV695()
+      : routeState();
+  }
+
+  function currentLensUrlV6200(state) {
+    return staticDiskModeV688()
+      ? viewRouteUrlV695(state)
+      : routeUrl(state);
+  }
+
+  function persistLensStateV6200(kind = 'replace') {
+    if (app.routing?.restoring || app.isBootingFromUrl || !app.workspaces?.length) return;
+    app.workspaces.forEach((ws) => rememberLensScrollV6200(ws));
+    const state = currentLensStateV6200();
+    try { sessionStorage.setItem(lensCacheKeyV6200(), JSON.stringify(state)); } catch (_) {}
+    try {
+      const next = currentLensUrlV6200(state);
+      const current = `${location.pathname}${location.search}${location.hash}`;
+      if (next !== current) {
+        if (kind === 'push') history.pushState(state, '', next);
+        else history.replaceState(state, '', next);
+      }
+    } catch (_) {}
+  }
+
+  function cachedLensStateV6200() {
+    try {
+      const raw = sessionStorage.getItem(lensCacheKeyV6200());
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function decodedLensStateV6200() {
+    return staticDiskModeV688() ? decodeViewRouteFromHashV695() : decodeRouteStateFromHash();
+  }
+
+  function applyCurrentOrCachedLensV6200() {
+    const state = decodedLensStateV6200() || cachedLensStateV6200();
+    if (!state) return false;
+
+    if (state.kind === 'view' || staticDiskModeV688()) {
+      const workspaces = Array.isArray(state.workspaces) ? state.workspaces : [];
+      workspaces.forEach((source, index) => applyLensSourceV6200(app.workspaces[index], source));
+      const activeIndex = Math.max(0, Math.min(Number(state.activeIndex || 0), app.workspaces.length - 1));
+      app.activeWorkspaceId = app.workspaces[activeIndex]?.id || app.workspaces[0]?.id || app.activeWorkspaceId;
+      app.pendingDurableLensStateV6200 = state;
+      return true;
+    }
+
+    if (Array.isArray(state.sources)) {
+      state.sources.forEach((source, index) => applyLensSourceV6200(app.workspaces[index], source));
+      const activeIndex = Math.max(0, Math.min(Number(state.activeIndex || 0), app.workspaces.length - 1));
+      app.activeWorkspaceId = app.workspaces[activeIndex]?.id || app.workspaces[0]?.id || app.activeWorkspaceId;
+      app.pendingDurableLensStateV6200 = state;
+      return true;
+    }
+
+    return false;
+  }
+
+  function chaseScrollForWorkspaceV6200(ws, durationMs = 2200) {
+    if (!ws) return;
+    const target = Math.max(0, Math.round(ws.routeScrollTopV6200 || ws.routeScrollTopV6183 || ws.routeScrollTopV6182 || 0));
+    if (!target) return;
+    const started = performance.now();
+    let lastMax = -1;
+    let stable = 0;
+
+    const tick = () => {
+      const el = activeScrollableFeedV6200(ws);
+      if (!el) {
+        if (performance.now() - started < durationMs) requestAnimationFrame(tick);
+        return;
+      }
+      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+      const nextTop = Math.min(target, maxTop);
+      if (maxTop > 0) el.scrollTop = nextTop;
+
+      if (Math.abs(el.scrollTop - target) <= 2) return;
+      if (maxTop === lastMax) stable += 1;
+      else stable = 0;
+      lastMax = maxTop;
+
+      if (performance.now() - started < durationMs && stable < 16) {
+        requestAnimationFrame(tick);
+      }
+    };
+
+    requestAnimationFrame(tick);
+    setTimeout(tick, 80);
+    setTimeout(tick, 240);
+    setTimeout(tick, 650);
+    setTimeout(tick, 1400);
+  }
+
+  function chaseAllScrollV6200() {
+    for (const ws of app.workspaces || []) chaseScrollForWorkspaceV6200(ws);
+  }
+
+  const computeWorkspaceIndexBeforeDurableLensV6200 = computeWorkspaceIndex;
+  computeWorkspaceIndex = function computeWorkspaceIndexWithDurableLensV6200(ws) {
+    const result = computeWorkspaceIndexBeforeDurableLensV6200(ws);
+    const state = app.pendingDurableLensStateV6200 || decodedLensStateV6200() || cachedLensStateV6200();
+    const sources = state?.workspaces || state?.sources || [];
+    const index = app.workspaces.indexOf(ws);
+    if (index >= 0 && sources[index]) applyLensSourceV6200(ws, sources[index]);
+    return result;
+  };
+
+  const renderBeforeDurableLensV6200 = render;
+  render = function renderWithDurableLensV6200() {
+    if (!app.isBootingFromUrl && !app.routing?.restoring) {
+      applyCurrentOrCachedLensV6200();
+    }
+    const result = renderBeforeDurableLensV6200();
+    requestAnimationFrame(chaseAllScrollV6200);
+    setTimeout(chaseAllScrollV6200, 180);
+    setTimeout(chaseAllScrollV6200, 700);
+    return result;
+  };
+
+  const setRouteStateBeforeDurableLensV6200 = setRouteState;
+  setRouteState = function setRouteStateWithDurableLensV6200(kind = 'push') {
+    setRouteStateBeforeDurableLensV6200(kind);
+    if (!app.routing?.restoring && !app.isBootingFromUrl) {
+      try { sessionStorage.setItem(lensCacheKeyV6200(), JSON.stringify(currentLensStateV6200())); } catch (_) {}
+    }
+  };
+
+  function onScrollPersistLensV6200(event) {
+    const el = event.target;
+    if (!el?.classList?.contains('post-feed')) return;
+    const ws = getWorkspace(el.dataset.ws || '');
+    if (!ws) return;
+    rememberLensScrollV6200(ws, el);
+    clearTimeout(app.persistLensTimerV6200);
+    app.persistLensTimerV6200 = setTimeout(() => persistLensStateV6200('replace'), 120);
+  }
+
+  document.addEventListener('scroll', onScrollPersistLensV6200, true);
+
+  window.addEventListener('pagehide', () => persistLensStateV6200('replace'));
+  window.addEventListener('beforeunload', () => persistLensStateV6200('replace'));
+
+  const copyShareLinkBeforeDurableLensV6200 = copyShareLink;
+  copyShareLink = function copyShareLinkWithDurableLensV6200() {
+    persistLensStateV6200('replace');
+    return copyShareLinkBeforeDurableLensV6200();
+  };
+
+
+
+
+  // ===== v6.201 cancel stale scroll chase after user interaction =====
+  function discoverySignatureForScrollV6201(ws) {
+    if (!ws) return '';
+    let nodes = [];
+    try {
+      nodes = typeof filteredDiscoveryNodes === 'function' ? filteredDiscoveryNodes(ws) : (ws.nodes || []);
+    } catch (_) {
+      nodes = ws.nodes || [];
+    }
+    const first = nodes.slice(0, 8).map((node) => node.path || node.id || '').join('|');
+    return [
+      ws.discoveryView || 'feed',
+      ws.discoveryFilterSchema || ws.filterSchema || 'all',
+      ws.discoverySearch || '',
+      ws.previewMaterialModeV6195 ? 'preview' : 'normal',
+      typeof previewMaterialKindV6195 === 'function' ? previewMaterialKindV6195(ws) : '',
+      nodes.length,
+      first
+    ].join('::');
+  }
+
+  const rememberLensScrollBeforeCancelV6201 = rememberLensScrollV6200;
+  rememberLensScrollV6200 = function rememberLensScrollWithDiscoverySignatureV6201(ws, explicitEl = null) {
+    rememberLensScrollBeforeCancelV6201(ws, explicitEl);
+    const selected = selectedNode(ws);
+    ws.routeScrollDiscoverySigV6201 = selected ? '' : discoverySignatureForScrollV6201(ws);
+  };
+
+  const enhanceLensSourceBeforeCancelV6201 = enhanceLensSourceV6200;
+  enhanceLensSourceV6200 = function enhanceLensSourceWithDiscoverySignatureV6201(source, ws) {
+    enhanceLensSourceBeforeCancelV6201(source, ws);
+    if (source && ws && !selectedNode(ws)) {
+      source.discoveryScrollSignature = discoverySignatureForScrollV6201(ws);
+    }
+    return source;
+  };
+
+  const applyLensSourceBeforeCancelV6201 = applyLensSourceV6200;
+  applyLensSourceV6200 = function applyLensSourceWithChaseGuardV6201(ws, source) {
+    applyLensSourceBeforeCancelV6201(ws, source);
+    if (!ws || !source) return;
+
+    const wantsLineage = source.mode === 'lineage' || Boolean(source.selectedNodeId || source.selectedPath || source.selectedTitle);
+    if (!wantsLineage && source.scrollTop) {
+      const currentSig = discoverySignatureForScrollV6201(ws);
+      const savedSig = source.discoveryScrollSignature || source.discoverySig || '';
+      if (savedSig && savedSig !== currentSig) {
+        ws.routeScrollTopV6200 = 0;
+        ws.routeScrollTopV6183 = 0;
+        ws.routeScrollTopV6182 = 0;
+      }
+    }
+
+    if (Number(ws.routeScrollTopV6200 || ws.routeScrollTopV6183 || ws.routeScrollTopV6182 || 0) > 0) {
+      ws.scrollRestoreArmedV6201 = true;
+      ws.scrollRestoreDeadlineV6201 = performance.now() + 2600;
+    }
+  };
+
+  function markUserInteractionV6201() {
+    if (app.isBootingFromUrl || app.routing?.restoring) return;
+    app.userInteractedV6201 = true;
+    for (const ws of app.workspaces || []) {
+      ws.userScrollVersionV6201 = (ws.userScrollVersionV6201 || 0) + 1;
+      ws.scrollRestoreArmedV6201 = false;
+    }
+  }
+
+  document.addEventListener('pointerdown', markUserInteractionV6201, true);
+  document.addEventListener('keydown', markUserInteractionV6201, true);
+  document.addEventListener('wheel', markUserInteractionV6201, { capture: true, passive: true });
+  document.addEventListener('touchmove', markUserInteractionV6201, { capture: true, passive: true });
+
+  const applyCurrentOrCachedLensBeforeCancelV6201 = applyCurrentOrCachedLensV6200;
+  applyCurrentOrCachedLensV6200 = function applyCurrentOrCachedLensOnceV6201() {
+    if (app.userInteractedV6201 && !app.isBootingFromUrl && !app.routing?.restoring) return false;
+    if (app.durableLensAppliedV6201 && !app.isBootingFromUrl && !app.routing?.restoring) return false;
+    const ok = applyCurrentOrCachedLensBeforeCancelV6201();
+    if (ok) app.durableLensAppliedV6201 = true;
+    return ok;
+  };
+
+  chaseScrollForWorkspaceV6200 = function chaseScrollForWorkspaceGuardedV6201(ws, durationMs = 2200) {
+    if (!ws) return;
+    const target = Math.max(0, Math.round(ws.routeScrollTopV6200 || ws.routeScrollTopV6183 || ws.routeScrollTopV6182 || 0));
+    if (!target) return;
+
+    if (!ws.scrollRestoreArmedV6201 && !app.isBootingFromUrl && !app.routing?.restoring) return;
+    if (ws.scrollRestoreDeadlineV6201 && performance.now() > ws.scrollRestoreDeadlineV6201) {
+      ws.scrollRestoreArmedV6201 = false;
+      return;
+    }
+
+    const selected = selectedNode(ws);
+    if (!selected && ws.routeScrollDiscoverySigV6201) {
+      const currentSig = discoverySignatureForScrollV6201(ws);
+      if (currentSig && currentSig !== ws.routeScrollDiscoverySigV6201) {
+        ws.scrollRestoreArmedV6201 = false;
+        ws.routeScrollTopV6200 = 0;
+        ws.routeScrollTopV6183 = 0;
+        ws.routeScrollTopV6182 = 0;
+        return;
+      }
+    }
+
+    const chaseVersion = ws.userScrollVersionV6201 || 0;
+    const chaseId = (ws.scrollChaseIdV6201 || 0) + 1;
+    ws.scrollChaseIdV6201 = chaseId;
+    const started = performance.now();
+    let lastMax = -1;
+    let stable = 0;
+
+    const tick = () => {
+      if (!ws.scrollRestoreArmedV6201 && !app.isBootingFromUrl && !app.routing?.restoring) return;
+      if ((ws.userScrollVersionV6201 || 0) !== chaseVersion) return;
+      if (ws.scrollChaseIdV6201 !== chaseId) return;
+
+      const el = activeScrollableFeedV6200(ws);
+      if (!el) {
+        if (performance.now() - started < durationMs) requestAnimationFrame(tick);
+        return;
+      }
+
+      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+      const nextTop = Math.min(target, maxTop);
+      if (maxTop > 0) el.scrollTop = nextTop;
+
+      if (Math.abs(el.scrollTop - target) <= 2) {
+        ws.scrollRestoreArmedV6201 = false;
+        return;
+      }
+
+      if (maxTop === lastMax) stable += 1;
+      else stable = 0;
+      lastMax = maxTop;
+
+      if (performance.now() - started < durationMs && stable < 16) {
+        requestAnimationFrame(tick);
+      } else {
+        ws.scrollRestoreArmedV6201 = false;
+      }
+    };
+
+    requestAnimationFrame(tick);
+    setTimeout(tick, 80);
+    setTimeout(tick, 240);
+    setTimeout(tick, 650);
+  };
+
+  function onManualPostFeedScrollCancelChaseV6201(event) {
+    const el = event.target;
+    if (!el?.classList?.contains('post-feed')) return;
+    if (app.isBootingFromUrl || app.routing?.restoring) return;
+    const ws = getWorkspace(el.dataset.ws || '');
+    if (!ws) return;
+    const top = Math.max(0, el.scrollTop || 0);
+    const target = Math.max(0, ws.routeScrollTopV6200 || ws.routeScrollTopV6183 || ws.routeScrollTopV6182 || 0);
+    if (ws.scrollRestoreArmedV6201 && Math.abs(top - target) > 12) {
+      ws.userScrollVersionV6201 = (ws.userScrollVersionV6201 || 0) + 1;
+      ws.scrollRestoreArmedV6201 = false;
+    }
+  }
+
+  document.addEventListener('scroll', onManualPostFeedScrollCancelChaseV6201, true);
+
+
+
+
+  // ===== v6.202 history push de-duplication for semantic lens state =====
+  function semanticLensStateV6202() {
+    let state;
+    try {
+      state = staticDiskModeV688() ? viewRouteStateV695() : routeState();
+    } catch (_) {
+      state = {};
+    }
+    const clone = JSON.parse(JSON.stringify(state || {}));
+
+    function stripVolatile(obj) {
+      if (!obj || typeof obj !== 'object') return obj;
+      delete obj.scrollTop;
+      delete obj.feedScrollTop;
+      delete obj.scrollMode;
+      delete obj.scrollSelectedPath;
+      delete obj.discoveryScrollSignature;
+      delete obj.discoverySig;
+      delete obj.previewFilterOpen;
+      delete obj.mobileChromeCompact;
+      delete obj.timestamp;
+      delete obj.createdAt;
+      Object.keys(obj).forEach((key) => stripVolatile(obj[key]));
+      return obj;
+    }
+
+    return stripVolatile(clone);
+  }
+
+  function semanticLensSignatureV6202() {
+    try {
+      return JSON.stringify(semanticLensStateV6202());
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function normalizeHistoryKindV6202(kind) {
+    if (kind !== 'push') return kind;
+    const sig = semanticLensSignatureV6202();
+    const now = performance.now();
+    const sameAsRecent = sig && app.lastPushedSemanticLensV6202 === sig && (now - (app.lastPushedSemanticLensAtV6202 || 0)) < 1200;
+    const sameAsCurrent = sig && history.state?.semanticLensV6202 === sig;
+    if (sameAsRecent || sameAsCurrent) return 'replace';
+    app.pendingPushedSemanticLensV6202 = sig;
+    return 'push';
+  }
+
+  const setRouteStateBeforeHistoryDedupeV6202 = setRouteState;
+  setRouteState = function setRouteStateWithHistoryDedupeV6202(kind = 'push') {
+    const normalized = normalizeHistoryKindV6202(kind);
+    setRouteStateBeforeHistoryDedupeV6202(normalized);
+
+    const sig = semanticLensSignatureV6202();
+    if (sig) {
+      const state = history.state && typeof history.state === 'object' ? Object.assign({}, history.state) : {};
+      if (state.semanticLensV6202 !== sig) {
+        try {
+          history.replaceState(Object.assign(state, { semanticLensV6202: sig }), '', location.href);
+        } catch (_) {}
+      }
+    }
+
+    if (normalized === 'push' && app.pendingPushedSemanticLensV6202) {
+      app.lastPushedSemanticLensV6202 = app.pendingPushedSemanticLensV6202;
+      app.lastPushedSemanticLensAtV6202 = performance.now();
+      app.pendingPushedSemanticLensV6202 = '';
+    }
+  };
+
+  const persistLensStateBeforeHistoryDedupeV6202 = persistLensStateV6200;
+  persistLensStateV6200 = function persistLensStateWithHistoryDedupeV6202(kind = 'replace') {
+    return persistLensStateBeforeHistoryDedupeV6202(kind === 'push' ? normalizeHistoryKindV6202(kind) : kind);
+  };
+
+
+
+
+  // ===== v6.203 mobile app lens: FAB, action sheet, preview cleanup =====
+  function mobileLensActiveV6203() {
+    return window.matchMedia?.('(max-width: 640px)').matches;
+  }
+
+  function activeWorkspaceV6203() {
+    return getWorkspace(app.activeWorkspaceId) || app.workspaces?.[0] || null;
+  }
+
+  function mobileGlobalActionsV6203(ws) {
+    if (!ws) return '';
+    return `<button class="mobile-fab-v6203" data-action="toggle-mobile-global-actions" data-ws="${escapeAttr(ws.id)}" aria-label="Workspace actions" title="Workspace actions">
+      <i class="fa-solid fa-plus"></i>
+    </button>
+    ${app.mobileGlobalActionsOpenV6203 ? `<div class="mobile-fab-sheet-v6203" role="menu" aria-label="Workspace actions">
+      <button data-action="open-add-artifact-source" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-file-circle-plus"></i><span>Create</span></button>
+      <button data-action="open-source-modal" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-folder-plus"></i><span>Add source/material</span></button>
+      <button data-action="open-export-workspace" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-download"></i><span>Export</span></button>
+      <button data-action="copy-link"><i class="fa-solid fa-link"></i><span>Copy link</span></button>
+      <button data-action="open-display-options" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-sliders"></i><span>Display</span></button>
+      <button data-action="open-help"><i class="fa-regular fa-circle-question"></i><span>Help</span></button>
+    </div>` : ''}`;
+  }
+
+  const renderBeforeMobileLensV6203 = render;
+  render = function renderWithMobileLensV6203() {
+    const result = renderBeforeMobileLensV6203();
+    requestAnimationFrame(() => {
+      const ws = activeWorkspaceV6203();
+      const root = document.querySelector('.app-shell, .viewer-shell, main, body');
+      document.body.classList.toggle('mobile-lens-v6203', mobileLensActiveV6203());
+      document.querySelectorAll('.mobile-global-actions-host-v6203').forEach((el) => el.remove());
+      if (ws && root) {
+        const host = document.createElement('div');
+        host.className = 'mobile-global-actions-host-v6203';
+        host.innerHTML = mobileGlobalActionsV6203(ws);
+        document.body.appendChild(host);
+      }
+    });
+    return result;
+  };
+
+  function actionLabelFromButtonV6203(button) {
+    const title = button.getAttribute('title') || button.getAttribute('aria-label') || '';
+    const text = button.innerText || button.textContent || '';
+    return (text || title || 'Action').trim();
+  }
+
+  function actionIconHtmlV6203(button) {
+    const icon = button.querySelector('i');
+    return icon ? icon.outerHTML : '<i class="fa-solid fa-circle-dot"></i>';
+  }
+
+  function openNodeActionSheetV6203(ws, node, card) {
+    if (!ws || !node || !card) return;
+    const actions = Array.from(card.querySelectorAll('.post-actions button, .post-actions a'))
+      .filter((button) => !button.disabled && button.offsetParent !== null)
+      .map((button, index) => ({
+        index,
+        label: actionLabelFromButtonV6203(button),
+        icon: actionIconHtmlV6203(button),
+        danger: button.classList.contains('danger-action') || /remove|delete|trash/i.test(actionLabelFromButtonV6203(button)),
+        dataset: Object.assign({}, button.dataset || {}),
+        href: button.getAttribute('href') || '',
+        tag: button.tagName.toLowerCase()
+      }));
+
+    app.mobileActionSheetV6203 = {
+      wsId: ws.id,
+      nodeId: node.id,
+      nodePath: node.path || '',
+      title: node.title || node.name || 'Artifact',
+      actions
+    };
+    render();
+  }
+
+  function renderMobileActionSheetV6203(sheet) {
+    const ws = getWorkspace(sheet.wsId);
+    const node = ws?.nodeById?.get?.(sheet.nodeId) || ws?.nodes?.find?.((n) => n.path === sheet.nodePath);
+    if (!ws || !node) return '';
+    return `<div class="mobile-action-backdrop-v6203" role="dialog" aria-modal="true" aria-label="Artifact actions">
+      <div class="mobile-action-sheet-v6203">
+        <div class="mobile-action-head-v6203">
+          <div>
+            <p class="kicker">Actions</p>
+            <h3>${escapeHtml(sheet.title || node.title || 'Artifact')}</h3>
+          </div>
+          <button class="tv-btn small subtle" data-action="close-mobile-action-sheet" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="mobile-action-list-v6203">
+          ${(sheet.actions || []).map((action) => `<button class="${action.danger ? 'danger' : ''}" data-action="mobile-run-node-action" data-action-index="${action.index}">
+            ${action.icon}<span>${escapeHtml(action.label)}</span>
+          </button>`).join('')}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  const renderModalBeforeMobileSheetV6203 = renderModal;
+  renderModal = function renderModalWithMobileSheetV6203(modal) {
+    if (modal?.type === 'mobile-action-sheet-v6203') return renderMobileActionSheetV6203(modal.sheet);
+    return renderModalBeforeMobileSheetV6203(modal);
+  };
+
+  function closeMobileActionSheetV6203() {
+    app.mobileActionSheetV6203 = null;
+    if (app.modal?.type === 'mobile-action-sheet-v6203') app.modal = null;
+  }
+
+  const onActionBeforeMobileLensV6203 = onActionV645;
+  onActionV645 = async function mobileLensActionsV6203(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+
+    if (action === 'toggle-mobile-global-actions') {
+      event.preventDefault();
+      event.stopPropagation();
+      app.mobileGlobalActionsOpenV6203 = !app.mobileGlobalActionsOpenV6203;
+      render();
+      return;
+    }
+
+    if (action === 'mobile-card-more') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      const node = ws?.nodeById?.get?.(event.currentTarget.dataset.node || '');
+      const card = event.currentTarget.closest('.lineage-post');
+      openNodeActionSheetV6203(ws, node, card);
+      app.modal = { type: 'mobile-action-sheet-v6203', sheet: app.mobileActionSheetV6203 };
+      return render();
+    }
+
+    if (action === 'close-mobile-action-sheet') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeMobileActionSheetV6203();
+      render();
+      return;
+    }
+
+    if (action === 'mobile-run-node-action') {
+      event.preventDefault();
+      event.stopPropagation();
+      const sheet = app.mobileActionSheetV6203;
+      const chosen = sheet?.actions?.[Number(event.currentTarget.dataset.actionIndex || -1)];
+      closeMobileActionSheetV6203();
+      render();
+      if (!chosen) return;
+      if (chosen.href) {
+        window.open(chosen.href, '_blank', 'noopener');
+        return;
+      }
+      const ws = getWorkspace(sheet.wsId);
+      const node = ws?.nodeById?.get?.(sheet.nodeId) || ws?.nodes?.find?.((n) => n.path === sheet.nodePath);
+      if (!ws || !node) return toast('Action target not found.', 'warn');
+
+      // Re-dispatch through the existing action handler with the original dataset.
+      const fake = document.createElement('button');
+      Object.entries(chosen.dataset || {}).forEach(([key, value]) => { fake.dataset[key] = value; });
+      if (!fake.dataset.ws) fake.dataset.ws = ws.id;
+      if (!fake.dataset.node) fake.dataset.node = node.id;
+      if (!fake.dataset.path) fake.dataset.path = node.path || '';
+      document.body.appendChild(fake);
+      try {
+        await onActionV645({ currentTarget: fake, target: fake, preventDefault(){}, stopPropagation(){} });
+      } finally {
+        fake.remove();
+      }
+      return;
+    }
+
+    if (action !== 'toggle-mobile-global-actions') {
+      app.mobileGlobalActionsOpenV6203 = false;
+    }
+
+    return onActionBeforeMobileLensV6203(event);
+  };
+
+  const renderNodePostBeforeMobileLensV6203 = renderNodePost;
+  renderNodePost = function renderNodePostMobileLensV6203(ws, node, options = {}) {
+    const html = renderNodePostBeforeMobileLensV6203(ws, node, options);
+    if (!mobileLensActiveV6203()) return html;
+    if (!ws || !node) return html;
+    const primaryIcon = options.lineage && node.id === ws.selectedNodeId ? 'fa-anchor' : 'fa-window-maximize';
+    const primaryAction = options.lineage && node.id === ws.selectedNodeId ? 'anchor-node' : 'select-node';
+    const mobileActions = `<div class="mobile-card-actions-v6203">
+      <button class="mobile-primary-action-v6203" data-action="${primaryAction}" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="${primaryAction === 'anchor-node' ? 'Anchor' : 'Open'}"><i class="fa-solid ${primaryIcon}"></i></button>
+      <button class="mobile-more-action-v6203" data-action="mobile-card-more" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="More actions"><i class="fa-solid fa-ellipsis"></i></button>
+    </div>`;
+    return html.replace(/<div class="post-actions[\s\S]*?<\/div>/, mobileActions);
+  };
+
+  function collapseExpandedNodesForModeChangeV6203(ws) {
+    if (!ws) return;
+    for (const node of ws.nodes || []) node.expanded = false;
+  }
+
+  const onActionBeforeCollapseV6203 = onActionV645;
+  onActionV645 = async function collapseOnViewChangeActionsV6203(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'select-node' || action === 'open-lineage' || action === 'show-lineage') {
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      collapseExpandedNodesForModeChangeV6203(ws);
+    }
+    return onActionBeforeCollapseV6203(event);
+  };
+
+  // Parent/origin edges are lineage context, not user-facing attachments.
+  const nodeMaterialRefsBeforePreviewCleanupV6203 = nodeMaterialRefsV6195;
+  nodeMaterialRefsV6195 = function nodeMaterialRefsWithoutParentOriginV6203(ws, node) {
+    return nodeMaterialRefsBeforePreviewCleanupV6203(ws, node).filter((ref) => {
+      const kind = String(ref?.kind || '').toLowerCase();
+      const label = String(ref?.label || ref?.title || ref?.path || ref?.href || '').toLowerCase();
+      if (kind === 'trace' && /parent|origin/.test(label)) return false;
+      if (/parent schema|parent origin|parent trace/.test(label)) return false;
+      return true;
+    });
+  };
+
+  function materialPreviewTitleV6203(ref) {
+    const representation = String(ref?.representation || ref?.description || ref?.summary || '').trim();
+    const label = String(ref?.label || ref?.title || '').trim();
+    const path = String(ref?.path || ref?.href || '').trim();
+    const file = path ? fileNameFromPath(path) : '';
+    const raw = representation || label || file || path || 'Attachment';
+    return raw === 'relative' && file ? file : raw;
+  }
+
+  const renderAssetPreviewModalBeforeTitleV6203 = typeof renderAssetPreviewModalV6188 === 'function' ? renderAssetPreviewModalV6188 : null;
+  if (renderAssetPreviewModalBeforeTitleV6203) {
+    renderAssetPreviewModalV6188 = function renderAssetPreviewModalBetterTitleV6203(modal) {
+      return renderAssetPreviewModalBeforeTitleV6203(modal)
+        .replace(/<h2 class="modal-title-lite" id="asset-preview-title"><i class="fa-solid [^"]+"><\/i>(.*?)<\/h2>/, (m, title) => m.replace(title, title === 'relative' ? 'Attachment preview' : title));
+    };
+  }
+
+
+
+
+  // ===== v6.204 mobile lens fixes: FAB, logo fallback, back collapse =====
+  function mobileFabHostClickV6204(event) {
+    const button = event.target?.closest?.('.mobile-global-actions-host-v6203 [data-action]');
+    if (!button) return;
+    const action = button.dataset.action || '';
+    const ws = activeWorkspaceV6203();
+    if (!ws) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (action === 'toggle-mobile-global-actions') {
+      app.mobileGlobalActionsOpenV6203 = !app.mobileGlobalActionsOpenV6203;
+      render();
+      return;
+    }
+
+    app.mobileGlobalActionsOpenV6203 = false;
+
+    const fake = document.createElement('button');
+    document.body.appendChild(fake);
+    try {
+      if (action === 'mobile-create') {
+        fake.dataset.action = 'open-add-artifact-source';
+        fake.dataset.ws = ws.id;
+      } else if (action === 'mobile-add-source') {
+        fake.dataset.action = 'open-source-modal';
+        fake.dataset.ws = ws.id;
+      } else if (action === 'mobile-export') {
+        fake.dataset.action = 'open-export-workspace';
+        fake.dataset.ws = ws.id;
+      } else if (action === 'mobile-copy-link') {
+        fake.dataset.action = 'copy-link';
+      } else if (action === 'mobile-display') {
+        fake.dataset.action = 'open-display-options';
+        fake.dataset.ws = ws.id;
+      } else if (action === 'mobile-help') {
+        fake.dataset.action = 'open-help';
+      } else {
+        fake.dataset.action = action;
+        Object.assign(fake.dataset, button.dataset);
+        if (!fake.dataset.ws) fake.dataset.ws = ws.id;
+      }
+      onActionV645({ currentTarget: fake, target: fake, preventDefault(){}, stopPropagation(){} });
+    } finally {
+      fake.remove();
+    }
+  }
+
+  document.addEventListener('click', mobileFabHostClickV6204, true);
+
+  function mobileGlobalActionsV6203(ws) {
+    if (!ws) return '';
+    return `<button class="mobile-fab-v6203" data-action="toggle-mobile-global-actions" data-ws="${escapeAttr(ws.id)}" aria-label="Workspace actions" title="Workspace actions">
+      <i class="fa-solid fa-plus"></i>
+    </button>
+    ${app.mobileGlobalActionsOpenV6203 ? `<div class="mobile-fab-sheet-v6203" role="menu" aria-label="Workspace actions">
+      <button data-action="mobile-create" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-file-circle-plus"></i><span>Create</span></button>
+      <button data-action="mobile-add-source" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-folder-plus"></i><span>Add source/material</span></button>
+      <button data-action="mobile-export" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-download"></i><span>Export</span></button>
+      <button data-action="mobile-copy-link"><i class="fa-solid fa-link"></i><span>Copy link</span></button>
+      <button data-action="mobile-display" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-sliders"></i><span>Display</span></button>
+      <button data-action="mobile-help"><i class="fa-regular fa-circle-question"></i><span>Help</span></button>
+    </div>` : ''}`;
+  }
+
+  function collapseAllExpandedNodesV6204() {
+    for (const ws of app.workspaces || []) {
+      for (const node of ws.nodes || []) node.expanded = false;
+    }
+  }
+
+  const applyLensSourceBeforeBackCollapseV6204 = applyLensSourceV6200;
+  applyLensSourceV6200 = function applyLensSourceWithBackCollapseV6204(ws, source) {
+    const before = ws ? selectedNode(ws)?.id || '' : '';
+    applyLensSourceBeforeBackCollapseV6204(ws, source);
+    const after = ws ? selectedNode(ws)?.id || '' : '';
+    if (before !== after) collapseExpandedNodesForModeChangeV6203(ws);
+  };
+
+  
+
+  // ===== v6.205 mobile chrome compression pass =====
+  function installMobileBrandFallbackV6205() {
+    if (!mobileLensActiveV6203()) return;
+    const topbar = document.querySelector('.topbar, .v3-topbar, .v5-topbar, .v611-topbar, .v613-topbar, .v677-topbar');
+    if (!topbar || topbar.querySelector('.mobile-brand-fallback-v6205')) return;
+    const firstOrb = topbar.querySelector('button, a, .brand, .brand-mark, .v691-brand-slot, .viewer-brand') || topbar.firstElementChild;
+    if (!firstOrb) return;
+    firstOrb.classList.add('mobile-brand-orb-v6205');
+    const mark = document.createElement('span');
+    mark.className = 'mobile-brand-fallback-v6205';
+    mark.textContent = 'T';
+    firstOrb.appendChild(mark);
+  }
+
+  function applyMobileChromeClassV6205() {
+    document.body.classList.toggle('mobile-chrome-v6205', mobileLensActiveV6203());
+    installMobileBrandFallbackV6205();
+  }
+
+  const renderBeforeMobileChromeV6205 = render;
+  render = function renderWithMobileChromeV6205() {
+    const result = renderBeforeMobileChromeV6205();
+    requestAnimationFrame(applyMobileChromeClassV6205);
+    return result;
+  };
+
+  window.addEventListener('resize', applyMobileChromeClassV6205);
+  window.addEventListener('orientationchange', applyMobileChromeClassV6205);
+
+
+
+
+  // ===== v6.206 mobile app lens repair: real action sheets + scroll-away chrome =====
+  function mobileNodeRemovableV6206(ws, node) {
+    if (!ws || !node) return false;
+    try {
+      if (typeof canRemoveNodeForNow === 'function' && canRemoveNodeForNow(ws, node)) return true;
+      if (typeof canEditNodeV6143 === 'function' && canEditNodeV6143(ws, node)) return true;
+    } catch (_) {}
+    return Boolean(node.isGenerated || node.sourceKind === 'local' || node.sourceId === 'local' || node.file?.sourceKind === 'local' || node.file?.sourceId === 'local');
+  }
+
+  function mobileNodeActionsV6206(ws, node, lineage = false) {
+    const base = { ws: ws.id, node: node.id };
+    // v6.255: the badge-row ellipsis is already the More/lineage affordance.
+    // Keep the native mobile sheet aligned with desktop artifact actions while
+    // preserving the original in-closure dispatcher and real node context.
+    const actions = [
+      { label: 'Open', icon: 'fa-regular fa-window-maximize', dataset: Object.assign({ action: 'open-detail-modal' }, base) },
+      { label: 'Markdown', icon: 'fa-brands fa-markdown', dataset: Object.assign({ action: 'open-markdown-modal' }, base) },
+      { label: 'Continue', icon: 'fa-solid fa-code-branch', dataset: Object.assign({ action: 'open-create', mode: 'continue' }, base), disabled: node.hasModernEnvelope === false },
+      { label: 'Reference', icon: 'fa-solid fa-link', dataset: Object.assign({ action: 'open-create', mode: 'reference' }, base) }
+    ];
+
+    if (node.browseUrl) {
+      actions.push({ label: 'Source', icon: 'fa-brands fa-github', href: safeUrl(node.browseUrl) || node.browseUrl });
+    }
+
+    if (mobileNodeRemovableV6206(ws, node)) {
+      actions.push({ label: 'Remove', icon: 'fa-regular fa-trash-can', dataset: Object.assign({ action: 'remove-local-node' }, base), danger: true });
+    }
+
+    return actions.filter((action) => !action.disabled);
+  }
+
+  openNodeActionSheetV6203 = function openNodeActionSheetDirectV6206(ws, node, card) {
+    if (!ws || !node) return;
+    const lineage = Boolean(card?.closest?.('.post-feed.lineage')) || Boolean(selectedNode(ws));
+    app.mobileActionSheetV6203 = {
+      wsId: ws.id,
+      nodeId: node.id,
+      nodePath: node.path || '',
+      title: node.title || node.name || 'Artifact',
+      actions: mobileNodeActionsV6206(ws, node, lineage)
+    };
+    app.modal = { type: 'mobile-action-sheet-v6203', sheet: app.mobileActionSheetV6203 };
+    render();
+  };
+
+  function mobileDispatchActionV6206(dataset, ws) {
+    const fake = document.createElement('button');
+    Object.entries(dataset || {}).forEach(([key, value]) => { fake.dataset[key] = value; });
+    if (ws && !fake.dataset.ws) fake.dataset.ws = ws.id;
+    document.body.appendChild(fake);
+    try {
+      return onActionV645({ currentTarget: fake, target: fake, preventDefault(){}, stopPropagation(){} });
+    } finally {
+      fake.remove();
+    }
+  }
+
+  function mobileFabActionDatasetV6206(action, ws) {
+    if (action === 'mobile-create') return { action: 'open-add-artifact', ws: ws.id };
+    if (action === 'mobile-add-source') return { action: 'open-source-modal', ws: ws.id };
+    if (action === 'mobile-export') return { action: 'save-workspace', ws: ws.id };
+    if (action === 'mobile-copy-link') return { action: 'copy-share' };
+    if (action === 'mobile-display') return { action: 'open-display-options', ws: ws.id };
+    if (action === 'mobile-help') return { action: 'open-config-help' };
+    return { action, ws: ws.id };
+  }
+
+  function mobileFabHostClickV6206(event) {
+    const button = event.target?.closest?.('.mobile-global-actions-host-v6203 [data-action]');
+    if (!button) return;
+    const action = button.dataset.action || '';
+    const ws = activeWorkspaceV6203();
+    if (!ws) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (action === 'toggle-mobile-global-actions') {
+      app.mobileGlobalActionsOpenV6203 = !app.mobileGlobalActionsOpenV6203;
+      render();
+      return;
+    }
+
+    app.mobileGlobalActionsOpenV6203 = false;
+    mobileDispatchActionV6206(mobileFabActionDatasetV6206(action, ws), ws);
+  }
+
+  document.addEventListener('click', mobileFabHostClickV6206, true);
+
+  const onActionBeforeMobileRepairV6206 = onActionV645;
+  onActionV645 = async function mobileRepairActionsV6206(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+
+    if (action === 'mobile-card-more') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      const node = ws?.nodeById?.get?.(event.currentTarget.dataset.node || '');
+      const card = event.currentTarget.closest?.('.lineage-post');
+      openNodeActionSheetV6203(ws, node, card);
+      return;
+    }
+
+    if (action === 'mobile-run-node-action') {
+      event.preventDefault();
+      event.stopPropagation();
+      const sheet = app.mobileActionSheetV6203;
+      const chosen = sheet?.actions?.[Number(event.currentTarget.dataset.actionIndex || -1)];
+      closeMobileActionSheetV6203();
+      render();
+      if (!chosen) return;
+      if (chosen.href) {
+        window.open(chosen.href, '_blank', 'noopener');
+        return;
+      }
+      const ws = getWorkspace(sheet.wsId);
+      if (!ws) return;
+      await mobileDispatchActionV6206(chosen.dataset, ws);
+      return;
+    }
+
+    return onActionBeforeMobileRepairV6206(event);
+  };
+
+  let lastMobileFeedTopV6206 = new WeakMap();
+  function onMobileChromeScrollV6206(event) {
+    if (!mobileLensActiveV6203()) return;
+    const el = event.target;
+    if (!el?.classList?.contains('post-feed')) return;
+    const top = Math.max(0, el.scrollTop || 0);
+    const prev = lastMobileFeedTopV6206.get(el) || 0;
+    lastMobileFeedTopV6206.set(el, top);
+
+    if (top < 18 || top < prev - 8) {
+      document.body.classList.remove('mobile-reading-v6206');
+      return;
+    }
+    if (top > prev + 4 && top > 42) {
+      document.body.classList.add('mobile-reading-v6206');
+    }
+  }
+
+  document.addEventListener('scroll', onMobileChromeScrollV6206, true);
+
+
+
+
+  // ===== v6.207 mobile lens repair 2: own action channel + tighter chrome =====
+  function mobileIconHtmlV6207(icon) {
+    const raw = String(icon || '').trim();
+    if (!raw) return '<i class="fa-solid fa-circle-dot"></i>';
+    if (raw.startsWith('<')) return raw;
+    return `<i class="${escapeAttr(raw)}"></i>`;
+  }
+
+  function renderMobileActionSheetV6203(sheet) {
+    const ws = getWorkspace(sheet.wsId);
+    const node = ws?.nodeById?.get?.(sheet.nodeId) || ws?.nodes?.find?.((n) => n.path === sheet.nodePath);
+    if (!ws || !node) return '';
+    return `<div class="mobile-action-backdrop-v6203" role="dialog" aria-modal="true" aria-label="Artifact actions">
+      <div class="mobile-action-sheet-v6203">
+        <div class="mobile-action-head-v6203">
+          <div>
+            <p class="kicker">Actions</p>
+            <h3>${escapeHtml(sheet.title || node.title || 'Artifact')}</h3>
+          </div>
+          <button class="tv-btn small subtle" data-mobile-action="close-mobile-action-sheet-v6207" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="mobile-action-list-v6203">
+          ${(sheet.actions || []).map((action, index) => `<button class="${action.danger ? 'danger' : ''}" data-mobile-action="run-node-action-v6207" data-action-index="${index}">
+            ${mobileIconHtmlV6207(action.icon)}<span>${escapeHtml(action.label || 'Action')}</span>
+          </button>`).join('')}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function mobileGlobalActionsV6203(ws) {
+    if (!ws) return '';
+    return `<button class="mobile-fab-v6203" data-mobile-action="toggle-global-actions-v6207" data-ws="${escapeAttr(ws.id)}" aria-label="Workspace actions" title="Workspace actions">
+      <i class="fa-solid fa-plus"></i>
+    </button>
+    ${app.mobileGlobalActionsOpenV6203 ? `<div class="mobile-fab-sheet-v6203" role="menu" aria-label="Workspace actions">
+      <button data-mobile-action="mobile-create" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-file-circle-plus"></i><span>Create</span></button>
+      <button data-mobile-action="mobile-add-source" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-folder-plus"></i><span>Add source/material</span></button>
+      <button data-mobile-action="mobile-export" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-download"></i><span>Export</span></button>
+      <button data-mobile-action="mobile-copy-link"><i class="fa-solid fa-link"></i><span>Copy link</span></button>
+      <button data-mobile-action="mobile-display" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-sliders"></i><span>Display</span></button>
+      <button data-mobile-action="mobile-help"><i class="fa-regular fa-circle-question"></i><span>Help</span></button>
+    </div>` : ''}`;
+  }
+
+  function mobileDispatchActionV6207(dataset, ws) {
+    const fake = document.createElement('button');
+    Object.entries(dataset || {}).forEach(([key, value]) => { fake.dataset[key] = value; });
+    if (ws && !fake.dataset.ws) fake.dataset.ws = ws.id;
+    document.body.appendChild(fake);
+    try {
+      return onActionV645({ currentTarget: fake, target: fake, preventDefault(){}, stopPropagation(){} });
+    } finally {
+      fake.remove();
+    }
+  }
+
+  function mobileFabActionDatasetV6207(action, ws) {
+    if (action === 'mobile-create') return { action: 'open-add-artifact', ws: ws.id };
+    if (action === 'mobile-add-source') return { action: 'open-source-modal', ws: ws.id };
+    if (action === 'mobile-export') return { action: 'save-workspace', ws: ws.id };
+    if (action === 'mobile-copy-link') return { action: 'copy-share' };
+    if (action === 'mobile-display') return { action: 'open-display-options', ws: ws.id };
+    if (action === 'mobile-help') return { action: 'open-config-help' };
+    return { action, ws: ws.id };
+  }
+
+  function mobileOnlyActionClickV6207(event) {
+    const button = event.target?.closest?.('[data-mobile-action]');
+    if (!button) return;
+
+    const action = button.dataset.mobileAction || '';
+    const ws = activeWorkspaceV6203();
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (action === 'toggle-global-actions-v6207') {
+      app.mobileGlobalActionsOpenV6203 = !app.mobileGlobalActionsOpenV6203;
+      render();
+      return;
+    }
+
+    if (action === 'close-mobile-action-sheet-v6207') {
+      closeMobileActionSheetV6203();
+      render();
+      return;
+    }
+
+    if (action === 'run-node-action-v6207') {
+      const sheet = app.mobileActionSheetV6203;
+      const chosen = sheet?.actions?.[Number(button.dataset.actionIndex || -1)];
+      closeMobileActionSheetV6203();
+      render();
+      if (!chosen) return;
+      if (chosen.href) return window.open(chosen.href, '_blank', 'noopener');
+      const actionWs = getWorkspace(sheet.wsId);
+      if (actionWs) return mobileDispatchActionV6207(chosen.dataset, actionWs);
+      return;
+    }
+
+    if (!ws) return;
+    app.mobileGlobalActionsOpenV6203 = false;
+    return mobileDispatchActionV6207(mobileFabActionDatasetV6207(action, ws), ws);
+  }
+
+  document.addEventListener('click', mobileOnlyActionClickV6207, true);
+
+  function mobilePostChipPriorityV6207(chip) {
+    const text = String(chip.textContent || '').toLowerCase();
+    const cls = String(chip.className || '').toLowerCase();
+    if (/mismatch|missing|error|fail/.test(text + cls)) return 0;
+    if (/verified|open|out of date/.test(text + cls)) return 1;
+    if (/evidence|topic|feedback|reduction|decision|task|pointer|schema|root|signal|lineage/.test(text)) return 2;
+    if (/refs?|image|trace/.test(text)) return 3;
+    if (/\d{4}-\d{2}-\d{2}/.test(text)) return 8;
+    if (/tiinex\/docs|github|local/.test(text)) return 9;
+    return 5;
+  }
+
+  function compactMobilePostChipsV6207() {
+    if (!mobileLensActiveV6203()) return;
+    document.querySelectorAll('.lineage-post .post-chips').forEach((row) => {
+      if (row.dataset.mobileChipsV6207 === '1') return;
+      row.dataset.mobileChipsV6207 = '1';
+      const chips = Array.from(row.children).filter((el) => !el.classList.contains('mobile-chip-more-v6207'));
+      chips.sort((a, b) => mobilePostChipPriorityV6207(a) - mobilePostChipPriorityV6207(b));
+      chips.forEach((chip) => row.appendChild(chip));
+      const keep = 4;
+      const hidden = chips.slice(keep);
+      hidden.forEach((chip) => chip.classList.add('mobile-chip-hidden-v6207'));
+      if (hidden.length) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'badge-soft mobile-chip-more-v6207';
+        btn.dataset.mobileAction = 'toggle-card-chips-v6207';
+        btn.textContent = `+${hidden.length}`;
+        row.appendChild(btn);
+      }
+    });
+  }
+
+  function mobileWorkspaceChromeV6207() {
+    if (!mobileLensActiveV6203()) return;
+    document.querySelectorAll('.workspace').forEach((workspace) => {
+      const sourceRow = workspace.querySelector('.workspace-source-tabs, .source-tabs, .workspace-sources');
+      const modeToggle = workspace.querySelector('.feed-mode');
+      if (sourceRow) {
+        const sourceChips = sourceRow.querySelectorAll('.source-pill, .workspace-source-pill, .source-chip');
+        workspace.classList.toggle('single-source-v6207', sourceChips.length <= 1);
+        if (modeToggle && !sourceRow.querySelector('.feed-mode')) {
+          sourceRow.appendChild(modeToggle);
+          modeToggle.classList.add('mobile-hoisted-mode-v6207');
+        }
+      }
+    });
+  }
+
+  function applyMobileLensDomPolishV6207() {
+    mobileWorkspaceChromeV6207();
+    compactMobilePostChipsV6207();
+  }
+
+  const renderBeforeMobileLensDomPolishV6207 = render;
+  render = function renderWithMobileLensDomPolishV6207() {
+    const result = renderBeforeMobileLensDomPolishV6207();
+    requestAnimationFrame(applyMobileLensDomPolishV6207);
+    return result;
+  };
+
+  document.addEventListener('click', (event) => {
+    const btn = event.target?.closest?.('[data-mobile-action="toggle-card-chips-v6207"]');
+    if (!btn) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const row = btn.closest('.post-chips');
+    if (!row) return;
+    row.classList.toggle('mobile-chip-expanded-v6207');
+  }, true);
+
+
+
+
+  // ===== v6.208 source/mode row unification + mobile dialog polish hooks =====
+  function unifySourceAndModeRowsV6208() {
+    for (const wsEl of document.querySelectorAll('.workspace')) {
+      const sourceRow = wsEl.querySelector('.workspace-source-tabs, .source-tabs, .workspace-sources');
+      const modeToggle = wsEl.querySelector('.feed-mode');
+      if (!sourceRow || !modeToggle) continue;
+      sourceRow.classList.add('source-mode-row-v6208');
+      modeToggle.classList.add('source-row-mode-toggle-v6208');
+      if (modeToggle.parentElement !== sourceRow) {
+        sourceRow.appendChild(modeToggle);
+      }
+    }
+  }
+
+  function tagOpenModalForMobileV6208() {
+    const modal = document.querySelector(
+      '.modal-backdrop, .modal-overlay, .lightbox, .dialog-backdrop, .source-modal-backdrop, .artifact-modal-backdrop, .mobile-action-backdrop-v6203'
+    );
+    document.body.classList.toggle('has-open-modal-v6208', Boolean(modal));
+  }
+
+  const renderBeforeLayoutPolishV6208 = render;
+  render = function renderWithLayoutPolishV6208() {
+    const result = renderBeforeLayoutPolishV6208();
+    requestAnimationFrame(() => {
+      unifySourceAndModeRowsV6208();
+      tagOpenModalForMobileV6208();
+      if (typeof compactMobilePostChipsV6207 === 'function') {
+        document.querySelectorAll('.post-chips[data-mobile-chips-v6207="1"]').forEach((row) => {
+          row.dataset.mobileChipsV6207 = '';
+          row.querySelectorAll('.mobile-chip-more-v6207').forEach((el) => el.remove());
+          row.querySelectorAll('.mobile-chip-hidden-v6207').forEach((el) => el.classList.remove('mobile-chip-hidden-v6207'));
+        });
+        compactMobilePostChipsV6207();
+      }
+    });
+    return result;
+  };
+
+  // Tune mobile badge packing: fewer chips, more readable chips.
+  mobilePostChipPriorityV6207 = function mobilePostChipPriorityReadableV6208(chip) {
+    const text = String(chip.textContent || '').toLowerCase();
+    const cls = String(chip.className || '').toLowerCase();
+    if (/mismatch|missing|error|fail/.test(text + cls)) return 0;
+    if (/verified|open|out of date/.test(text + cls)) return 1;
+    if (/evidence|topic|feedback|reduction|decision|task|pointer|schema|root|signal|lineage/.test(text)) return 2;
+    if (/refs?|image|trace/.test(text)) return 3;
+    if (/\d{4}-\d{2}-\d{2}/.test(text)) return 6;
+    if (/tiinex\/docs|github|local/.test(text)) return 8;
+    return 5;
+  };
+
+  const compactMobilePostChipsBeforeReadableV6208 = compactMobilePostChipsV6207;
+  compactMobilePostChipsV6207 = function compactMobilePostChipsReadableV6208() {
+    if (!mobileLensActiveV6203()) return;
+    document.querySelectorAll('.lineage-post .post-chips').forEach((row) => {
+      if (row.dataset.mobileChipsV6207 === '1') return;
+      row.dataset.mobileChipsV6207 = '1';
+      const chips = Array.from(row.children).filter((el) => !el.classList.contains('mobile-chip-more-v6207'));
+      chips.sort((a, b) => mobilePostChipPriorityV6207(a) - mobilePostChipPriorityV6207(b));
+      chips.forEach((chip) => row.appendChild(chip));
+      const keep = row.closest('.preview-post-v6195') ? 3 : 4;
+      const hidden = chips.slice(keep);
+      hidden.forEach((chip) => chip.classList.add('mobile-chip-hidden-v6207'));
+      if (hidden.length) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'badge-soft mobile-chip-more-v6207';
+        btn.dataset.mobileAction = 'toggle-card-chips-v6207';
+        btn.textContent = `+${hidden.length}`;
+        row.appendChild(btn);
+      }
+    });
+  };
+
+
+
+
+  // ===== v6.209 mobile simplification: hide single source, compact wizard, stricter material refs =====
+  function isSingleSourceWorkspaceV6209(wsEl) {
+    if (!wsEl) return false;
+    const chips = wsEl.querySelectorAll('.source-pill, .workspace-source-pill, .source-chip');
+    return chips.length <= 1;
+  }
+
+  function mobileSourceSimplifyV6209() {
+    document.querySelectorAll('.workspace').forEach((wsEl) => {
+      wsEl.classList.toggle('mobile-single-source-v6209', isSingleSourceWorkspaceV6209(wsEl));
+    });
+  }
+
+  function badgePriorityV6209(chip) {
+    const text = String(chip.textContent || '').toLowerCase();
+    const cls = String(chip.className || '').toLowerCase();
+    if (/mismatch|missing|error|fail/.test(text + cls)) return 0;
+    if (/verified|out of date|open/.test(text + cls)) return 1;
+    if (/refs?|image|material|attachment/.test(text)) return 2;
+    if (/evidence|topic|feedback|reduction|decision|task|pointer|schema|root|signal|lineage|upgrade/.test(text)) return 7;
+    if (/\d{4}-\d{2}-\d{2}/.test(text)) return 8;
+    if (/tiinex\/docs|github|local/.test(text)) return 9;
+    return 5;
+  }
+
+  function compactMobilePostChipsV6207() {
+    if (!mobileLensActiveV6203()) return;
+    document.querySelectorAll('.lineage-post .post-chips').forEach((row) => {
+      if (row.dataset.mobileChipsV6209 === '1') return;
+      row.dataset.mobileChipsV6209 = '1';
+      row.dataset.mobileChipsV6207 = '1';
+
+      row.querySelectorAll('.mobile-chip-more-v6207').forEach((el) => el.remove());
+      row.querySelectorAll('.mobile-chip-hidden-v6207').forEach((el) => el.classList.remove('mobile-chip-hidden-v6207'));
+
+      const chips = Array.from(row.children).filter((el) => !el.classList.contains('mobile-chip-more-v6207'));
+      chips.sort((a, b) => badgePriorityV6209(a) - badgePriorityV6209(b));
+      chips.forEach((chip) => row.appendChild(chip));
+
+      const keep = 3;
+      const hidden = chips.slice(keep);
+      hidden.forEach((chip) => chip.classList.add('mobile-chip-hidden-v6207'));
+      if (hidden.length) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'badge-soft mobile-chip-more-v6207';
+        btn.dataset.mobileAction = 'toggle-card-chips-v6207';
+        btn.textContent = `+${hidden.length}`;
+        row.appendChild(btn);
+      }
+    });
+  }
+
+  const renderBeforeMobileSourceSimplifyV6209 = render;
+  render = function renderWithMobileSourceSimplifyV6209() {
+    const result = renderBeforeMobileSourceSimplifyV6209();
+    requestAnimationFrame(() => {
+      mobileSourceSimplifyV6209();
+      document.querySelectorAll('.post-chips[data-mobile-chips-v6209="1"]').forEach((row) => {
+        row.dataset.mobileChipsV6209 = '';
+        row.dataset.mobileChipsV6207 = '';
+        row.querySelectorAll('.mobile-chip-more-v6207').forEach((el) => el.remove());
+        row.querySelectorAll('.mobile-chip-hidden-v6207').forEach((el) => el.classList.remove('mobile-chip-hidden-v6207'));
+      });
+      compactMobilePostChipsV6207();
+    });
+    return result;
+  };
+
+  function isParentLikeMaterialRefV6209(ws, node, ref) {
+    const kind = String(ref?.kind || '').toLowerCase();
+    const label = String(ref?.label || ref?.title || '').toLowerCase();
+    const path = canonicalWorkspacePath(String(ref?.path || ref?.href || '').replace(/^https?:\/\/[^/]+\/?/, ''));
+    const href = String(ref?.href || ref?.rawUrl || ref?.browseUrl || '').toLowerCase();
+    const parentPath = canonicalWorkspacePath(node?.parentResolvedPath || '');
+    const parentHref = canonicalWorkspacePath(node?.parentHref || '');
+    const parentTrace = String(node?.parentTrace || '').toLowerCase();
+
+    if (/parent|origin/.test(label)) return true;
+    if (/parent schema|parent origin|parent trace/.test(`${label} ${href}`)) return true;
+
+    if (kind === 'trace') {
+      if (parentPath && path && path.endsWith(parentPath)) return true;
+      if (parentPath && path === parentPath) return true;
+      if (parentHref && (path === parentHref || path.endsWith(parentHref))) return true;
+      if (parentTrace && (label.includes(parentTrace) || href.includes(parentTrace))) return true;
+      if (ref.loadedNodeId && node?.parentNode?.id && ref.loadedNodeId === node.parentNode.id) return true;
+    }
+
+    return false;
+  }
+
+  const nodeMaterialRefsBeforeV6209 = nodeMaterialRefsV6195;
+  nodeMaterialRefsV6195 = function nodeMaterialRefsWithoutLineageEdgesV6209(ws, node) {
+    return nodeMaterialRefsBeforeV6209(ws, node).filter((ref) => !isParentLikeMaterialRefV6209(ws, node, ref));
+  };
+
+  const extractMaterialRefsBeforeV6209 = extractMaterialRefs;
+  extractMaterialRefs = function extractMaterialRefsWithoutParentLikeV6209(ws, node) {
+    return extractMaterialRefsBeforeV6209(ws, node).filter((ref) => !isParentLikeMaterialRefV6209(ws, node, ref));
+  };
+
+
+
+
+  // ===== v6.210 robust single-source mobile hiding =====
+  function workspaceSourceCountV6210(ws) {
+    if (!ws) return 0;
+    if (Array.isArray(ws.sources)) return ws.sources.length;
+    if (Array.isArray(ws.sourceDescriptors)) return ws.sourceDescriptors.length;
+    if (Array.isArray(ws.loadedSources)) return ws.loadedSources.length;
+    if (ws.source || ws.sourceName || ws.sourceLabel || ws.id) return 1;
+    return 0;
+  }
+
+  function markSingleSourceWorkspacesV6210() {
+    for (const ws of app.workspaces || []) {
+      const single = workspaceSourceCountV6210(ws) <= 1;
+      document.querySelectorAll(`.workspace[data-ws="${CSS.escape(ws.id)}"]`).forEach((el) => {
+        el.classList.toggle('single-source-state-v6210', single);
+      });
+    }
+
+    // Fallback for older DOM variants that do not carry data-ws on the workspace root.
+    document.querySelectorAll('.workspace').forEach((el, index) => {
+      if (el.dataset.ws) return;
+      const ws = app.workspaces[index] || activeWorkspaceV6203?.();
+      const single = workspaceSourceCountV6210(ws) <= 1;
+      el.classList.toggle('single-source-state-v6210', single);
+    });
+  }
+
+  const renderBeforeSingleSourceV6210 = render;
+  render = function renderWithSingleSourceV6210() {
+    const result = renderBeforeSingleSourceV6210();
+    requestAnimationFrame(markSingleSourceWorkspacesV6210);
+    return result;
+  };
+
+
+
+
+
+  // ===== v6.211 mobile single-source strip + chip compaction repair =====
+  function mobileLayoutActiveV6211() {
+    try {
+      if (window.matchMedia && window.matchMedia('(max-width: 640px)').matches) return true;
+    } catch (_) {}
+    return Boolean(document.body?.classList?.contains('mobile-lens-v6203') || document.body?.classList?.contains('mobile-chrome-v6205'));
+  }
+
+  function workspaceDisplaySourceCountV6211(ws) {
+    if (!ws) return 0;
+    try {
+      if (typeof filteredDiscoverySources === 'function') return filteredDiscoverySources(ws).length;
+    } catch (_) {}
+    try {
+      if (typeof countWorkspaceSources === 'function') return countWorkspaceSources(ws);
+    } catch (_) {}
+    try {
+      ensureWorkspaceSources(ws);
+      if (ws.sources instanceof Map) {
+        return Array.from(ws.sources.values()).filter((source) =>
+          source.kind !== 'draft' ||
+          ws.generated?.length ||
+          Array.from(ws.files?.values?.() || []).some((file) => file.sourceId === source.id)
+        ).length;
+      }
+    } catch (_) {}
+    if (Array.isArray(ws.sources)) return ws.sources.length;
+    if (Array.isArray(ws.sourceDescriptors)) return ws.sourceDescriptors.length;
+    if (Array.isArray(ws.loadedSources)) return ws.loadedSources.length;
+    return ws.source || ws.sourceName || ws.sourceLabel ? 1 : 0;
+  }
+
+  function workspaceForChipRowV6211(row) {
+    const wsId = row?.closest?.('[data-ws]')?.dataset?.ws || row?.closest?.('.workspace')?.dataset?.ws || '';
+    if (wsId) {
+      try { return getWorkspace(wsId); } catch (_) {}
+    }
+    try { return typeof activeWorkspaceV6203 === 'function' ? activeWorkspaceV6203() : null; } catch (_) { return null; }
+  }
+
+  function markSingleSourceWorkspacesV6211() {
+    document.querySelectorAll('.workspace').forEach((el, index) => {
+      const ws = el.dataset.ws ? getWorkspace(el.dataset.ws) : ((app.workspaces || [])[index] || null);
+      const count = workspaceDisplaySourceCountV6211(ws);
+      const single = count <= 1;
+      // v6.210 used broad source-row selectors that could hide Feed/Tree with the
+      // source rail. v6.211 owns the final mobile class and removes that risk.
+      el.classList.remove('single-source-state-v6210');
+      el.classList.toggle('single-source-state-v6211', single);
+      el.dataset.sourceCountV6211 = String(count);
+    });
+  }
+
+  function chipTextV6211(chip) {
+    return String(chip?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  function chipIsDateV6211(chip) {
+    return /\b\d{4}-\d{2}-\d{2}\b/.test(chipTextV6211(chip));
+  }
+
+  function chipIsSchemaV6211(chip) {
+    const text = chipTextV6211(chip);
+    const cls = String(chip?.className || '').toLowerCase();
+    return /badge-schema|schema-nav-badge/.test(cls) || /\b(topic|task|decision|evidence|feedback|reduction|signal|pointer|runtime|machine runtime|ai runtime|lineage\.upgrade\.deferral|lineage upgrade|root|schema|continuation|capability|archive|broken|encrypted)\b/.test(text);
+  }
+
+  function chipIsSourceV6211(chip) {
+    const text = chipTextV6211(chip);
+    const cls = String(chip?.className || '').toLowerCase();
+    return /source-chip|source-badge|source-github|source-local|source-url|source-draft/.test(cls) || /tiinex\/docs|github|local state|local\b/.test(text);
+  }
+
+  function chipPriorityV6211(chip, ws) {
+    const text = chipTextV6211(chip);
+    const cls = String(chip?.className || '').toLowerCase();
+    if (/mismatch|missing|error|fail|danger/.test(text + ' ' + cls)) return 0;
+    if (/verified|out of date|integrity|ok/.test(text + ' ' + cls)) return 1;
+    if (/refs?|image|material|attachment|asset|pdf|zip/.test(text + ' ' + cls)) return 2;
+    if (/selected leaf|parent|child|ancestor|descendant/.test(text)) return 4;
+    if (chipIsSchemaV6211(chip)) return 7;
+    if (chipIsDateV6211(chip)) return 8;
+    if (chipIsSourceV6211(chip)) return workspaceDisplaySourceCountV6211(ws) <= 1 ? 10 : 6;
+    return 5;
+  }
+
+  function chipForcedHiddenV6211(chip, ws) {
+    const singleSource = workspaceDisplaySourceCountV6211(ws) <= 1;
+    if (singleSource && chipIsSourceV6211(chip)) return true;
+    if (chipIsSchemaV6211(chip)) return true;
+    if (chipIsDateV6211(chip)) return true;
+    return false;
+  }
+
+  function resetChipRowV6211(row) {
+    row.dataset.mobileChipsV6207 = '';
+    row.dataset.mobileChipsV6209 = '';
+    row.dataset.mobileChipsV6211 = '';
+    row.querySelectorAll('.mobile-chip-more-v6207').forEach((el) => el.remove());
+    row.querySelectorAll('.mobile-chip-hidden-v6207').forEach((el) => el.classList.remove('mobile-chip-hidden-v6207'));
+  }
+
+  function compactMobilePostChipsV6211() {
+    const rows = Array.from(document.querySelectorAll('.lineage-post .post-chips'));
+    if (!mobileLayoutActiveV6211()) {
+      rows.forEach(resetChipRowV6211);
+      return;
+    }
+
+    rows.forEach((row) => {
+      resetChipRowV6211(row);
+      row.dataset.mobileChipsV6211 = '1';
+      row.dataset.mobileChipsV6207 = '1';
+      row.dataset.mobileChipsV6209 = '1';
+
+      const ws = workspaceForChipRowV6211(row);
+      const chips = Array.from(row.children).filter((el) => !el.classList.contains('mobile-chip-more-v6207'));
+      chips.sort((a, b) => chipPriorityV6211(a, ws) - chipPriorityV6211(b, ws));
+
+      const forcedHidden = [];
+      const candidates = [];
+      chips.forEach((chip) => {
+        if (chipForcedHiddenV6211(chip, ws)) forcedHidden.push(chip);
+        else candidates.push(chip);
+      });
+
+      const keep = row.closest('.preview-post-v6195') ? 2 : 3;
+      const visible = candidates.slice(0, keep);
+      const hidden = candidates.slice(keep).concat(forcedHidden);
+      if (!visible.length && hidden.length) visible.push(hidden.shift());
+
+      visible.concat(hidden).forEach((chip) => row.appendChild(chip));
+      hidden.forEach((chip) => chip.classList.add('mobile-chip-hidden-v6207'));
+
+      if (hidden.length) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'badge-soft mobile-chip-more-v6207';
+        btn.dataset.mobileAction = 'toggle-card-chips-v6207';
+        btn.textContent = `+${hidden.length}`;
+        btn.title = 'Show hidden badges';
+        row.appendChild(btn);
+      }
+    });
+  }
+
+  const renderBeforeMobileDensityV6211 = render;
+  render = function renderWithMobileDensityV6211() {
+    const result = renderBeforeMobileDensityV6211();
+    requestAnimationFrame(() => {
+      markSingleSourceWorkspacesV6211();
+      compactMobilePostChipsV6211();
+    });
+    return result;
+  };
+
+
+
+  // ===== v6.213 mobile rail alignment + width-aware badge packing =====
+  function mobileChipTextV6213(chip) {
+    return String(chip?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  function mobileChipClassV6213(chip) {
+    return String(chip?.className || '').toLowerCase();
+  }
+
+  function mobileChipIsDateV6213(chip) {
+    return /\b\d{4}-\d{2}-\d{2}\b/u.test(mobileChipTextV6213(chip));
+  }
+
+  function mobileChipIsSchemaV6213(chip) {
+    const text = mobileChipTextV6213(chip);
+    const cls = mobileChipClassV6213(chip);
+    return /badge-schema|schema-nav-badge/u.test(cls)
+      || /\b(topic|task|decision|evidence|feedback|reduction|signal|pointer|runtime|machine runtime|ai runtime|lineage\.upgrade\.deferral|lineage upgrade|root|schema|continuation|capability|archive|broken|encrypted)\b/u.test(text);
+  }
+
+  function mobileChipIsSourceV6213(chip) {
+    const text = mobileChipTextV6213(chip);
+    const cls = mobileChipClassV6213(chip);
+    return /source-chip|source-badge|source-github|source-local|source-url|source-draft/u.test(cls)
+      || /tiinex\/docs|github|local state|local\b/u.test(text);
+  }
+
+  function mobileChipIsStatusV6213(chip) {
+    const joined = `${mobileChipTextV6213(chip)} ${mobileChipClassV6213(chip)}`;
+    return /verified|open|out of date|integrity|ok|mismatch|missing|error|fail|danger/u.test(joined);
+  }
+
+  function mobileChipPriorityV6213(chip, sourceCount) {
+    const text = mobileChipTextV6213(chip);
+    const cls = mobileChipClassV6213(chip);
+    const joined = `${text} ${cls}`;
+    if (/mismatch|missing|error|fail|danger/u.test(joined)) return 0;
+    if (/verified|open|out of date|integrity|ok/u.test(joined)) return 1;
+    if (mobileChipIsSchemaV6213(chip)) return 2;
+    if (mobileChipIsDateV6213(chip)) return 3;
+    if (/refs?|image|material|attachment|asset|pdf|zip/u.test(joined)) return 4;
+    if (/selected leaf|parent|child|ancestor|descendant/u.test(text)) return 5;
+    if (mobileChipIsSourceV6213(chip)) return sourceCount <= 1 ? 10 : 6;
+    return 7;
+  }
+
+  function mobileChipShouldDropFromCollapsedV6213(chip, sourceCount) {
+    return sourceCount <= 1 && mobileChipIsSourceV6213(chip);
+  }
+
+  function mobileChipWidthV6213(chip) {
+    const rect = chip.getBoundingClientRect?.();
+    const width = rect && Number.isFinite(rect.width) ? rect.width : 0;
+    if (width > 0) return Math.ceil(width);
+    const text = String(chip?.textContent || '').trim();
+    return Math.min(126, Math.max(32, 18 + text.length * 7));
+  }
+
+  function mobileChipGapV6213(row) {
+    const style = window.getComputedStyle?.(row);
+    const raw = style?.columnGap || style?.gap || '';
+    const parsed = parseFloat(raw);
+    return Number.isFinite(parsed) ? parsed : 4;
+  }
+
+  function mobileMoreWidthV6213(row, hiddenCount) {
+    const probe = document.createElement('button');
+    probe.type = 'button';
+    probe.className = 'badge-soft mobile-chip-more-v6207 mobile-chip-more-v6212 mobile-chip-more-v6213';
+    probe.textContent = `+${Math.max(1, hiddenCount || 1)}`;
+    probe.style.visibility = 'hidden';
+    probe.style.position = 'absolute';
+    probe.style.pointerEvents = 'none';
+    row.appendChild(probe);
+    const width = mobileChipWidthV6213(probe);
+    probe.remove();
+    return Math.max(30, width);
+  }
+
+  function collapseMobileBadgeRowsV6213() {
+    document.querySelectorAll('.post-chips.mobile-chip-expanded-v6207').forEach((row) => {
+      row.classList.remove('mobile-chip-expanded-v6207');
+    });
+  }
+
+  function fitMobileChipsOneLineV6213(row, chips, forcedHidden) {
+    const gap = mobileChipGapV6213(row);
+    const rowWidth = Math.floor(row.clientWidth || row.getBoundingClientRect?.().width || 0);
+    const available = rowWidth > 0 ? rowWidth : Math.floor(row.closest('.lineage-post, article')?.clientWidth || 300);
+    const hiddenBase = forcedHidden.length;
+    const moreWidth = mobileMoreWidthV6213(row, Math.max(1, chips.length + hiddenBase));
+
+    const visible = [];
+    const hidden = [];
+    let used = 0;
+
+    chips.forEach((chip, index) => {
+      const width = mobileChipWidthV6213(chip);
+      const nextGap = visible.length ? gap : 0;
+      const usedIfVisible = used + nextGap + width;
+      const hiddenIfVisible = (chips.length - index - 1) + hiddenBase;
+      const reserve = hiddenIfVisible > 0 ? gap + moreWidth : 0;
+      const canFit = usedIfVisible + reserve <= available;
+      const mustKeepFirst = visible.length === 0;
+
+      if (canFit || mustKeepFirst) {
+        visible.push(chip);
+        used = usedIfVisible;
+      } else {
+        hidden.push(chip);
+      }
+    });
+
+    return { visible, hidden: hidden.concat(forcedHidden) };
+  }
+
+  compactMobilePostChipsV6212 = function compactMobilePostChipsWidthAwareV6213() {
+    const rows = Array.from(document.querySelectorAll('.lineage-post .post-chips, article .post-chips'));
+    if (!mobileActiveV6212()) {
+      rows.forEach(resetChipRowV6212);
+      return;
+    }
+
+    rows.forEach((row) => {
+      const wasExpanded = row.classList.contains('mobile-chip-expanded-v6207');
+      resetChipRowV6212(row);
+      if (wasExpanded) row.classList.add('mobile-chip-expanded-v6207');
+      row.dataset.mobileChipsV6212 = '1';
+      row.dataset.mobileChipsV6213 = '1';
+      row.dataset.mobileChipsV6207 = '1';
+
+      const workspaceEl = workspaceDomForRowV6212(row);
+      const ws = workspaceForRowV6212(row) || (workspaceEl?.dataset?.ws ? getWorkspace(workspaceEl.dataset.ws) : null);
+      const sourceCount = workspaceSourceCountV6212(ws, workspaceEl);
+      row.dataset.sourceCountV6212 = String(sourceCount);
+      row.dataset.sourceCountV6213 = String(sourceCount);
+      row.classList.toggle('single-source-chip-row-v6212', sourceCount <= 1);
+      row.classList.toggle('single-source-chip-row-v6213', sourceCount <= 1);
+
+      const chips = Array.from(row.children).filter((el) => !el.classList.contains('mobile-chip-more-v6207') && !el.classList.contains('mobile-chip-more-v6212') && !el.classList.contains('mobile-chip-more-v6213'));
+      chips.sort((a, b) => mobileChipPriorityV6213(a, sourceCount) - mobileChipPriorityV6213(b, sourceCount));
+      chips.forEach((chip) => row.appendChild(chip));
+
+      const forcedHidden = [];
+      const candidates = [];
+      chips.forEach((chip) => {
+        if (mobileChipShouldDropFromCollapsedV6213(chip, sourceCount)) forcedHidden.push(chip);
+        else candidates.push(chip);
+      });
+
+      // Measure after prioritized chips are in the live row so CSS max-width and icon widths are real.
+      const packed = fitMobileChipsOneLineV6213(row, candidates, forcedHidden);
+      const visible = packed.visible;
+      const hidden = packed.hidden;
+
+      visible.concat(hidden).forEach((chip) => row.appendChild(chip));
+      hidden.forEach((chip) => {
+        chip.classList.add('mobile-chip-hidden-v6207');
+        chip.classList.add('mobile-chip-hidden-v6212');
+        chip.classList.add('mobile-chip-hidden-v6213');
+      });
+
+      if (hidden.length) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'badge-soft mobile-chip-more-v6207 mobile-chip-more-v6212 mobile-chip-more-v6213';
+        btn.dataset.mobileAction = 'toggle-card-chips-v6207';
+        btn.textContent = `+${hidden.length}`;
+        btn.title = 'Show hidden badges';
+        row.appendChild(btn);
+      }
+    });
+  };
+
+  const dispatchMobileTopActionBeforeV6213 = dispatchMobileTopActionV6212;
+  dispatchMobileTopActionV6212 = function dispatchMobileTopActionWithBadgeResetV6213(dataset, ws) {
+    collapseMobileBadgeRowsV6213();
+    return dispatchMobileTopActionBeforeV6213(dataset, ws);
+  };
+
+  const onActionBeforeMobileBadgeResetV6213 = onActionV645;
+  onActionV645 = function onActionWithMobileBadgeResetV6213(event) {
+    const action = event?.currentTarget?.dataset?.action || event?.target?.dataset?.action || '';
+    if (action === 'clear-selection' || action === 'workspace-prev' || action === 'workspace-next' || action === 'set-discovery-mode' || action === 'set-source') {
+      collapseMobileBadgeRowsV6213();
+      try { collapseAllExpandedNodesV6204(); } catch (_) {}
+    }
+    return onActionBeforeMobileBadgeResetV6213(event);
+  };
+
+  window.addEventListener('popstate', collapseMobileBadgeRowsV6213, true);
+
+
+
+
+  // ===== v6.214 mobile source/mode row + create action correction =====
+  function undoMobileSourceModeRowsV6214() {
+    document.querySelectorAll('.mobile-source-mode-row-v6214').forEach((row) => {
+      const workspace = row.closest?.('.workspace');
+      const toolbar = workspace?.querySelector?.(':scope > .feed-toolbar.discovery, :scope > .feed-toolbar');
+      const sourceStrip = row.querySelector?.('.workspace-source-strip');
+      const feedMode = row.querySelector?.('.feed-mode');
+
+      if (sourceStrip && workspace) {
+        if (toolbar && toolbar.parentElement === workspace) workspace.insertBefore(sourceStrip, toolbar);
+        else workspace.appendChild(sourceStrip);
+      }
+      if (feedMode && toolbar) toolbar.insertBefore(feedMode, toolbar.firstChild);
+      toolbar?.classList?.remove?.('mobile-tools-only-v6214');
+      row.remove();
+    });
+  }
+
+  function syncMobileSourceModeRowsV6214() {
+    const active = typeof mobileActiveV6212 === 'function' ? mobileActiveV6212() : window.matchMedia?.('(max-width: 640px)')?.matches;
+    if (!active) {
+      undoMobileSourceModeRowsV6214();
+      return;
+    }
+
+    document.querySelectorAll('.workspace').forEach((workspace) => {
+      const toolbar = workspace.querySelector(':scope > .feed-toolbar.discovery, :scope > .feed-toolbar');
+      const feedMode = toolbar?.querySelector(':scope > .feed-mode') || workspace.querySelector(':scope > .mobile-source-mode-row-v6214 .feed-mode');
+      const sourceStrip = workspace.querySelector(':scope > .workspace-source-strip') || workspace.querySelector(':scope > .mobile-source-mode-row-v6214 .workspace-source-strip');
+      if (!toolbar || !feedMode) return;
+
+      let row = workspace.querySelector(':scope > .mobile-source-mode-row-v6214');
+      if (!row) {
+        row = document.createElement('div');
+        row.className = 'mobile-source-mode-row-v6214';
+        if (sourceStrip && sourceStrip.parentElement === workspace) workspace.insertBefore(row, sourceStrip);
+        else workspace.insertBefore(row, toolbar);
+      }
+
+      if (sourceStrip && sourceStrip.parentElement !== row) row.appendChild(sourceStrip);
+      if (feedMode.parentElement !== row) row.appendChild(feedMode);
+      toolbar.classList.add('mobile-tools-only-v6214');
+    });
+  }
+
+  const ensureMobileTopRailBeforeV6214 = ensureMobileTopRailV6212;
+  ensureMobileTopRailV6212 = function ensureMobileTopRailWithCreateCorrectionV6214() {
+    const result = ensureMobileTopRailBeforeV6214();
+    requestAnimationFrame(syncMobileSourceModeRowsV6214);
+    return result;
+  };
+
+  const scheduleMobileDensityBeforeV6214 = scheduleMobileDensityV6212;
+  scheduleMobileDensityV6212 = function scheduleMobileDensityWithSourceModeRowV6214() {
+    const result = scheduleMobileDensityBeforeV6214();
+    requestAnimationFrame(syncMobileSourceModeRowsV6214);
+    setTimeout(syncMobileSourceModeRowsV6214, 90);
+    return result;
+  };
+
+  const renderBeforeMobileSourceModeV6214 = render;
+  render = function renderWithMobileSourceModeV6214() {
+    const result = renderBeforeMobileSourceModeV6214();
+    requestAnimationFrame(syncMobileSourceModeRowsV6214);
+    return result;
+  };
+
+  window.addEventListener('resize', () => requestAnimationFrame(syncMobileSourceModeRowsV6214), { passive: true });
+
+
+  // ===== v6.217 mobile freeze guard + create-workspace sheet =====
+  function setTextContentIfChangedV6217(el, value) {
+    if (!el) return;
+    const next = String(value || '');
+    if (el.textContent !== next) el.textContent = next;
+  }
+
+  syncMobileEmptyWorkspaceHintsV6215 = function syncMobileEmptyWorkspaceHintsV6217() {
+    const active = typeof mobileActiveV6212 === 'function'
+      ? mobileActiveV6212()
+      : Boolean(window.matchMedia?.('(max-width: 640px)')?.matches);
+    if (!active) {
+      document.querySelectorAll('.workspace').forEach((workspace) => {
+        workspace.classList.remove('empty-mobile-workspace-v6216');
+        workspace.querySelector('.workspace-drop-hint')?.classList?.remove?.('workspace-drop-hint-hidden-v6215');
+        workspace.querySelector('.empty-state.empty-state-workspace-instructions-v6215')?.classList?.remove?.('empty-state-workspace-instructions-v6215');
+      });
+      return;
+    }
+
+    document.querySelectorAll('.workspace').forEach((workspace) => {
+      const ws = workspace.dataset.ws ? getWorkspace(workspace.dataset.ws) : null;
+      const empty = mobileWorkspaceIsEmptyV6216(ws);
+      const dropHint = workspace.querySelector('.workspace-drop-hint');
+      const emptyState = workspace.querySelector('.post-feed .empty-state');
+      workspace.classList.toggle('empty-mobile-workspace-v6216', empty);
+      if (empty && emptyState) {
+        emptyState.classList.add('empty-state-workspace-instructions-v6215');
+        setTextContentIfChangedV6217(emptyState, 'Add lineage files, configs, folders, or zips with the + button.');
+        dropHint?.classList?.add?.('workspace-drop-hint-hidden-v6215');
+      } else {
+        emptyState?.classList?.remove?.('empty-state-workspace-instructions-v6215');
+        dropHint?.classList?.remove?.('workspace-drop-hint-hidden-v6215');
+      }
+    });
+  };
+
+  let mobileChromeRafV6217 = 0;
+  let mobileChromeTimerV6217 = 0;
+  scheduleMobileChromeStabilizeV6215 = function scheduleMobileChromeStabilizeV6217() {
+    if (mobileChromeRafV6217) return;
+    mobileChromeRafV6217 = requestAnimationFrame(() => {
+      mobileChromeRafV6217 = 0;
+      try { syncMobileSourceModeRowsV6214(); } catch (_) {}
+      try { syncMobileEmptyWorkspaceHintsV6215(); } catch (_) {}
+    });
+    if (mobileChromeTimerV6217) clearTimeout(mobileChromeTimerV6217);
+    mobileChromeTimerV6217 = setTimeout(() => {
+      mobileChromeTimerV6217 = 0;
+      try { syncMobileSourceModeRowsV6214(); } catch (_) {}
+      try { syncMobileEmptyWorkspaceHintsV6215(); } catch (_) {}
+    }, 160);
+  };
+
+  const renderCreateModalBeforeV6217 = renderCreateModal;
+  renderCreateModal = function renderCreateWorkspaceSheetV6217(modal) {
+    if (modal?.mode !== 'workspace') return renderCreateModalBeforeV6217(modal);
+    return `
+      <div class="modal-backdrop-custom focus-modal create-workspace-backdrop create-workspace-sheet-backdrop-v6217" role="dialog" aria-modal="true">
+        <div class="modal-panel create-workspace-panel create-workspace-sheet-v6217">
+          <div class="create-workspace-grabber-v6217" aria-hidden="true"></div>
+          <div class="modal-header-lite create-workspace-head">
+            <div>
+              <p class="kicker">Workspace</p>
+              <h2 class="modal-title-lite">Create workspace</h2>
+              <p class="text-secondary mb-0">Name a local workspace. Add sources and files after it opens.</p>
+            </div>
+            <button class="tv-btn small subtle create-workspace-close-v6217" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+          <div class="create-workspace-body">
+            <label class="field-label" for="workspace-name">Name</label>
+            <input id="workspace-name" class="form-control tv-input" data-field="workspaceName" placeholder="Example: Tiinex/docs" value="${escapeAttr(modal.workspaceName || '')}" autofocus>
+            <p class="form-text"><i class="fa-solid fa-lock"></i> Local to this browser until exported.</p>
+            <div class="modal-footer-actions create-workspace-actions">
+              <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+              <button class="tv-btn primary" data-action="create-workspace"><i class="fa-solid fa-plus"></i>Create</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  };
+
+
+window.addEventListener('popstate', () => {
+    collapseAllExpandedNodesV6204();
+  }, true);
+
+  // Guard against mobile double-tap zoom in engines that ignore viewport/user-scalable on local files.
+  let lastTouchEndV6204 = 0;
+  document.addEventListener('touchend', (event) => {
+    const now = Date.now();
+    if (now - lastTouchEndV6204 < 320) {
+      event.preventDefault();
+    }
+    lastTouchEndV6204 = now;
+  }, { passive: false });
+
+
+
+  // ===== v6.212 mobile rail + resilient density pass =====
+  function mobileActiveV6212() {
+    try {
+      if (window.matchMedia && window.matchMedia('(max-width: 640px)').matches) return true;
+    } catch (_) {}
+    return Boolean(document.body?.classList?.contains('mobile-lens-v6203') || document.body?.classList?.contains('mobile-chrome-v6205'));
+  }
+
+  function workspaceDomForRowV6212(row) {
+    return row?.closest?.('.workspace') || row?.closest?.('[data-ws]')?.closest?.('.workspace') || null;
+  }
+
+  function workspaceForRowV6212(row) {
+    const holder = row?.closest?.('[data-ws]');
+    const wsId = holder?.dataset?.ws || row?.closest?.('.workspace')?.dataset?.ws || '';
+    if (wsId) {
+      try { return getWorkspace(wsId); } catch (_) {}
+    }
+    return null;
+  }
+
+  function renderedSourceCountV6212(workspaceEl) {
+    if (!workspaceEl) return undefined;
+    const strip = workspaceEl.querySelector('.workspace-source-strip');
+    if (!strip) return undefined;
+    const pills = Array.from(strip.querySelectorAll('.workspace-source-pill, .source-pill, .source-chip'))
+      .filter((pill) => !pill.hidden && !pill.closest('[hidden]'));
+    return pills.length;
+  }
+
+  function workspaceSourceCountV6212(ws, workspaceEl) {
+    const domCount = renderedSourceCountV6212(workspaceEl);
+    if (Number.isFinite(domCount)) return domCount;
+    try {
+      if (typeof workspaceDisplaySourceCountV6211 === 'function') return workspaceDisplaySourceCountV6211(ws);
+    } catch (_) {}
+    try {
+      if (typeof countWorkspaceSources === 'function') return countWorkspaceSources(ws);
+    } catch (_) {}
+    try {
+      ensureWorkspaceSources(ws);
+      if (ws?.sources instanceof Map) return ws.sources.size;
+    } catch (_) {}
+    return ws ? 1 : 0;
+  }
+
+  function markSingleSourceWorkspacesV6212() {
+    document.querySelectorAll('.workspace').forEach((el, index) => {
+      const ws = el.dataset.ws ? getWorkspace(el.dataset.ws) : ((app.workspaces || [])[index] || null);
+      const count = workspaceSourceCountV6212(ws, el);
+      const single = count <= 1;
+      el.classList.remove('single-source-state-v6210');
+      el.classList.toggle('single-source-state-v6211', single);
+      el.classList.toggle('single-source-state-v6212', single);
+      el.dataset.sourceCountV6212 = String(count);
+    });
+  }
+
+  function chipTextV6212(chip) {
+    return String(chip?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  function chipIsDateV6212(chip) {
+    return /\b\d{4}-\d{2}-\d{2}\b/.test(chipTextV6212(chip));
+  }
+
+  function chipIsSchemaV6212(chip) {
+    const text = chipTextV6212(chip);
+    const cls = String(chip?.className || '').toLowerCase();
+    return /badge-schema|schema-nav-badge/.test(cls) || /\b(topic|task|decision|evidence|feedback|reduction|signal|pointer|runtime|machine runtime|ai runtime|lineage\.upgrade\.deferral|lineage upgrade|root|schema|continuation|capability|archive|broken|encrypted)\b/.test(text);
+  }
+
+  function chipIsSourceV6212(chip) {
+    const text = chipTextV6212(chip);
+    const cls = String(chip?.className || '').toLowerCase();
+    return /source-chip|source-badge|source-github|source-local|source-url|source-draft/.test(cls) || /tiinex\/docs|github|local state|local\b/.test(text);
+  }
+
+  function chipPriorityV6212(chip, sourceCount) {
+    const text = chipTextV6212(chip);
+    const cls = String(chip?.className || '').toLowerCase();
+    const joined = `${text} ${cls}`;
+    if (/mismatch|missing|error|fail|danger/.test(joined)) return 0;
+    if (/verified|out of date|integrity|ok/.test(joined)) return 1;
+    if (/refs?|image|material|attachment|asset|pdf|zip/.test(joined)) return 2;
+    if (/selected leaf|parent|child|ancestor|descendant/.test(text)) return 4;
+    if (chipIsSourceV6212(chip)) return sourceCount <= 1 ? 10 : 6;
+    if (chipIsSchemaV6212(chip)) return 7;
+    if (chipIsDateV6212(chip)) return 8;
+    return 5;
+  }
+
+  function chipForcedHiddenV6212(chip, sourceCount) {
+    if (sourceCount <= 1 && chipIsSourceV6212(chip)) return true;
+    if (chipIsSchemaV6212(chip)) return true;
+    if (chipIsDateV6212(chip)) return true;
+    return false;
+  }
+
+  function resetChipRowV6212(row) {
+    row.dataset.mobileChipsV6207 = '';
+    row.dataset.mobileChipsV6209 = '';
+    row.dataset.mobileChipsV6211 = '';
+    row.dataset.mobileChipsV6212 = '';
+    row.querySelectorAll('.mobile-chip-more-v6207, .mobile-chip-more-v6212').forEach((el) => el.remove());
+    row.querySelectorAll('.mobile-chip-hidden-v6207, .mobile-chip-hidden-v6212').forEach((el) => {
+      el.classList.remove('mobile-chip-hidden-v6207');
+      el.classList.remove('mobile-chip-hidden-v6212');
+    });
+  }
+
+  function compactMobilePostChipsV6212() {
+    const rows = Array.from(document.querySelectorAll('.lineage-post .post-chips, article .post-chips'));
+    if (!mobileActiveV6212()) {
+      rows.forEach(resetChipRowV6212);
+      return;
+    }
+
+    rows.forEach((row) => {
+      resetChipRowV6212(row);
+      const workspaceEl = workspaceDomForRowV6212(row);
+      const ws = workspaceForRowV6212(row) || (workspaceEl?.dataset?.ws ? getWorkspace(workspaceEl.dataset.ws) : null);
+      const sourceCount = workspaceSourceCountV6212(ws, workspaceEl);
+      row.dataset.mobileChipsV6212 = '1';
+      row.dataset.mobileChipsV6207 = '1';
+      row.dataset.sourceCountV6212 = String(sourceCount);
+      row.classList.toggle('single-source-chip-row-v6212', sourceCount <= 1);
+
+      const chips = Array.from(row.children).filter((el) => !el.classList.contains('mobile-chip-more-v6207') && !el.classList.contains('mobile-chip-more-v6212'));
+      chips.sort((a, b) => chipPriorityV6212(a, sourceCount) - chipPriorityV6212(b, sourceCount));
+
+      const forcedHidden = [];
+      const candidates = [];
+      chips.forEach((chip) => {
+        if (chipForcedHiddenV6212(chip, sourceCount)) forcedHidden.push(chip);
+        else candidates.push(chip);
+      });
+
+      const keep = row.closest('.preview-post-v6195') ? 2 : 3;
+      const visible = candidates.slice(0, keep);
+      const hidden = candidates.slice(keep).concat(forcedHidden);
+      if (!visible.length && hidden.length) visible.push(hidden.shift());
+
+      visible.concat(hidden).forEach((chip) => row.appendChild(chip));
+      hidden.forEach((chip) => {
+        chip.classList.add('mobile-chip-hidden-v6207');
+        chip.classList.add('mobile-chip-hidden-v6212');
+      });
+
+      if (hidden.length) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'badge-soft mobile-chip-more-v6207 mobile-chip-more-v6212';
+        btn.dataset.mobileAction = 'toggle-card-chips-v6207';
+        btn.textContent = `+${hidden.length}`;
+        btn.title = 'Show hidden badges';
+        row.appendChild(btn);
+      }
+    });
+  }
+
+  function renderMobileTopRailV6212() {
+    const ws = activeWorkspaceV6203?.() || null;
+    const count = typeof visibleWorkspaceCount === 'function' ? visibleWorkspaceCount() : 1;
+    const total = app.workspaces?.length || 0;
+    const to = Math.min((app.workspaceOffset || 0) + count, total);
+    const canPage = total > count;
+    const prevDisabled = !canPage || (app.workspaceOffset || 0) <= 0;
+    const nextDisabled = !canPage || to >= total;
+    const brand = typeof renderViewerBrand === 'function' ? renderViewerBrand() : '<span class="mobile-rail-brand-fallback-v6212">T</span>';
+    const wsAttr = ws?.id ? ` data-ws="${escapeAttr(ws.id)}"` : '';
+    return `<div class="mobile-top-rail-v6212" role="toolbar" aria-label="Mobile workspace controls">
+      <button class="mobile-rail-btn-v6212 mobile-rail-page-v6212" data-mobile-action="workspace-prev-v6212" ${prevDisabled ? 'disabled' : ''} title="Previous workspace" aria-label="Previous workspace"><i class="fa-solid fa-chevron-left"></i></button>
+      <button class="mobile-rail-btn-v6212 mobile-rail-create-v6212" data-mobile-action="create-workspace-v6212" title="Create workspace" aria-label="Create workspace"><i class="fa-solid fa-plus"></i></button>
+      <div class="mobile-rail-brand-v6212">${brand}</div>
+      <button class="mobile-rail-btn-v6212 mobile-rail-copy-v6212" data-mobile-action="copy-link-v6212" title="Copy link" aria-label="Copy link"><i class="fa-solid fa-link"></i></button>
+      <button class="mobile-rail-btn-v6212 mobile-rail-page-v6212" data-mobile-action="workspace-next-v6212" ${nextDisabled ? 'disabled' : ''} title="Next workspace" aria-label="Next workspace"><i class="fa-solid fa-chevron-right"></i></button>
+    </div>`;
+  }
+
+  function ensureMobileTopRailV6212() {
+    const shell = document.querySelector('.app-shell');
+    if (!shell) return;
+    const active = mobileActiveV6212();
+    document.body.classList.toggle('mobile-top-rail-mounted-v6212', active);
+
+    const existing = shell.querySelector(':scope > .mobile-top-rail-v6212') || shell.querySelector('.mobile-top-rail-v6212');
+    document.querySelectorAll('.mobile-top-rail-v6212').forEach((el) => {
+      if (el !== existing && !shell.contains(el)) el.remove();
+    });
+
+    if (!active) {
+      existing?.remove?.();
+      return;
+    }
+
+    const html = renderMobileTopRailV6212();
+    if (existing) {
+      if (existing.outerHTML !== html) existing.outerHTML = html;
+      return;
+    }
+
+    const topbar = shell.querySelector('.topbar');
+    const host = document.createElement('div');
+    host.innerHTML = html;
+    const rail = host.firstElementChild;
+    if (topbar?.nextSibling) shell.insertBefore(rail, topbar.nextSibling);
+    else shell.insertBefore(rail, shell.firstChild);
+  }
+
+  function dispatchMobileTopActionV6212(dataset, ws) {
+    const fake = document.createElement('button');
+    Object.entries(dataset || {}).forEach(([key, value]) => { fake.dataset[key] = value; });
+    if (ws?.id && !fake.dataset.ws) fake.dataset.ws = ws.id;
+    document.body.appendChild(fake);
+    try {
+      return onActionV645({ currentTarget: fake, target: fake, preventDefault(){}, stopPropagation(){} });
+    } finally {
+      fake.remove();
+    }
+  }
+
+  function mobileTopRailClickV6212(event) {
+    const button = event.target?.closest?.('.mobile-top-rail-v6212 [data-mobile-action]');
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const ws = activeWorkspaceV6203?.() || null;
+    const action = button.dataset.mobileAction || '';
+    if (action === 'workspace-prev-v6212') return dispatchMobileTopActionV6212({ action: 'workspace-prev' }, ws);
+    if (action === 'workspace-next-v6212') return dispatchMobileTopActionV6212({ action: 'workspace-next' }, ws);
+    if (action === 'copy-link-v6212') return dispatchMobileTopActionV6212({ action: 'copy-share' }, ws);
+    if (action === 'create-workspace-v6212') return dispatchMobileTopActionV6212({ action: 'open-source-modal' }, null);
+  }
+
+  document.addEventListener('click', mobileTopRailClickV6212, true);
+
+  let mobileDensityRafV6212 = 0;
+  function scheduleMobileDensityV6212() {
+    if (mobileDensityRafV6212) return;
+    mobileDensityRafV6212 = requestAnimationFrame(() => {
+      mobileDensityRafV6212 = 0;
+      markSingleSourceWorkspacesV6212();
+      compactMobilePostChipsV6212();
+      ensureMobileTopRailV6212();
+    });
+  }
+
+  const renderBeforeMobileV6212 = render;
+  render = function renderWithMobileV6212() {
+    const result = renderBeforeMobileV6212();
+    scheduleMobileDensityV6212();
+    requestAnimationFrame(scheduleMobileDensityV6212);
+    setTimeout(scheduleMobileDensityV6212, 80);
+    return result;
+  };
+
+  try {
+    const mobileMutationObserverV6212 = new MutationObserver(() => {
+      if (mobileActiveV6212()) scheduleMobileDensityV6212();
+    });
+    mobileMutationObserverV6212.observe(document.body, { childList: true, subtree: true });
+  } catch (_) {}
+
+  window.addEventListener('resize', scheduleMobileDensityV6212, { passive: true });
+
+
+  // ===== v6.215 mobile chrome stabilization + empty workspace copy =====
+  function syncMobileEmptyWorkspaceHintsV6215() {
+    const active = typeof mobileActiveV6212 === 'function'
+      ? mobileActiveV6212()
+      : Boolean(window.matchMedia?.('(max-width: 640px)')?.matches);
+    if (!active) return;
+
+    document.querySelectorAll('.workspace').forEach((workspace) => {
+      const dropHint = workspace.querySelector(':scope > .workspace-drop-hint, .workspace-drop-hint');
+      const emptyState = workspace.querySelector('.post-feed .empty-state, .empty-state');
+      const hasRenderedCards = Boolean(workspace.querySelector('.lineage-post, article.lineage-post, .post-card, .node-card'));
+      if (!emptyState) return;
+
+      if (dropHint && !hasRenderedCards) {
+        emptyState.classList.add('empty-state-workspace-instructions-v6215');
+        emptyState.textContent = 'Drop lineage files, configs, folders, or zips into this workspace · or use the source button above.';
+        dropHint.classList.add('workspace-drop-hint-hidden-v6215');
+      } else {
+        emptyState.classList.remove('empty-state-workspace-instructions-v6215');
+        dropHint?.classList?.remove?.('workspace-drop-hint-hidden-v6215');
+      }
+    });
+  }
+
+  function scheduleMobileChromeStabilizeV6215() {
+    requestAnimationFrame(() => {
+      try { syncMobileSourceModeRowsV6214(); } catch (_) {}
+      syncMobileEmptyWorkspaceHintsV6215();
+    });
+    setTimeout(() => {
+      try { syncMobileSourceModeRowsV6214(); } catch (_) {}
+      syncMobileEmptyWorkspaceHintsV6215();
+    }, 120);
+  }
+
+  const scheduleMobileDensityBeforeV6215 = scheduleMobileDensityV6212;
+  scheduleMobileDensityV6212 = function scheduleMobileDensityWithChromeStabilizeV6215() {
+    const result = scheduleMobileDensityBeforeV6215();
+    scheduleMobileChromeStabilizeV6215();
+    return result;
+  };
+
+  const renderBeforeMobileChromeStabilizeV6215 = render;
+  render = function renderWithMobileChromeStabilizeV6215() {
+    const result = renderBeforeMobileChromeStabilizeV6215();
+    scheduleMobileChromeStabilizeV6215();
+    return result;
+  };
+
+  document.addEventListener('scroll', (event) => {
+    if (!mobileActiveV6212()) return;
+    const target = event.target;
+    if (target?.closest?.('.post-feed') || target?.classList?.contains?.('post-feed')) {
+      requestAnimationFrame(() => {
+        try { syncMobileSourceModeRowsV6214(); } catch (_) {}
+        syncMobileEmptyWorkspaceHintsV6215();
+      });
+    }
+  }, true);
+
+
+  // ===== v6.216 mobile title/mode consolidation + empty workspace trim =====
+  function mobileWorkspaceIsEmptyV6216(ws) {
+    if (!ws) return false;
+    if (ws.loading) return false;
+    const nodeCount = Array.isArray(ws.nodes) ? ws.nodes.length : 0;
+    const generatedCount = Array.isArray(ws.generated) ? ws.generated.length : 0;
+    const fileCount = ws.files?.size || 0;
+    const assetCount = ws.assets?.size || 0;
+    return nodeCount === 0 && generatedCount === 0 && fileCount === 0 && assetCount === 0;
+  }
+
+  function restoreMobileTitleModeRowsV6216() {
+    document.querySelectorAll('.workspace.mobile-title-mode-mounted-v6216').forEach((workspace) => {
+      const strip = workspace.querySelector(':scope > .workspace-strip');
+      const toolbar = workspace.querySelector(':scope > .feed-toolbar.discovery, :scope > .feed-toolbar');
+      const feedMode = strip?.querySelector?.(':scope > .feed-mode');
+      if (feedMode && toolbar) toolbar.insertBefore(feedMode, toolbar.firstChild);
+      strip?.classList?.remove?.('mobile-title-mode-row-v6216');
+      toolbar?.classList?.remove?.('mobile-tools-only-v6216');
+      workspace.classList.remove('mobile-title-mode-mounted-v6216');
+      workspace.classList.remove('empty-mobile-workspace-v6216');
+    });
+  }
+
+  syncMobileSourceModeRowsV6214 = function syncMobileTitleModeRowsV6216() {
+    const active = typeof mobileActiveV6212 === 'function' ? mobileActiveV6212() : window.matchMedia?.('(max-width: 640px)')?.matches;
+    if (!active) {
+      try { undoMobileSourceModeRowsV6214(); } catch (_) {}
+      restoreMobileTitleModeRowsV6216();
+      return;
+    }
+
+    document.querySelectorAll('.workspace').forEach((workspace) => {
+      const ws = workspace.dataset.ws ? getWorkspace(workspace.dataset.ws) : null;
+      const strip = workspace.querySelector(':scope > .workspace-strip');
+      const toolbar = workspace.querySelector(':scope > .feed-toolbar.discovery, :scope > .feed-toolbar');
+      if (!strip || !toolbar) return;
+
+      const oldRow = workspace.querySelector(':scope > .mobile-source-mode-row-v6214');
+      const sourceStrip = oldRow?.querySelector?.(':scope > .workspace-source-strip') || workspace.querySelector(':scope > .workspace-source-strip');
+      const feedMode = toolbar.querySelector(':scope > .feed-mode') || strip.querySelector(':scope > .feed-mode') || oldRow?.querySelector?.(':scope > .feed-mode');
+
+      if (sourceStrip && sourceStrip.parentElement !== workspace) {
+        workspace.insertBefore(sourceStrip, toolbar);
+      }
+      if (oldRow && oldRow.childElementCount === 0) oldRow.remove();
+      if (oldRow && !oldRow.querySelector('.workspace-source-strip') && !oldRow.querySelector('.feed-mode')) oldRow.remove();
+
+      if (feedMode && feedMode.parentElement !== strip) {
+        strip.appendChild(feedMode);
+      }
+
+      strip.classList.add('mobile-title-mode-row-v6216');
+      toolbar.classList.add('mobile-tools-only-v6214');
+      toolbar.classList.add('mobile-tools-only-v6216');
+      workspace.classList.add('mobile-title-mode-mounted-v6216');
+      workspace.classList.toggle('empty-mobile-workspace-v6216', mobileWorkspaceIsEmptyV6216(ws));
+    });
+  };
+
+  syncMobileEmptyWorkspaceHintsV6215 = function syncMobileEmptyWorkspaceHintsV6216() {
+    if (!mobileActiveV6212()) {
+      document.querySelectorAll('.workspace').forEach((workspace) => {
+        workspace.classList.remove('empty-mobile-workspace-v6216');
+        workspace.querySelector('.workspace-drop-hint')?.classList?.remove?.('workspace-drop-hint-hidden-v6215');
+        workspace.querySelector('.empty-state.empty-state-workspace-instructions-v6215')?.classList?.remove?.('empty-state-workspace-instructions-v6215');
+      });
+      return;
+    }
+
+    document.querySelectorAll('.workspace').forEach((workspace) => {
+      const ws = workspace.dataset.ws ? getWorkspace(workspace.dataset.ws) : null;
+      const empty = mobileWorkspaceIsEmptyV6216(ws);
+      const dropHint = workspace.querySelector('.workspace-drop-hint');
+      const emptyState = workspace.querySelector('.post-feed .empty-state');
+      workspace.classList.toggle('empty-mobile-workspace-v6216', empty);
+      if (empty && emptyState) {
+        emptyState.classList.add('empty-state-workspace-instructions-v6215');
+        emptyState.textContent = 'Add lineage files, configs, folders, or zips with the + button.';
+        dropHint?.classList?.add?.('workspace-drop-hint-hidden-v6215');
+      } else {
+        emptyState?.classList?.remove?.('empty-state-workspace-instructions-v6215');
+        dropHint?.classList?.remove?.('workspace-drop-hint-hidden-v6215');
+      }
+    });
+  };
+
+  const scheduleMobileChromeStabilizeBeforeV6216 = scheduleMobileChromeStabilizeV6215;
+  scheduleMobileChromeStabilizeV6215 = function scheduleMobileChromeStabilizeWithTitleModeV6216() {
+    const result = scheduleMobileChromeStabilizeBeforeV6216();
+    requestAnimationFrame(() => {
+      try { syncMobileSourceModeRowsV6214(); } catch (_) {}
+      try { syncMobileEmptyWorkspaceHintsV6215(); } catch (_) {}
+    });
+    setTimeout(() => {
+      try { syncMobileSourceModeRowsV6214(); } catch (_) {}
+      try { syncMobileEmptyWorkspaceHintsV6215(); } catch (_) {}
+    }, 140);
+    return result;
+  };
+
+
+
+  // ===== v6.218 source visibility, tree FAB suppression, mobile create sheet =====
+  function sourceCountForWorkspaceV6218(ws, workspaceEl) {
+    try {
+      if (typeof workspaceSourceCountV6212 === 'function') return workspaceSourceCountV6212(ws, workspaceEl);
+    } catch (_) {}
+    try {
+      if (typeof countWorkspaceSources === 'function') return countWorkspaceSources(ws);
+    } catch (_) {}
+    try {
+      ensureWorkspaceSources(ws);
+      if (ws?.sources instanceof Map) return ws.sources.size;
+      if (Array.isArray(ws?.sources)) return ws.sources.length;
+    } catch (_) {}
+    return ws ? 1 : 0;
+  }
+
+  function syncSingleSourceWorkspacesV6218() {
+    document.querySelectorAll('.workspace').forEach((workspace, index) => {
+      let ws = null;
+      try {
+        ws = workspace.dataset.ws ? getWorkspace(workspace.dataset.ws) : ((app.workspaces || [])[index] || null);
+      } catch (_) {}
+      const count = sourceCountForWorkspaceV6218(ws, workspace);
+      const single = Number.isFinite(count) ? count <= 1 : true;
+      workspace.classList.toggle('single-source-state-v6218', single);
+      workspace.dataset.sourceCountV6218 = String(count);
+    });
+  }
+
+  function workspaceIsDiscoveryTreeV6218(ws) {
+    if (!ws) return false;
+    try {
+      if (typeof selectedNode === 'function' && selectedNode(ws)) return false;
+    } catch (_) {}
+    return (ws.discoveryView || 'feed') === 'tree';
+  }
+
+  function syncMobileTreeChromeV6218() {
+    const active = typeof mobileActiveV6212 === 'function'
+      ? mobileActiveV6212()
+      : Boolean(window.matchMedia?.('(max-width: 640px)')?.matches);
+    let tree = false;
+    try {
+      const ws = typeof activeWorkspaceV6203 === 'function' ? activeWorkspaceV6203() : null;
+      tree = active && workspaceIsDiscoveryTreeV6218(ws);
+    } catch (_) {}
+    document.body.classList.toggle('mobile-discovery-tree-v6218', Boolean(tree));
+    if (tree) {
+      app.mobileGlobalActionsOpenV6203 = false;
+      document.querySelectorAll('.mobile-global-actions-host-v6203').forEach((host) => {
+        if (!host.querySelector('.mobile-fab-v6203')) return;
+        host.classList.add('mobile-global-actions-hidden-v6218');
+      });
+    } else {
+      document.querySelectorAll('.mobile-global-actions-host-v6203.mobile-global-actions-hidden-v6218').forEach((host) => host.classList.remove('mobile-global-actions-hidden-v6218'));
+    }
+  }
+
+  function syncChromeV6218() {
+    try { syncSingleSourceWorkspacesV6218(); } catch (_) {}
+    try { syncMobileTreeChromeV6218(); } catch (_) {}
+  }
+
+  const mobileGlobalActionsBeforeV6218 = typeof mobileGlobalActionsV6203 === 'function' ? mobileGlobalActionsV6203 : null;
+  if (mobileGlobalActionsBeforeV6218) {
+    mobileGlobalActionsV6203 = function mobileGlobalActionsWithoutTreeFabV6218(ws) {
+      if (workspaceIsDiscoveryTreeV6218(ws)) return '';
+      return mobileGlobalActionsBeforeV6218(ws);
+    };
+  }
+
+  const renderCreateModalBeforeV6218 = renderCreateModal;
+  renderCreateModal = function renderCreateWorkspaceMobileSheetV6218(modal) {
+    if (modal?.mode !== 'workspace') return renderCreateModalBeforeV6218(modal);
+    const mobile = typeof mobileActiveV6212 === 'function'
+      ? mobileActiveV6212()
+      : Boolean(window.matchMedia?.('(max-width: 640px)')?.matches);
+    if (!mobile) return renderCreateModalBeforeV6218(modal);
+    return `
+      <div class="modal-backdrop-custom focus-modal create-workspace-backdrop create-workspace-sheet-backdrop-v6218" role="dialog" aria-modal="true" aria-label="Create workspace">
+        <div class="modal-panel create-workspace-panel create-workspace-sheet-v6218">
+          <div class="create-workspace-grabber-v6218" aria-hidden="true"></div>
+          <div class="create-workspace-head-v6218">
+            <div class="create-workspace-title-block-v6218">
+              <p class="kicker">Workspace</p>
+              <h2>Create workspace</h2>
+            </div>
+            <button class="tv-btn small subtle create-workspace-close-v6218" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+          <div class="create-workspace-body-v6218">
+            <label class="field-label" for="workspace-name">Name</label>
+            <input id="workspace-name" class="form-control tv-input" data-field="workspaceName" placeholder="Example: Tiinex/docs" value="${escapeAttr(modal.workspaceName || '')}" autofocus>
+            <p class="form-text create-workspace-hint-v6218">Empty now. Add files, folders, or GitHub sources after creation.</p>
+          </div>
+          <div class="create-workspace-actions-v6218">
+            <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+            <button class="tv-btn primary" data-action="create-workspace"><i class="fa-solid fa-plus"></i>Create</button>
+          </div>
+        </div>
+      </div>`;
+  };
+
+  const scheduleMobileDensityBeforeV6218 = typeof scheduleMobileDensityV6212 === 'function' ? scheduleMobileDensityV6212 : null;
+  if (scheduleMobileDensityBeforeV6218) {
+    scheduleMobileDensityV6212 = function scheduleMobileDensityWithV6218() {
+      const result = scheduleMobileDensityBeforeV6218();
+      requestAnimationFrame(syncChromeV6218);
+      return result;
+    };
+  }
+
+  const renderBeforeV6218 = render;
+  render = function renderWithV6218() {
+    const result = renderBeforeV6218();
+    requestAnimationFrame(syncChromeV6218);
+    setTimeout(syncChromeV6218, 90);
+    return result;
+  };
+
+  try {
+    const observerV6218 = new MutationObserver(() => requestAnimationFrame(syncChromeV6218));
+    observerV6218.observe(document.body, { childList: true, subtree: true });
+  } catch (_) {}
+
+  window.addEventListener('resize', () => requestAnimationFrame(syncChromeV6218), { passive: true });
+
+
 window.addEventListener('popstate', () => {
     restoreRouteFromBrowserHistory();
   });
@@ -26378,6 +28995,3511 @@ window.addEventListener('popstate', () => {
     toast(`Startup failed: ${error.message}`, 'error');
     render();
   });
+
+  // ===== v6.219 mobile polish, stable legal badges, closed tree default =====
+  const renderPolicyBadgeBeforeV6219 = typeof renderPolicyBadge === 'function' ? renderPolicyBadge : null;
+  const noticeBadgeBeforeV6219 = typeof noticeBadge === 'function' ? noticeBadge : null;
+  function policyStatusLoadingV6219(ws, status) {
+    return status === 'unknown' || status === 'loading' || Boolean(ws?.loading && (!status || status === 'unknown'));
+  }
+
+  if (typeof policyBadgeButtonV6123 === 'function') {
+    noticeBadge = function noticeBadgeStableSlotV6219(ws) {
+      const notice = ws?.notice || { status: 'unknown' };
+      if (notice.status === 'found') {
+        return policyBadgeButtonV6123(ws, 'notice', 'fa-regular fa-file-lines', notice.kind || 'NOTICE', notice.note || 'Origin NOTICE found', 'notice');
+      }
+      if (policyStatusLoadingV6219(ws, notice.status)) {
+        return policyBadgeButtonV6123(ws, 'notice pending-v6219', 'fa-regular fa-file-lines', 'Notice loading', notice.note || 'NOTICE status not loaded yet', 'notice');
+      }
+      return '';
+    };
+
+    renderPolicyBadge = function renderPolicyBadgeStableSlotV6219(ws) {
+      const p = ws?.policy || { status: 'unknown' };
+      let badge = '';
+      if (p.status === 'found') {
+        badge = policyBadgeButtonV6123(ws, 'ok', 'fa-solid fa-scroll', p.kind || 'Lineage policy', p.note || 'Lineage policy found', 'policy');
+      } else if (p.status === 'origin-fallback') {
+        badge = policyBadgeButtonV6123(ws, 'warn', 'fa-solid fa-scale-balanced', p.kind || 'Origin policy', p.note || 'Origin license/policy found', 'policy');
+      } else if (p.status === 'missing') {
+        badge = policyBadgeButtonV6123(ws, 'danger', 'fa-solid fa-triangle-exclamation', 'No origin policy/license', p.note || 'No origin policy/license found', 'policy');
+      } else if (p.status === 'local') {
+        badge = policyBadgeButtonV6123(ws, 'local', 'fa-solid fa-laptop-file', 'Local workspace', p.note || 'Local workspace', 'policy');
+      } else {
+        badge = policyBadgeButtonV6123(ws, 'pending-v6219', 'fa-solid fa-scale-balanced', 'Policy loading', p.note || 'Policy/license status not loaded yet', 'policy');
+      }
+      return badge + noticeBadge(ws);
+    };
+  }
+
+  const treeFolderExpandedBeforeV6219 = typeof treeFolderExpanded === 'function' ? treeFolderExpanded : null;
+  if (treeFolderExpandedBeforeV6219) {
+    treeFolderExpanded = function treeFolderClosedByDefaultV6219(ws, path) {
+      ws.treeExpandedFolders = ws.treeExpandedFolders || {};
+      if (Object.prototype.hasOwnProperty.call(ws.treeExpandedFolders, path)) return Boolean(ws.treeExpandedFolders[path]);
+      return false;
+    };
+  }
+
+  const renderCreateModalBeforeV6219 = typeof renderCreateModal === 'function' ? renderCreateModal : null;
+  function mobileCreateSheetActiveV6219() {
+    try {
+      if (typeof mobileActiveV6212 === 'function' && mobileActiveV6212()) return true;
+    } catch (_) {}
+    try {
+      if (document.body?.classList?.contains('mobile-chrome-v6205') || document.body?.classList?.contains('mobile-lens-v6203')) return true;
+    } catch (_) {}
+    return Boolean(window.matchMedia?.('(max-width: 640px)')?.matches);
+  }
+
+  if (renderCreateModalBeforeV6219) {
+    renderCreateModal = function renderCreateWorkspaceMobileSheetV6219(modal) {
+      if (modal?.mode !== 'workspace' || !mobileCreateSheetActiveV6219()) return renderCreateModalBeforeV6219(modal);
+      return `
+        <div class="modal-backdrop-custom focus-modal create-workspace-backdrop create-workspace-sheet-backdrop-v6219" role="dialog" aria-modal="true" aria-label="Create workspace">
+          <div class="modal-panel create-workspace-panel create-workspace-sheet-v6219">
+            <div class="create-workspace-grabber-v6219" aria-hidden="true"></div>
+            <div class="create-workspace-head-v6219">
+              <div>
+                <p class="kicker">Create</p>
+                <h2 class="modal-title-lite">New workspace</h2>
+              </div>
+              <button class="tv-btn small subtle create-workspace-close-v6219" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="create-workspace-body-v6219">
+              <label class="field-label" for="workspace-name">Workspace name</label>
+              <input id="workspace-name" class="form-control tv-input" data-field="workspaceName" placeholder="Example: Tiinex/docs" value="${escapeAttr(modal.workspaceName || '')}" autofocus>
+              <p class="form-text create-workspace-hint-v6219">Add files, folders, or GitHub sources after creation.</p>
+            </div>
+            <div class="create-workspace-actions-v6219">
+              <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+              <button class="tv-btn primary" data-action="create-workspace"><i class="fa-solid fa-plus"></i>Create</button>
+            </div>
+          </div>
+        </div>`;
+    };
+  }
+
+
+  // ===== v6.221 workspace stats order + display options in toolbar =====
+  function displayOptionsToolbarButtonV6221(ws) {
+    const displayCount = typeof displayOptionsActiveCountV6134 === 'function' ? displayOptionsActiveCountV6134(ws) : 0;
+    const displayTitle = displayCount ? `${displayCount} display option${displayCount === 1 ? '' : 's'} active` : 'Display options';
+    return `<button class="tv-btn tiny subtle display-options-action toolbar-display-options-v6221 ${displayCount ? 'active' : ''}" data-action="open-display-options" data-ws="${escapeAttr(ws.id)}" title="${escapeAttr(displayTitle)}" aria-label="Display options"><i class="fa-solid fa-sliders"></i>${displayCount ? `<small>${displayCount}</small>` : ''}</button>`;
+  }
+
+  const renderWorkspaceBeforeV6221 = typeof renderWorkspace === 'function' ? renderWorkspace : null;
+  if (renderWorkspaceBeforeV6221) {
+    renderWorkspace = function renderWorkspaceStatsAndToolbarV6221(ws) {
+      let html = renderWorkspaceBeforeV6221(ws);
+      // Source count is more closely tied to workspace identity than trace count, so it reads better first.
+      html = html.replace(
+        /(<span class="stat-pill" title="Trace files"><i class="fa-regular fa-file-lines"><\/i>[\s\S]*?<\/span>)\s*(<span class="stat-pill" title="Sources"><i class="fa-solid fa-database"><\/i>[\s\S]*?<\/span>)/,
+        '$2$1'
+      );
+      // The display-options control belongs with discovery/search controls, not with workspace storage/actions.
+      html = html.replace(
+        /\s*<button class="tv-btn small subtle display-options-action[\s\S]*?data-action="open-display-options"[\s\S]*?aria-label="Display options">[\s\S]*?<\/button>/,
+        ''
+      );
+      return html;
+    };
+  }
+
+  const renderWorkspaceFeedBeforeV6221 = typeof renderWorkspaceFeed === 'function' ? renderWorkspaceFeed : null;
+  if (renderWorkspaceFeedBeforeV6221) {
+    renderWorkspaceFeed = function renderWorkspaceFeedWithToolbarDisplayOptionsV6221(ws, selected) {
+      let html = renderWorkspaceFeedBeforeV6221(ws, selected);
+      const button = displayOptionsToolbarButtonV6221(ws);
+      if (!selected) {
+        html = html.replace(/(<div class="discovery-tools[^"\n]*">\s*)/, `$1${button}`);
+      }
+      return html;
+    };
+  }
+
+
+
+  // ===== v6.231 mobile mutation-loop guard =====
+  // The mobile density pipeline had accumulated several MutationObserver-driven
+  // post-render passes. One of them rebuilt badge rows on every mutation by
+  // removing the +N button, appending a probe, re-appending chips, and creating a
+  // fresh +N button. DevTools made that visible as a hot DOM update loop. Keep
+  // the same visual behavior, but make the post-render passes idempotent: do not
+  // write the DOM when the current row already matches the desired packed state.
+  function classToggleIfChangedV6231(el, className, enabled) {
+    if (!el?.classList) return false;
+    const has = el.classList.contains(className);
+    if (Boolean(enabled) === has) return false;
+    el.classList.toggle(className, Boolean(enabled));
+    return true;
+  }
+
+  function setDatasetIfChangedV6231(el, key, value) {
+    if (!el?.dataset) return false;
+    const next = String(value ?? '');
+    if (el.dataset[key] === next) return false;
+    el.dataset[key] = next;
+    return true;
+  }
+
+  function setTextIfChangedV6231(el, value) {
+    if (!el) return false;
+    const next = String(value || '');
+    if (el.textContent === next) return false;
+    el.textContent = next;
+    return true;
+  }
+
+  function resetChipRowIfDirtyV6231(row) {
+    if (!row) return;
+    const more = Array.from(row.querySelectorAll('.mobile-chip-more-v6207, .mobile-chip-more-v6212, .mobile-chip-more-v6213, .mobile-chip-more-v6231'));
+    more.forEach((el) => el.remove());
+    Array.from(row.children).forEach((el) => {
+      el.classList?.remove?.('mobile-chip-hidden-v6207', 'mobile-chip-hidden-v6212', 'mobile-chip-hidden-v6213', 'mobile-chip-hidden-v6231');
+    });
+    row.classList.remove('single-source-chip-row-v6212', 'single-source-chip-row-v6213', 'mobile-chip-packed-v6231');
+    row.dataset.mobileChipsV6207 = '';
+    row.dataset.mobileChipsV6212 = '';
+    row.dataset.mobileChipsV6213 = '';
+    row.dataset.mobileChipsV6231 = '';
+    row.dataset.mobileChipSignatureV6231 = '';
+  }
+
+  function mobileChipTextV6231(chip) {
+    return String(chip?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  function mobileChipClassV6231(chip) {
+    return String(chip?.className || '').toLowerCase();
+  }
+
+  function mobileChipIsDateV6231(chip) {
+    return /\b\d{4}-\d{2}-\d{2}\b/u.test(mobileChipTextV6231(chip));
+  }
+
+  function mobileChipIsSchemaV6231(chip) {
+    const text = mobileChipTextV6231(chip);
+    const cls = mobileChipClassV6231(chip);
+    return /badge-schema|schema-nav-badge/u.test(cls)
+      || /\b(topic|task|decision|evidence|feedback|reduction|signal|pointer|runtime|machine runtime|ai runtime|lineage\.upgrade\.deferral|lineage upgrade|root|schema|continuation|capability|archive|broken|encrypted)\b/u.test(text);
+  }
+
+  function mobileChipIsSourceV6231(chip) {
+    const text = mobileChipTextV6231(chip);
+    const cls = mobileChipClassV6231(chip);
+    return /source-chip|source-badge|source-github|source-local|source-url|source-draft/u.test(cls)
+      || /tiinex\/docs|github|local state|local\b/u.test(text);
+  }
+
+  function mobileChipPriorityV6231(chip, sourceCount) {
+    const text = mobileChipTextV6231(chip);
+    const cls = mobileChipClassV6231(chip);
+    const joined = `${text} ${cls}`;
+    // v6.240: the card More menu is now a badge-row control and must never
+    // be packed behind the hidden-badges counter. Keep it in the measured set
+    // so row packing reserves width, then CSS orders it to the far right.
+    if (chip?.classList?.contains('mobile-card-more-chip-v6239')) return -1;
+    if (/mismatch|missing|error|fail|danger/u.test(joined)) return 0;
+    if (/verified|open|out of date|integrity|ok/u.test(joined)) return 1;
+    if (mobileChipIsSchemaV6231(chip)) return 2;
+    if (mobileChipIsDateV6231(chip)) return 3;
+    if (/refs?|image|material|attachment|asset|pdf|zip/u.test(joined)) return 4;
+    if (/selected leaf|parent|child|ancestor|descendant/u.test(text)) return 5;
+    if (mobileChipIsSourceV6231(chip)) return sourceCount <= 1 ? 10 : 6;
+    return 7;
+  }
+
+  function mobileChipWidthEstimateV6231(chip) {
+    if (!chip) return 0;
+    if (!chip.classList?.contains('mobile-chip-hidden-v6207')
+      && !chip.classList?.contains('mobile-chip-hidden-v6212')
+      && !chip.classList?.contains('mobile-chip-hidden-v6213')
+      && !chip.classList?.contains('mobile-chip-hidden-v6231')) {
+      const rect = chip.getBoundingClientRect?.();
+      const measured = rect && Number.isFinite(rect.width) ? Math.ceil(rect.width) : 0;
+      if (measured > 0) return measured;
+    }
+    const text = String(chip.textContent || '').trim();
+    return Math.min(126, Math.max(34, 20 + text.length * 7));
+  }
+
+  function mobileChipGapV6231(row) {
+    const style = window.getComputedStyle?.(row);
+    const parsed = parseFloat(style?.columnGap || style?.gap || '');
+    return Number.isFinite(parsed) ? parsed : 4;
+  }
+
+  function mobileMoreWidthV6231(hiddenCount) {
+    const digits = String(Math.max(1, hiddenCount || 1)).length;
+    return 30 + Math.max(0, digits - 1) * 7;
+  }
+
+  function packMobileChipsV6231(row, candidates, forcedHidden) {
+    const gap = mobileChipGapV6231(row);
+    const rowWidth = Math.floor(row.clientWidth || row.getBoundingClientRect?.().width || 0);
+    const fallbackWidth = Math.floor(row.closest('.lineage-post, article')?.clientWidth || 300);
+    const available = rowWidth > 0 ? rowWidth : fallbackWidth;
+    const hiddenBase = forcedHidden.length;
+    const moreWidth = mobileMoreWidthV6231(Math.max(1, candidates.length + hiddenBase));
+    const visible = [];
+    const hidden = [];
+    let used = 0;
+
+    candidates.forEach((chip, index) => {
+      const width = mobileChipWidthEstimateV6231(chip);
+      const nextGap = visible.length ? gap : 0;
+      const usedIfVisible = used + nextGap + width;
+      const hiddenIfVisible = (candidates.length - index - 1) + hiddenBase;
+      const reserve = hiddenIfVisible > 0 ? gap + moreWidth : 0;
+      const canFit = usedIfVisible + reserve <= available;
+      if (canFit || visible.length === 0) {
+        visible.push(chip);
+        used = usedIfVisible;
+      } else {
+        hidden.push(chip);
+      }
+    });
+
+    return { visible, hidden: hidden.concat(forcedHidden) };
+  }
+
+  function rowSignatureV6231(visible, hidden, moreText, sourceCount, expanded) {
+    const part = (chips) => chips.map((chip) => `${mobileChipTextV6231(chip)}::${mobileChipClassV6231(chip).replace(/\bmobile-chip-hidden-v\d+\b/gu, '').trim()}`).join('|');
+    return `s=${sourceCount};e=${expanded ? 1 : 0};v=${part(visible)};h=${part(hidden)};m=${moreText || ''}`;
+  }
+
+  compactMobilePostChipsV6212 = function compactMobilePostChipsIdempotentV6231() {
+    const rows = Array.from(document.querySelectorAll('.lineage-post .post-chips, article .post-chips'));
+    const active = typeof mobileActiveV6212 === 'function'
+      ? mobileActiveV6212()
+      : Boolean(window.matchMedia?.('(max-width: 640px)')?.matches);
+    if (!active) {
+      rows.forEach((row) => {
+        if (row.dataset.mobileChipsV6231 || row.querySelector('.mobile-chip-more-v6207, .mobile-chip-hidden-v6207, .mobile-chip-more-v6212, .mobile-chip-more-v6213, .mobile-chip-more-v6231')) {
+          resetChipRowIfDirtyV6231(row);
+        }
+      });
+      return;
+    }
+
+    rows.forEach((row) => {
+      const expanded = row.classList.contains('mobile-chip-expanded-v6207');
+      const workspaceEl = typeof workspaceDomForRowV6212 === 'function' ? workspaceDomForRowV6212(row) : row.closest('.workspace');
+      const ws = (typeof workspaceForRowV6212 === 'function' ? workspaceForRowV6212(row) : null)
+        || (workspaceEl?.dataset?.ws ? getWorkspace(workspaceEl.dataset.ws) : null);
+      const sourceCount = typeof workspaceSourceCountV6212 === 'function' ? workspaceSourceCountV6212(ws, workspaceEl) : 1;
+      const chips = Array.from(row.children).filter((el) => el?.classList?.contains('badge-soft')
+        && !el.classList.contains('mobile-chip-more-v6207')
+        && !el.classList.contains('mobile-chip-more-v6212')
+        && !el.classList.contains('mobile-chip-more-v6213')
+        && !el.classList.contains('mobile-chip-more-v6231'));
+      if (!chips.length) return;
+
+      const sorted = chips.map((chip, index) => ({ chip, index })).sort((a, b) => {
+        const pa = mobileChipPriorityV6231(a.chip, sourceCount);
+        const pb = mobileChipPriorityV6231(b.chip, sourceCount);
+        return pa === pb ? a.index - b.index : pa - pb;
+      }).map((entry) => entry.chip);
+
+      const forcedHidden = [];
+      const candidates = [];
+      sorted.forEach((chip) => {
+        if (sourceCount <= 1 && mobileChipIsSourceV6231(chip)) forcedHidden.push(chip);
+        else candidates.push(chip);
+      });
+      const packed = expanded ? { visible: candidates.concat(forcedHidden), hidden: [] } : packMobileChipsV6231(row, candidates, forcedHidden);
+      const visible = packed.visible;
+      const hidden = packed.hidden;
+      const moreText = hidden.length && !expanded ? `+${hidden.length}` : '';
+      const signature = rowSignatureV6231(visible, hidden, moreText, sourceCount, expanded);
+
+      if (row.dataset.mobileChipSignatureV6231 === signature) return;
+
+      row.querySelectorAll('.mobile-chip-more-v6207, .mobile-chip-more-v6212, .mobile-chip-more-v6213, .mobile-chip-more-v6231').forEach((el) => el.remove());
+      visible.concat(hidden).forEach((chip) => {
+        chip.classList.remove('mobile-chip-hidden-v6207', 'mobile-chip-hidden-v6212', 'mobile-chip-hidden-v6213', 'mobile-chip-hidden-v6231');
+        const shouldHide = hidden.includes(chip) && !expanded;
+        if (shouldHide) chip.classList.add('mobile-chip-hidden-v6207', 'mobile-chip-hidden-v6212', 'mobile-chip-hidden-v6213', 'mobile-chip-hidden-v6231');
+        if (chip.parentElement !== row || row.lastElementChild !== chip) row.appendChild(chip);
+      });
+
+      if (moreText) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'badge-soft mobile-chip-more-v6207 mobile-chip-more-v6212 mobile-chip-more-v6213 mobile-chip-more-v6231';
+        btn.dataset.mobileAction = 'toggle-card-chips-v6207';
+        btn.textContent = moreText;
+        btn.title = 'Show hidden badges';
+        row.appendChild(btn);
+      }
+      row.classList.toggle('single-source-chip-row-v6212', sourceCount <= 1);
+      row.classList.toggle('single-source-chip-row-v6213', sourceCount <= 1);
+      row.classList.add('mobile-chip-packed-v6231');
+      row.dataset.mobileChipsV6207 = '1';
+      row.dataset.mobileChipsV6212 = '1';
+      row.dataset.mobileChipsV6213 = '1';
+      row.dataset.mobileChipsV6231 = '1';
+      row.dataset.sourceCountV6212 = String(sourceCount);
+      row.dataset.sourceCountV6213 = String(sourceCount);
+      row.dataset.mobileChipSignatureV6231 = signature;
+    });
+  };
+
+  const ensureMobileTopRailBeforeV6231 = typeof ensureMobileTopRailV6212 === 'function' ? ensureMobileTopRailV6212 : null;
+  if (ensureMobileTopRailBeforeV6231) {
+    ensureMobileTopRailV6212 = function ensureMobileTopRailStableV6231() {
+      const shell = document.querySelector('.app-shell');
+      if (!shell) return;
+      const active = typeof mobileActiveV6212 === 'function' ? mobileActiveV6212() : false;
+      document.body.classList.toggle('mobile-top-rail-mounted-v6212', active);
+      const existing = shell.querySelector(':scope > .mobile-top-rail-v6212') || shell.querySelector('.mobile-top-rail-v6212');
+      if (!active) {
+        if (existing) existing.remove();
+        return;
+      }
+      const html = typeof renderMobileTopRailV6212 === 'function' ? renderMobileTopRailV6212() : '';
+      if (!html) return;
+      if (existing && existing.dataset.stableHtmlV6231 === html) return;
+      if (existing && existing.outerHTML === html) {
+        existing.dataset.stableHtmlV6231 = html;
+        return;
+      }
+      const host = document.createElement('div');
+      host.innerHTML = html;
+      const rail = host.firstElementChild;
+      rail.dataset.stableHtmlV6231 = html;
+      if (existing) existing.replaceWith(rail);
+      else {
+        const topbar = shell.querySelector('.topbar');
+        if (topbar?.nextSibling) shell.insertBefore(rail, topbar.nextSibling);
+        else shell.insertBefore(rail, shell.firstChild);
+      }
+      shell.querySelectorAll(':scope > .mobile-top-rail-v6212').forEach((el) => {
+        if (el !== rail) el.remove();
+      });
+    };
+  }
+
+  syncMobileEmptyWorkspaceHintsV6215 = function syncMobileEmptyWorkspaceHintsStableV6231() {
+    const active = typeof mobileActiveV6212 === 'function'
+      ? mobileActiveV6212()
+      : Boolean(window.matchMedia?.('(max-width: 640px)')?.matches);
+    document.querySelectorAll('.workspace').forEach((workspace) => {
+      const ws = workspace.dataset.ws ? getWorkspace(workspace.dataset.ws) : null;
+      const empty = active && (typeof mobileWorkspaceIsEmptyV6216 === 'function' ? mobileWorkspaceIsEmptyV6216(ws) : false);
+      const dropHint = workspace.querySelector('.workspace-drop-hint');
+      const emptyState = workspace.querySelector('.post-feed .empty-state');
+      classToggleIfChangedV6231(workspace, 'empty-mobile-workspace-v6216', empty);
+      if (empty && emptyState) {
+        classToggleIfChangedV6231(emptyState, 'empty-state-workspace-instructions-v6215', true);
+        setTextIfChangedV6231(emptyState, 'Add lineage files, configs, folders, or zips with the + button.');
+        if (dropHint) classToggleIfChangedV6231(dropHint, 'workspace-drop-hint-hidden-v6215', true);
+      } else {
+        if (emptyState) classToggleIfChangedV6231(emptyState, 'empty-state-workspace-instructions-v6215', false);
+        if (dropHint) classToggleIfChangedV6231(dropHint, 'workspace-drop-hint-hidden-v6215', false);
+      }
+    });
+  };
+
+  let mobileDensityTimerV6231 = 0;
+  const scheduleMobileDensityBeforeV6231 = typeof scheduleMobileDensityV6212 === 'function' ? scheduleMobileDensityV6212 : null;
+  if (scheduleMobileDensityBeforeV6231) {
+    scheduleMobileDensityV6212 = function scheduleMobileDensityCoalescedV6231() {
+      const result = scheduleMobileDensityBeforeV6231();
+      if (mobileDensityTimerV6231) window.clearTimeout(mobileDensityTimerV6231);
+      mobileDensityTimerV6231 = window.setTimeout(() => {
+        mobileDensityTimerV6231 = 0;
+        try { compactMobilePostChipsV6212(); } catch (_) {}
+        try { syncMobileEmptyWorkspaceHintsV6215(); } catch (_) {}
+      }, 120);
+      return result;
+    };
+  }
+
 })();
 
 /* v6.32: automatic successful load/navigation toasts are intentionally quiet. */
+
+;(() => {
+  // ===== v6.222 revert display-options toolbar relocation =====
+  // v6.221 moved display options into the discovery toolbar. In practice that
+  // fought the existing Feed/Tree/search grid and produced a floating control.
+  // Keep the Sources/Traces stat ordering from v6.221, but return display
+  // options to the workspace action rail where the action cluster already owns
+  // sizing and badging.
+  const renderWorkspaceBeforeV6222 = typeof renderWorkspace === 'function' ? renderWorkspace : null;
+
+  function displayOptionsWorkspaceButtonV6222(ws) {
+    const displayCount = typeof displayOptionsActiveCountV6134 === 'function' ? displayOptionsActiveCountV6134(ws) : 0;
+    const displayTitle = displayCount ? `${displayCount} display option${displayCount === 1 ? '' : 's'} active` : 'Display options';
+    return `<button class="tv-btn small subtle display-options-action ${displayCount ? 'active' : ''}" data-action="open-display-options" data-ws="${escapeAttr(ws.id)}" title="${escapeAttr(displayTitle)}" aria-label="Display options"><i class="fa-solid fa-sliders"></i>${displayCount ? `<small>${displayCount}</small>` : ''}</button>`;
+  }
+
+  if (renderWorkspaceBeforeV6222) {
+    renderWorkspace = function renderWorkspaceRestoreDisplayOptionsActionV6222(ws) {
+      let html = renderWorkspaceBeforeV6222(ws);
+      if (!html || html.includes('display-options-action')) return html;
+      const button = displayOptionsWorkspaceButtonV6222(ws);
+      html = html.replace(
+        /(<span class="stat-pill" title="Drafts"><i class="fa-solid fa-pen-nib"><\/i>[\s\S]*?<\/span>)/,
+        `$1${button}`
+      );
+      return html;
+    };
+  }
+
+  const renderWorkspaceFeedBeforeV6222 = typeof renderWorkspaceFeed === 'function' ? renderWorkspaceFeed : null;
+  if (renderWorkspaceFeedBeforeV6222) {
+    renderWorkspaceFeed = function renderWorkspaceFeedWithoutToolbarDisplayOptionsV6222(ws, selected) {
+      let html = renderWorkspaceFeedBeforeV6222(ws, selected);
+      return html.replace(/\s*<button class="tv-btn tiny subtle display-options-action toolbar-display-options-v6221[\s\S]*?data-action="open-display-options"[\s\S]*?aria-label="Display options">[\s\S]*?<\/button>/g, '');
+    };
+  }
+})();
+
+;(() => {
+  // ===== v6.223 display options in discovery tools + aligned tree add column =====
+  // v6.221 proved that the display-options control belongs near search, but
+  // inserting it as a first-column item fought the existing toolbar grid and
+  // made it float. Put it next to the existing discovery tool buttons, directly
+  // before search, and keep it out of the workspace action rail.
+  function displayOptionsToolbarButtonV6223(ws) {
+    const displayCount = typeof displayOptionsActiveCountV6134 === 'function' ? displayOptionsActiveCountV6134(ws) : 0;
+    const displayTitle = displayCount ? `${displayCount} display option${displayCount === 1 ? '' : 's'} active` : 'Display options';
+    return `<button class="tv-btn tiny subtle display-options-action toolbar-display-options-v6223 ${displayCount ? 'active' : ''}" data-action="open-display-options" data-ws="${escapeAttr(ws.id)}" title="${escapeAttr(displayTitle)}" aria-label="Display options"><i class="fa-solid fa-sliders"></i>${displayCount ? `<small>${displayCount}</small>` : ''}</button>`;
+  }
+
+  function removeWorkspaceDisplayOptionsButtonsV6223(html) {
+    return String(html || '').replace(/\s*<button class="tv-btn small subtle display-options-action[\s\S]*?data-action="open-display-options"[\s\S]*?aria-label="Display options">[\s\S]*?<\/button>/g, '');
+  }
+
+  const renderWorkspaceBeforeV6223 = typeof renderWorkspace === 'function' ? renderWorkspace : null;
+  if (renderWorkspaceBeforeV6223) {
+    renderWorkspace = function renderWorkspaceWithoutRailDisplayOptionsV6223(ws) {
+      return removeWorkspaceDisplayOptionsButtonsV6223(renderWorkspaceBeforeV6223(ws));
+    };
+  }
+
+  const renderWorkspaceFeedBeforeV6223 = typeof renderWorkspaceFeed === 'function' ? renderWorkspaceFeed : null;
+  if (renderWorkspaceFeedBeforeV6223) {
+    renderWorkspaceFeed = function renderWorkspaceFeedWithInlineDisplayOptionsV6223(ws, selected) {
+      let html = renderWorkspaceFeedBeforeV6223(ws, selected);
+      html = html.replace(/\s*<button class="tv-btn tiny subtle display-options-action toolbar-display-options-v6221[\s\S]*?data-action="open-display-options"[\s\S]*?aria-label="Display options">[\s\S]*?<\/button>/g, '');
+      html = html.replace(/\s*<button class="tv-btn tiny subtle display-options-action toolbar-display-options-v6223[\s\S]*?data-action="open-display-options"[\s\S]*?aria-label="Display options">[\s\S]*?<\/button>/g, '');
+      if (selected) return html;
+      const button = displayOptionsToolbarButtonV6223(ws);
+      const searchStart = /(<div class="search-box)/;
+      if (searchStart.test(html)) return html.replace(searchStart, `${button}$1`);
+      return html;
+    };
+  }
+})();
+
+
+;(() => {
+  // ===== v6.227 normalize discovery toolbar controls after render =====
+  // The v6.221-v6.226 CSS-only moves were fighting older toolbar rules. Keep
+  // display options in the search rail, including Tree view, but normalize the
+  // actual DOM order after render so the three controls remain one row:
+  // display options, preview/expand, search.
+  function trimToEmptyV6227(value) {
+    return typeof value === 'string' ? value.trim() : '';
+  }
+
+  function displayOptionsToolbarButtonElementV6227(workspaceEl) {
+    const ws = workspaceEl?.dataset?.ws && typeof getWorkspace === 'function' ? getWorkspace(workspaceEl.dataset.ws) : null;
+    if (!ws) return null;
+    const displayCount = typeof displayOptionsActiveCountV6134 === 'function' ? displayOptionsActiveCountV6134(ws) : 0;
+    const displayTitle = displayCount ? `${displayCount} display option${displayCount === 1 ? '' : 's'} active` : 'Display options';
+    const button = document.createElement('button');
+    button.className = `tv-btn tiny subtle display-options-action toolbar-display-options-v6223 toolbar-display-options-v6227 ${displayCount ? 'active' : ''}`.trim();
+    button.dataset.action = 'open-display-options';
+    button.dataset.ws = ws.id;
+    button.title = displayTitle;
+    button.setAttribute('aria-label', 'Display options');
+    button.innerHTML = `<i class="fa-solid fa-sliders"></i>${displayCount ? `<small>${displayCount}</small>` : ''}`;
+    return button;
+  }
+
+  function normalizeDiscoveryToolbarV6227(toolbar) {
+    if (!toolbar || !toolbar.classList?.contains('discovery')) return;
+    const workspace = toolbar.closest('.workspace');
+    const feedMode = toolbar.querySelector(':scope > .feed-mode');
+    let cluster = toolbar.querySelector(':scope > .toolbar-search-cluster-v6227');
+    let tools = toolbar.querySelector(':scope > .discovery-tools, :scope > .v63-discovery-tools, :scope > .v66-discovery-tools, :scope > .tree-toolbar-tools');
+    const search = toolbar.querySelector(':scope .search-box');
+    if (!search) return;
+
+    if (!cluster) {
+      cluster = tools || document.createElement('div');
+      cluster.classList.add('toolbar-search-cluster-v6227');
+      if (!tools) {
+        cluster.classList.add('discovery-tools');
+        if (feedMode?.nextSibling) toolbar.insertBefore(cluster, feedMode.nextSibling);
+        else toolbar.appendChild(cluster);
+      }
+    }
+
+    // Tree toolbars must keep display options visible too. If earlier wrappers
+    // failed to inject it, create one from the active workspace state.
+    let display = toolbar.querySelector(':scope .toolbar-display-options-v6223, :scope .display-options-action[data-action="open-display-options"]');
+    if (!display) display = displayOptionsToolbarButtonElementV6227(workspace);
+    if (display) display.classList.add('toolbar-display-options-v6227');
+
+    const secondary = toolbar.querySelector(':scope .tree-all-toggle:not(.disabled-placeholder-v6173), :scope .preview-toggle-v6195, :scope .tree-all-toggle.disabled-placeholder-v6173');
+
+    // Keep the cluster as the only visual right-side rail. Moving already-owned
+    // nodes is idempotent and avoids repeated string rewrites.
+    const ordered = [display, secondary, search].filter(Boolean);
+    for (const node of ordered) {
+      if (node.parentElement !== cluster) cluster.appendChild(node);
+    }
+    ordered.forEach((node, index) => {
+      const wanted = cluster.children[index];
+      if (wanted !== node) cluster.insertBefore(node, wanted || null);
+    });
+
+    toolbar.classList.add('toolbar-normalized-v6227');
+    cluster.classList.add('toolbar-search-cluster-v6227');
+  }
+
+  let normalizeToolbarRafV6227 = 0;
+  function normalizeDiscoveryToolbarsV6227() {
+    normalizeToolbarRafV6227 = 0;
+    document.querySelectorAll('.feed-toolbar.discovery').forEach(normalizeDiscoveryToolbarV6227);
+  }
+
+  function scheduleNormalizeDiscoveryToolbarsV6227() {
+    if (normalizeToolbarRafV6227) return;
+    normalizeToolbarRafV6227 = requestAnimationFrame(normalizeDiscoveryToolbarsV6227);
+  }
+
+  const renderBeforeV6227 = typeof render === 'function' ? render : null;
+  if (renderBeforeV6227) {
+    render = function renderWithNormalizedDiscoveryToolbarV6227() {
+      const result = renderBeforeV6227();
+      scheduleNormalizeDiscoveryToolbarsV6227();
+      setTimeout(scheduleNormalizeDiscoveryToolbarsV6227, 60);
+      return result;
+    };
+  }
+
+  try {
+    const observer = new MutationObserver(scheduleNormalizeDiscoveryToolbarsV6227);
+    observer.observe(document.body, { childList: true, subtree: true });
+  } catch (_) {}
+
+  window.addEventListener('resize', scheduleNormalizeDiscoveryToolbarsV6227, { passive: true });
+  scheduleNormalizeDiscoveryToolbarsV6227();
+
+  // ===== v6.228 stable desktop chip order + mobile title-row height =====
+  function chipTextV6228(chip) {
+    return String(chip?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  function chipClassV6228(chip) {
+    return String(chip?.className || '').toLowerCase();
+  }
+
+  function chipIsDateV6228(chip) {
+    return /\b\d{4}-\d{2}-\d{2}\b/u.test(chipTextV6228(chip));
+  }
+
+  function chipIsSchemaV6228(chip) {
+    const text = chipTextV6228(chip);
+    const cls = chipClassV6228(chip);
+    return /badge-schema|schema-nav-badge/u.test(cls)
+      || /\b(topic|task|decision|evidence|feedback|reduction|signal|pointer|runtime|machine runtime|ai runtime|lineage\.upgrade\.deferral|lineage upgrade|root|schema|continuation|capability|archive|broken|encrypted)\b/u.test(text);
+  }
+
+  function chipIsSourceV6228(chip) {
+    const text = chipTextV6228(chip);
+    const cls = chipClassV6228(chip);
+    return /source-chip|source-badge|source-github|source-local|source-url|source-draft/u.test(cls)
+      || /tiinex\/docs|github|local state|local\b/u.test(text);
+  }
+
+  function chipPriorityV6228(chip) {
+    const text = chipTextV6228(chip);
+    const cls = chipClassV6228(chip);
+    const joined = `${text} ${cls}`;
+    if (/mismatch|missing|error|fail|danger/u.test(joined)) return 0;
+    if (/verified|open|out of date|integrity|ok/u.test(joined)) return 1;
+    if (chipIsSchemaV6228(chip)) return 2;
+    if (chipIsDateV6228(chip)) return 3;
+    if (/refs?|image|material|attachment|asset|pdf|zip/u.test(joined)) return 4;
+    if (chipIsSourceV6228(chip)) return 5;
+    if (/selected leaf|parent|child|ancestor|descendant/u.test(text)) return 6;
+    return 7;
+  }
+
+  function normalizeDesktopPostChipOrderV6228() {
+    const mobileActive = typeof mobileActiveV6212 === 'function'
+      ? mobileActiveV6212()
+      : Boolean(window.matchMedia?.('(max-width: 640px)')?.matches);
+    if (mobileActive) return;
+
+    document.querySelectorAll('.lineage-post .post-chips, article .post-chips').forEach((row) => {
+      const chips = Array.from(row.children).filter((el) => {
+        if (!el?.classList?.contains('badge-soft')) return false;
+        if (el.classList.contains('mobile-chip-more-v6207') || el.classList.contains('mobile-chip-more-v6212') || el.classList.contains('mobile-chip-more-v6213')) return false;
+        return true;
+      });
+      if (chips.length < 2) return;
+      const sorted = chips.map((chip, index) => ({ chip, index })).sort((a, b) => {
+        const pa = chipPriorityV6228(a.chip);
+        const pb = chipPriorityV6228(b.chip);
+        return pa === pb ? a.index - b.index : pa - pb;
+      }).map((entry) => entry.chip);
+      let changed = false;
+      for (let i = 0; i < sorted.length; i += 1) {
+        if (chips[i] !== sorted[i]) { changed = true; break; }
+      }
+      if (!changed) return;
+      sorted.forEach((chip) => row.appendChild(chip));
+      row.dataset.desktopChipOrderV6228 = '1';
+    });
+  }
+
+  let desktopChipOrderRafV6228 = 0;
+  function scheduleDesktopPostChipOrderV6228() {
+    if (desktopChipOrderRafV6228) return;
+    desktopChipOrderRafV6228 = requestAnimationFrame(() => {
+      desktopChipOrderRafV6228 = 0;
+      normalizeDesktopPostChipOrderV6228();
+    });
+  }
+
+  const renderBeforeV6228 = typeof render === 'function' ? render : null;
+  if (renderBeforeV6228) {
+    render = function renderWithDesktopChipOrderV6228() {
+      const result = renderBeforeV6228();
+      scheduleDesktopPostChipOrderV6228();
+      setTimeout(scheduleDesktopPostChipOrderV6228, 70);
+      return result;
+    };
+  }
+
+  try {
+    const chipOrderObserverV6228 = new MutationObserver(scheduleDesktopPostChipOrderV6228);
+    chipOrderObserverV6228.observe(document.body, { childList: true, subtree: true });
+  } catch (_) {}
+
+  window.addEventListener('resize', scheduleDesktopPostChipOrderV6228, { passive: true });
+  scheduleDesktopPostChipOrderV6228();
+
+})();
+
+;(() => {
+  // ===== v6.234 lineage toolbar parity + mobile lineage action compacting =====
+  // Discovery has already been normalized into a stable search rail. Lineage had
+  // separate older rules, so Back/Audit and the preview/search controls shifted
+  // between desktop and mobile. Keep the lineage action semantics, but normalize
+  // the DOM order and add a harmless reserved display-options slot so preview +
+  // search align with Discovery without moving the real display-options button
+  // into Lineage.
+  function normalizeLineageToolbarV6234(toolbar) {
+    if (!toolbar || !toolbar.classList?.contains('lineage')) return;
+    const workspace = toolbar.closest('.workspace');
+    const strip = workspace?.querySelector?.(':scope > .workspace-strip');
+    const feedMode = toolbar.querySelector(':scope > .feed-mode') || strip?.querySelector?.(':scope > .feed-mode');
+    const wrap = toolbar.querySelector(':scope > .lineage-search-wrap');
+    if (!wrap) return;
+
+    let spacer = wrap.querySelector(':scope > .lineage-display-spacer-v6234');
+    if (!spacer) {
+      spacer = document.createElement('span');
+      spacer.className = 'lineage-display-spacer-v6234';
+      spacer.setAttribute('aria-hidden', 'true');
+    }
+
+    const preview = wrap.querySelector(':scope > .preview-toggle-v6195, :scope > .tree-all-toggle, :scope > .tree-all-toggle.disabled-placeholder-v6173');
+    const search = wrap.querySelector(':scope > .search-box');
+    const ordered = [spacer, preview, search].filter(Boolean);
+    for (const node of ordered) {
+      if (node.parentElement !== wrap) wrap.appendChild(node);
+    }
+    ordered.forEach((node, index) => {
+      const wanted = wrap.children[index];
+      if (wanted !== node) wrap.insertBefore(node, wanted || null);
+    });
+
+    toolbar.classList.add('toolbar-normalized-v6234');
+    toolbar.classList.add('toolbar-normalized-v6235');
+    wrap.classList.add('toolbar-lineage-cluster-v6234');
+
+    if (feedMode) {
+      const isLineageActionGroup = Boolean(feedMode.querySelector('.back-button, .audit-lineage-btn'));
+      feedMode.classList.toggle('mobile-lineage-actions-v6234', isLineageActionGroup);
+      if (isLineageActionGroup) {
+        feedMode.querySelector('.back-button')?.setAttribute('aria-label', 'Back to discovery');
+        feedMode.querySelector('.audit-lineage-btn')?.setAttribute('aria-label', 'Audit lineage boundary');
+      }
+    }
+  }
+
+  let lineageToolbarRafV6234 = 0;
+  function normalizeLineageToolbarsV6234() {
+    lineageToolbarRafV6234 = 0;
+    document.querySelectorAll('.feed-toolbar.lineage').forEach(normalizeLineageToolbarV6234);
+  }
+
+  function scheduleNormalizeLineageToolbarsV6234() {
+    if (lineageToolbarRafV6234) return;
+    lineageToolbarRafV6234 = requestAnimationFrame(normalizeLineageToolbarsV6234);
+  }
+
+  const renderBeforeV6234 = typeof render === 'function' ? render : null;
+  if (renderBeforeV6234) {
+    render = function renderWithLineageToolbarParityV6234() {
+      const result = renderBeforeV6234();
+      scheduleNormalizeLineageToolbarsV6234();
+      setTimeout(scheduleNormalizeLineageToolbarsV6234, 60);
+      return result;
+    };
+  }
+
+  try {
+    const observer = new MutationObserver(scheduleNormalizeLineageToolbarsV6234);
+    observer.observe(document.body, { childList: true, subtree: true });
+  } catch (_) {}
+
+  window.addEventListener('resize', scheduleNormalizeLineageToolbarsV6234, { passive: true });
+  scheduleNormalizeLineageToolbarsV6234();
+})();
+
+;(() => {
+  // ===== v6.237 Lineage Back uses browser history =====
+  // The visible Back button should behave like the browser Back button so nested
+  // lineage/history states unwind one step at a time. If the browser history does
+  // not produce a popstate, fall back to the old clear-selection behavior.
+  function selectedWorkspaceForBackV6237(button) {
+    const wsId = button?.dataset?.ws || button?.closest?.('[data-ws]')?.dataset?.ws || '';
+    return typeof getWorkspace === 'function' ? getWorkspace(wsId) : null;
+  }
+
+  function clearSelectedFallbackV6237(ws) {
+    if (!ws) return;
+    ws.selectedNodeId = null;
+    ws.pendingSelectedRouteV6156 = null;
+    if (typeof updateUrlState === 'function') updateUrlState();
+    if (typeof render === 'function') render();
+  }
+
+  document.addEventListener('click', (event) => {
+    const button = event.target?.closest?.('.back-button[data-action="clear-selection"]');
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation?.();
+
+    const ws = selectedWorkspaceForBackV6237(button);
+    let popped = false;
+    const onPop = () => { popped = true; };
+    window.addEventListener('popstate', onPop, { once: true });
+
+    try {
+      history.back();
+    } catch (_) {
+      window.removeEventListener('popstate', onPop);
+      clearSelectedFallbackV6237(ws);
+      return;
+    }
+
+    setTimeout(() => {
+      window.removeEventListener('popstate', onPop);
+      if (popped) return;
+      const stillSelected = ws && typeof selectedNode === 'function' ? Boolean(selectedNode(ws)) : Boolean(ws?.selectedNodeId);
+      if (stillSelected) clearSelectedFallbackV6237(ws);
+    }, 360);
+  }, true);
+})();
+
+;(() => {
+  // ===== v6.238 mobile Lineage entry resets inherited compact chrome =====
+  // Opening Lineage from a scrolled mobile Discovery feed could inherit the
+  // Discovery compact flag, leaving the Lineage search rail visually collapsed
+  // until the next manual scroll/render. Reset only on the transition into
+  // Lineage; normal Discovery compact behavior is left intact.
+  function mobileActiveV6238() {
+    try {
+      if (typeof mobileLensActiveV6203 === 'function' && mobileLensActiveV6203()) return true;
+    } catch (_) {}
+    return Boolean(window.matchMedia?.('(max-width: 640px)')?.matches);
+  }
+
+  function workspaceFromActionTargetV6238(target) {
+    const host = target?.closest?.('[data-ws]');
+    const wsId = target?.dataset?.ws || host?.dataset?.ws || '';
+    return typeof getWorkspace === 'function' ? getWorkspace(wsId) : null;
+  }
+
+  function revealLineageChromeV6238(ws) {
+    if (!ws || !mobileActiveV6238()) return;
+    ws.mobileChromeCompactV6199 = false;
+    requestAnimationFrame(() => {
+      document.querySelectorAll(`.workspace[data-ws="${CSS.escape(ws.id)}"]`).forEach((workspaceEl) => {
+        workspaceEl.classList.remove('mobile-chrome-compact-v6199');
+        workspaceEl.querySelectorAll('.post-feed').forEach((feed) => {
+          if (feed && feed.scrollTop > 0) feed.scrollTop = 0;
+        });
+      });
+    });
+  }
+
+  document.addEventListener('click', (event) => {
+    const target = event.target?.closest?.('[data-action]');
+    const action = target?.dataset?.action || '';
+    if (!target || !['select-node', 'open-lineage', 'show-lineage'].includes(action)) return;
+    revealLineageChromeV6238(workspaceFromActionTargetV6238(target));
+  }, true);
+
+  const renderBeforeLineageChromeResetV6238 = typeof render === 'function' ? render : null;
+  if (renderBeforeLineageChromeResetV6238) {
+    render = function renderWithLineageChromeResetV6238() {
+      const result = renderBeforeLineageChromeResetV6238();
+      if (mobileActiveV6238()) {
+        requestAnimationFrame(() => {
+          for (const ws of app.workspaces || []) {
+            let hasLineage = false;
+            try { hasLineage = typeof selectedNode === 'function' ? Boolean(selectedNode(ws)) : Boolean(ws?.selectedNodeId); } catch (_) { hasLineage = Boolean(ws?.selectedNodeId); }
+            if (hasLineage) revealLineageChromeV6238(ws);
+          }
+        });
+      }
+      return result;
+    };
+  }
+})();
+
+
+
+;(() => {
+  // ===== v6.239 move mobile card More into the badge row =====
+  // The card itself is the primary mobile action, so the old dedicated action
+  // row cost too much vertical space. Keep the More menu available as a compact
+  // badge-sized chip at the right edge of the chip row.
+  function mobileActiveV6239() {
+    try {
+      if (typeof mobileLensActiveV6203 === 'function' && mobileLensActiveV6203()) return true;
+    } catch (_) {}
+    return Boolean(window.matchMedia?.('(max-width: 640px)')?.matches);
+  }
+
+  function removeMobileActionRowsV6239(html) {
+    return String(html || '').replace(/\s*<div class="mobile-card-actions-v6203">[\s\S]*?<\/div>/gu, '');
+  }
+
+  function moreChipHtmlV6239(ws, node) {
+    return `<button class="badge-soft mobile-card-more-chip-v6239" data-action="mobile-card-more" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="More actions" aria-label="More actions"><i class="fa-solid fa-ellipsis"></i></button>`;
+  }
+
+  function injectMoreChipV6239(html, ws, node) {
+    const more = moreChipHtmlV6239(ws, node);
+    if (/mobile-card-more-chip-v6239/u.test(html)) return html;
+    const chipRow = /(<div class="post-chips[^"\\]*(?:"[^>]*?)?>)([\s\S]*?)(<\/div>)/u;
+    if (chipRow.test(html)) {
+      return html.replace(chipRow, (_, open, body, close) => `${open}${body}${more}${close}`);
+    }
+    return html;
+  }
+
+  const renderNodePostBeforeMoreChipV6239 = typeof renderNodePost === 'function' ? renderNodePost : null;
+  if (renderNodePostBeforeMoreChipV6239) {
+    renderNodePost = function renderNodePostWithBadgeMoreV6239(ws, node, options = {}) {
+      let html = renderNodePostBeforeMoreChipV6239(ws, node, options);
+      if (!mobileActiveV6239() || !ws || !node) return html;
+      html = removeMobileActionRowsV6239(html);
+      return injectMoreChipV6239(html, ws, node);
+    };
+  }
+})();
+
+
+
+;(() => {
+  // ===== v6.240 keep mobile card More visible after badge packing =====
+  function mobileActiveV6240() {
+    try {
+      if (typeof mobileActiveV6212 === 'function' && mobileActiveV6212()) return true;
+    } catch (_) {}
+    try {
+      if (typeof mobileLensActiveV6203 === 'function' && mobileLensActiveV6203()) return true;
+    } catch (_) {}
+    return Boolean(window.matchMedia?.('(max-width: 640px)')?.matches);
+  }
+
+  function ensureMobileCardMoreVisibleV6240() {
+    if (!mobileActiveV6240()) return;
+    document.querySelectorAll('.lineage-post .post-chips, article .post-chips').forEach((row) => {
+      const more = row.querySelector(':scope > .mobile-card-more-chip-v6239');
+      if (!more) return;
+      more.classList.remove('mobile-chip-hidden-v6207', 'mobile-chip-hidden-v6212', 'mobile-chip-hidden-v6213', 'mobile-chip-hidden-v6231');
+      more.removeAttribute('hidden');
+      more.style.removeProperty('display');
+      if (row.lastElementChild !== more) row.appendChild(more);
+    });
+  }
+
+  const compactMobilePostChipsBeforeMoreVisibleV6240 = typeof compactMobilePostChipsV6212 === 'function' ? compactMobilePostChipsV6212 : null;
+  if (compactMobilePostChipsBeforeMoreVisibleV6240) {
+    compactMobilePostChipsV6212 = function compactMobilePostChipsWithVisibleMoreV6240(...args) {
+      const result = compactMobilePostChipsBeforeMoreVisibleV6240.apply(this, args);
+      ensureMobileCardMoreVisibleV6240();
+      return result;
+    };
+  }
+
+  const renderBeforeMoreVisibleV6240 = typeof render === 'function' ? render : null;
+  if (renderBeforeMoreVisibleV6240) {
+    render = function renderWithVisibleBadgeMoreV6240(...args) {
+      const result = renderBeforeMoreVisibleV6240.apply(this, args);
+      requestAnimationFrame(ensureMobileCardMoreVisibleV6240);
+      return result;
+    };
+  }
+
+  window.addEventListener('resize', () => requestAnimationFrame(ensureMobileCardMoreVisibleV6240), { passive: true });
+})();
+
+
+;(() => {
+  // ===== v6.241 robust badge-row card More and Lineage rail parity =====
+  // v6.239/v6.240 depended on render-time mobile detection and normal flex
+  // flow, so some cards lost the card More control when the badge row was
+  // packed. Ensure the chip exists after render and keep it out of packing
+  // layout with absolute badge-row positioning.
+  function mobileActiveV6241() {
+    try { if (typeof mobileActiveV6212 === 'function' && mobileActiveV6212()) return true; } catch (_) {}
+    try { if (typeof mobileLensActiveV6203 === 'function' && mobileLensActiveV6203()) return true; } catch (_) {}
+    return Boolean(window.matchMedia?.('(max-width: 640px)')?.matches);
+  }
+
+  function rowWorkspaceV6241(row) {
+    const host = row?.closest?.('[data-ws]');
+    const wsId = host?.dataset?.ws || '';
+    return typeof getWorkspace === 'function' ? getWorkspace(wsId) : null;
+  }
+
+  function rowNodeV6241(row, ws) {
+    const post = row?.closest?.('.lineage-post[data-node], article[data-node]');
+    const nodeId = post?.dataset?.node || '';
+    if (!nodeId) return null;
+    try { return (ws?.nodes || []).find((node) => node && node.id === nodeId) || null; } catch (_) { return null; }
+  }
+
+  function createMoreChipV6241(ws, node) {
+    if (!ws || !node || typeof document === 'undefined') return null;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'badge-soft mobile-card-more-chip-v6239 mobile-card-more-chip-v6241';
+    button.dataset.action = 'mobile-card-more';
+    button.dataset.ws = ws.id;
+    button.dataset.node = node.id;
+    button.title = 'More actions';
+    button.setAttribute('aria-label', 'More actions');
+    const icon = document.createElement('i');
+    icon.className = 'fa-solid fa-ellipsis';
+    button.appendChild(icon);
+    return button;
+  }
+
+  function ensureMobileCardMoreChipsV6241() {
+    if (!mobileActiveV6241()) return;
+    document.querySelectorAll('.lineage-post .post-chips, article .post-chips').forEach((row) => {
+      const ws = rowWorkspaceV6241(row);
+      const node = rowNodeV6241(row, ws);
+      if (!ws || !node) return;
+      let more = row.querySelector(':scope > .mobile-card-more-chip-v6239');
+      if (!more) {
+        more = createMoreChipV6241(ws, node);
+        if (!more) return;
+        row.appendChild(more);
+      }
+      more.classList.add('mobile-card-more-chip-v6241');
+      more.classList.remove('mobile-chip-hidden-v6207', 'mobile-chip-hidden-v6212', 'mobile-chip-hidden-v6213', 'mobile-chip-hidden-v6231');
+      more.removeAttribute('hidden');
+      more.style.removeProperty('display');
+      more.style.removeProperty('visibility');
+      more.style.removeProperty('opacity');
+    });
+  }
+
+  const compactBeforeV6241 = typeof compactMobilePostChipsV6212 === 'function' ? compactMobilePostChipsV6212 : null;
+  if (compactBeforeV6241) {
+    compactMobilePostChipsV6212 = function compactMobilePostChipsWithGuaranteedMoreV6241(...args) {
+      const result = compactBeforeV6241.apply(this, args);
+      ensureMobileCardMoreChipsV6241();
+      return result;
+    };
+  }
+
+  const renderBeforeV6241 = typeof render === 'function' ? render : null;
+  if (renderBeforeV6241) {
+    render = function renderWithGuaranteedMobileMoreV6241(...args) {
+      const result = renderBeforeV6241.apply(this, args);
+      requestAnimationFrame(ensureMobileCardMoreChipsV6241);
+      setTimeout(ensureMobileCardMoreChipsV6241, 80);
+      return result;
+    };
+  }
+
+  try {
+    const observer = new MutationObserver(() => requestAnimationFrame(ensureMobileCardMoreChipsV6241));
+    observer.observe(document.body, { childList: true, subtree: true });
+  } catch (_) {}
+
+  window.addEventListener('resize', () => requestAnimationFrame(ensureMobileCardMoreChipsV6241), { passive: true });
+  requestAnimationFrame(ensureMobileCardMoreChipsV6241);
+})();
+
+
+;(() => {
+  // ===== v6.242 robust mobile card More injection + Lineage rail resync =====
+  // v6.239-v6.241 could still miss the card More chip when row-to-workspace
+  // lookup depended on ws.nodes being an Array. This pass derives ids from the
+  // actual rendered DOM first, then falls back to workspace state only when it
+  // helps. It is idempotent to avoid reintroducing the mobile MutationObserver
+  // hot-loop fixed in v6.231.
+  function mobileActiveV6242() {
+    try { if (typeof mobileLensActiveV6203 === 'function' && mobileLensActiveV6203()) return true; } catch (_) {}
+    try { if (typeof mobileActiveV6212 === 'function' && mobileActiveV6212()) return true; } catch (_) {}
+    return Boolean(window.matchMedia?.('(max-width: 640px)')?.matches);
+  }
+
+  function rowIdsV6242(row) {
+    const post = row?.closest?.('.lineage-post[data-node], article[data-node]');
+    const feed = row?.closest?.('.post-feed[data-ws]');
+    const workspace = row?.closest?.('.workspace[data-ws]');
+    const wsId = feed?.dataset?.ws || workspace?.dataset?.ws || app?.activeWorkspaceId || '';
+    const nodeId = post?.dataset?.node || '';
+    return { wsId, nodeId };
+  }
+
+  function makeMoreChipV6242(wsId, nodeId) {
+    if (!wsId || !nodeId || typeof document === 'undefined') return null;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'badge-soft mobile-card-more-chip-v6239 mobile-card-more-chip-v6241 mobile-card-more-chip-v6242';
+    btn.dataset.action = 'mobile-card-more';
+    btn.dataset.ws = wsId;
+    btn.dataset.node = nodeId;
+    btn.title = 'More actions';
+    btn.setAttribute('aria-label', 'More actions');
+    const icon = document.createElement('i');
+    icon.className = 'fa-solid fa-ellipsis';
+    btn.appendChild(icon);
+    return btn;
+  }
+
+  function revealMoreChipV6242(btn) {
+    if (!btn) return;
+    btn.classList.add('mobile-card-more-chip-v6242');
+    btn.classList.remove(
+      'mobile-chip-hidden-v6207',
+      'mobile-chip-hidden-v6212',
+      'mobile-chip-hidden-v6213',
+      'mobile-chip-hidden-v6231'
+    );
+    btn.removeAttribute('hidden');
+    btn.style.removeProperty('display');
+    btn.style.removeProperty('visibility');
+    btn.style.removeProperty('opacity');
+  }
+
+  function ensureMobileCardMoreChipsV6242() {
+    if (!mobileActiveV6242()) return;
+    document.querySelectorAll('.lineage-post[data-node] .post-chips, article[data-node] .post-chips').forEach((row) => {
+      const { wsId, nodeId } = rowIdsV6242(row);
+      if (!wsId || !nodeId) return;
+      let more = row.querySelector(':scope > .mobile-card-more-chip-v6239, :scope > .mobile-card-more-chip-v6241, :scope > .mobile-card-more-chip-v6242');
+      if (!more) {
+        more = makeMoreChipV6242(wsId, nodeId);
+        if (!more) return;
+        row.appendChild(more);
+      } else {
+        if (more.dataset.ws !== wsId) more.dataset.ws = wsId;
+        if (more.dataset.node !== nodeId) more.dataset.node = nodeId;
+      }
+      revealMoreChipV6242(more);
+      row.classList.add('mobile-card-more-row-v6242');
+    });
+  }
+
+  let rafV6242 = 0;
+  function scheduleMobileCardMoreV6242() {
+    if (rafV6242) return;
+    rafV6242 = requestAnimationFrame(() => {
+      rafV6242 = 0;
+      ensureMobileCardMoreChipsV6242();
+    });
+  }
+
+  const renderBeforeV6242 = typeof render === 'function' ? render : null;
+  if (renderBeforeV6242) {
+    render = function renderWithRobustMobileMoreV6242(...args) {
+      const result = renderBeforeV6242.apply(this, args);
+      scheduleMobileCardMoreV6242();
+      setTimeout(scheduleMobileCardMoreV6242, 90);
+      return result;
+    };
+  }
+
+  try {
+    const observer = new MutationObserver(scheduleMobileCardMoreV6242);
+    observer.observe(document.body, { childList: true, subtree: true });
+  } catch (_) {}
+
+  window.addEventListener('resize', scheduleMobileCardMoreV6242, { passive: true });
+  scheduleMobileCardMoreV6242();
+})();
+
+;(() => {
+  // ===== v6.243 make badge-row More actionable =====
+  // v6.242 made the compact badge-row ellipsis visible, but chips injected
+  // after render are not covered by the normal bindEvents pass and the old
+  // action sheet depended on the removed .post-actions row. Handle the chip at
+  // document-capture level and reconstruct the same bounded action list from
+  // workspace/node state instead of from removed DOM.
+  function mobileMoreActiveV6243() {
+    try { if (typeof mobileLensActiveV6203 === 'function' && mobileLensActiveV6203()) return true; } catch (_) {}
+    try { if (typeof mobileActiveV6212 === 'function' && mobileActiveV6212()) return true; } catch (_) {}
+    return Boolean(window.matchMedia?.('(max-width: 640px)')?.matches);
+  }
+
+  function nodeByAnyIdV6243(ws, nodeId) {
+    if (!ws || !nodeId) return null;
+    try {
+      const fromMap = ws.nodeById?.get?.(nodeId);
+      if (fromMap) return fromMap;
+    } catch (_) {}
+    try {
+      const list = Array.isArray(ws.nodes) ? ws.nodes : Array.from(ws.nodeById?.values?.() || []);
+      return list.find((node) => node && node.id === nodeId) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function actionV6243(actions, label, iconClass, dataset, options = {}) {
+    const index = actions.length;
+    actions.push({
+      index,
+      label,
+      icon: `<i class="${iconClass}"></i>`,
+      danger: Boolean(options.danger),
+      dataset: Object.assign({}, dataset || {}),
+      href: options.href || '',
+      tag: options.href ? 'a' : 'button'
+    });
+  }
+
+  function buildMobileMoreActionsV6243(ws, node, card) {
+    const actions = [];
+    const inLineage = Boolean(card?.closest?.('.lineage-view, .lineage-mode, [data-lineage="true"]'))
+      || Boolean(ws?.selectedNodeId && ws.selectedNodeId === node?.id)
+      || Boolean(document.querySelector('.feed-toolbar.lineage'));
+    const expanded = Boolean(node?.expanded);
+    const common = { ws: ws.id, node: node.id };
+
+    if (inLineage) {
+      actionV6243(actions, 'Anchor', 'fa-solid fa-anchor', Object.assign({ action: 'select-node' }, common));
+    } else {
+      actionV6243(actions, expanded ? 'Less' : 'More', `fa-solid ${expanded ? 'fa-chevron-up' : 'fa-chevron-down'}`, Object.assign({ action: 'toggle-node-expand' }, common));
+    }
+
+    actionV6243(actions, 'Open', 'fa-regular fa-window-maximize', Object.assign({ action: 'open-detail-modal' }, common));
+    actionV6243(actions, 'Markdown', 'fa-brands fa-markdown', Object.assign({ action: 'open-markdown-modal' }, common));
+
+    if (node?.hasModernEnvelope) {
+      actionV6243(actions, 'Continue', 'fa-solid fa-code-branch', Object.assign({ action: 'open-create', mode: 'continue' }, common));
+    }
+
+    actionV6243(actions, 'Reference', 'fa-solid fa-link', Object.assign({ action: 'open-create', mode: 'reference' }, common));
+
+    if (node?.browseUrl) {
+      actionV6243(actions, 'Source', 'fa-brands fa-github', {}, { href: typeof safeUrl === 'function' ? safeUrl(node.browseUrl) : node.browseUrl });
+    }
+
+    try {
+      if (typeof canRemoveNodeForNow === 'function' && canRemoveNodeForNow(ws, node)) {
+        actionV6243(actions, 'Remove', 'fa-regular fa-trash-can', Object.assign({ action: 'remove-local-node' }, common), { danger: true });
+      }
+    } catch (_) {}
+
+    return actions;
+  }
+
+  function openBadgeMoreSheetV6243(button) {
+    const wsId = button?.dataset?.ws || button?.closest?.('[data-ws]')?.dataset?.ws || app?.activeWorkspaceId || '';
+    const nodeId = button?.dataset?.node || button?.closest?.('.lineage-post[data-node], article[data-node]')?.dataset?.node || '';
+    const ws = typeof getWorkspace === 'function' ? getWorkspace(wsId) : null;
+    const node = nodeByAnyIdV6243(ws, nodeId);
+    const card = button?.closest?.('.lineage-post, article');
+    if (!ws || !node || !card) return false;
+
+    app.mobileActionSheetV6203 = {
+      wsId: ws.id,
+      nodeId: node.id,
+      nodePath: node.path || '',
+      title: node.title || node.name || 'Artifact',
+      actions: buildMobileMoreActionsV6243(ws, node, card)
+    };
+    app.modal = { type: 'mobile-action-sheet-v6203', sheet: app.mobileActionSheetV6203 };
+    if (typeof render === 'function') render();
+    return true;
+  }
+
+  document.addEventListener('click', (event) => {
+    const button = event.target?.closest?.('.mobile-card-more-chip-v6239, .mobile-card-more-chip-v6241, .mobile-card-more-chip-v6242');
+    if (!button || !mobileMoreActiveV6243()) return;
+    // v6.255: these late, DOM-only handlers live outside the original app state
+    // closure in some bundles. Delegate to the hidden native mobile-more button
+    // that was rendered and bound by the in-closure mobile lens instead of
+    // rebuilding an empty title-only action sheet here.
+    const card = button.closest?.('.lineage-post[data-node], article[data-node], .lineage-post, article');
+    const native = card?.querySelector?.('.mobile-more-action-v6203[data-action="mobile-card-more"]');
+    if (!native || native === button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation?.();
+    native.click();
+  }, true);
+})();
+
+;(() => {
+  // ===== v6.244 hard-stop badge-row More before card click delegation =====
+  // Some mobile card click delegation can run at document-capture before the
+  // v6.243 document listener sees the injected ellipsis chip. Intercept at
+  // window-capture and resolve the target by hit-test as well as DOM ancestry so
+  // the badge-row More never leaks through to the card primary action.
+  function mobileMaybeActiveV6244() {
+    try { if (typeof mobileLensActiveV6203 === 'function' && mobileLensActiveV6203()) return true; } catch (_) {}
+    try { if (typeof mobileActiveV6212 === 'function' && mobileActiveV6212()) return true; } catch (_) {}
+    try { if (window.matchMedia?.('(max-width: 640px)')?.matches) return true; } catch (_) {}
+    return Boolean(document.body?.classList?.contains?.('mobile-chrome-v6205') || document.body?.classList?.contains?.('mobile-lens-v6203'));
+  }
+
+  const MORE_SELECTOR_V6244 = '.mobile-card-more-chip-v6239, .mobile-card-more-chip-v6241, .mobile-card-more-chip-v6242, .mobile-card-more-chip-v6244';
+
+  function hitMoreChipV6244(event) {
+    const direct = event.target?.closest?.(MORE_SELECTOR_V6244);
+    if (direct) return direct;
+    const x = Number(event.clientX);
+    const y = Number(event.clientY);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    try {
+      const fromPoint = document.elementsFromPoint(x, y)
+        .map((el) => el?.closest?.(MORE_SELECTOR_V6244))
+        .find(Boolean);
+      if (fromPoint) return fromPoint;
+    } catch (_) {}
+    const card = event.target?.closest?.('.lineage-post[data-node], article[data-node]')
+      || document.elementFromPoint?.(x, y)?.closest?.('.lineage-post[data-node], article[data-node]');
+    const chip = card?.querySelector?.(MORE_SELECTOR_V6244);
+    if (!chip) return null;
+    try {
+      const rect = chip.getBoundingClientRect();
+      const pad = 8;
+      if (x >= rect.left - pad && x <= rect.right + pad && y >= rect.top - pad && y <= rect.bottom + pad) return chip;
+    } catch (_) {}
+    return null;
+  }
+
+  // v6.254: runtime node registry for mobile badge-row actions.
+  // The capture sheet is opened from a DOM-injected ellipsis chip. Runtime
+  // evidence showed the event path and sheet dispatch work, but node context can
+  // degrade to title-only DOM metadata. Register concrete ws/node references while
+  // renderNodePost still has them, then recover those references for the sheet.
+  const mobileNodeRegistryV6254 = new Map();
+
+  function registryKeyV6254(wsId, nodeId) { return `${wsId || ''}::id::${nodeId || ''}`; }
+  function registryPathKeyV6254(wsId, nodePath) { return `${wsId || ''}::path::${nodePath || ''}`; }
+  function registryTitleKeyV6254(wsId, title) { return `${wsId || ''}::title::${String(title || '').trim()}`; }
+
+  function registerNodeRefV6254(ws, node) {
+    if (!ws || !node) return;
+    const value = { ws, node };
+    try {
+      if (ws.id && node.id) mobileNodeRegistryV6254.set(registryKeyV6254(ws.id, node.id), value);
+      if (ws.id && node.path) mobileNodeRegistryV6254.set(registryPathKeyV6254(ws.id, node.path), value);
+      const title = node.title || node.name || '';
+      if (ws.id && title) mobileNodeRegistryV6254.set(registryTitleKeyV6254(ws.id, title), value);
+    } catch (_) {}
+  }
+
+  function harvestNodeRegistryV6254() {
+    try {
+      if (!Array.isArray(app?.workspaces)) return;
+      app.workspaces.forEach((ws) => {
+        if (!ws) return;
+        const nodes = Array.isArray(ws.nodes) ? ws.nodes : (ws.nodeById?.values ? Array.from(ws.nodeById.values()) : []);
+        nodes.forEach((node) => registerNodeRefV6254(ws, node));
+      });
+    } catch (_) {}
+  }
+
+  function lookupNodeRefV6254(wsId, nodeId, nodePath, title) {
+    harvestNodeRegistryV6254();
+    try {
+      if (wsId && nodeId) {
+        const byId = mobileNodeRegistryV6254.get(registryKeyV6254(wsId, nodeId));
+        if (byId?.ws && byId?.node) return byId;
+      }
+      if (wsId && nodePath) {
+        const byPath = mobileNodeRegistryV6254.get(registryPathKeyV6254(wsId, nodePath));
+        if (byPath?.ws && byPath?.node) return byPath;
+      }
+      if (wsId && title) {
+        const byTitle = mobileNodeRegistryV6254.get(registryTitleKeyV6254(wsId, title));
+        if (byTitle?.ws && byTitle?.node) return byTitle;
+      }
+      if (nodeId) {
+        for (const entry of mobileNodeRegistryV6254.values()) if (entry?.node?.id === nodeId) return entry;
+      }
+      if (nodePath) {
+        for (const entry of mobileNodeRegistryV6254.values()) if (entry?.node?.path === nodePath) return entry;
+      }
+      const normalizedTitle = String(title || '').trim();
+      if (normalizedTitle) {
+        for (const entry of mobileNodeRegistryV6254.values()) {
+          if (String(entry?.node?.title || entry?.node?.name || '').trim() === normalizedTitle) return entry;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function ensureNodeLookupV6254(ws, node) {
+    if (!ws || !node || !node.id) return;
+    try {
+      if (ws.nodeById && typeof ws.nodeById.get === 'function' && !ws.nodeById.get(node.id) && typeof ws.nodeById.set === 'function') {
+        ws.nodeById.set(node.id, node);
+      }
+    } catch (_) {}
+  }
+
+  const renderNodePostBeforeMobileRegistryV6254 = typeof renderNodePost === 'function' ? renderNodePost : null;
+  if (renderNodePostBeforeMobileRegistryV6254) {
+    renderNodePost = function renderNodePostWithMobileRegistryV6254(ws, node, options = {}) {
+      registerNodeRefV6254(ws, node);
+      ensureNodeLookupV6254(ws, node);
+      return renderNodePostBeforeMobileRegistryV6254(ws, node, options);
+    };
+  }
+
+  function nodeByAnyIdV6244(ws, nodeId) {
+    if (!ws || !nodeId) return null;
+    try {
+      const fromMap = ws.nodeById?.get?.(nodeId);
+      if (fromMap) return fromMap;
+    } catch (_) {}
+    try {
+      const values = ws.nodeById?.values ? Array.from(ws.nodeById.values()) : [];
+      const list = Array.isArray(ws.nodes) ? ws.nodes : values;
+      return list.find((node) => node && node.id === nodeId) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function actionV6244(actions, label, iconClass, dataset, options = {}) {
+    const index = actions.length;
+    actions.push({
+      index,
+      label,
+      icon: `<i class="${iconClass}"></i>`,
+      danger: Boolean(options.danger),
+      dataset: Object.assign({}, dataset || {}),
+      href: options.href || '',
+      tag: options.href ? 'a' : 'button'
+    });
+  }
+
+  function buildActionsV6244(ws, node, card) {
+    const actions = [];
+    const common = { ws: ws.id, node: node.id };
+    const inLineage = Boolean(card?.closest?.('.lineage-view, .lineage-mode, [data-lineage="true"]'))
+      || Boolean(ws?.selectedNodeId && ws.selectedNodeId === node?.id)
+      || Boolean(document.querySelector('.feed-toolbar.lineage'));
+    const expanded = Boolean(node?.expanded);
+
+    // v6.250: the badge-row ellipsis itself is the “more” affordance.
+    // Keep the sheet aligned with the desktop post-actions, but do not include
+    // another More/Less/Anchor entry inside the sheet.
+    actionV6244(actions, 'Open', 'fa-regular fa-window-maximize', Object.assign({ action: 'open-detail-modal' }, common));
+    actionV6244(actions, 'Markdown', 'fa-brands fa-markdown', Object.assign({ action: 'open-markdown-modal' }, common));
+    if (node?.hasModernEnvelope !== false) actionV6244(actions, 'Continue', 'fa-solid fa-code-branch', Object.assign({ action: 'open-create', mode: 'continue' }, common));
+    actionV6244(actions, 'Reference', 'fa-solid fa-link', Object.assign({ action: 'open-create', mode: 'reference' }, common));
+    if (node?.browseUrl) actionV6244(actions, 'Source', 'fa-brands fa-github', {}, { href: typeof safeUrl === 'function' ? safeUrl(node.browseUrl) : node.browseUrl });
+    try {
+      if (typeof canRemoveNodeForNow === 'function' && canRemoveNodeForNow(ws, node)) {
+        actionV6244(actions, 'Remove', 'fa-regular fa-trash-can', Object.assign({ action: 'remove-local-node' }, common), { danger: true });
+      }
+    } catch (_) {}
+    return actions;
+  }
+
+  function openMoreSheetV6244(chip) {
+    const card = chip?.closest?.('.lineage-post[data-node], article[data-node], .lineage-post, article')
+      || chip?.closest?.('.post-chips')?.closest?.('.lineage-post[data-node], article[data-node], .lineage-post, article');
+    const main = card?.querySelector?.('.post-main[data-node], [data-action][data-node]');
+    const wsId = chip?.dataset?.ws
+      || main?.dataset?.ws
+      || chip?.closest?.('[data-ws]')?.dataset?.ws
+      || card?.closest?.('[data-ws]')?.dataset?.ws
+      || app?.activeWorkspaceId
+      || '';
+    const nodeId = chip?.dataset?.node || card?.dataset?.node || main?.dataset?.node || '';
+
+    let ws = typeof getWorkspace === 'function' ? getWorkspace(wsId) : null;
+    const nodePathFromDom = card?.dataset?.path || main?.dataset?.path || '';
+    const titleFromDom = card?.querySelector?.('.post-title, h2, h3, .node-card-title')?.textContent?.trim?.() || '';
+    const registered = lookupNodeRefV6254(wsId, nodeId, nodePathFromDom, titleFromDom);
+    if (registered?.ws) ws = registered.ws;
+    let node = registered?.node || nodeByAnyIdV6244(ws, nodeId);
+
+    // v6.247: be tolerant when the badge chip was injected from DOM and the
+    // workspace id or node lookup drifts. Search all workspaces before giving
+    // up so the captured event can always open the action sheet it already
+    // stopped from reaching the card.
+    if ((!ws || !node) && nodeId && Array.isArray(app?.workspaces)) {
+      for (const candidateWs of app.workspaces) {
+        const candidateNode = nodeByAnyIdV6244(candidateWs, nodeId);
+        if (candidateNode) {
+          ws = candidateWs;
+          node = candidateNode;
+          registerNodeRefV6254(ws, node);
+          ensureNodeLookupV6254(ws, node);
+          break;
+        }
+      }
+    }
+
+    if (!node) {
+      const recovered = lookupNodeRefV6254(wsId, nodeId, nodePathFromDom, titleFromDom);
+      if (recovered?.ws) ws = recovered.ws;
+      if (recovered?.node) node = recovered.node;
+    }
+    if (!ws && wsId) ws = { id: wsId };
+    if (!node && nodeId) {
+      const safeTitleFromDom = titleFromDom || 'Artifact';
+      node = { id: nodeId, title: safeTitleFromDom, name: safeTitleFromDom, path: nodePathFromDom || '' };
+    }
+    if (!ws || !node) return false;
+    registerNodeRefV6254(ws, node);
+    ensureNodeLookupV6254(ws, node);
+
+    app.mobileActionSheetV6203 = {
+      wsId: ws.id,
+      nodeId: node.id,
+      nodePath: node.path || '',
+      title: node.title || node.name || 'Artifact',
+      actions: buildActionsV6244(ws, node, card),
+      // v6.253: keep the resolved runtime objects. The action sheet is rendered
+      // outside the normal app/modal pipeline; if ids drift between DOM and state,
+      // the direct dispatcher still needs the actual ws/node object it resolved
+      // while opening the sheet.
+      wsRef: ws,
+      nodeRef: node
+    };
+    // v6.248: render directly from this earliest window-capture path. The
+    // v6.244 handler calls stopImmediatePropagation(), so later v6.247 direct
+    // DOM handlers never get a chance to run. Keep the capture guard here, but
+    // make it own the visible sheet instead of delegating through app.modal.
+    renderCaptureSheetV6248(app.mobileActionSheetV6203);
+    return true;
+  }
+
+  const CAPTURE_SHEET_ID_V6248 = 'mobile-more-capture-sheet-v6248';
+
+  function escV6248(value) {
+    if (typeof escapeHtml === 'function') return escapeHtml(value == null ? '' : value);
+    return String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[ch]));
+  }
+
+  function closeCaptureSheetV6248() {
+    document.getElementById(CAPTURE_SHEET_ID_V6248)?.remove();
+  }
+
+  function captureActionFromControlV6253(control) {
+    if (!control) return null;
+    const label = control.textContent?.trim?.() || 'Action';
+    const dataset = {};
+    if (control.dataset.nodeActionV6253) dataset.action = control.dataset.nodeActionV6253;
+    if (control.dataset.wsV6253) dataset.ws = control.dataset.wsV6253;
+    if (control.dataset.nodeV6253) dataset.node = control.dataset.nodeV6253;
+    if (control.dataset.pathV6253) dataset.path = control.dataset.pathV6253;
+    if (control.dataset.modeV6253) dataset.mode = control.dataset.modeV6253;
+    return {
+      label,
+      icon: '',
+      danger: control.classList?.contains?.('danger') || false,
+      dataset,
+      href: control.dataset.hrefV6253 || '',
+      tag: control.dataset.hrefV6253 ? 'a' : 'button'
+    };
+  }
+
+  function resolveCaptureContextV6253(action, sheet) {
+    const dataset = Object.assign({}, action?.dataset || {});
+    let wsId = dataset.ws || sheet?.wsId || '';
+    let nodeId = dataset.node || sheet?.nodeId || '';
+    const nodePath = dataset.path || sheet?.nodePath || '';
+    const title = sheet?.title || '';
+    let ws = sheet?.wsRef && sheet.wsRef.id ? sheet.wsRef : null;
+    let node = sheet?.nodeRef && (sheet.nodeRef.id || sheet.nodeRef.path || sheet.nodeRef.title) ? sheet.nodeRef : null;
+    const registered = lookupNodeRefV6254(wsId, nodeId, nodePath, title);
+    if (registered?.ws) ws = registered.ws;
+    if (registered?.node) node = registered.node;
+
+    try { if (!ws && wsId && typeof getWorkspace === 'function') ws = getWorkspace(wsId); } catch (_) {}
+    try { if (ws && (!node || !node.id || (nodeId && node.id !== nodeId))) node = nodeByAnyIdV6244(ws, nodeId) || node; } catch (_) {}
+    try { if (ws && (!node || !node.id) && nodePath) node = (ws.nodes || []).find((candidate) => candidate?.path === nodePath) || node; } catch (_) {}
+    try {
+      if (Array.isArray(app?.workspaces) && (!node || !node.id)) {
+        const normalizedTitle = String(title || '').trim();
+        for (const candidateWs of app.workspaces) {
+          const candidate = nodeByAnyIdV6244(candidateWs, nodeId)
+            || (Array.isArray(candidateWs?.nodes) ? candidateWs.nodes.find((item) => {
+              if (!item) return false;
+              if (nodePath && item.path === nodePath) return true;
+              if (normalizedTitle && String(item.title || item.name || '').trim() === normalizedTitle) return true;
+              return false;
+            }) : null);
+          if (candidate) {
+            ws = candidateWs;
+            node = candidate;
+            break;
+          }
+        }
+      }
+    } catch (_) {}
+
+    wsId = ws?.id || wsId || '';
+    nodeId = node?.id || nodeId || '';
+    if (ws && node) {
+      registerNodeRefV6254(ws, node);
+      ensureNodeLookupV6254(ws, node);
+    }
+    return { ws, node, wsId, nodeId, nodePath: node?.path || nodePath || '', title: node?.title || node?.name || title || 'Artifact', dataset };
+  }
+
+  function closeDirectNodeModalV6253() {
+    document.getElementById('mobile-capture-node-modal-v6253')?.remove();
+  }
+
+  function captureActionAttrsV6253(action) {
+    const dataset = action?.dataset || {};
+    const attrs = [
+      `data-node-action-v6253="${escV6248(dataset.action || '')}"`,
+      `data-ws-v6253="${escV6248(dataset.ws || '')}"`,
+      `data-node-v6253="${escV6248(dataset.node || '')}"`,
+      `data-path-v6253="${escV6248(dataset.path || '')}"`,
+      `data-mode-v6253="${escV6248(dataset.mode || '')}"`,
+      `data-href-v6253="${escV6248(action?.href || '')}"`
+    ];
+    return attrs.join(' ');
+  }
+
+  function renderDirectNodeModalV6253(kind, ctx) {
+    const node = ctx?.node;
+    if (!node) return false;
+    const isMarkdown = kind === 'markdown';
+    closeDirectNodeModalV6253();
+    const overlay = document.createElement('div');
+    overlay.id = 'mobile-capture-node-modal-v6253';
+    overlay.className = 'modal-backdrop-custom focus-modal read-modal-backdrop mobile-capture-node-modal-v6253';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', isMarkdown ? 'Raw markdown' : 'Schema read view');
+    let body = '';
+    try {
+      body = isMarkdown
+        ? `<pre class="source-block modal-source"><code>${escV6248(node.rawMarkdown || node.body || '')}</code></pre>`
+        : `<div class="modal-read-body">${typeof renderDetailReadView === 'function' ? renderDetailReadView(ctx.ws, node) : (typeof renderSafeMarkdown === 'function' ? renderSafeMarkdown(node.body || node.rawMarkdown || '') : escV6248(node.body || node.rawMarkdown || ''))}</div>`;
+    } catch (_) {
+      body = `<pre class="source-block modal-source"><code>${escV6248(node.rawMarkdown || node.body || '')}</code></pre>`;
+    }
+    overlay.innerHTML = `
+      <div class="modal-panel read-modal-panel">
+        <div class="modal-header-lite sticky-modal-head read-modal-head">
+          <div>
+            <p class="kicker">${isMarkdown ? 'Raw markdown' : 'Schema read view'}</p>
+            <h2 class="modal-title-lite">${escV6248(ctx.title || node.title || 'Artifact')}</h2>
+            <p class="text-secondary mb-0">${escV6248(ctx.nodePath || node.path || '')}</p>
+          </div>
+          <button class="tv-btn small subtle" data-capture-node-modal-close-v6253="true" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-read-scroll">${body}</div>
+      </div>`;
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay || event.target?.closest?.('[data-capture-node-modal-close-v6253]')) {
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        closeDirectNodeModalV6253();
+      }
+    }, true);
+    document.body.appendChild(overlay);
+    return true;
+  }
+
+  async function runCaptureSheetActionV6248(action, sheet) {
+    if (!action) return;
+    if (action.href) {
+      window.open(action.href, '_blank', 'noopener');
+      return;
+    }
+    const ctx = resolveCaptureContextV6253(action, sheet || {});
+    const dataset = Object.assign({}, ctx.dataset || {});
+    const wsId = ctx.wsId || dataset.ws || '';
+    const nodeId = ctx.nodeId || dataset.node || '';
+    const actionName = dataset.action || '';
+    ensureNodeLookupV6254(ctx.ws, ctx.node);
+
+    // v6.253: DevTools showed v6.252 did reach this earliest capture path and
+    // removed the sheet, so the remaining failure is not event interception. It
+    // is missing/unstable action context. Resolve/store ws+node at sheet-open
+    // time and render read/markdown modals directly as a fallback when app.modal
+    // cannot resolve the node id.
+    try {
+      if (actionName === 'open-detail-modal' || actionName === 'open-markdown-modal') {
+        if (wsId && nodeId) {
+          app.modal = { type: actionName === 'open-detail-modal' ? 'detail' : 'markdown', wsId, nodeId };
+          if (typeof render === 'function') render();
+          const modalVisible = document.querySelector('.read-modal-backdrop, .modal-backdrop-custom.focus-modal');
+          if (modalVisible) {
+            const visibleText = String(modalVisible.textContent || '').replace(/\s+/g, ' ').trim();
+            const codeText = modalVisible.querySelector?.('pre code')?.textContent || '';
+            const titleText = String(ctx.title || '').trim();
+            const hasUsefulBody = Boolean(codeText.trim()) || (visibleText && visibleText.replace(titleText, '').trim().length > 36);
+            if (hasUsefulBody) return;
+            try { modalVisible.remove(); } catch (_) {}
+          }
+        }
+        if (renderDirectNodeModalV6253(actionName === 'open-markdown-modal' ? 'markdown' : 'detail', ctx)) return;
+        try { if (typeof toast === 'function') toast('Could not resolve this artifact for the mobile action.', 'warn'); } catch (_) {}
+        return;
+      }
+      if (actionName === 'open-create') {
+        if (typeof openCreateModal === 'function') openCreateModal(dataset.mode || '', wsId, nodeId);
+        if (app?.modal?.type === 'create') return;
+        try { if (typeof toast === 'function') toast('Could not resolve this artifact for create.', 'warn'); } catch (_) {}
+        return;
+      }
+      if (actionName === 'remove-local-node') {
+        if (typeof removeNodeFromWorkspace === 'function') removeNodeFromWorkspace(wsId, nodeId);
+        return;
+      }
+    } catch (error) {
+      try { if (typeof toast === 'function') toast(`Action failed: ${error.message}`, 'warn'); } catch (_) {}
+      return;
+    }
+
+    const fake = document.createElement(action.tag === 'a' ? 'a' : 'button');
+    Object.entries(dataset).forEach(([key, value]) => { fake.dataset[key] = value; });
+    if (wsId && !fake.dataset.ws) fake.dataset.ws = wsId;
+    if (nodeId && !fake.dataset.node) fake.dataset.node = nodeId;
+    if (ctx.nodePath && !fake.dataset.path) fake.dataset.path = ctx.nodePath;
+    document.body.appendChild(fake);
+    try {
+      if (typeof onActionV645 === 'function') {
+        await onActionV645({
+          currentTarget: fake,
+          target: fake,
+          preventDefault(){},
+          stopPropagation(){},
+          stopImmediatePropagation(){}
+        });
+      }
+    } finally {
+      fake.remove();
+    }
+  }
+
+  function renderCaptureSheetV6248(sheet) {
+    closeCaptureSheetV6248();
+    const actions = Array.isArray(sheet?.actions) ? sheet.actions : [];
+    const overlay = document.createElement('div');
+    overlay.id = CAPTURE_SHEET_ID_V6248;
+    overlay.className = 'mobile-action-backdrop-v6203 mobile-action-backdrop-v6247 mobile-action-backdrop-v6248';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', 'Artifact actions');
+    overlay.innerHTML = `<div class="mobile-action-sheet-v6203 mobile-action-sheet-v6247 mobile-action-sheet-v6248">
+      <div class="mobile-action-head-v6203">
+        <div><p class="kicker">Actions</p><h3>${escV6248(sheet?.title || 'Artifact')}</h3></div>
+        <button type="button" class="tv-btn small subtle" data-capture-sheet-action="close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="mobile-action-list-v6203">
+        ${actions.length ? actions.map((action, index) => `<button type="button" class="${action.danger ? 'danger' : ''}" data-capture-sheet-action="run" data-action-index="${index}" ${captureActionAttrsV6253(action)}>${action.icon || '<i class="fa-solid fa-circle-dot"></i>'}<span>${escV6248(action.label || 'Action')}</span></button>`).join('') : '<p class="mobile-action-empty-v6246">No actions available.</p>'}
+      </div>
+    </div>`;
+    // v6.252: expose the closure-only action payload on the overlay as well.
+    // DevTools showed the rendered buttons had data-capture-sheet-action and
+    // data-action-index, but no later handler could recover the corresponding
+    // action object once an older document-capture close path removed the sheet.
+    overlay.__captureActionsV6252 = actions;
+    overlay.__captureSheetV6252 = sheet;
+    overlay.addEventListener('click', async (event) => {
+      const control = event.target?.closest?.('[data-capture-sheet-action]');
+      if (!control && event.target === overlay) {
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        closeCaptureSheetV6248();
+        return;
+      }
+      if (!control) return;
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      event.stopImmediatePropagation?.();
+      if (control.dataset.captureSheetAction === 'close') {
+        closeCaptureSheetV6248();
+        return;
+      }
+      if (control.dataset.captureSheetAction === 'run') {
+        const action = actions[Number(control.dataset.actionIndex || -1)] || captureActionFromControlV6253(control);
+        closeCaptureSheetV6248();
+        await runCaptureSheetActionV6248(action, sheet);
+      }
+    }, true);
+    document.body.appendChild(overlay);
+  }
+
+
+
+  // v6.252: handle action-sheet buttons at window-capture before any older
+  // global click/close delegates can remove the sheet. This is intentionally
+  // scoped only to the v6.248 capture sheet and supports both press and click
+  // events with duplicate suppression.
+  let lastCaptureSheetActionKeyV6252 = '';
+  let lastCaptureSheetActionAtV6252 = 0;
+
+  function nowV6252() {
+    try { return performance.now(); } catch (_) { return Date.now(); }
+  }
+
+  async function handleCaptureSheetActionV6252(event) {
+    const overlay = document.getElementById(CAPTURE_SHEET_ID_V6248);
+    if (!overlay) return;
+    const control = event.target?.closest?.(`#${CAPTURE_SHEET_ID_V6248} [data-capture-sheet-action]`);
+    if (!control) return;
+    const directAction = control.dataset.captureSheetAction || '';
+    if (directAction !== 'run' && directAction !== 'close') return;
+
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    event.stopImmediatePropagation?.();
+
+    const index = control.dataset.actionIndex || '';
+    const key = `${directAction}::${index}`;
+    const t = nowV6252();
+    if (key === lastCaptureSheetActionKeyV6252 && t - lastCaptureSheetActionAtV6252 < 360) return;
+    lastCaptureSheetActionKeyV6252 = key;
+    lastCaptureSheetActionAtV6252 = t;
+
+    if (directAction === 'close') {
+      closeCaptureSheetV6248();
+      return;
+    }
+
+    const actions = Array.isArray(overlay.__captureActionsV6252)
+      ? overlay.__captureActionsV6252
+      : (Array.isArray(app?.mobileActionSheetV6203?.actions) ? app.mobileActionSheetV6203.actions : []);
+    const sheet = overlay.__captureSheetV6252 || app?.mobileActionSheetV6203 || {};
+    const action = actions[Number(index || -1)] || captureActionFromControlV6253(control);
+    closeCaptureSheetV6248();
+    await runCaptureSheetActionV6248(action, sheet);
+  }
+
+  ['pointerdown', 'touchstart', 'mousedown', 'click'].forEach((type) => {
+    window.addEventListener(type, handleCaptureSheetActionV6252, true);
+  });
+
+  let lastMoreOpenAtV6244 = 0;
+  let lastMoreOpenKeyV6244 = '';
+
+  function chipKeyV6244(chip) {
+    const card = chip?.closest?.('.lineage-post[data-node], article[data-node]');
+    return `${chip?.dataset?.ws || chip?.closest?.('[data-ws]')?.dataset?.ws || app?.activeWorkspaceId || ''}::${chip?.dataset?.node || card?.dataset?.node || ''}`;
+  }
+
+  function shouldOpenMoreSheetForEventV6244(event, chip) {
+    if (!['pointerdown', 'touchstart', 'mousedown', 'click'].includes(event.type)) return false;
+    const key = chipKeyV6244(chip);
+    const now = Number.isFinite(performance?.now?.()) ? performance.now() : Date.now();
+    if (key && key === lastMoreOpenKeyV6244 && now - lastMoreOpenAtV6244 < 420) return false;
+    lastMoreOpenKeyV6244 = key;
+    lastMoreOpenAtV6244 = now;
+    return true;
+  }
+
+  function delegateToNativeMobileMoreV6255(chip) {
+    const card = chip?.closest?.('.lineage-post[data-node], article[data-node], .lineage-post, article')
+      || chip?.closest?.('.post-chips')?.closest?.('.lineage-post[data-node], article[data-node], .lineage-post, article');
+    const native = card?.querySelector?.('.mobile-more-action-v6203[data-action="mobile-card-more"]');
+    if (!native || native === chip) return false;
+    try {
+      native.click();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function interceptMoreV6244(event) {
+    const chip = hitMoreChipV6244(event);
+    if (!chip || !mobileMaybeActiveV6244()) return;
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    event.stopImmediatePropagation?.();
+    if (!shouldOpenMoreSheetForEventV6244(event, chip)) return;
+    // v6.255: do not open the out-of-closure capture sheet. Delegate to the
+    // original in-closure mobile action sheet so Open/Markdown/Continue/Reference
+    // receive the real workspace/node objects and modal content.
+    if (delegateToNativeMobileMoreV6255(chip)) return;
+    openMoreSheetV6244(chip);
+  }
+
+  window.addEventListener('pointerdown', interceptMoreV6244, true);
+  window.addEventListener('touchstart', interceptMoreV6244, true);
+  window.addEventListener('mousedown', interceptMoreV6244, true);
+  window.addEventListener('click', interceptMoreV6244, true);
+})();
+
+;(() => {
+  // ===== v6.245 mobile badge-row More opens on the captured down event =====
+  // v6.244 correctly stopped the card click, but preventing pointerdown can
+  // suppress the follow-up click on mobile. The v6.244 interceptor now opens
+  // the sheet on the first captured down/click event with duplicate suppression.
+})();
+
+
+;(() => {
+  // ===== v6.247 render captured badge-row More sheet without re-lookup =====
+  // v6.244/v6.245 proved the event interception path works, but the older
+  // mobile action-sheet renderer re-resolved ws/node and returned empty output
+  // when that lookup missed. This renderer trusts the already-built bounded
+  // sheet payload and handles action dispatch explicitly.
+  function renderMobileMoreSheetV6246(sheet) {
+    const safeTitle = typeof escapeHtml === 'function' ? escapeHtml(sheet?.title || 'Artifact') : String(sheet?.title || 'Artifact');
+    const actions = Array.isArray(sheet?.actions) ? sheet.actions : [];
+    const actionHtml = actions.length
+      ? actions.map((action, index) => `<button type="button" class="${action.danger ? 'danger' : ''}" data-action="mobile-run-node-action-v6246" data-action-index="${index}">${action.icon || '<i class="fa-solid fa-circle-dot"></i>'}<span>${typeof escapeHtml === 'function' ? escapeHtml(action.label || 'Action') : String(action.label || 'Action')}</span></button>`).join('')
+      : '<p class="mobile-action-empty-v6246">No actions available.</p>';
+    return `<div class="mobile-action-backdrop-v6203 mobile-action-backdrop-v6246" role="dialog" aria-modal="true" aria-label="Artifact actions">
+      <div class="mobile-action-sheet-v6203 mobile-action-sheet-v6246">
+        <div class="mobile-action-head-v6203">
+          <div>
+            <p class="kicker">Actions</p>
+            <h3>${safeTitle}</h3>
+          </div>
+          <button type="button" class="tv-btn small subtle" data-action="close-mobile-action-sheet-v6246" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="mobile-action-list-v6203">${actionHtml}</div>
+      </div>
+    </div>`;
+  }
+
+  const renderModalBeforeV6246 = typeof renderModal === 'function' ? renderModal : null;
+  if (renderModalBeforeV6246) {
+    renderModal = function renderModalWithCapturedBadgeMoreSheetV6246(modal) {
+      if (modal?.type === 'mobile-action-sheet-v6246') return renderMobileMoreSheetV6246(modal.sheet || {});
+      return renderModalBeforeV6246(modal);
+    };
+  }
+
+  function closeSheetV6246() {
+    if (app?.modal?.type === 'mobile-action-sheet-v6246') app.modal = null;
+    app.mobileActionSheetV6203 = null;
+  }
+
+  const onActionBeforeV6246 = typeof onActionV645 === 'function' ? onActionV645 : null;
+  if (onActionBeforeV6246) {
+    onActionV645 = async function mobileBadgeMoreSheetActionsV6246(event) {
+      const action = event.currentTarget?.dataset?.action || '';
+      if (action === 'close-mobile-action-sheet-v6246') {
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        closeSheetV6246();
+        if (typeof render === 'function') render();
+        return;
+      }
+      if (action === 'mobile-run-node-action-v6246') {
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        const sheet = app?.mobileActionSheetV6203;
+        const index = Number(event.currentTarget?.dataset?.actionIndex || -1);
+        const chosen = sheet?.actions?.[index];
+        closeSheetV6246();
+        if (typeof render === 'function') render();
+        if (!chosen) return;
+        if (chosen.href) {
+          window.open(chosen.href, '_blank', 'noopener');
+          return;
+        }
+        const fake = document.createElement(chosen.tag === 'a' ? 'a' : 'button');
+        Object.entries(chosen.dataset || {}).forEach(([key, value]) => { fake.dataset[key] = value; });
+        if (sheet?.wsId && !fake.dataset.ws) fake.dataset.ws = sheet.wsId;
+        if (sheet?.nodeId && !fake.dataset.node) fake.dataset.node = sheet.nodeId;
+        if (sheet?.nodePath && !fake.dataset.path) fake.dataset.path = sheet.nodePath;
+        document.body.appendChild(fake);
+        try {
+          await onActionBeforeV6246({
+            currentTarget: fake,
+            target: fake,
+            preventDefault(){},
+            stopPropagation(){}
+          });
+        } finally {
+          fake.remove();
+        }
+        return;
+      }
+      return onActionBeforeV6246(event);
+    };
+  }
+
+;(() => {
+  // ===== v6.247 direct DOM mobile badge-row More sheet =====
+  // Previous v6.24x passes proved event capture works: the card no longer opens.
+  // The remaining failure is render-pipeline/state lookup drift, so this sheet is
+  // rendered directly into document.body from the captured chip/card. It does not
+  // depend on app.modal or renderModal.
+  const OVERLAY_ID = 'mobile-more-direct-sheet-v6247';
+  let lastOpenAt = 0;
+  let lastOpenKey = '';
+
+  function activeMobileV6247() {
+    try {
+      return Boolean(window.matchMedia?.('(max-width: 640px)').matches || document.body.classList.contains('mobile-chrome-v6205') || document.body.classList.contains('mobile-lens-v6203'));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function escV6247(value) {
+    return typeof escapeHtml === 'function' ? escapeHtml(value == null ? '' : value) : String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]));
+  }
+
+  function safeV6247(value) {
+    return typeof safeUrl === 'function' ? safeUrl(value) : String(value || '');
+  }
+
+  function closestCardV6247(el) {
+    return el?.closest?.('.lineage-post[data-node], article[data-node], .node-card[data-node], [data-node].lineage-post') || null;
+  }
+
+  function moreChipFromEventV6247(event) {
+    const targetChip = event.target?.closest?.('.mobile-card-more-chip-v6239, .mobile-card-more-chip-v6241, .mobile-card-more-chip-v6242, .mobile-card-more-chip-v6244');
+    if (targetChip) return targetChip;
+    const x = event.clientX ?? event.touches?.[0]?.clientX ?? event.changedTouches?.[0]?.clientX;
+    const y = event.clientY ?? event.touches?.[0]?.clientY ?? event.changedTouches?.[0]?.clientY;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    for (const el of (document.elementsFromPoint?.(x, y) || [])) {
+      const chip = el.closest?.('.mobile-card-more-chip-v6239, .mobile-card-more-chip-v6241, .mobile-card-more-chip-v6242, .mobile-card-more-chip-v6244');
+      if (chip) return chip;
+    }
+    return null;
+  }
+
+  function wsByIdV6247(id) {
+    if (!id) return null;
+    try { return typeof getWorkspace === 'function' ? getWorkspace(id) : null; } catch (_) { return null; }
+  }
+
+  function nodeFromWsV6247(ws, id, path) {
+    if (!ws || (!id && !path)) return null;
+    try {
+      return ws.nodeById?.get?.(id) || ws.nodes?.find?.((node) => node?.id === id || node?.path === path) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function resolveContextV6247(chip) {
+    const card = closestCardV6247(chip) || chip?.closest?.('.post-chips')?.closest?.('.lineage-post[data-node], article[data-node], .node-card[data-node]') || null;
+    const wsId = chip?.dataset?.ws || card?.closest?.('[data-ws]')?.dataset?.ws || app?.activeWorkspaceId || '';
+    const nodeId = chip?.dataset?.node || card?.dataset?.node || '';
+    const nodePath = chip?.dataset?.path || card?.dataset?.path || '';
+    let ws = wsByIdV6247(wsId);
+    let node = nodeFromWsV6247(ws, nodeId, nodePath);
+    if ((!ws || !node) && Array.isArray(app?.workspaces)) {
+      for (const candidateWs of app.workspaces) {
+        const candidateNode = nodeFromWsV6247(candidateWs, nodeId, nodePath);
+        if (candidateNode) {
+          ws = candidateWs;
+          node = candidateNode;
+          break;
+        }
+      }
+    }
+    const title = node?.title || node?.name || card?.querySelector?.('.post-title, h2, h3, .node-card-title')?.textContent?.trim?.() || 'Artifact';
+    return { card, ws, node, wsId: ws?.id || wsId, nodeId: node?.id || nodeId, nodePath: node?.path || nodePath, title };
+  }
+
+  function actionV6247(actions, label, icon, dataset, options = {}) {
+    actions.push({ label, icon, dataset: Object.assign({}, dataset || {}), href: options.href || '', danger: Boolean(options.danger), tag: options.href ? 'a' : 'button' });
+  }
+
+  function buildActionsV6247(ctx) {
+    const actions = [];
+    const wsId = ctx.wsId || app?.activeWorkspaceId || '';
+    const nodeId = ctx.nodeId || '';
+    const nodePath = ctx.nodePath || '';
+    const common = { ws: wsId, node: nodeId };
+    if (nodePath) common.path = nodePath;
+
+    // v6.249: the compact ellipsis is already the “more” affordance.
+    // The sheet should expose artifact actions only, not another More/Less row.
+    actionV6247(actions, 'Open', 'fa-regular fa-window-maximize', Object.assign({ action: 'open-detail-modal' }, common));
+    actionV6247(actions, 'Markdown', 'fa-brands fa-markdown', Object.assign({ action: 'open-markdown-modal' }, common));
+
+    // If the node lookup drifted but the rendered card still carries a node id,
+    // keep Continue available. The existing create handler remains the authority.
+    if (ctx.node ? ctx.node.hasModernEnvelope !== false : Boolean(nodeId)) {
+      actionV6247(actions, 'Continue', 'fa-solid fa-code-branch', Object.assign({ action: 'open-create', mode: 'continue' }, common));
+    }
+
+    actionV6247(actions, 'Reference', 'fa-solid fa-link', Object.assign({ action: 'open-create', mode: 'reference' }, common));
+    if (ctx.node?.browseUrl) actionV6247(actions, 'Source', 'fa-brands fa-github', {}, { href: safeV6247(ctx.node.browseUrl) });
+    try {
+      if (typeof canRemoveNodeForNow === 'function' && ctx.ws && ctx.node && canRemoveNodeForNow(ctx.ws, ctx.node)) {
+        actionV6247(actions, 'Remove', 'fa-regular fa-trash-can', Object.assign({ action: 'remove-local-node' }, common), { danger: true });
+      }
+    } catch (_) {}
+    return actions;
+  }
+
+  function closeSheetV6247() {
+    document.getElementById(OVERLAY_ID)?.remove();
+  }
+
+  function renderSheetV6247(ctx, actions) {
+    closeSheetV6247();
+    const overlay = document.createElement('div');
+    overlay.id = OVERLAY_ID;
+    overlay.className = 'mobile-action-backdrop-v6203 mobile-action-backdrop-v6247';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.innerHTML = `<div class="mobile-action-sheet-v6203 mobile-action-sheet-v6247">
+      <div class="mobile-action-head-v6203">
+        <div><p class="kicker">Actions</p><h3>${escV6247(ctx.title)}</h3></div>
+        <button type="button" class="tv-btn small subtle" data-direct-action="close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="mobile-action-list-v6203">
+        ${actions.map((action, index) => `<button type="button" class="${action.danger ? 'danger' : ''}" data-direct-action="run" data-action-index="${index}"><i class="${escV6247(action.icon)}"></i><span>${escV6247(action.label)}</span></button>`).join('') || '<p class="mobile-action-empty-v6246">No actions available.</p>'}
+      </div>
+    </div>`;
+    overlay.__mobileActionsV6247 = actions;
+    overlay.__mobileContextV6247 = ctx;
+    document.body.appendChild(overlay);
+  }
+
+  async function runActionV6247(action, ctx) {
+    if (!action) return;
+    if (action.href) {
+      window.open(action.href, '_blank', 'noopener');
+      return;
+    }
+    const fake = document.createElement(action.tag === 'a' ? 'a' : 'button');
+    Object.entries(action.dataset || {}).forEach(([key, value]) => { fake.dataset[key] = value; });
+    if (ctx.wsId && !fake.dataset.ws) fake.dataset.ws = ctx.wsId;
+    if (ctx.nodeId && !fake.dataset.node) fake.dataset.node = ctx.nodeId;
+    if (ctx.nodePath && !fake.dataset.path) fake.dataset.path = ctx.nodePath;
+    document.body.appendChild(fake);
+    try {
+      if (typeof onActionV645 === 'function') {
+        await onActionV645({ currentTarget: fake, target: fake, preventDefault(){}, stopPropagation(){}, stopImmediatePropagation(){} });
+      }
+    } finally {
+      fake.remove();
+    }
+  }
+
+  function openFromChipV6247(chip) {
+    const ctx = resolveContextV6247(chip);
+    const actions = buildActionsV6247(ctx);
+    renderSheetV6247(ctx, actions);
+    return true;
+  }
+
+  function interceptChipV6247(event) {
+    const chip = moreChipFromEventV6247(event);
+    if (!chip || !activeMobileV6247()) return;
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    event.stopImmediatePropagation?.();
+    const key = `${chip.dataset?.ws || ''}::${chip.dataset?.node || closestCardV6247(chip)?.dataset?.node || ''}`;
+    const now = Number.isFinite(performance?.now?.()) ? performance.now() : Date.now();
+    if (key && key === lastOpenKey && now - lastOpenAt < 280) return;
+    lastOpenKey = key;
+    lastOpenAt = now;
+    openFromChipV6247(chip);
+  }
+
+  ['pointerdown', 'touchstart', 'mousedown', 'click'].forEach((type) => {
+    window.addEventListener(type, interceptChipV6247, true);
+  });
+
+  window.addEventListener('click', async (event) => {
+    const overlay = document.getElementById(OVERLAY_ID);
+    if (!overlay) return;
+    const control = event.target?.closest?.('[data-direct-action]');
+    if (!control && event.target === overlay) {
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      closeSheetV6247();
+      return;
+    }
+    if (!control) return;
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    event.stopImmediatePropagation?.();
+    if (control.dataset.directAction === 'close') {
+      closeSheetV6247();
+      return;
+    }
+    if (control.dataset.directAction === 'run') {
+      const actions = overlay.__mobileActionsV6247 || [];
+      const ctx = overlay.__mobileContextV6247 || {};
+      const action = actions[Number(control.dataset.actionIndex || -1)];
+      closeSheetV6247();
+      await runActionV6247(action, ctx);
+    }
+  }, true);
+})();
+
+
+;(() => {
+  // ===== v6.251 mobile badge-row action sheet dispatch on press =====
+  // v6.248-v6.250 proved the compact ellipsis and sheet rendering work, but
+  // the sheet actions were still being swallowed by the older click-capture
+  // close path before the action dispatch produced visible UI. Handle the run
+  // button on the first press event, dispatch the core action directly, and
+  // suppress the subsequent synthetic click.
+  const OVERLAY_ID = 'mobile-more-direct-sheet-v6247';
+  let lastHandledKey = '';
+  let lastHandledAt = 0;
+
+  function nowV6251() {
+    try { return performance.now(); } catch (_) { return Date.now(); }
+  }
+
+  function controlFromEventV6251(event) {
+    return event.target?.closest?.(`#${OVERLAY_ID} [data-direct-action]`) || null;
+  }
+
+  function closeSheetV6251() {
+    document.getElementById(OVERLAY_ID)?.remove();
+  }
+
+  function contextForActionV6251(action, ctx) {
+    const dataset = action?.dataset || {};
+    const wsId = dataset.ws || ctx?.wsId || app?.activeWorkspaceId || '';
+    const nodeId = dataset.node || ctx?.nodeId || '';
+    const nodePath = dataset.path || ctx?.nodePath || '';
+    let ws = null;
+    let node = null;
+    try { ws = typeof getWorkspace === 'function' ? getWorkspace(wsId) : null; } catch (_) {}
+    try { node = ws?.nodeById?.get?.(nodeId) || null; } catch (_) {}
+    if (!node && ws && Array.isArray(ws.nodes)) {
+      node = ws.nodes.find((candidate) => candidate?.id === nodeId || candidate?.path === nodePath) || null;
+    }
+    if ((!ws || !node) && Array.isArray(app?.workspaces)) {
+      for (const candidateWs of app.workspaces) {
+        const candidateNode = candidateWs?.nodeById?.get?.(nodeId)
+          || (Array.isArray(candidateWs?.nodes) ? candidateWs.nodes.find((candidate) => candidate?.id === nodeId || candidate?.path === nodePath) : null);
+        if (candidateNode) {
+          ws = candidateWs;
+          node = candidateNode;
+          break;
+        }
+      }
+    }
+    return { wsId: ws?.id || wsId, nodeId: node?.id || nodeId, nodePath: node?.path || nodePath, ws, node };
+  }
+
+  async function dispatchActionV6251(action, ctx) {
+    if (!action) return;
+    if (action.href) {
+      window.open(action.href, '_blank', 'noopener');
+      return;
+    }
+    const dataset = action.dataset || {};
+    const actionName = dataset.action || '';
+    const resolved = contextForActionV6251(action, ctx || {});
+    const wsId = resolved.wsId || dataset.ws || '';
+    const nodeId = resolved.nodeId || dataset.node || '';
+
+    if (actionName === 'open-detail-modal') {
+      app.modal = { type: 'detail', wsId, nodeId };
+      if (typeof render === 'function') render();
+      return;
+    }
+    if (actionName === 'open-markdown-modal') {
+      app.modal = { type: 'markdown', wsId, nodeId };
+      if (typeof render === 'function') render();
+      return;
+    }
+    if (actionName === 'open-create') {
+      if (typeof openCreateModal === 'function') {
+        openCreateModal(dataset.mode || 'continue', wsId, nodeId);
+      } else {
+        app.modal = { type: 'create', mode: dataset.mode || 'continue', wsId, nodeId };
+        if (typeof render === 'function') render();
+      }
+      return;
+    }
+    if (actionName === 'remove-local-node') {
+      if (typeof removeNodeFromWorkspace === 'function') removeNodeFromWorkspace(wsId, nodeId);
+      return;
+    }
+
+    // Last-resort compatibility with any future action not listed above.
+    const fake = document.createElement('button');
+    Object.entries(dataset).forEach(([key, value]) => { fake.dataset[key] = value; });
+    if (wsId && !fake.dataset.ws) fake.dataset.ws = wsId;
+    if (nodeId && !fake.dataset.node) fake.dataset.node = nodeId;
+    document.body.appendChild(fake);
+    try {
+      if (typeof onActionV645 === 'function') {
+        await onActionV645({ currentTarget: fake, target: fake, preventDefault(){}, stopPropagation(){}, stopImmediatePropagation(){} });
+      }
+    } finally {
+      fake.remove();
+    }
+  }
+
+  async function handleControlV6251(event) {
+    const control = controlFromEventV6251(event);
+    if (!control) return;
+    const overlay = document.getElementById(OVERLAY_ID);
+    if (!overlay) return;
+    const directAction = control.dataset.directAction || '';
+    if (directAction !== 'run' && directAction !== 'close') return;
+
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    event.stopImmediatePropagation?.();
+
+    const index = control.dataset.actionIndex || '';
+    const key = `${directAction}::${index}`;
+    const t = nowV6251();
+    if (key === lastHandledKey && t - lastHandledAt < 320) return;
+    lastHandledKey = key;
+    lastHandledAt = t;
+
+    if (directAction === 'close') {
+      closeSheetV6251();
+      return;
+    }
+
+    const actions = overlay.__mobileActionsV6247 || [];
+    const ctx = overlay.__mobileContextV6247 || {};
+    const action = actions[Number(index || -1)];
+    closeSheetV6251();
+    await dispatchActionV6251(action, ctx);
+  }
+
+  ['pointerdown', 'touchstart', 'mousedown'].forEach((type) => {
+    window.addEventListener(type, handleControlV6251, true);
+  });
+})();
+
+})();
+
+
+
+;(() => {
+  // ===== v6.256 non-recursive Create modal renderer =====
+  // v6.126 captured renderCreateModal with a hoisted function declaration, so the
+  // saved "original" points back to the same wrapper and non-workspace create
+  // modals recurse forever. Continue/Reference both use mode=continue/reference,
+  // so replace the renderer with an explicit stable implementation for all create
+  // modes instead of delegating through the broken wrapper chain.
+  function mobileCreateActiveV6256() {
+    try { if (typeof mobileCreateSheetActiveV6219 === 'function' && mobileCreateSheetActiveV6219()) return true; } catch (_) {}
+    try { if (typeof mobileActiveV6212 === 'function' && mobileActiveV6212()) return true; } catch (_) {}
+    try { if (document.body?.classList?.contains('mobile-chrome-v6205') || document.body?.classList?.contains('mobile-lens-v6203')) return true; } catch (_) {}
+    try { return Boolean(window.matchMedia?.('(max-width: 640px)')?.matches); } catch (_) { return false; }
+  }
+
+  function renderWorkspaceCreateModalV6256(modal) {
+    if (mobileCreateActiveV6256()) {
+      return `
+        <div class="modal-backdrop-custom focus-modal create-workspace-backdrop create-workspace-sheet-backdrop-v6219 create-workspace-sheet-backdrop-v6256" role="dialog" aria-modal="true" aria-label="Create workspace">
+          <div class="modal-panel create-workspace-panel create-workspace-sheet-v6219 create-workspace-sheet-v6256">
+            <div class="create-workspace-grabber-v6219" aria-hidden="true"></div>
+            <div class="create-workspace-head-v6219">
+              <div>
+                <p class="kicker">Create</p>
+                <h2 class="modal-title-lite">New workspace</h2>
+              </div>
+              <button class="tv-btn small subtle create-workspace-close-v6219" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="create-workspace-body-v6219">
+              <label class="field-label" for="workspace-name">Workspace name</label>
+              <input id="workspace-name" class="form-control tv-input" data-field="workspaceName" placeholder="Example: Tiinex/docs" value="${escapeAttr(modal?.workspaceName || '')}" autofocus>
+              <p class="form-text create-workspace-hint-v6219">Add files, folders, or GitHub sources after creation.</p>
+            </div>
+            <div class="create-workspace-actions-v6219">
+              <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+              <button class="tv-btn primary" data-action="create-workspace"><i class="fa-solid fa-plus"></i>Create</button>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    return `
+      <div class="modal-backdrop-custom focus-modal create-workspace-backdrop create-workspace-backdrop-v6256" role="dialog" aria-modal="true">
+        <div class="modal-panel create-workspace-panel">
+          <div class="modal-header-lite create-workspace-head">
+            <div>
+              <p class="kicker">Create</p>
+              <h2 class="modal-title-lite">Create workspace</h2>
+              <p class="text-secondary mb-0">Name a local workspace. You can add sources, files, folders, and GitHub roots after it exists.</p>
+            </div>
+            <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+          <div class="create-workspace-body">
+            <label class="field-label" for="workspace-name">Workspace name</label>
+            <input id="workspace-name" class="form-control tv-input" data-field="workspaceName" placeholder="Name this workspace" value="${escapeAttr(modal?.workspaceName || '')}" autofocus>
+            <p class="form-text">Stored locally in this browser unless exported.</p>
+            <div class="modal-footer-actions create-workspace-actions">
+              <button class="tv-btn primary" data-action="create-workspace"><i class="fa-solid fa-plus"></i>Create</button>
+              <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function renderLineageCreateModalV6256(modal) {
+    const sourceWs = getWorkspace(modal?.sourceWsId || modal?.wsId || '');
+    const sourceNode = sourceWs?.nodeById?.get?.(modal?.sourceNodeId || modal?.nodeId || '');
+    const workspaces = Array.isArray(app?.workspaces) ? app.workspaces : [];
+    const destinationOptions = workspaces.map((ws) => `<option value="${escapeAttr(ws.id)}" ${modal?.destWsId === ws.id ? 'selected' : ''}>${escapeHtml(ws.label)}</option>`).join('');
+    const destWs = getWorkspace(modal?.destWsId || '');
+    const destNode = destWs ? selectedNode(destWs) : null;
+    const mode = modal?.mode === 'reference' ? 'reference' : 'continue';
+    const useParent = mode === 'continue' || modal?.useDestinationParent;
+    const hasParent = mode === 'continue' ? Boolean(sourceNode) : Boolean(useParent && destNode);
+    const availability = schemaAvailability(mode, hasParent, Boolean(sourceNode));
+    const needsDecision = modal?.requiresPolicyDecision;
+    const fields = modal?.fields || {};
+    const schemaKeyValue = modal?.schemaKey || 'topic';
+    return `
+      <div class="modal-backdrop-custom create-lineage-backdrop-v6256" role="dialog" aria-modal="true">
+        <div class="modal-panel create-lineage-panel-v6256">
+          <div class="modal-header-lite">
+            <div>
+              <p class="kicker">${mode === 'continue' ? 'Continue lineage' : 'Reference lineage'}</p>
+              <h2 class="modal-title-lite">${mode === 'continue' ? 'Create child leaf' : 'Create reference leaf'}</h2>
+              <p class="text-secondary mb-0">${escapeHtml(sourceNode ? sourceNode.title : 'No source selected')}</p>
+            </div>
+            <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+
+          ${sourceWs ? `<div class="policy-callout ${needsDecision ? 'danger' : ''}">
+            <strong>${needsDecision ? 'Policy decision required' : 'Source policy'}</strong><br>
+            ${escapeHtml(policyTextForModal(sourceWs))}
+            ${needsDecision ? `<label class="d-flex gap-2 align-items-start mt-2"><input type="checkbox" data-field="policyDecisionAccepted" ${modal?.policyDecisionAccepted ? 'checked' : ''}> <span>Create a decision leaf first and make it the parent of the generated leaf.</span></label>` : ''}
+          </div>` : ''}
+
+          <div class="row g-3">
+            ${mode === 'reference' ? `
+              <div class="col-md-7">
+                <label class="form-label">Destination workspace</label>
+                <select class="form-select" data-field="destWsId">${destinationOptions}</select>
+                <div class="form-text text-secondary">The generated file belongs to this workspace. The viewed source becomes a reference, not the parent.</div>
+              </div>
+              <div class="col-md-5 d-flex align-items-end">
+                <label class="d-flex gap-2 align-items-center text-secondary mb-2">
+                  <input type="checkbox" data-field="useDestinationParent" ${modal?.useDestinationParent ? 'checked' : ''} ${destNode ? '' : 'disabled'}>
+                  Use selected destination node as parent
+                </label>
+              </div>` : ''}
+
+            <div class="col-12">
+              <label class="form-label">Schema</label>
+              <div class="schema-grid">
+                ${Object.entries(SCHEMAS).map(([key, schema]) => renderSchemaOption(key, schema, schemaKeyValue, availability)).join('')}
+              </div>
+              ${availability.note ? `<div class="form-text text-warning mt-2">${escapeHtml(availability.note)}</div>` : ''}
+            </div>
+
+            <div class="col-md-7">
+              <label class="form-label">Title / summary</label>
+              <input class="form-control" data-field="summary" value="${escapeAttr(modal?.summary || '')}" placeholder="Short title for the generated leaf">
+            </div>
+            <div class="col-md-5">
+              <label class="form-label">Authors</label>
+              <input class="form-control" data-field="authors" value="${escapeAttr(modal?.authors || '')}" placeholder="Your name or team">
+            </div>
+            <div class="col-12">
+              <label class="form-label">Why</label>
+              <textarea class="form-control" data-field="why" placeholder="Why this leaf exists">${escapeHtml(modal?.why || '')}</textarea>
+            </div>
+            ${renderSchemaFields(Object.assign({}, modal, { mode, schemaKey: schemaKeyValue, fields }))}
+            <div class="col-md-7">
+              <label class="form-label">Export directory</label>
+              <input class="form-control" data-field="exportDir" value="${escapeAttr(modal?.exportDir || '/')}" placeholder="/.topics">
+              <div class="form-text text-secondary">Repo-root anchored. <code>/</code> means repository root. Directories are created in the exported zip.</div>
+            </div>
+            <div class="col-md-5">
+              <label class="form-label">Filename</label>
+              <input class="form-control" data-field="filename" value="${escapeAttr(modal?.filename || '')}" placeholder="001-1.trace.md">
+              <div class="form-text text-secondary">Schema proposes this; edit only when you need a different lineage label or slug.</div>
+            </div>
+            <div class="col-12 d-flex flex-wrap gap-2 mt-2">
+              <button class="tv-btn primary" data-action="generate-trace"><i class="fa-solid fa-file-circle-plus"></i>${needsDecision ? 'Create decision + leaf' : 'Create local leaf'}</button>
+              <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  renderCreateModal = function renderCreateModalStableV6256(modal) {
+    if (modal?.mode === 'workspace') return renderWorkspaceCreateModalV6256(modal || {});
+    return renderLineageCreateModalV6256(modal || {});
+  };
+
+  // ===== v6.258 artifact wizard UX contract =====
+  // Continue / Reference now share the artifact wizard as the single create surface.
+  // Continue has an implicit locked parent. Reference keeps parent and reference
+  // target separate, but defaults to the selected node when there is no better
+  // lineage context. Reduction stays out of the ordinary continuation list until
+  // it can carry a proper source-range / commit-anchor flow.
+  const openCreateModalBeforeWizardUXV6258 = typeof openCreateModal === 'function' ? openCreateModal : null;
+
+  function wizardSchemaOrderV6258(mode) {
+    if (mode === 'reference') {
+      return ['tiinex.evidence.v1', 'tiinex.feedback.v1', 'tiinex.pointer.v1', 'tiinex.topic.v1', 'tiinex.decision.v1', 'tiinex.task.v1'];
+    }
+    if (mode === 'continue') {
+      return ['tiinex.topic.v1', 'tiinex.feedback.v1', 'tiinex.evidence.v1', 'tiinex.task.v1', 'tiinex.decision.v1', 'tiinex.pointer.v1'];
+    }
+    return ['tiinex.topic.v1', 'tiinex.task.v1', 'tiinex.decision.v1', 'tiinex.evidence.v1', 'tiinex.feedback.v1', 'tiinex.pointer.v1', 'tiinex.lineage.upgrade.deferral.v1', 'tiinex.workspace.v1', 'raw'];
+  }
+
+  function wizardOptionsForModeV6258(options, modal) {
+    const mode = modal?.mode || 'new';
+    const order = wizardSchemaOrderV6258(mode);
+    const byId = new Map((options || []).map((option) => [option.id, option]));
+    return order.map((id) => byId.get(id)).filter(Boolean);
+  }
+
+  function defaultWizardSchemaForV6258(mode, node) {
+    if (mode === 'reference') return 'tiinex.evidence.v1';
+    if (mode === 'continue') return 'tiinex.topic.v1';
+    return node?.currentSchemaText || node?.currentSchema || 'tiinex.topic.v1';
+  }
+
+  function bestReferenceParentV6258(ws, node) {
+    try {
+      const selected = typeof selectedNode === 'function' ? selectedNode(ws) : null;
+      return selected || node || null;
+    } catch (_) {
+      return node || null;
+    }
+  }
+
+  if (openCreateModalBeforeWizardUXV6258 && typeof openArtifactWizardV6158 === 'function') {
+    openCreateModal = function openCreateModalWizardUXV6258(mode, wsId, nodeId) {
+      const ws = typeof getWorkspace === 'function' ? getWorkspace(wsId) : null;
+      const node = ws?.nodeById?.get?.(nodeId) || null;
+      if (!ws || !node) return openCreateModalBeforeWizardUXV6258(mode, wsId, nodeId);
+      const normalizedMode = mode === 'reference' ? 'reference' : 'continue';
+      if (normalizedMode === 'reference') {
+        const parent = bestReferenceParentV6258(ws, node);
+        openArtifactWizardV6158(ws, {
+          mode: 'reference',
+          parentNodeId: parent?.id || node.id,
+          referencedNodeId: node.id,
+          schemaId: defaultWizardSchemaForV6258('reference', node),
+          title: `${node.title || 'Selected artifact'} reference`,
+          wizardStep: 'type'
+        });
+        return;
+      }
+      openArtifactWizardV6158(ws, {
+        mode: 'continue',
+        parentNodeId: node.id,
+        referencedNodeId: '',
+        schemaId: defaultWizardSchemaForV6258('continue', node),
+        title: `${node.title || 'Selected artifact'} continuation`,
+        wizardStep: 'type'
+      });
+    };
+  }
+
+  if (typeof wizardModeCopyV6158 === 'function') {
+    wizardModeCopyV6158 = function wizardModeCopyUXV6258(modal) {
+      const mode = modal?.mode || 'new';
+      if (mode === 'continue') {
+        return {
+          kicker: 'Continue',
+          title: 'Create child leaf',
+          lead: 'Parent is fixed for Continue. Choose the leaf type that best carries the next step.',
+          icon: 'fa-code-branch',
+          button: 'Continue to content'
+        };
+      }
+      if (mode === 'reference') {
+        return {
+          kicker: 'Reference',
+          title: 'Create reference leaf',
+          lead: 'Choose the leaf type that will point back to the selected reference target.',
+          icon: 'fa-link',
+          button: 'Continue to content'
+        };
+      }
+      return {
+        kicker: 'Add',
+        title: 'Create Tiinex artifact',
+        lead: 'Choose a human-authored Tiinex leaf type before editing content.',
+        icon: 'fa-file-circle-plus',
+        button: 'Continue to content'
+      };
+    };
+  }
+
+  if (typeof wizardRelationCardV6158 === 'function') {
+    wizardRelationCardV6158 = function wizardRelationCardUXV6258(ws, modal) {
+      const mode = modal?.mode || 'new';
+      const parent = typeof wizardNodeByIdV6158 === 'function' ? wizardNodeByIdV6158(ws, modal?.parentNodeId) : null;
+      const referenced = typeof wizardNodeByIdV6158 === 'function' ? wizardNodeByIdV6158(ws, modal?.referencedNodeId) : null;
+
+      if (mode === 'new' && !parent && !referenced) {
+        return `<div class="wizard-relation-card neutral wizard-relation-card-v6258"><div class="wizard-relation-icon"><i class="fa-solid fa-seedling"></i></div><div><strong>New workspace leaf</strong><p>No parent or reference target is attached. Use card actions for Continue or Reference.</p></div></div>`;
+      }
+
+      const rows = [];
+      if (parent) rows.push(`<div><strong>Parent</strong><span>${escapeHtml(parent.title || parent.path)}</span></div>`);
+      if (referenced) rows.push(`<div><strong>Reference target</strong><span>${escapeHtml(referenced.title || referenced.path)}</span></div>`);
+      const relation = mode === 'continue' ? 'Continuation relation' : mode === 'reference' ? 'Reference relation' : 'Selected relation';
+      const icon = mode === 'continue' ? 'fa-code-branch' : mode === 'reference' ? 'fa-link' : 'fa-diagram-project';
+      const note = mode === 'reference'
+        ? 'This leaf keeps Parent and Reference target separate. The target is the material being cited.'
+        : mode === 'continue'
+          ? 'This leaf will be created as a child of the selected parent. Parent is implicit for Continue.'
+          : 'This leaf is created without a selected parent unless one is added later.';
+      return `<div class="wizard-relation-card ${escapeAttr(mode)} wizard-relation-card-v6258"><div class="wizard-relation-icon"><i class="fa-solid ${icon}"></i></div><div><strong>${escapeHtml(relation)}</strong><p>${escapeHtml(note)}</p><div class="wizard-relation-rows">${rows.join('')}</div></div></div>`;
+    };
+  }
+
+  if (typeof wizardTypeStepV6159 === 'function') {
+    wizardTypeStepV6159 = function wizardTypeStepUXV6258(ws, modal, options, selectedId) {
+      const visibleOptions = wizardOptionsForModeV6258(options || [], modal || {});
+      const mode = modal?.mode || 'new';
+      const note = mode === 'reference'
+        ? 'Recommended reference-capable human leaves. Reduction is handled by a separate source-range flow later.'
+        : mode === 'continue'
+          ? 'Recommended continuation leaves for this parent. Runtime and reduction flows stay hidden here.'
+          : 'Human-authored leaf shapes. Runtime-oriented schemas stay hidden here.';
+      return `<section class="wizard-step wizard-step-page wizard-type-step wizard-type-step-v6258">
+        <div class="wizard-step-head"><span>1</span><div><strong>Choose leaf type</strong><p>${escapeHtml(note)}</p></div></div>
+        <div class="wizard-schema-grid paged wizard-schema-grid-v6258">
+          ${visibleOptions.map((option) => `<button type="button" class="wizard-schema-card ${option.id === selectedId ? 'selected' : ''}" data-action="wizard-select-schema" data-schema="${escapeAttr(option.id)}" data-ws="${escapeAttr(ws.id)}" title="Use ${escapeAttr(option.label)}">
+            <i class="fa-solid ${escapeAttr(option.icon)}"></i>
+            <strong>${escapeHtml(option.label)}</strong>
+            <small>${escapeHtml(option.suffix)}</small>
+            <p>${escapeHtml(option.summary)}</p>
+          </button>`).join('')}
+        </div>
+      </section>`;
+    };
+  }
+
+  if (typeof renderArtifactWizardModalV6158 === 'function') {
+    const renderArtifactWizardModalBeforeUXV6258 = renderArtifactWizardModalV6158;
+    renderArtifactWizardModalV6158 = function renderArtifactWizardModalUXV6258(modal) {
+      let html = renderArtifactWizardModalBeforeUXV6258(modal);
+      html = html.replace('artifact-wizard-backdrop', 'artifact-wizard-backdrop artifact-wizard-backdrop-v6258');
+      html = html.replace('artifact-wizard-panel paged', 'artifact-wizard-panel paged artifact-wizard-panel-v6258');
+      html = html.replace('artifact-wizard-body paged', 'artifact-wizard-body paged artifact-wizard-body-v6258');
+      html = html.replace('artifact-wizard-actions paged', 'artifact-wizard-actions paged artifact-wizard-actions-v6258');
+      return html;
+    };
+  }
+
+
+;(() => {
+  // ===== v6.259 compact create flow / step ergonomics =====
+  // Keep the working legacy create flow, but make it explicitly stepped and compact.
+  // This avoids mixing schema choice with form fields and keeps mobile actions visible.
+
+  function createModalStepV6259(modal) {
+    return modal?.createStepV6259 === 'details' ? 'details' : 'type';
+  }
+
+  function nodeLabelV6259(node) {
+    return node?.title || node?.path || 'None';
+  }
+
+  function policyShortV6259(text) {
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!value) return '';
+    return value.length > 118 ? `${value.slice(0, 118)}…` : value;
+  }
+
+  function legacyCreateContextV6259(modal) {
+    const sourceWs = typeof getWorkspace === 'function' ? getWorkspace(modal?.sourceWsId || modal?.wsId || '') : null;
+    const sourceNode = sourceWs?.nodeById?.get?.(modal?.sourceNodeId || modal?.nodeId || '') || null;
+    const workspaces = Array.isArray(app?.workspaces) ? app.workspaces : [];
+    const destinationOptions = workspaces.map((ws) => `<option value="${escapeAttr(ws.id)}" ${modal?.destWsId === ws.id ? 'selected' : ''}>${escapeHtml(ws.label)}</option>`).join('');
+    const destWs = typeof getWorkspace === 'function' ? getWorkspace(modal?.destWsId || '') : null;
+    const destNode = destWs && typeof selectedNode === 'function' ? selectedNode(destWs) : null;
+    const mode = modal?.mode === 'reference' ? 'reference' : 'continue';
+    const useParent = mode === 'continue' || modal?.useDestinationParent;
+    const parent = mode === 'continue' ? sourceNode : (useParent ? destNode : null);
+    const hasParent = Boolean(parent);
+    const availability = typeof schemaAvailability === 'function'
+      ? schemaAvailability(mode, hasParent, Boolean(sourceNode))
+      : { schemas: {}, note: '' };
+    return { sourceWs, sourceNode, workspaces, destinationOptions, destWs, destNode, mode, useParent, parent, hasParent, availability };
+  }
+
+  function createStepPillsV6259(step) {
+    const items = [
+      ['type', '1', 'Type'],
+      ['details', '2', 'Details']
+    ];
+    return `<div class="create-step-pills-v6259" aria-label="Create steps">
+      ${items.map(([id, n, label]) => `<span class="${step === id ? 'active' : step === 'details' && id === 'type' ? 'done' : ''}"><b>${escapeHtml(n)}</b>${escapeHtml(label)}</span>`).join('')}
+    </div>`;
+  }
+
+  function createRelationSummaryV6259(ctx) {
+    const { mode, sourceNode, parent, destWs, destNode } = ctx;
+    const target = sourceNode;
+    const rows = [];
+    if (mode === 'continue') {
+      rows.push(`<div><small>Parent</small><strong>${escapeHtml(nodeLabelV6259(parent))}</strong></div>`);
+      return `<section class="create-relation-compact-v6259 continue"><i class="fa-solid fa-code-branch"></i><div><strong>Child leaf</strong><p>Parent is fixed for Continue.</p></div><div class="create-relation-grid-v6259">${rows.join('')}</div></section>`;
+    }
+    rows.push(`<div><small>Parent</small><strong>${escapeHtml(parent ? nodeLabelV6259(parent) : 'None selected')}</strong></div>`);
+    rows.push(`<div><small>Reference target</small><strong>${escapeHtml(nodeLabelV6259(target))}</strong></div>`);
+    return `<section class="create-relation-compact-v6259 reference"><i class="fa-solid fa-link"></i><div><strong>Reference leaf</strong><p>Parent and reference target are separate.</p></div><div class="create-relation-grid-v6259">${rows.join('')}</div></section>`;
+  }
+
+  function schemaEntriesForCreateV6259(ctx, selectedKey) {
+    return Object.entries(SCHEMAS || {})
+      .map(([key, schema]) => {
+        const state = ctx.availability?.schemas?.[key] || 'hidden';
+        if (state === 'hidden') return '';
+        const disabled = state === 'disabled';
+        const active = key === selectedKey;
+        return `<button type="button" class="schema-row-v6259 ${active ? 'selected' : ''} ${disabled ? 'disabled' : ''}" data-action="select-schema" data-schema="${escapeAttr(key)}" ${disabled ? 'disabled' : ''}>
+          <i class="${escapeAttr(schema.icon || 'fa-solid fa-file-lines')}"></i>
+          <span><strong>${escapeHtml(schema.label || key)}</strong>${state === 'advanced' ? '<em>advanced</em>' : ''}</span>
+          <small>${escapeHtml(schema.description || '')}</small>
+        </button>`;
+      })
+      .join('');
+  }
+
+  function renderCreateTypeStepV6259(modal, ctx) {
+    const selected = modal?.schemaKey || 'topic';
+    const mode = ctx.mode;
+    const note = mode === 'reference'
+      ? 'Choose the shape that will carry the reference.'
+      : 'Choose the shape for the next child leaf.';
+    return `<div class="create-step-body-v6259 create-type-step-v6259">
+      ${createRelationSummaryV6259(ctx)}
+      <section class="create-type-panel-v6259">
+        <div class="create-section-head-v6259"><span>1</span><div><strong>Leaf type</strong><p>${escapeHtml(note)} Runtime and reduction flows are hidden here.</p></div></div>
+        <div class="schema-row-list-v6259">${schemaEntriesForCreateV6259(ctx, selected)}</div>
+        ${ctx.availability?.note ? `<p class="create-warning-v6259">${escapeHtml(ctx.availability.note)}</p>` : ''}
+      </section>
+    </div>`;
+  }
+
+  function compactPolicyV6259(ctx, needsDecision, modal) {
+    if (!ctx.sourceWs) return '';
+    const text = typeof policyTextForModal === 'function' ? policyTextForModal(ctx.sourceWs) : '';
+    if (needsDecision) {
+      return `<section class="create-policy-compact-v6259 danger"><strong>Policy decision required</strong><p>${escapeHtml(policyShortV6259(text))}</p><label><input type="checkbox" data-field="policyDecisionAccepted" ${modal?.policyDecisionAccepted ? 'checked' : ''}> Create a decision leaf first.</label></section>`;
+    }
+    return `<details class="create-policy-compact-v6259"><summary>Source policy</summary><p>${escapeHtml(text)}</p></details>`;
+  }
+
+  function renderCreateDetailsStepV6259(modal, ctx) {
+    const fields = modal?.fields || {};
+    const schemaKeyValue = modal?.schemaKey || 'topic';
+    const schema = SCHEMAS?.[schemaKeyValue] || SCHEMAS?.topic || { label: schemaKeyValue, icon: 'fa-solid fa-file-lines' };
+    const fieldModal = Object.assign({}, modal || {}, { mode: ctx.mode, schemaKey: schemaKeyValue, fields });
+    return `<div class="create-step-body-v6259 create-details-step-v6259">
+      <div class="create-selected-type-v6259">
+        <i class="${escapeAttr(schema.icon || 'fa-solid fa-file-lines')}"></i>
+        <div><strong>${escapeHtml(schema.label || schemaKeyValue)}</strong><span>${escapeHtml(ctx.mode === 'continue' ? 'Child leaf' : 'Reference leaf')}</span></div>
+        <button class="tv-btn tiny subtle" data-action="create-step-v6259" data-step="type"><i class="fa-solid fa-arrow-left"></i>Change</button>
+      </div>
+      ${compactPolicyV6259(ctx, modal?.requiresPolicyDecision, modal)}
+      ${ctx.mode === 'reference' ? `
+        <section class="create-placement-compact-v6259">
+          <label class="field-label">Destination workspace<select class="form-select" data-field="destWsId">${ctx.destinationOptions}</select></label>
+          <label class="create-checkbox-v6259"><input type="checkbox" data-field="useDestinationParent" ${modal?.useDestinationParent ? 'checked' : ''} ${ctx.destNode ? '' : 'disabled'}> Attach under selected destination node as parent</label>
+        </section>` : ''}
+      <div class="create-form-grid-v6259">
+        <label class="field-label">Title / summary<input class="form-control" data-field="summary" value="${escapeAttr(modal?.summary || '')}" placeholder="Short title for the generated leaf"></label>
+        <label class="field-label">Authors<input class="form-control" data-field="authors" value="${escapeAttr(modal?.authors || '')}" placeholder="Your name or team"></label>
+        <label class="field-label full">Why<textarea class="form-control" data-field="why" placeholder="Why this leaf exists">${escapeHtml(modal?.why || '')}</textarea></label>
+        ${renderSchemaFields(fieldModal)}
+        <label class="field-label">Export directory<input class="form-control" data-field="exportDir" value="${escapeAttr(modal?.exportDir || '/')}" placeholder="/.topics"><span class="create-help-v6259">Repo-root anchored.</span></label>
+        <label class="field-label">Filename<input class="form-control" data-field="filename" value="${escapeAttr(modal?.filename || '')}" placeholder="001-1.trace.md"><span class="create-help-v6259">Usually auto-proposed.</span></label>
+      </div>
+    </div>`;
+  }
+
+  function renderLineageCreateModalV6259(modal) {
+    const ctx = legacyCreateContextV6259(modal || {});
+    const step = createModalStepV6259(modal || {});
+    const title = ctx.mode === 'continue' ? 'Create child leaf' : 'Create reference leaf';
+    const kicker = ctx.mode === 'continue' ? 'Continue' : 'Reference';
+    const sourceTitle = ctx.sourceNode ? nodeLabelV6259(ctx.sourceNode) : 'No source selected';
+    const primaryAction = step === 'type' ? 'create-step-v6259' : 'generate-trace';
+    const primaryText = step === 'type' ? 'Continue to details' : (modal?.requiresPolicyDecision ? 'Create decision + leaf' : 'Create local leaf');
+    const primaryIcon = step === 'type' ? 'fa-arrow-right' : 'fa-file-circle-plus';
+    return `<div class="modal-backdrop-custom create-lineage-backdrop-v6256 create-lineage-backdrop-v6259" role="dialog" aria-modal="true">
+      <div class="modal-panel create-lineage-panel-v6256 create-lineage-panel-v6259">
+        <div class="modal-header-lite create-lineage-head-v6259">
+          <div>
+            <p class="kicker">${escapeHtml(kicker)}</p>
+            <h2 class="modal-title-lite">${escapeHtml(title)}</h2>
+            <p class="text-secondary mb-0">${escapeHtml(sourceTitle)}</p>
+          </div>
+          <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        ${createStepPillsV6259(step)}
+        <div class="create-lineage-scroll-v6259">
+          ${step === 'type' ? renderCreateTypeStepV6259(modal || {}, ctx) : renderCreateDetailsStepV6259(modal || {}, ctx)}
+        </div>
+        <div class="create-lineage-actions-v6259">
+          ${step === 'details' ? `<button class="tv-btn subtle" data-action="create-step-v6259" data-step="type"><i class="fa-solid fa-arrow-left"></i>Back</button>` : ''}
+          <button class="tv-btn primary" data-action="${escapeAttr(primaryAction)}" data-step="details"><i class="fa-solid ${escapeAttr(primaryIcon)}"></i>${escapeHtml(primaryText)}</button>
+          <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+
+
+  // ===== v6.260 legacy create modal routing fix =====
+  // v6.259 introduced the compact stepped renderer, but the active Continue /
+  // Reference modal sometimes arrives as { mode: 'continue' | 'reference' }
+  // without type='create'. Treat those as create modals so the compact UX is
+  // actually used instead of falling back to the old one-page renderer.
+  const renderCreateModalBeforeCompactV6259 = typeof renderCreateModal === 'function' ? renderCreateModal : null;
+  renderCreateModal = function renderCreateModalCompactV6259(modal) {
+    if (modal?.mode === 'workspace') return renderCreateModalBeforeCompactV6259 ? renderCreateModalBeforeCompactV6259(modal) : '';
+    if (modal?.type === 'create' || modal?.mode === 'continue' || modal?.mode === 'reference') return renderLineageCreateModalV6259(Object.assign({ type: 'create' }, modal || {}));
+    return renderCreateModalBeforeCompactV6259 ? renderCreateModalBeforeCompactV6259(modal || {}) : '';
+  };
+
+  const onActionBeforeCompactCreateV6259 = typeof onActionV645 === 'function' ? onActionV645 : null;
+  onActionV645 = async function compactCreateActionV6259(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'create-step-v6259') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!app.modal || (app.modal.type !== 'create' && app.modal.mode !== 'continue' && app.modal.mode !== 'reference')) return;
+      app.modal.type = app.modal.type || 'create';
+      app.modal.createStepV6259 = event.currentTarget.dataset.step === 'type' ? 'type' : 'details';
+      if (app.modal.createStepV6259 === 'details' && typeof refreshModalDefaults === 'function') refreshModalDefaults();
+      render();
+      return;
+    }
+    if (action === 'select-schema' && app.modal && (app.modal.type === 'create' || app.modal.mode === 'continue' || app.modal.mode === 'reference')) {
+      event.preventDefault();
+      event.stopPropagation();
+      const key = event.currentTarget.dataset.schema || 'topic';
+      if (!SCHEMAS?.[key]) return;
+      app.modal.type = app.modal.type || 'create';
+      app.modal.schemaKey = key;
+      app.modal.fields = {};
+      app.modal.exportPathWasAuto = true;
+      app.modal.createStepV6259 = 'type';
+      if (typeof refreshModalDefaults === 'function') refreshModalDefaults();
+      render();
+      return;
+    }
+    return onActionBeforeCompactCreateV6259 ? onActionBeforeCompactCreateV6259(event) : undefined;
+  };
+})();
+
+
+;(() => {
+  // ===== v6.261 canonical create wizard routing =====
+  // Stop splitting Continue/Reference across legacy create-modal and artifact-wizard.
+  // The artifact wizard is the canonical human-authored leaf surface; legacy
+  // create-modal remains only for workspace / older fallback paths.
+
+  const legacyToWizardSchemaV6261 = {
+    topic: 'tiinex.topic.v1',
+    task: 'tiinex.task.v1',
+    decision: 'tiinex.decision.v1',
+    evidence: 'tiinex.evidence.v1',
+    feedback: 'tiinex.feedback.v1',
+    pointer: 'tiinex.pointer.v1',
+    signal: 'tiinex.topic.v1',
+    raw: 'raw',
+    'lineage.upgrade.deferral': 'tiinex.lineage.upgrade.deferral.v1'
+  };
+
+  function wizardSchemaForLegacyKeyV6261(key, fallback = 'tiinex.topic.v1') {
+    const raw = String(key || '').trim();
+    if (!raw) return fallback;
+    if (raw.startsWith('tiinex.')) return raw;
+    return legacyToWizardSchemaV6261[raw] || fallback;
+  }
+
+  function nodeByAnyIdV6261(ws, nodeId, nodePath = '') {
+    if (!ws) return null;
+    try {
+      if (nodeId && typeof nodeByAnyIdV6244 === 'function') {
+        const found = nodeByAnyIdV6244(ws, nodeId);
+        if (found) return found;
+      }
+    } catch (_) {}
+    try {
+      if (nodeId) {
+        const byMap = ws.nodeById?.get?.(nodeId);
+        if (byMap) return byMap;
+      }
+    } catch (_) {}
+    try {
+      const list = Array.isArray(ws.nodes) ? ws.nodes : (ws.nodeById?.values ? Array.from(ws.nodeById.values()) : []);
+      return list.find((node) => node && ((nodeId && node.id === nodeId) || (nodePath && node.path === nodePath))) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function resolveCreateNodeV6261(wsId, nodeId, nodePath = '', title = '') {
+    let ws = null;
+    let node = null;
+    try { ws = wsId && typeof getWorkspace === 'function' ? getWorkspace(wsId) : null; } catch (_) {}
+    try {
+      if (typeof lookupNodeRefV6254 === 'function') {
+        const ref = lookupNodeRefV6254(wsId, nodeId, nodePath, title);
+        if (ref?.ws) ws = ref.ws;
+        if (ref?.node) node = ref.node;
+      }
+    } catch (_) {}
+    if (ws && !node) node = nodeByAnyIdV6261(ws, nodeId, nodePath);
+    try {
+      if ((!ws || !node) && Array.isArray(app?.workspaces)) {
+        for (const candidateWs of app.workspaces) {
+          const candidate = nodeByAnyIdV6261(candidateWs, nodeId, nodePath);
+          if (candidate) {
+            ws = candidateWs;
+            node = candidate;
+            break;
+          }
+        }
+      }
+    } catch (_) {}
+    try { if (ws && node && typeof registerNodeRefV6254 === 'function') registerNodeRefV6254(ws, node); } catch (_) {}
+    try { if (ws && node && typeof ensureNodeLookupV6254 === 'function') ensureNodeLookupV6254(ws, node); } catch (_) {}
+    return { ws, node };
+  }
+
+  function selectedParentForReferenceV6261(ws, referencedNode) {
+    try {
+      const selected = typeof selectedNode === 'function' ? selectedNode(ws) : null;
+      return selected || referencedNode || null;
+    } catch (_) {
+      return referencedNode || null;
+    }
+  }
+
+  function buildWizardOptionsV6261(mode, ws, node, seed = {}) {
+    const normalized = mode === 'reference' ? 'reference' : mode === 'continue' ? 'continue' : 'new';
+    const fallbackSchema = normalized === 'reference'
+      ? 'tiinex.evidence.v1'
+      : normalized === 'continue'
+        ? 'tiinex.topic.v1'
+        : (node?.currentSchemaText || node?.currentSchema || 'tiinex.topic.v1');
+    const schemaId = wizardSchemaForLegacyKeyV6261(seed.schemaKey || seed.schemaId, fallbackSchema);
+    if (normalized === 'reference') {
+      const parent = seed.parentNodeId
+        ? nodeByAnyIdV6261(ws, seed.parentNodeId)
+        : selectedParentForReferenceV6261(ws, node);
+      return {
+        mode: 'reference',
+        parentNodeId: parent?.id || node?.id || '',
+        referencedNodeId: node?.id || seed.referencedNodeId || '',
+        schemaId,
+        title: seed.title || seed.summary || `${node?.title || 'Selected artifact'} reference`,
+        summary: seed.summary || '',
+        body: seed.body,
+        wizardStep: seed.wizardStep || 'type'
+      };
+    }
+    if (normalized === 'continue') {
+      return {
+        mode: 'continue',
+        parentNodeId: node?.id || seed.parentNodeId || '',
+        referencedNodeId: '',
+        schemaId,
+        title: seed.title || seed.summary || `${node?.title || 'Selected artifact'} continuation`,
+        summary: seed.summary || '',
+        body: seed.body,
+        wizardStep: seed.wizardStep || 'type'
+      };
+    }
+    return {
+      mode: 'new',
+      parentNodeId: seed.parentNodeId || '',
+      referencedNodeId: seed.referencedNodeId || '',
+      schemaId,
+      title: seed.title || seed.summary || '',
+      summary: seed.summary || '',
+      body: seed.body,
+      wizardStep: seed.wizardStep || 'type'
+    };
+  }
+
+  function openCanonicalCreateWizardV6261(mode, wsId, nodeId, seed = {}) {
+    const normalized = mode === 'reference' ? 'reference' : mode === 'continue' ? 'continue' : 'new';
+    const resolved = resolveCreateNodeV6261(wsId || seed.wsId || seed.sourceWsId || '', nodeId || seed.nodeId || seed.sourceNodeId || '', seed.nodePath || seed.path || '', seed.title || seed.summary || '');
+    const ws = resolved.ws || (seed.wsId && typeof getWorkspace === 'function' ? getWorkspace(seed.wsId) : null);
+    const node = resolved.node;
+    if (!ws || ((normalized === 'continue' || normalized === 'reference') && !node)) return false;
+    if (typeof openArtifactWizardV6158 !== 'function') return false;
+    openArtifactWizardV6158(ws, buildWizardOptionsV6261(normalized, ws, node, seed));
+    return true;
+  }
+
+  const openCreateModalBeforeCanonicalV6261 = typeof openCreateModal === 'function' ? openCreateModal : null;
+  openCreateModal = function openCreateModalCanonicalWizardV6261(mode, wsId, nodeId) {
+    const normalized = mode === 'reference' ? 'reference' : mode === 'continue' ? 'continue' : mode;
+    if (normalized === 'continue' || normalized === 'reference') {
+      if (openCanonicalCreateWizardV6261(normalized, wsId, nodeId)) return;
+    }
+    return openCreateModalBeforeCanonicalV6261 ? openCreateModalBeforeCanonicalV6261(mode, wsId, nodeId) : undefined;
+  };
+
+  function modalToWizardV6261(modal) {
+    if (!modal || modal.type === 'artifact-wizard') return modal || null;
+    const mode = modal.mode === 'reference' ? 'reference' : modal.mode === 'continue' ? 'continue' : '';
+    if (!mode) return null;
+    const wsId = modal.wsId || modal.sourceWsId || '';
+    const nodeId = modal.nodeId || modal.sourceNodeId || '';
+    const { ws, node } = resolveCreateNodeV6261(wsId, nodeId, modal.nodePath || modal.path || '', modal.title || modal.summary || '');
+    if (!ws || !node) return null;
+    return Object.assign({ type: 'artifact-wizard', wsId: ws.id }, buildWizardOptionsV6261(mode, ws, node, modal));
+  }
+
+  const renderModalBeforeCanonicalCreateV6261 = typeof renderModal === 'function' ? renderModal : null;
+  renderModal = function renderModalCanonicalCreateV6261(modal) {
+    if (modal?.type === 'create' && (modal.mode === 'continue' || modal.mode === 'reference')) {
+      const wizard = modalToWizardV6261(modal);
+      if (wizard && typeof renderArtifactWizardModalV6158 === 'function') {
+        if (app?.modal === modal) app.modal = wizard;
+        return renderArtifactWizardModalV6158(wizard);
+      }
+    }
+    return renderModalBeforeCanonicalCreateV6261 ? renderModalBeforeCanonicalCreateV6261(modal) : '';
+  };
+
+  const renderCreateModalBeforeCanonicalCreateV6261 = typeof renderCreateModal === 'function' ? renderCreateModal : null;
+  renderCreateModal = function renderCreateModalCanonicalCreateV6261(modal) {
+    if (modal?.mode === 'continue' || modal?.mode === 'reference') {
+      const wizard = modalToWizardV6261(modal);
+      if (wizard && typeof renderArtifactWizardModalV6158 === 'function') {
+        if (app?.modal === modal) app.modal = wizard;
+        return renderArtifactWizardModalV6158(wizard);
+      }
+    }
+    return renderCreateModalBeforeCanonicalCreateV6261 ? renderCreateModalBeforeCanonicalCreateV6261(modal) : '';
+  };
+
+  const onActionBeforeCanonicalCreateV6261 = typeof onActionV645 === 'function' ? onActionV645 : null;
+  onActionV645 = async function canonicalCreateActionV6261(event) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'wizard-select-schema' && app?.modal?.type === 'artifact-wizard') {
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      const option = typeof schemaOptionByIdV6158 === 'function'
+        ? schemaOptionByIdV6158(event.currentTarget.dataset.schema || 'tiinex.topic.v1')
+        : null;
+      if (option) {
+        app.modal.schemaId = option.id;
+        app.modal.body = option.body;
+        app.modal.wizardStep = 'type';
+        render();
+      }
+      return;
+    }
+    if (action === 'open-create') {
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      const mode = event.currentTarget.dataset.mode || 'continue';
+      const wsId = event.currentTarget.dataset.ws || event.currentTarget.dataset.sourceWsId || '';
+      const nodeId = event.currentTarget.dataset.node || event.currentTarget.dataset.sourceNodeId || '';
+      if (openCanonicalCreateWizardV6261(mode, wsId, nodeId, Object.assign({}, event.currentTarget.dataset || {}))) return;
+    }
+    return onActionBeforeCanonicalCreateV6261 ? onActionBeforeCanonicalCreateV6261(event) : undefined;
+  };
+
+  if (typeof wizardTypeStepV6159 === 'function') {
+    const wizardTypeStepBeforeCanonicalV6261 = wizardTypeStepV6159;
+    wizardTypeStepV6159 = function wizardTypeStepCanonicalV6261(ws, modal, options, selectedId) {
+      const mode = modal?.mode || 'new';
+      const filtered = (() => {
+        if (mode === 'continue') {
+          const order = ['tiinex.topic.v1', 'tiinex.feedback.v1', 'tiinex.evidence.v1', 'tiinex.task.v1', 'tiinex.decision.v1', 'tiinex.pointer.v1'];
+          const byId = new Map((options || []).map((option) => [option.id, option]));
+          return order.map((id) => byId.get(id)).filter(Boolean);
+        }
+        if (mode === 'reference') {
+          const order = ['tiinex.evidence.v1', 'tiinex.feedback.v1', 'tiinex.pointer.v1', 'tiinex.topic.v1', 'tiinex.decision.v1', 'tiinex.task.v1'];
+          const byId = new Map((options || []).map((option) => [option.id, option]));
+          return order.map((id) => byId.get(id)).filter(Boolean);
+        }
+        return options || [];
+      })();
+      return wizardTypeStepBeforeCanonicalV6261(ws, modal, filtered, selectedId);
+    };
+  }
+
+  if (typeof renderArtifactWizardModalV6158 === 'function') {
+    const renderArtifactWizardModalBeforeCanonicalV6261 = renderArtifactWizardModalV6158;
+    renderArtifactWizardModalV6158 = function renderArtifactWizardModalCanonicalV6261(modal) {
+      let html = renderArtifactWizardModalBeforeCanonicalV6261(modal);
+      if (modal?.type === 'artifact-wizard' || modal?.mode === 'continue' || modal?.mode === 'reference') {
+        html = html.replace('artifact-wizard-backdrop', 'artifact-wizard-backdrop artifact-wizard-backdrop-v6261');
+        html = html.replace('artifact-wizard-panel', 'artifact-wizard-panel artifact-wizard-panel-v6261');
+      }
+      return html;
+    };
+  }
+})();
+
+
+;(() => {
+  // ===== v6.262 canonical create wizard hard routing =====
+  // v6.261 still left two active create surfaces: the desktop artifact wizard and
+  // the mobile legacy create modal. Route every Continue/Reference entrypoint to
+  // the artifact wizard directly, and intercept native mobile sheet actions before
+  // their older redispatch path can open the legacy modal.
+
+  function schemaForWizardModeV6262(mode) {
+    return mode === 'reference' ? 'tiinex.evidence.v1' : 'tiinex.topic.v1';
+  }
+
+  function getWsHardV6262(wsId) {
+    let ws = null;
+    try { if (wsId && typeof getWorkspace === 'function') ws = getWorkspace(wsId); } catch (_) {}
+    try {
+      if (!ws && Array.isArray(app?.workspaces)) ws = app.workspaces.find((candidate) => candidate?.id === wsId) || null;
+    } catch (_) {}
+    return ws;
+  }
+
+  function getNodeHardV6262(ws, nodeId, nodePath = '') {
+    if (!ws) return null;
+    let node = null;
+    try { if (nodeId) node = ws.nodeById?.get?.(nodeId) || null; } catch (_) {}
+    try {
+      if (!node && ws.nodeById?.values) {
+        node = Array.from(ws.nodeById.values()).find((candidate) => candidate && ((nodeId && candidate.id === nodeId) || (nodePath && candidate.path === nodePath))) || null;
+      }
+    } catch (_) {}
+    try {
+      if (!node && Array.isArray(ws.nodes)) {
+        node = ws.nodes.find((candidate) => candidate && ((nodeId && candidate.id === nodeId) || (nodePath && candidate.path === nodePath))) || null;
+      }
+    } catch (_) {}
+    try {
+      if (node && ws.nodeById && typeof ws.nodeById.set === 'function' && node.id && !ws.nodeById.get?.(node.id)) ws.nodeById.set(node.id, node);
+    } catch (_) {}
+    return node;
+  }
+
+  function resolveHardV6262(input = {}) {
+    const wsId = input.wsId || input.ws || input.sourceWsId || input.destWsId || '';
+    const nodeId = input.nodeId || input.node || input.sourceNodeId || input.parentNodeId || input.referencedNodeId || '';
+    const nodePath = input.nodePath || input.path || '';
+    let ws = getWsHardV6262(wsId);
+    let node = getNodeHardV6262(ws, nodeId, nodePath);
+    try {
+      if ((!ws || !node) && Array.isArray(app?.workspaces)) {
+        for (const candidateWs of app.workspaces) {
+          const candidateNode = getNodeHardV6262(candidateWs, nodeId, nodePath);
+          if (candidateNode) {
+            ws = candidateWs;
+            node = candidateNode;
+            break;
+          }
+        }
+      }
+    } catch (_) {}
+    return { ws, node };
+  }
+
+  function selectedParentHardV6262(ws, node) {
+    try {
+      const selected = typeof selectedNode === 'function' ? selectedNode(ws) : null;
+      return selected || node || null;
+    } catch (_) {
+      return node || null;
+    }
+  }
+
+  function wizardFromCreateInputV6262(modeRaw, input = {}) {
+    const mode = modeRaw === 'reference' ? 'reference' : modeRaw === 'continue' ? 'continue' : '';
+    if (!mode) return null;
+    const { ws, node } = resolveHardV6262(input);
+    if (!ws || !node) return null;
+    const schemaId = input.schemaId || schemaForWizardModeV6262(mode);
+    const parent = mode === 'continue' ? node : selectedParentHardV6262(ws, node);
+    return {
+      type: 'artifact-wizard',
+      wsId: ws.id,
+      mode,
+      parentNodeId: parent?.id || '',
+      referencedNodeId: mode === 'reference' ? node.id : '',
+      schemaId,
+      wizardStep: input.wizardStep || 'type',
+      title: input.title || '',
+      summary: input.summary || '',
+      body: typeof input.body === 'string' ? input.body : undefined
+    };
+  }
+
+  function openCanonicalWizardHardV6262(mode, input = {}) {
+    const wizard = wizardFromCreateInputV6262(mode, input);
+    if (!wizard) return false;
+    app.modal = wizard;
+    app.mobileActionSheetV6203 = null;
+    try { document.querySelectorAll('.mobile-action-backdrop-v6203, #mobile-more-direct-sheet-v6247, #mobile-more-capture-sheet-v6248').forEach((el) => el.remove()); } catch (_) {}
+    if (typeof render === 'function') render();
+    return true;
+  }
+
+  const openCreateModalBeforeHardV6262 = typeof openCreateModal === 'function' ? openCreateModal : null;
+  openCreateModal = function openCreateModalHardCanonicalWizardV6262(mode, wsId, nodeId) {
+    const normalized = mode === 'reference' ? 'reference' : mode === 'continue' ? 'continue' : '';
+    if (normalized && openCanonicalWizardHardV6262(normalized, { wsId, nodeId })) return;
+    return openCreateModalBeforeHardV6262 ? openCreateModalBeforeHardV6262(mode, wsId, nodeId) : undefined;
+  };
+
+  function wizardFromLegacyModalHardV6262(modal) {
+    const mode = modal?.mode === 'reference' ? 'reference' : modal?.mode === 'continue' ? 'continue' : '';
+    if (!mode) return null;
+    return wizardFromCreateInputV6262(mode, {
+      wsId: modal.sourceWsId || modal.wsId || modal.destWsId || '',
+      nodeId: modal.sourceNodeId || modal.nodeId || modal.parentNodeId || modal.referencedNodeId || '',
+      nodePath: modal.nodePath || modal.path || '',
+      schemaId: modal.schemaId || (modal.schemaKey && typeof wizardSchemaForLegacyKeyV6261 === 'function' ? wizardSchemaForLegacyKeyV6261(modal.schemaKey, schemaForWizardModeV6262(mode)) : schemaForWizardModeV6262(mode)),
+      title: modal.title || '',
+      summary: modal.summary || '',
+      body: modal.body,
+      wizardStep: modal.wizardStep || 'type'
+    });
+  }
+
+  const renderModalBeforeHardV6262 = typeof renderModal === 'function' ? renderModal : null;
+  renderModal = function renderModalHardCanonicalCreateV6262(modal) {
+    if (modal && (modal.mode === 'continue' || modal.mode === 'reference' || (modal.type === 'create' && (modal.mode === 'continue' || modal.mode === 'reference')))) {
+      const wizard = wizardFromLegacyModalHardV6262(modal);
+      if (wizard && typeof renderArtifactWizardModalV6158 === 'function') {
+        if (app?.modal === modal) app.modal = wizard;
+        return renderArtifactWizardModalV6158(wizard);
+      }
+    }
+    return renderModalBeforeHardV6262 ? renderModalBeforeHardV6262(modal) : '';
+  };
+
+  const renderCreateModalBeforeHardV6262 = typeof renderCreateModal === 'function' ? renderCreateModal : null;
+  renderCreateModal = function renderCreateModalHardCanonicalCreateV6262(modal) {
+    if (modal && (modal.mode === 'continue' || modal.mode === 'reference')) {
+      const wizard = wizardFromLegacyModalHardV6262(modal);
+      if (wizard && typeof renderArtifactWizardModalV6158 === 'function') {
+        if (app?.modal === modal) app.modal = wizard;
+        return renderArtifactWizardModalV6158(wizard);
+      }
+    }
+    return renderCreateModalBeforeHardV6262 ? renderCreateModalBeforeHardV6262(modal) : '';
+  };
+
+  function nativeSheetCreateControlV6262(event) {
+    const control = event.target?.closest?.('.mobile-action-backdrop-v6203 [data-action="mobile-run-node-action"], .mobile-action-backdrop-v6203 [data-direct-action="run"], .mobile-action-backdrop-v6203 [data-capture-sheet-action="run"]');
+    if (!control) return null;
+    const label = String(control.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    let action = null;
+    let sheet = null;
+    const index = Number(control.dataset.actionIndex || -1);
+    try {
+      sheet = app?.mobileActionSheetV6203 || null;
+      if (sheet?.actions && index >= 0) action = sheet.actions[index] || null;
+    } catch (_) {}
+    try {
+      const overlay = control.closest('.mobile-action-backdrop-v6203');
+      if ((!action || !sheet) && overlay) {
+        const actions = overlay.__captureActionsV6252 || overlay.__mobileActionsV6247 || [];
+        if (actions && index >= 0) action = action || actions[index] || null;
+        sheet = sheet || overlay.__captureSheetV6252 || overlay.__mobileContextV6247 || null;
+      }
+    } catch (_) {}
+    const dataset = action?.dataset || control.dataset || {};
+    const mode = dataset.mode || (label.includes('reference') ? 'reference' : label.includes('continue') ? 'continue' : '');
+    if (dataset.action !== 'open-create' && mode !== 'continue' && mode !== 'reference') return null;
+    if (mode !== 'continue' && mode !== 'reference') return null;
+    return { control, action, sheet, mode, dataset };
+  }
+
+  async function interceptNativeSheetCreateV6262(event) {
+    const hit = nativeSheetCreateControlV6262(event);
+    if (!hit) return;
+    const ds = hit.dataset || {};
+    const sheet = hit.sheet || {};
+    const ok = openCanonicalWizardHardV6262(hit.mode, {
+      wsId: ds.ws || sheet.wsId || '',
+      nodeId: ds.node || sheet.nodeId || '',
+      nodePath: ds.path || sheet.nodePath || '',
+      title: sheet.title || '',
+      mode: hit.mode
+    });
+    if (!ok) return;
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    event.stopImmediatePropagation?.();
+  }
+
+  ['pointerdown', 'touchstart', 'mousedown', 'click'].forEach((type) => {
+    window.addEventListener(type, interceptNativeSheetCreateV6262, true);
+  });
+})();
+
+
+;(() => {
+  // ===== v6.263 canonical create hard-stop for legacy lineage modal =====
+  // Runtime route tracing showed the mobile fresh-open path still rendered
+  // create-lineage-backdrop-v6257 through the root render pipeline. The missing
+  // case was legacy create state with type='create' but no mode; the v6.257
+  // renderer defaults such state to Continue and emits the one-page legacy form.
+  // This sentry treats every non-workspace create modal with source node context
+  // as canonical artifact-wizard state, and catches native mobile sheet actions
+  // before they can redispatch into the legacy create path.
+
+  function schemaIdFromLegacyCreateV6263(key, fallback) {
+    const raw = String(key || '').trim();
+    if (!raw) return fallback || 'tiinex.topic.v1';
+    const map = {
+      topic: 'tiinex.topic.v1',
+      task: 'tiinex.task.v1',
+      decision: 'tiinex.decision.v1',
+      evidence: 'tiinex.evidence.v1',
+      feedback: 'tiinex.feedback.v1',
+      pointer: 'tiinex.pointer.v1',
+      signal: 'tiinex.signal.v1',
+      raw: 'raw'
+    };
+    if (map[raw]) return map[raw];
+    if (/^tiinex\./.test(raw) || raw === 'raw') return raw;
+    return fallback || 'tiinex.topic.v1';
+  }
+
+  function createModeV6263(modal, fallback = '') {
+    const explicit = modal?.mode === 'reference' ? 'reference' : modal?.mode === 'continue' ? 'continue' : '';
+    if (explicit) return explicit;
+    if (fallback === 'reference' || fallback === 'continue') return fallback;
+    // The legacy renderer defaults type='create' with source context to Continue.
+    // Preserve that semantics, but route to the canonical wizard instead.
+    if (modal?.type === 'create' && modal?.mode !== 'workspace' && (modal?.sourceWsId || modal?.wsId || modal?.sourceNodeId || modal?.nodeId || modal?.parentNodeId || modal?.referencedNodeId)) return 'continue';
+    return '';
+  }
+
+  function getWorkspaceV6263(wsId) {
+    let ws = null;
+    try { if (wsId && typeof getWorkspace === 'function') ws = getWorkspace(wsId); } catch (_) {}
+    try { if (!ws && Array.isArray(app?.workspaces)) ws = app.workspaces.find((item) => item?.id === wsId) || null; } catch (_) {}
+    return ws;
+  }
+
+  function getNodeV6263(ws, nodeId, path = '') {
+    if (!ws) return null;
+    let node = null;
+    try { if (nodeId) node = ws.nodeById?.get?.(nodeId) || null; } catch (_) {}
+    try { if (!node && nodeId && typeof nodeByAnyIdV6244 === 'function') node = nodeByAnyIdV6244(ws, nodeId) || null; } catch (_) {}
+    try { if (!node && Array.isArray(ws.nodes)) node = ws.nodes.find((item) => item && ((nodeId && item.id === nodeId) || (path && item.path === path))) || null; } catch (_) {}
+    try { if (!node && ws.nodeById?.values) node = Array.from(ws.nodeById.values()).find((item) => item && ((nodeId && item.id === nodeId) || (path && item.path === path))) || null; } catch (_) {}
+    try { if (node && ws.nodeById && typeof ws.nodeById.set === 'function' && node.id && !ws.nodeById.get?.(node.id)) ws.nodeById.set(node.id, node); } catch (_) {}
+    return node;
+  }
+
+  function resolveCreateTargetV6263(input = {}) {
+    const wsId = input.wsId || input.ws || input.sourceWsId || input.destWsId || '';
+    const nodeId = input.nodeId || input.node || input.sourceNodeId || input.parentNodeId || input.referencedNodeId || '';
+    const path = input.nodePath || input.path || '';
+    let ws = getWorkspaceV6263(wsId);
+    let node = getNodeV6263(ws, nodeId, path);
+    try {
+      if ((!ws || !node) && Array.isArray(app?.workspaces)) {
+        for (const candidateWs of app.workspaces) {
+          const candidateNode = getNodeV6263(candidateWs, nodeId, path);
+          if (candidateNode) { ws = candidateWs; node = candidateNode; break; }
+        }
+      }
+    } catch (_) {}
+    try { if (ws && node && typeof registerNodeRefV6254 === 'function') registerNodeRefV6254(ws, node); } catch (_) {}
+    try { if (ws && node && typeof ensureNodeLookupV6254 === 'function') ensureNodeLookupV6254(ws, node); } catch (_) {}
+    return { ws, node };
+  }
+
+  function selectedParentForReferenceV6263(ws, referencedNode) {
+    try {
+      const selected = typeof selectedNode === 'function' ? selectedNode(ws) : null;
+      return selected || referencedNode || null;
+    } catch (_) {
+      return referencedNode || null;
+    }
+  }
+
+  function wizardFromCreateV6263(input = {}, fallbackMode = '') {
+    const mode = createModeV6263(input, fallbackMode);
+    if (mode !== 'continue' && mode !== 'reference') return null;
+    const { ws, node } = resolveCreateTargetV6263(input);
+    if (!ws || !node) return null;
+    const fallbackSchema = mode === 'reference' ? 'tiinex.evidence.v1' : 'tiinex.topic.v1';
+    const schemaId = schemaIdFromLegacyCreateV6263(input.schemaId || input.schemaKey || input.schema, fallbackSchema);
+    const parent = mode === 'continue' ? node : selectedParentForReferenceV6263(ws, node);
+    return {
+      type: 'artifact-wizard',
+      wsId: ws.id,
+      mode,
+      parentNodeId: parent?.id || '',
+      referencedNodeId: mode === 'reference' ? node.id : '',
+      schemaId,
+      wizardStep: input.wizardStep || input.createStepV6259 || 'type',
+      title: input.title || '',
+      summary: input.summary || '',
+      body: typeof input.body === 'string' ? input.body : undefined
+    };
+  }
+
+  function renderWizardForCreateV6263(modal, fallbackMode = '') {
+    const wizard = wizardFromCreateV6263(modal || {}, fallbackMode);
+    if (!wizard || typeof renderArtifactWizardModalV6158 !== 'function') return null;
+    try { if (app?.modal === modal) app.modal = wizard; } catch (_) {}
+    return renderArtifactWizardModalV6158(wizard);
+  }
+
+  function openWizardFromCreateV6263(input = {}, fallbackMode = '') {
+    const wizard = wizardFromCreateV6263(input || {}, fallbackMode);
+    if (!wizard) return false;
+    app.modal = wizard;
+    app.mobileActionSheetV6203 = null;
+    try { document.querySelectorAll('.mobile-action-backdrop-v6203, #mobile-more-capture-sheet-v6248, #mobile-more-direct-sheet-v6247').forEach((node) => node.remove()); } catch (_) {}
+    if (typeof render === 'function') render();
+    return true;
+  }
+
+  const openCreateModalBeforeV6263 = typeof openCreateModal === 'function' ? openCreateModal : null;
+  openCreateModal = function openCreateModalCanonicalV6263(mode, wsId, nodeId) {
+    const normalized = mode === 'reference' ? 'reference' : mode === 'continue' ? 'continue' : '';
+    if (normalized && openWizardFromCreateV6263({ wsId, nodeId }, normalized)) return;
+    return openCreateModalBeforeV6263 ? openCreateModalBeforeV6263(mode, wsId, nodeId) : undefined;
+  };
+
+  const renderModalBeforeV6263 = typeof renderModal === 'function' ? renderModal : null;
+  renderModal = function renderModalCanonicalV6263(modal) {
+    if (modal?.type === 'create' && modal?.mode !== 'workspace') {
+      const html = renderWizardForCreateV6263(modal);
+      if (html !== null) return html;
+    }
+    return renderModalBeforeV6263 ? renderModalBeforeV6263(modal) : '';
+  };
+
+  const renderCreateModalBeforeV6263 = typeof renderCreateModal === 'function' ? renderCreateModal : null;
+  renderCreateModal = function renderCreateModalCanonicalV6263(modal) {
+    if (modal?.type === 'create' && modal?.mode !== 'workspace') {
+      const html = renderWizardForCreateV6263(modal);
+      if (html !== null) return html;
+    }
+    return renderCreateModalBeforeV6263 ? renderCreateModalBeforeV6263(modal) : '';
+  };
+
+  function sheetActionFromControlV6263(control) {
+    const sheet = app?.mobileActionSheetV6203 || null;
+    const label = String(control?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const rawIndex = control?.dataset?.actionIndex || '';
+    let action = null;
+    const index = Number(rawIndex);
+    if (sheet?.actions && Number.isFinite(index)) action = sheet.actions[index] || null;
+    if (!action && sheet?.actions && label) action = sheet.actions.find((item) => String(item?.label || '').replace(/\s+/g, ' ').trim().toLowerCase() === label) || null;
+    return { sheet, action, label };
+  }
+
+  const onActionBeforeV6263 = typeof onActionV645 === 'function' ? onActionV645 : null;
+  onActionV645 = async function canonicalCreateActionV6263(event) {
+    const actionName = event.currentTarget?.dataset?.action || '';
+    if (actionName === 'open-create') {
+      const mode = event.currentTarget.dataset.mode || '';
+      const wsId = event.currentTarget.dataset.ws || event.currentTarget.dataset.sourceWsId || '';
+      const nodeId = event.currentTarget.dataset.node || event.currentTarget.dataset.sourceNodeId || '';
+      if (openWizardFromCreateV6263(Object.assign({}, event.currentTarget.dataset || {}, { wsId, nodeId }), mode)) {
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        event.stopImmediatePropagation?.();
+        return;
+      }
+    }
+
+    if (actionName === 'mobile-run-node-action') {
+      const { sheet, action, label } = sheetActionFromControlV6263(event.currentTarget);
+      const dataset = Object.assign({}, action?.dataset || {});
+      const mode = dataset.mode || (label.includes('reference') ? 'reference' : label.includes('continue') ? 'continue' : '');
+      if ((dataset.action === 'open-create' || mode === 'continue' || mode === 'reference') && (mode === 'continue' || mode === 'reference')) {
+        const ok = openWizardFromCreateV6263({
+          wsId: dataset.ws || sheet?.wsId || '',
+          nodeId: dataset.node || sheet?.nodeId || '',
+          nodePath: dataset.path || sheet?.nodePath || '',
+          title: sheet?.title || '',
+          schemaId: dataset.schemaId || '',
+          mode
+        }, mode);
+        if (ok) {
+          event.preventDefault?.();
+          event.stopPropagation?.();
+          event.stopImmediatePropagation?.();
+          return;
+        }
+      }
+    }
+
+    return onActionBeforeV6263 ? onActionBeforeV6263(event) : undefined;
+  };
+
+  // Final DOM safety net: if any stale path still creates the legacy lineage modal,
+  // convert the still-present app.modal and re-render once. This is intentionally
+  // bounded and idempotent to avoid the old DOM hot-loop class of bugs.
+  const renderBeforeLegacySentryV6263 = typeof render === 'function' ? render : null;
+  if (renderBeforeLegacySentryV6263) {
+    render = function renderWithLegacyCreateSentryV6263() {
+      const result = renderBeforeLegacySentryV6263();
+      try {
+        const legacy = document.querySelector('.create-lineage-backdrop-v6257, .create-lineage-backdrop-v6256:not(.artifact-wizard-backdrop)');
+        if (legacy && app?.modal?.type === 'create' && app.modal.mode !== 'workspace') {
+          const wizard = wizardFromCreateV6263(app.modal);
+          if (wizard) {
+            app.modal = wizard;
+            renderBeforeLegacySentryV6263();
+          }
+        }
+      } catch (_) {}
+      return result;
+    };
+  }
+})();
+
+})();

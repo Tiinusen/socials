@@ -219,3 +219,26 @@ The broader Tiinex docs/source lineage may live in public Git repositories or ex
 - sha256-base64url-c14n-v1
   - Towards: self
   - Value: pending
+
+
+## v6.241
+- Mobile card More chip made post-render resilient.
+- Mobile Lineage search rail parity tightened against Discovery.
+
+
+## v6.257
+
+- Fixed mobile Continue/Reference create modal recursion by replacing the original v6.126 `renderCreateModal` wrapper body with a non-delegating renderer for workspace, continue, and reference modes.
+- Validation: `node --check app.js` passed.
+
+
+## v6.259 compact create flow update
+
+- Split legacy Continue/Reference create into explicit Type and Details steps.
+- Kept Continue parent implicit; Reference still separates parent from reference target.
+- Compacted mobile boilerplate so leaf-type choices and form inputs are reachable without scrolling past a full policy/relationship page.
+- Added sticky footer actions and internal dialog scroll for mobile and desktop.
+- Selection of a schema no longer jumps directly into the form; the user chooses type, then continues to details.
+- Reduction remains out of this ordinary create flow pending a dedicated provenance-preserving reduction flow.
+
+Validation: `node --check app.js` passes. Browser visual validation not run in this environment.

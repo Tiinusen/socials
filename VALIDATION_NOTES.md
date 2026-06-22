@@ -2927,3 +2927,405 @@ Not browser-validated here:
 
 - Exact feel of scroll-down/up chrome compression on the user's mobile viewport.
 - Whether any touch target should be slightly larger/smaller after real testing.
+
+
+## v6.200 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Route/view-state wrappers include selected lineage descriptors and scroll targets.
+- Render/index wrappers re-apply pending lens state.
+- Pagehide/beforeunload persist current lens state.
+- Scroll restore chases target scroll while content height grows.
+
+Not browser-validated here:
+
+- F5 restoration on the user's exact file:// browser path.
+- Whether sessionStorage fallback is enough when browser aggressively reloads local files.
+
+
+## v6.201 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Replaces v6.200 scroll chase with guarded version.
+- Adds user interaction guards for pointer, keyboard, wheel, touchmove, and post-feed scroll.
+- Discovery scroll restore now compares a lightweight discovery signature.
+
+Not browser-validated here:
+
+- Exact reduction of the reported first-seconds scroll jump in the user's browser.
+- Whether the discovery signature is strict enough for every future data source.
+
+
+## v6.202 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Route push de-duplication strips volatile fields such as scroll targets.
+- Duplicate semantic lens pushes within 1200ms become replace operations.
+
+Grounded user report:
+
+- Browser/mouse Back required two clicks after entering a card/lineage, suggesting duplicate history entries for the same navigation.
+
+
+## v6.203 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Mobile-only CSS and JS added.
+- Existing desktop behavior is not intentionally changed.
+- Action sheet re-dispatches through existing action handler using the original dataset.
+
+Not browser-validated here:
+
+- Exact mobile FAB placement on real device safe areas.
+- Whether every card action has a useful label in the action sheet.
+- Whether every parent/origin material variant is filtered from Preview attachments.
+
+
+## v6.204 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Mobile FAB uses a document-level delegated click handler because its host is appended after normal render binding.
+- Viewport meta is updated with `maximum-scale=1, user-scalable=no`.
+- Popstate/back collapse guard is added.
+
+Grounded user report:
+
+- v6.203 FAB did not work.
+- Mobile icon/brand mark disappeared again.
+- Double tap zoom was possible.
+- Expanded cards stayed expanded after browser Back/Forward lens changes.
+
+
+## v6.205 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Mobile-only CSS compression added.
+- JS installs a brand fallback glyph on the first topbar brand/orb candidate after render.
+
+Not browser-validated here:
+
+- Whether all historical workspace action row class variants are hidden in the user's exact viewport.
+- Exact perceived mobile reading-area improvement.
+
+
+## v6.206 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Mobile node action sheet no longer depends on desktop `.post-actions` being present.
+- FAB actions use known existing app action names.
+- Mobile scroll listener toggles `mobile-reading-v6206`.
+
+Not browser-validated here:
+
+- Whether every FAB action works in the user's exact browser after chained older handlers also run.
+- Exact feel of scroll-away chrome.
+
+
+## v6.207 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- FAB and action sheet now use `data-mobile-action`, separate from older app click binding.
+- Node action sheets no longer depend on removed desktop buttons.
+- Mobile badge rail is DOM-sorted by lightweight priority.
+
+Not browser-validated here:
+
+- Exact coverage of source/filter/search hiding in every mobile view variant.
+- Whether the badge priority order should be tuned after real use.
+
+
+## v6.208 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Source/mode row DOM unification runs after render.
+- Mobile badge compaction is reset/reapplied after render to avoid stale `+N`.
+- Mobile dialog compact styling is CSS-only and broad by design.
+
+Not browser-validated here:
+
+- Whether every dialog class variant is covered.
+- Whether source/mode row unification is ideal in all desktop widths.
+
+
+## v6.209 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Mobile single-source detection adds `mobile-single-source-v6209`.
+- Mobile badge compaction now keeps only three priority chips before `+N`.
+- Material reference extraction and Preview material refs both filter parent/origin-like refs.
+
+Not browser-validated here:
+
+- Whether all historical schema card class variants are covered.
+- Whether parent/origin filtering misses any malformed legacy wording.
+
+
+## v6.210 check
+
+Validated in sandbox:
+
+- `node --check app.js` passes.
+- Static zip packaging completed.
+- Single-source state is applied after render using workspace source arrays when available.
+- CSS hides multiple source-row class variants under `single-source-state-v6210`.
+
+Grounded user report:
+
+- v6.209 still showed the source row even though only one source was loaded.
+
+
+## v6.211 check
+
+Expected validation:
+
+- `node --check app.js` passes.
+- On a ~360px mobile viewport with a single-source workspace, `.workspace-source-strip` is hidden.
+- Feed/Tree remains accessible; v6.211 does not broadly hide `.source-mode-row-v6208`.
+- Card badge rows show only high-priority chips and a `+N` overflow button; source/date/schema chips are hidden behind `+N` when they are low-signal on mobile.
+- Desktop layout should remain unchanged because the new CSS is scoped to `max-width: 640px`.
+
+
+## v6.212
+
+- Added a mobile top rail with icon-only workspace create, copy link, and workspace navigation around the Tiinex logo.
+- Added a resilient mobile density pass for workspace/page transitions so single-source badges and low-signal schema/date badges stay behind the +N control after paging.
+- Validation: node --check app.js. Browser/mobile visual validation still required.
+
+
+## v6.213 validation notes
+
+- Syntax validation: `node --check app.js`.
+- Browser/mobile visual validation still required for: centered mobile rail controls, width-aware badge packing, expanded badge +N hiding, and badge reset on back/navigation actions.
+
+## v6.214 Mobile rail and source row polish
+
+- Corrected the mobile top-rail create button to open the same create-workspace flow as desktop, not the workspace add-material flow.
+- Aligns mobile source chips with the Feed/Tree toggle in a single mobile-only source/mode row.
+- Hides source chips when the mobile feed scrolls into compact reading mode while keeping Feed/Tree reachable.
+
+## v6.215 mobile chrome stabilization
+
+- Stabilized the mobile sources + Feed/Tree row so the Feed/Tree toggle keeps one vertical slot while sources disappear on scroll.
+- Reduced visual size of the mobile top rail controls while preserving usable tap affordance.
+- Replaced separate empty-workspace instruction hint with the empty-state card on mobile.
+- Reduced oversized create-workspace modal action buttons on mobile.
+- Validation: `node --check app.js`.
+
+
+## v6.216
+
+- Moves mobile Feed/Tree into the workspace title row to reclaim vertical space and prevent header-slot drift.
+- Hides the search/filter toolbar for truly empty mobile workspaces and uses the empty-state card as the instruction surface.
+- Trims the Create Workspace dialog into a more compact mobile form with smaller thumb-friendly actions.
+
+
+## v6.217
+
+- Syntax validation: `node --check app.js`.
+- Main runtime risk addressed: repeated empty-state `textContent` writes could cause child-list mutation churn in mobile mode.
+- Browser validation still required for: repeated create-workspace open/close after creating an empty workspace, mobile bottom-sheet ergonomics, and empty workspace scroll stability.
+
+## v6.218 validation notes
+
+- Static validation: `node --check app.js`.
+- Manual validation requested: single-source desktop source strip hidden, mobile Tree view has no global FAB, Create Workspace can open/close/reopen without freezing, and the new mobile sheet remains usable at 360px width.
+
+
+## v6.219
+
+- Stabilized desktop legal/policy/notice badge slots during workspace indexing.
+- Normalized the display-options action size against the other desktop workspace action buttons.
+- Changed discovery tree folders to be collapsed by default unless explicitly opened by the user.
+- Reworked the mobile create-workspace sheet with minimal copy and bottom-aligned same-row actions.
+
+## v6.222
+
+- Kept v6.221 Sources/Traces stat ordering.
+- Reverted display-options relocation from discovery toolbar back to the workspace action rail after visual regression.
+- Restored discovery search/tool grid to the stable two-column shape.
+- Validation: `node --check app.js`.
+
+## v6.223
+
+- Moves Display Options into the discovery/search tool row directly beside the existing toolbar controls instead of the workspace action rail.
+- Keeps the Sources → Traces workspace-stat ordering.
+- Aligns Tree view folder add buttons into a stable right-side column.
+- Validation: `node --check app.js` passes.
+
+
+## v6.224 validation
+
+- `node --check app.js` passed.
+- Visual browser alignment is still human-validated.
+
+## v6.225
+
+- Nudged the Tree root add button one more pixel left for column alignment.
+- Stabilized the Discovery/Lineage right-side toolbar rail by reserving matching button slots before search in both modes.
+- Validation: `node --check app.js`.
+
+## v6.226
+
+- Repaired Discovery/Tree/Lineage search rail placement after v6.225.
+- Strongly pins display-options to slot 1, preview/tree-control to slot 2, and search to slot 3.
+- Keeps v6.225's stable slot model without letting older `search-box` grid rules collapse the input into an icon-sized circle.
+
+Validation:
+
+- `node --check app.js` passes.
+
+
+## v6.228
+
+- Stabilized mobile workspace title row height so Feed/Tree changes do not produce a visible 1px header hop.
+- Normalized desktop card badge order to match the mobile-prioritized order after render: status, schema, date, material/reference, source.
+- Preserved v6.227 toolbar and Tree plus alignment behavior.
+
+## v6.229
+
+- Locked the mobile workspace title/mode row to a fixed height to avoid 1px Feed/Tree toggle jumps.
+- Hid the redundant green mobile primary card action while preserving the right-side More action position and size.
+
+
+## v6.230
+
+- `node --check app.js`: PASS
+- Visual validation still required for mobile Feed/Tree toggle header stability.
+
+## v6.232
+
+- Removed the mobile top rail `min-height` lock that caused a visible 1px Feed/Tree toggle jump on narrow/mobile layouts.
+- Kept the v6.231 idempotent mobile DOM stabilization.
+
+
+## v6.234
+- `node --check app.js` passes.
+- Browser validation still required for desktop/mobile Lineage toolbar parity and mobile Back/Audit compacting.
+
+
+## v6.235
+
+- Normalized Lineage toolbar rhythm against Discovery after v6.234.
+- Removed legacy pseudo-spacer now that the real Lineage spacer owns the reserved slot.
+- Locked Back/Audit and Lineage search rail to the same 2rem control geometry.
+
+## v6.236 validation
+
+- `node --check app.js`: PASS
+- Browser visual validation still required for Discovery ↔ Lineage toolbar parity.
+
+## v6.237
+
+- Aligned mobile Lineage search rail with Discovery geometry.
+- Restored readable Back/Audit labels in mobile Lineage title actions.
+- Lineage Back button now attempts browser history back first, with clear-selection fallback.
+- v6.238: `node --check app.js` passed after mobile Lineage compact-state reset and toolbar alignment overrides. Browser visual validation still required for mobile Discovery -> Lineage transition.
+
+
+### v6.241 validation
+- `node --check app.js` expected.
+- Visual checks: mobile More ellipsis visible; mobile Discovery/Lineage search rails align.
+
+### v6.242 validation
+
+- `node --check app.js`: PASS.
+- Browser/runtime visual validation still required for mobile card More visibility and Lineage/Discovery search-row parity.
+
+## v6.244 validation
+
+- `node --check app.js`: PASS
+- Browser/mobile visual validation: not run in this environment.
+- Target manual validation: tapping badge-row `...` opens the mobile action sheet and does not trigger the card primary action.
+
+## v6.245 validation notes
+
+- `node --check app.js`: PASS
+- Manual browser validation still needed: tap the mobile badge-row `...` and confirm the action sheet opens without selecting/opening the card.
+
+## v6.251
+
+- Fixed mobile badge-row action sheet dispatch by handling sheet action buttons on first press before the older click-capture close path can swallow them.
+- Runs core actions directly for Open, Markdown, Continue, Reference, Source, and Remove while preserving the compact ellipsis sheet.
+- Validation: `node --check app.js` passed.
+
+
+## v6.257 validation
+
+- Target: mobile badge-row `...` action sheet Continue / Reference regression.
+- Evidence: user debug log showed native mobile action sheet opened, Continue click dispatched, then `renderCreateModal` recursed with `RangeError: Maximum call stack size exceeded`.
+- Change: replaced the original v6.126 `renderCreateModal` wrapper body with a self-contained non-delegating renderer for workspace, continue, and reference modes, removing the self-recursive fallback path at the source instead of only appending a later override.
+- Validation: `node --check app.js` passed.
+- Not browser-validated here.
+
+
+## v6.259 compact create flow update
+
+- Split legacy Continue/Reference create into explicit Type and Details steps.
+- Kept Continue parent implicit; Reference still separates parent from reference target.
+- Compacted mobile boilerplate so leaf-type choices and form inputs are reachable without scrolling past a full policy/relationship page.
+- Added sticky footer actions and internal dialog scroll for mobile and desktop.
+- Selection of a schema no longer jumps directly into the form; the user chooses type, then continues to details.
+- Reduction remains out of this ordinary create flow pending a dedicated provenance-preserving reduction flow.
+
+Validation: `node --check app.js` passes. Browser visual validation not run in this environment.
+
+## v6.260 compact create routing fix
+
+- User reported v6.259 looked unchanged; screenshots showed the old one-page Continue/Reference create renderer still active.
+- Root cause: the compact v6.259 renderer only matched `modal.type === 'create'`, but active Continue/Reference modals can arrive as `{ mode: 'continue' | 'reference' }` without `type`.
+- Change: route mode-only Continue/Reference modals into the compact stepped renderer and normalize `app.modal.type` during step/schema actions.
+- Validation: `node --check app.js` passed.
+- Browser visual validation not run here.
+
+## v6.261
+
+- Canonicalized Continue / Reference create routing so all open-create actions resolve to the existing artifact wizard, not the legacy lineage create modal.
+- Added guarded conversion for any stale `{ type: "create", mode: "continue" | "reference" }` modal state into artifact-wizard state before rendering.
+- Added a final open-create action guard so desktop, mobile action sheet, and badge-row dispatch share the same entrypoint.
+- Kept workspace create / unrelated legacy create paths outside this routing change.
+- Re-filtered ordinary Continue / Reference type choices to human-authored leaf types and kept Reduction out of the ordinary continuation flow.
+- Added mobile responsive refinements for the canonical artifact wizard without changing the desktop wizard model.
+
+Validation:
+
+```txt
+node --check app.js
+PASS
+```
+
+## v6.263 validation
+
+- Purpose: stop the remaining mobile fresh-open Continue/Reference path from rendering legacy `create-lineage-backdrop-v6257`.
+- Runtime evidence from route trace: legacy DOM was still created through root render, with `create-lineage-backdrop-v6257` visible and `window.app.modal` unavailable to DevTools.
+- Fix: final in-closure canonicalization now treats every non-workspace `type="create"` modal with source context as artifact wizard state, including mode-missing legacy create state that previously defaulted to Continue.
+- Additional guard: mobile `mobile-run-node-action` is intercepted by label/action dataset and opens the wizard directly before older redispatch can call legacy create.
