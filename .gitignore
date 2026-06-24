@@ -1,0 +1,10 @@
+# Local development noise
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.bak
+
+# Local package artifacts
+*.zip
+node_modules/

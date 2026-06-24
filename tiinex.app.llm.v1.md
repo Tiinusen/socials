@@ -10,15 +10,11 @@
 
 # Tiinex Lineage Viewer LLM Orientation
 
-This file is the short path for a language model that receives a link to `https://tiinex.dev` or a local Tiinex Lineage Viewer package without prior project context.
+This file orients a language model that receives a link to `https://tiinex.dev` or a local Tiinex Lineage Viewer package without prior project context.
 
-It is intentionally written as portable markdown so it can be read from the page source, fetched directly, copied into a chat, or preserved as a Tiinex artifact.
+Tiinex Lineage Viewer is a static, client-side application for working with portable markdown artifacts. Its main role is to make handoff, provenance, continuity, and lineage visible without requiring a server-side AI integration.
 
-## Current Read
-
-Tiinex Lineage Viewer is a static, client-side application for working with portable markdown artifacts.
-
-Its main role is to make handoff, provenance, continuity, and lineage visible without requiring a server-side AI integration.
+## Artifact scope
 
 The application reads and works with files such as:
 
@@ -26,183 +22,88 @@ The application reads and works with files such as:
 - `.schema.md`
 - `.workspace.md`
 - `.config.md`
-- related local assets such as images or evidence files
+- related evidence, image, and local asset files
 
 The core product idea is:
 
 > Tiinex makes handoffs first-class objects.
 
-The app can import local files, folders, zip bundles, explicit URLs, and public GitHub sources. It can show lineage views, discovery views, schema-aware cards, integrity state, source boundaries, and local draft additions.
+## Core semantics
 
-## Current Application Capabilities
+- `Parent` means continuity lineage.
+- `Origin` means grounding or provenance source.
+- A reference/destination link is not automatically a parent.
+- A missing parent can be valid for a root or local starting point.
+- A leaf is not permanently final; it is the current tip until a child, repair, continuation, or supersession exists.
+- Integrity warnings are provenance signals, not merely generic errors.
 
-The current package supports these broad flows:
+## Current application capabilities
 
-- import material into a local workspace
+The app can:
+
+- import local files, folders, and zip bundles
+- load public GitHub sources selected by the human
 - discover and display Tiinex artifacts
 - inspect lineage relationships
 - distinguish parent continuity from origin/provenance
-- verify known continuity integrity where target material is available
+- show schema-aware cards and badges
+- show source and material context
 - create local Tiinex artifacts through an Add wizard
 - continue from an existing artifact
 - reference an existing artifact without making it a parent
 - edit local workspace markdown
-- add Evidence artifacts through an evidence collector
-- attach URL/file evidence to Evidence artifacts
-- preserve dropped/selected evidence files as local workspace assets
-- generate portable markdown from schema-aware form fields
-- review generated content in a shared Rich/Raw markdown editor before saving
+- export portable workspace bundles
 
-## Artifact Semantics
+## Implementation baseline
 
-A Tiinex artifact usually has a readable continuity envelope, a body, and optionally an integrity footer.
+The current package is a public handoff candidate with dependency-free static validation available through `node tools/validate-static.mjs`, static metrics through `node tools/collect-metrics.mjs`, and browser storage inventory through `node tools/inspect-storage.mjs`. `npm test`, `npm run metrics`, and `npm run storage:scan` are convenience aliases only; they do not imply a build step, dependencies, or a runtime requirement.
 
-A typical readable root envelope shape is:
+Ordinary app-level version suffixes, duplicate function declarations, package-local audit reports, embedded base64 logo data, inline data/blob logo payload support, version-stamped browser storage-key tokens, debug console/dynamic-code runtime surfaces, and unexpected single function reassignments are blocked by static validation. Packaged continuity markdown is also checked for pinned schema links and non-placeholder integrity values.
 
-```md
-# Continuity Context
+Storage keys are centralized. Local workspace drafts autosave as local deltas without duplicating remote/default source trees. Startup reconnects saved local workspace state unless an explicit shared URL state is being opened. Storage write failures report through one `console.error` diagnostic path. Scroll and view-state behavior remain an active design surface and should be verified in the browser before claiming it is settled.
 
-- Envelope Schema: tiinex.root.v1
-- Parent
-  - Parent Schema: tiinex.topic.v1
-  - Created At: 2026-06-18 00:00:00
-  - Trace: [001.trace.md](001.trace.md)
-  - Origin:
-    - [relative](001.trace.md)
-- Current
-  - Current Schema: tiinex.evidence.v1
-  - Created At: 2026-06-18 00:00:00
-  - Summary: Short summary of the current artifact.
+The viewer brand resolves through workspace markdown (`Viewer Identity` → `Icon`) and falls back to the packaged asset in `assets/`. Do not add a second logo path, inline image payload, or data/blob URL path for brand assets.
 
----
+Ordinary app identifiers, CSS classes, actions, and DOM data attributes should remain semantic. Use Git history for implementation history; do not put implementation chronology into runtime names.
 
-# Human Readable Artifact Title
+The current app is a static client-side package. Prefer improvements that preserve this shape unless the human explicitly chooses a larger architecture. Use the code maps in `app.js` and `styles.css` to navigate the monolith before changing behavior.
 
-Body content.
+## Development guidance
 
----
+When changing code:
 
-# Continuity Integrity
-
-- sha256-base64url-c14n-v1
-  - Towards: [001.trace.md](001.trace.md)
-  - Value: pending
-```
-
-Important distinctions:
-
-- `Parent` means continuity lineage.
-- `Origin` means grounding/provenance source.
-- A destination link in a body does not automatically become a parent.
-- A missing parent can be valid for a root or local starting point.
-- A leaf is not permanently final; it is the current tip until a child, repair, continuation, or supersession exists.
-
-## Draft Language
-
-Use the word `draft` carefully.
-
-In this app, draft-like state is best treated as local UI/workspace state, not as a stable Tiinex lineage semantic by itself.
-
-A more precise vocabulary is often:
-
-- local artifact
-- current leaf
-- current tip
-- unsaved local edit
-- unexported local workspace state
-- generated preview
-- pending integrity value
-- child not yet known
-
-## Evidence UX
-
-Evidence should feel like collecting material, not filling out a markdown template.
-
-Current Evidence creation expects the human to provide:
-
-- a supported claim
-- one or more attachments or source references
-- optional notes
-- optional explicit limits
-
-For files, the app may derive metadata such as file type, size, and image dimensions. This metadata can make hidden context visible while keeping the form simple.
-
-Generated Evidence markdown should preserve at least:
-
-- `## Supported Claim`
-- `## Provenance`
-- `## Evidence Material`
-- `## Interpretation Limits`
-
-## How To Help A Human Use The App
-
-When explaining Tiinex to a human:
-
-- Start with portable continuity and provenance, not with implementation details.
-- Explain that Tiinex does not need AI integration to help structure cognition.
-- Emphasize that local additions are not automatically committed or published.
-- Encourage export or Git commit when persistence matters.
-- Treat warnings, missing parents, and integrity mismatches as provenance signals, not just errors.
-- Keep actions reversible and small.
-
-## How To Help Improve The App
-
-The current app is a static client-side package. Prefer improvements that preserve this shape unless the human explicitly chooses a larger architecture.
-
-Useful development principles:
-
-- Keep leaves small, reversible, and testable.
-- Do not silently collapse Parent and Origin.
-- Do not claim repo state, tests, commits, pushes, or runtime behavior without evidence.
-- Use schema-aware UX where the artifact type is known.
-- Hide advanced markdown when simple fields are enough.
-- Keep markdown as the portable output behind the UI.
+- Keep changes small, reversible, and testable.
 - Preserve mobile usability.
-- Prefer human-in-the-loop source loading over recursive background crawling.
-- Use source adapters only when the user explicitly supplies or selects a source.
+- Do not silently collapse Parent, Origin, and Reference.
+- Keep markdown as the portable output behind the UI.
+- Do not add ordinary app version suffixes such as `V1234`, `v1234`, or `*-v1234`.
+- Schema IDs and checksum formats are domain versions and should remain versioned.
+- Do not add wrapper or override layers by default.
+- Simplify the touched semantic cluster directly when the live path is understood. Keep localStorage/sessionStorage keys centralized in `STORAGE_KEYS`, and treat saved browser state as a deliberate product surface. Verify scroll and view-state behavior in the browser before changing it.
+- Run `node tools/validate-static.mjs` after code or package-shape changes; `npm test` is only a convenience alias.
+- Run `node tools/collect-metrics.mjs` when updating documented size/quality numbers; `npm run metrics` is only a convenience alias.
+- Run `node tools/inspect-storage.mjs` before changing browser storage behavior; `npm run storage:scan` is only a convenience alias.
+- Run `node --check app.js` after JavaScript changes when a minimal syntax check is enough.
+- Check CSS brace balance after CSS changes; the static validation tool includes this check.
+- Browser-test mobile action surfaces after UI changes.
 
-Implementation caution for the current app code:
+## Mobile caution
 
-- The app has many layered function overrides.
-- JavaScript function declarations are hoisted.
-- Avoid wrapper patterns that accidentally capture the new function instead of the old function.
-- Prefer assignment-based overrides such as:
-  - `const previous = someFunction;`
-  - `someFunction = function someFunctionVNext(...) { ... previous(...); }`
-- Run `node --check app.js` after every app-code change.
-- Browser validation is separate from syntax validation.
+Mobile cards use two separate controls that should not be conflated:
 
-## LLM Entry Protocol
+- `.mobile-chip-more` expands hidden badges such as `+3`.
+- `.mobile-card-more-chip` opens the card action sheet through the `...` button.
 
-If you are an LLM looking at the Tiinex site or package:
+The card action trigger must remain visible and must not be packed or hidden as a normal badge.
 
-1. Look for `llms.txt`.
-2. Look for `tiinex.app.llm.v1.md`.
-3. Look in page source for:
-   - `data-tiinex-llm-entrypoint`
-   - `data-tiinex-role="llm-orientation"`
-   - `link[rel="help"][type="text/markdown"]`
-4. Treat this file as orientation, not as proof of runtime state.
-5. Use visible UI, supplied files, Git evidence, or explicit user reports to ground claims about current behavior.
+## LLM entry protocol
+
+1. Read `llms.txt`.
+2. Read this file.
+3. Inspect the actual app files and current user report before making claims about runtime behavior.
+4. Treat this file as orientation, not proof of current runtime state.
+5. Use visible UI, supplied files, Git evidence, or explicit user reports to ground claims.
 6. Help the human preserve continuity rather than replacing their judgment.
-
-## Source Adapter Direction
-
-Future adapters may recognize explicit links ending in:
-
-- `.trace.md`
-- `.schema.md`
-- `.workspace.md`
-- `.config.md`
-
-A conservative adapter should:
-
-- only read what the human explicitly selected or opened
-- avoid background crawling
-- avoid recursive source traversal without a human action
-- respect unavailable or removed sources
-- render external material in Tiinex style rather than cloning another platform's UI
-- preserve source URL, fetch time, limits, and provenance uncertainty
 
 ## Origin
 
@@ -218,27 +119,12 @@ The broader Tiinex docs/source lineage may live in public Git repositories or ex
 
 - sha256-base64url-c14n-v1
   - Towards: self
-  - Value: pending
+  - Value: 3EGAi0P_5pU4f_b3IY7l0ZKFjVOCpQEUmoodZFafX9E
 
+## Browser State
 
-## v6.241
-- Mobile card More chip made post-render resilient.
-- Mobile Lineage search rail parity tightened against Discovery.
+Local workspace persistence stores local/draft deltas only. Remote/default workspace content must be reloaded from its source and then merged with saved local deltas. Scroll and lens state are session-scoped; treat them as an active design surface until the browser behavior is deliberately consolidated.
 
+## Runtime wrapper invariant
 
-## v6.257
-
-- Fixed mobile Continue/Reference create modal recursion by replacing the original v6.126 `renderCreateModal` wrapper body with a non-delegating renderer for workspace, continue, and reference modes.
-- Validation: `node --check app.js` passed.
-
-
-## v6.259 compact create flow update
-
-- Split legacy Continue/Reference create into explicit Type and Details steps.
-- Kept Continue parent implicit; Reference still separates parent from reference target.
-- Compacted mobile boilerplate so leaf-type choices and form inputs are reachable without scrolling past a full policy/relationship page.
-- Added sticky footer actions and internal dialog scroll for mobile and desktop.
-- Selection of a schema no longer jumps directly into the form; the user chooses type, then continues to details.
-- Reduction remains out of this ordinary create flow pending a dedicated provenance-preserving reduction flow.
-
-Validation: `node --check app.js` passes. Browser visual validation not run in this environment.
+Render wrappers are `(next, ...args)` continuations. Do not pass Promise callback values before `next`; startup/render wrappers must keep the continuation as the first argument.

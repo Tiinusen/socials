@@ -1,15 +1,36 @@
-# Tiinex Lineage Viewer
+# Tiinex Lineage Viewer LLM Entry
 
-Purpose: Tiinex is a portable markdown-based provenance, lineage, and workspace viewer. It helps humans carry forward work through `.trace.md`, `.schema.md`, `.workspace.md`, and related artifact files.
+This package is a static client-side viewer for portable Tiinex markdown artifacts.
 
 Start here:
-- Human explanation: `./tiinex.app.llm.v1.md`
-- App origin: `https://tiinex.dev`
-- Artifact roots: `.trace.md`, `.schema.md`, `.workspace.md`, `.config.md`
 
-Quick model instructions:
-- Treat Tiinex artifacts as portable work handoff and provenance objects.
-- Do not infer repo/runtime state unless the page, source files, or user provides evidence.
-- Preserve Parent and Origin as distinct concepts.
-- Prefer small reversible changes and explicit validation.
-- When helping improve this app, preserve the static/offline-first architecture unless the human explicitly chooses otherwise.
+1. Read `README.md` for product and package context.
+2. Read `tiinex.app.llm.v1.md` for LLM-oriented continuity guidance.
+3. Inspect the actual app files and current user report before making claims about runtime behavior.
+
+Important semantics:
+
+- Parent means continuity lineage.
+- Origin means grounding or provenance.
+- Reference and destination links are not automatically parents.
+- Integrity warnings are provenance signals, not generic UI errors.
+- Schema IDs and checksum methods are domain versions and should remain versioned.
+- Ordinary app helpers, actions, CSS classes, and state fields should stay semantic rather than version-stamped.
+
+Development guardrails:
+
+- This app remains a static frontend package.
+- `package.json` is maintainer tooling only; it does not imply a build step.
+- Run `node tools/validate-static.mjs` after code or package-shape changes.
+- Run `node tools/collect-metrics.mjs` when checking current size and cleanup metrics.
+- Run `node tools/inspect-storage.mjs` before changing browser storage behavior.
+- Browser testing is still required for UI behavior.
+- Do not add wrapper or override layers as a default fix.
+- Do not collapse Parent, Origin, Reference, Current Schema, or Integrity into one generic relation.
+
+Browser state:
+
+- Local workspace persistence stores local/draft deltas only.
+- Remote/default workspace content should not be duplicated into browser storage.
+- Scroll and lens state are session-scoped and should stay compact, content-aware, and safe to clear.
+- Scroll and view-state behavior are still an active design surface; verify current runtime behavior before asserting it is settled.

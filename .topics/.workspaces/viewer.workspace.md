@@ -79,4 +79,4 @@ A useful validation note names the selected artifact, the source inspected, the 
 
 - sha256-base64url-c14n-v1
   - Towards: [viewer.workspace.md](viewer.workspace.md)
-  - Value: AvH6YloZJ-FHYxnCU_FzXFefkaMrjZCmLZhm1ySEKsU
+  - Value: 6vM2gDbZwBwAFL5ZsH8hVXRnsdLd3gpyHcIetgRS7GQ
