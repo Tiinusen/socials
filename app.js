@@ -90,64 +90,6 @@
    * IDs and checksum format versions are domain data and may remain versioned.
    */
 
-  const SCHEMA_DOC_BASE = 'https://github.com/Tiinex/docs/blob/master/.topics/.schemas/';
-  const DEMO_SOURCES = [
-    {
-      label: 'Tiinex/docs public provenance viewer',
-      urls: [
-        'https://raw.githubusercontent.com/Tiinex/docs/master/.topics/ideas/software/recoverable-context-apps/001.trace.md',
-        'https://raw.githubusercontent.com/Tiinex/docs/master/.topics/ideas/software/recoverable-context-apps/public-provenance-viewer/001.trace.md'
-      ]
-    },
-    {
-      label: 'Tiinex/docs Reddit meme lineage slice',
-      urls: [
-        'https://raw.githubusercontent.com/Tiinex/docs/master/.topics/educational/memes/office/developer/001-2-1-1-cloud-image-only-reply-handoff.trace.md',
-        'https://raw.githubusercontent.com/Tiinex/docs/master/.topics/educational/memes/office/developer/001-2-1-1-3-reddit-feedback.trace.md',
-        'https://raw.githubusercontent.com/Tiinex/docs/master/.topics/educational/memes/office/developer/001-2-1-1-3-1-2-1-1-1-1-lineage-traversal-audit.trace.md',
-        'https://raw.githubusercontent.com/Tiinex/docs/master/.topics/educational/memes/office/developer/001-2-1-1-3-1-2-1-1-1-1-1-lineage-traversal-audit-findings.trace.md'
-      ]
-    },
-    {
-      label: 'Tiinex/ai runtime exports',
-      urls: [
-        'https://raw.githubusercontent.com/Tiinex/ai/master/.github/agents/.topics/linus/001-linus.trace.md',
-        'https://raw.githubusercontent.com/Tiinex/ai/master/.github/agents/companions/myable/.topics/tests/001-parallax.trace.md'
-      ]
-    }
-  ];
-
-  const SCHEMAS = {
-    topic: {
-      id: 'tiinex.topic.v1',
-      label: 'Topic',
-      icon: 'fa-regular fa-compass',
-      description: 'Best default for a new or continued thought surface.',
-      schemaFile: 'tiinex.topic.v1.schema.md'
-    },
-    task: {
-      id: 'tiinex.task.v1',
-      label: 'Task',
-      icon: 'fa-solid fa-list-check',
-      description: 'Concrete work request with done criteria and scope.',
-      schemaFile: 'tiinex.task.v1.schema.md'
-    },
-    decision: {
-      id: 'tiinex.decision.v1',
-      label: 'Decision',
-      icon: 'fa-solid fa-gavel',
-      description: 'A landed or explicitly provisional decision.',
-      schemaFile: 'tiinex.decision.v1.schema.md'
-    },
-    evidence: {
-      id: 'tiinex.evidence.v1',
-      label: 'Evidence',
-      icon: 'fa-solid fa-magnifying-glass-chart',
-      description: 'Supporting material tied to a readable claim.',
-      schemaFile: 'tiinex.evidence.v1.schema.md'
-    }
-  };
-
   const app = {
     workspaces: [],
     activeWorkspaceId: null,
@@ -490,48 +432,38 @@
     try { return typeof selectedNode === 'function' ? selectedNode(ws) : null; } catch (_) { return null; }
   }
 
-  function wizardStateFromCreate(input = {}, fallbackMode = '') {
-    const mode = createMode(input, fallbackMode);
-    if (mode !== 'continue' && mode !== 'reference') return null;
-    const { ws, node } = resolveCreateTarget(input);
-    if (!ws || !node) return null;
-    const selected = selectedNodeSafe(ws);
-    const schemaId = schemaIdFromCreate(input.schemaId || input.schemaKey || input.schema, mode === 'reference' ? 'tiinex.evidence.v1' : 'tiinex.topic.v1');
-    return {
-      type: 'artifact-wizard',
-      wsId: ws.id,
-      mode,
-      parentNodeId: mode === 'continue' ? node.id : (selected?.id || node.id),
-      referencedNodeId: mode === 'reference' ? node.id : '',
+  function openArtifactCreateIntent(input = {}) {
+    const mode = createMode(input);
+    if (mode !== 'continue' && mode !== 'reference') return false;
+
+    const providedWs = input.ws || null;
+    const providedNode = input.node || null;
+    const resolved = providedWs && providedNode ? { ws: providedWs, node: providedNode } : resolveCreateTarget(input);
+    const ws = providedWs || resolved.ws;
+    const node = providedNode || resolved.node;
+    if (!ws || !node) {
+      toast(mode === 'reference' ? 'No node selected to reference.' : 'No node selected to continue.', 'warn');
+      return false;
+    }
+
+    if (mode === 'reference') {
+      enterReferenceParentPicker(ws, node);
+      return true;
+    }
+
+    const schemaId = schemaIdFromCreate(
+      input.schemaId || input.schema || node.currentSchemaText || node.currentSchema,
+      node.currentSchemaText || node.currentSchema || 'tiinex.topic.v1'
+    );
+    openArtifactWizard(ws, {
+      mode: 'continue',
+      parentNodeId: node.id,
       schemaId,
-      wizardStep: input.wizardStep || input.createStep || 'type',
-      title: input.title || (mode === 'reference' ? `${node.title || 'Selected artifact'} reference` : `${node.title || 'Selected artifact'} continuation`),
-      summary: input.summary || '',
-      body: typeof input.body === 'string' ? input.body : undefined
-    };
-  }
-
-  function renderCreateWizardFromRouteInput(input = {}, fallbackMode = '') {
-    const wizard = wizardStateFromCreate(input, fallbackMode);
-    if (!wizard || typeof renderArtifactWizardModal !== 'function') return null;
-    try { if (app?.modal === input) app.modal = wizard; } catch (_) {}
-    return renderArtifactWizardModal(wizard);
-  }
-
-  function renderCreateRouteUnavailable(input = {}) {
-    if (input?.mode === 'workspace') return '';
-    return `<div class="modal-backdrop-custom focus-modal artifact-wizard-backdrop" role="dialog" aria-modal="true">
-      <div class="modal-panel artifact-wizard-panel">
-        <div class="modal-header-lite artifact-wizard-head">
-          <div>
-            <p class="kicker">Create</p>
-            <h2 class="modal-title-lite">Create route unavailable</h2>
-            <p class="text-secondary mb-0">This create route did not include enough node context. Reopen the action from the artifact card.</p>
-          </div>
-          <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
-        </div>
-      </div>
-    </div>`;
+      wizardStep: input.wizardStep || 'type',
+      title: input.title || `${node.title || 'Selected artifact'} continuation`,
+      summary: input.summary || ''
+    });
+    return true;
   }
 
 
@@ -540,320 +472,10 @@
   function onModalField(event) {
     if (!app.modal) return;
     const field = event.currentTarget.dataset.field;
-    if (event.currentTarget.type === 'checkbox') app.modal[field] = event.currentTarget.checked;
-    else app.modal[field] = event.currentTarget.value;
-    if (field === 'exportDir' || field === 'filename') app.modal.exportPathWasAuto = false;
-    if (field === 'summary' && app.modal.exportPathWasAuto !== false) { app.modal.exportDir = ''; app.modal.filename = ''; }
-    if (['destWsId', 'useDestinationParent', 'summary'].includes(field)) {
-      app.modal.exportDir = '';
-      app.modal.filename = '';
-      refreshModalDefaults();
-      render();
-    }
-  }
-
-  function onModalSubField(event) {
-    if (!app.modal) return;
-    app.modal.fields[event.currentTarget.dataset.subfield] = event.currentTarget.value;
-  }
-
-
-
-  function openCreateModal(mode, wsId, nodeId) {
-    const sourceWs = getWorkspace(wsId);
-    const sourceNode = sourceWs?.nodeById.get(nodeId);
-    if (!sourceWs || !sourceNode) return;
-    const otherWs = app.workspaces.find((ws) => ws.id !== sourceWs.id);
-    const defaultDest = mode === 'continue' ? sourceWs.id : (otherWs?.id || sourceWs.id);
-    const modal = {
-      type: 'create',
-      mode,
-      sourceWsId: sourceWs.id,
-      sourceNodeId: sourceNode.id,
-      destWsId: defaultDest,
-      useDestinationParent: mode === 'reference' && defaultDest !== sourceWs.id,
-      requiresPolicyDecision: sourceNeedsPolicyDecision(sourceWs),
-      policyDecisionAccepted: false,
-      schemaKey: 'topic',
-      summary: mode === 'continue' ? `Continue ${sourceNode.title}` : `Reference ${sourceNode.title}`,
-      authors: localStorage.getItem(STORAGE_KEYS.authors) || '',
-      why: mode === 'continue' ? 'Continue the selected lineage with a new local leaf.' : 'Connect this destination lineage to the referenced source lineage.',
-      fields: {},
-      exportDir: '/',
-      filename: '',
-      exportPathWasAuto: true
-    };
-    app.modal = modal;
-    refreshModalDefaults();
-    render();
-  }
-
-  function selectSchema(key) {
-    if (!app.modal || !SCHEMAS[key]) return;
-    app.modal.schemaKey = key;
-    refreshModalDefaults();
-    render();
-  }
-
-  function refreshModalDefaults() {
-    const modal = app.modal;
-    if (!modal) return;
-    const sourceWs = getWorkspace(modal.sourceWsId);
-    const sourceNode = sourceWs?.nodeById.get(modal.sourceNodeId);
-    const destWs = modal.mode === 'continue' ? sourceWs : getWorkspace(modal.destWsId);
-    const parent = modal.mode === 'continue' ? sourceNode : (modal.useDestinationParent ? selectedNode(destWs) : null);
-    if ((!modal.exportDir || !modal.filename) || modal.exportPathWasAuto !== false) {
-      const proposed = proposeExportParts(destWs, parent, modal.summary, modal.schemaKey);
-      modal.exportDir = proposed.dir;
-      modal.filename = proposed.filename;
-      modal.exportPathWasAuto = true;
-    }
-    if (!Object.keys(modal.fields || {}).length) modal.fields = defaultFields(modal.schemaKey, sourceNode, parent, modal.mode);
-  }
-
-  function defaultFields(schemaKey, sourceNode, parent, mode) {
-    const refLine = sourceNode ? `Referenced lineage: ${sourceNode.title}` : '';
-    if (schemaKey === 'task') return { objective: mode === 'reference' ? `Use the referenced lineage as context for a bounded next step.\n${refLine}` : 'Define the concrete work requested by this leaf.', done: 'The work can be reviewed from this trace and its parent/reference context.', scope: 'Keep the task bounded and reversible.', dependencies: sourceNode ? `Reference source: ${sourceNode.path}` : '' };
-    if (schemaKey === 'decision') return { decision: 'State: provisional\nDecision: ', basis: refLine || 'Basis for this decision.', consequences: 'What now follows from this decision.' };
-    if (schemaKey === 'evidence') return { claim: refLine || 'Claim this evidence supports.', material: sourceNode ? `The referenced lineage is treated as supporting material: ${sourceNode.path}` : 'Preserve the supporting material here.', limits: 'State scope, fidelity, and interpretation limits.' };
-    return { currentRead: mode === 'reference' && sourceNode ? `This lineage now references ${sourceNode.title} as external context.` : 'Current state of this topic.', direction: 'Where this lineage should move next.', next: '- continue with a narrower artifact when the next step is concrete' };
-  }
-
-  function proposeExportPath(ws, parent, summary, schemaKey) {
-    const parts = proposeExportParts(ws, parent, summary, schemaKey);
-    return combineExportPath(parts.dir, parts.filename);
-  }
-
-  function proposeExportParts(ws, parent, summary, schemaKey) {
-    const slug = slugify(summary);
-    if (parent) {
-      const dir = toRepoDir(dirname(parent.path));
-      const parentLabel = fileNameFromPath(parent.path).replace(/\.trace\.md$/i, '').replace(/-[a-z0-9][a-z0-9-]{2,}$/i, (m) => m.startsWith('-') && /^-\d+$/.test(m) ? m : '');
-      const next = nextChildLabel(ws, parentLabel || '001', stripRootSlash(dir));
-      const filename = slug && schemaKey !== 'topic' ? `${next}-${slug}.trace.md` : `${next}.trace.md`;
-      return { dir, filename };
-    }
-    const dir = suggestedWorkspaceDir(ws);
-    const rootLabel = nextRootLabel(ws, stripRootSlash(dir));
-    const filename = slug && schemaKey !== 'topic' ? `${rootLabel}-${slug}.trace.md` : `${rootLabel}.trace.md`;
-    return { dir, filename };
-  }
-
-  function normalizeExportDir(value) {
-    let s = String(value || '/').replace(/\\/g, '/').trim();
-    if (!s) s = '/';
-    if (!s.startsWith('/')) s = '/' + s;
-    const parts = [];
-    s.split('/').forEach((part) => {
-      if (!part || part === '.') return;
-      if (part === '..') return;
-      parts.push(part);
-    });
-    return '/' + parts.join('/');
-  }
-
-  function stripRootSlash(dir) {
-    return normalizeExportDir(dir).replace(/^\//, '').replace(/\/$/, '');
-  }
-
-  function toRepoDir(dir) {
-    const normalized = normalizeExportDir(dir || '/.topics');
-    return normalized === '/' ? '/' : normalized.replace(/\/$/, '');
-  }
-
-  function combineExportPath(dir, filename) {
-    const cleanDir = normalizeExportDir(dir);
-    const cleanFilename = sanitizeTraceFilename(filename || '001.trace.md');
-    const base = cleanDir === '/' ? '' : stripRootSlash(cleanDir);
-    return base ? `${base}/${cleanFilename}` : cleanFilename;
-  }
-
-  function sanitizeTraceFilename(filename) {
-    let name = String(filename || '').replace(/\\/g, '/').split('/').pop().trim();
-    name = name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
-    if (!name) name = '001.trace.md';
-    if (!/\.trace\.md$/i.test(name)) {
-      name = name.replace(/\.md$/i, '') + '.trace.md';
-    }
-    return name;
-  }
-
-  function suggestedWorkspaceDir(ws) {
-    if (!ws || !ws.nodes.length) return '/.topics';
-    const selected = selectedNode(ws);
-    if (selected) return toRepoDir(dirname(selected.path) || '/.topics');
-    const topicPaths = ws.nodes.map((n) => dirname(n.path)).filter((p) => p.includes('.topics/'));
-    return toRepoDir(topicPaths[0] || '/.topics');
-  }
-
-  function nextRootLabel(ws, dir) {
-    const labels = new Set(Array.from(ws.files.keys()).filter((p) => dirname(p) === dir).map((p) => fileNameFromPath(p).replace(/\.trace\.md$/i, '').split('-')[0]).filter(Boolean));
-    for (let i = 1; i < 1000; i += 1) {
-      const candidate = String(i).padStart(3, '0');
-      if (!labels.has(candidate)) return candidate;
-    }
-    return String(Date.now());
-  }
-
-  function nextChildLabel(ws, parentLabel, dir) {
-    for (let i = 1; i < 1000; i += 1) {
-      const candidate = `${parentLabel}-${i}`;
-      const exists = Array.from(ws.files.keys()).some((p) => dirname(p) === dir && fileNameFromPath(p).startsWith(candidate));
-      if (!exists) return candidate;
-    }
-    return `${parentLabel}-${Date.now()}`;
-  }
-
-  async function generateTraceFromModal() {
-    const modal = app.modal;
-    if (!modal) return;
-    const sourceWs = getWorkspace(modal.sourceWsId);
-    const sourceNode = sourceWs?.nodeById.get(modal.sourceNodeId);
-    const destWs = modal.mode === 'continue' ? sourceWs : getWorkspace(modal.destWsId);
-    let parentNode = modal.mode === 'continue' ? sourceNode : (modal.useDestinationParent ? selectedNode(destWs) : null);
-    if (!destWs) { toast('Destination workspace not found.', 'error'); return; }
-    if (!modal.summary.trim()) { toast('Title / summary is required.', 'error'); return; }
-    if (modal.requiresPolicyDecision && !modal.policyDecisionAccepted) {
-      toast('Policy decision required before creating derived lineage from this source.', 'warn');
-      return;
-    }
-    if (modal.authors.trim()) localStorage.setItem(STORAGE_KEYS.authors, modal.authors.trim());
-
-    let generatedDecisionPath = '';
-    if (modal.requiresPolicyDecision) {
-      generatedDecisionPath = await createPolicyDecisionLeaf({ modal, sourceWs, sourceNode, destWs, parentNode });
-      computeWorkspaceIndex(destWs);
-      const decisionNode = destWs.nodeByPath.get(generatedDecisionPath);
-      if (decisionNode) parentNode = decisionNode;
-    }
-
-    let path = combineExportPath(modal.exportDir, modal.filename);
-    if (!path || modal.exportPathWasAuto !== false || generatedDecisionPath) {
-      const proposed = proposeExportParts(destWs, parentNode, modal.summary, modal.schemaKey);
-      path = combineExportPath(proposed.dir, proposed.filename);
-    }
-    const markdown = await buildTraceMarkdown({ modal, sourceNode, parentNode, path, destWs });
-    addGeneratedFile(destWs, path, markdown);
-    computeWorkspaceIndex(destWs);
-    const generatedNode = destWs.nodeByPath.get(path);
-    if (generatedNode) destWs.selectedNodeId = generatedNode.id;
-    app.activeWorkspaceId = destWs.id;
-    app.modal = null;
-    toast(modal.requiresPolicyDecision ? `Created policy decision and local leaf ${path}.` : `Created local leaf ${path}.`, 'ok');
-    updateUrlState();
-    render();
-  }
-
-  function addGeneratedFile(ws, path, markdown) {
-    addFileToWorkspace(ws, { path, content: markdown, isGenerated: true, generatedAt: nowStamp() });
-    if (!ws.generated.includes(path)) ws.generated.push(path);
-  }
-
-  async function createPolicyDecisionLeaf({ modal, sourceWs, sourceNode, destWs, parentNode }) {
-    const policySummary = `Proceed despite missing lineage policy for ${sourceWs.label}`;
-    const decisionPath = proposeExportPath(destWs, parentNode, policySummary, 'decision');
-    const decisionModal = {
-      ...modal,
-      mode: 'policy-decision',
-      schemaKey: 'decision',
-      summary: policySummary,
-      why: 'Authorize continuation/reference despite no LINEAGE_LICENSE.md or LICENSE.md being discovered for the source workspace.',
-      fields: {
-        decision: '- State: accepted by creator\n- Subject: continuing/reference use despite missing lineage policy or license\n- Decision: proceed with generated lineage creation from the referenced source',
-        basis: `- The viewer did not find LINEAGE_LICENSE.md or LICENSE.md for ${sourceWs.repo || sourceWs.label}.\n- The creator asserts permission, ownership, or another sufficient basis to continue.`,
-        consequences: '- Downstream readers should treat the permission state as user-asserted, not verified by the viewer.\n- Repair, redact, or supersede this decision if the source owner later publishes contrary policy or requests removal.',
-        review: '- Replace this decision if a lineage policy or license is later published.\n- Treat descendants as dependent on this decision until repaired or superseded.'
-      }
-    };
-    const markdown = await buildTraceMarkdown({ modal: decisionModal, sourceNode, parentNode, path: decisionPath, destWs });
-    addGeneratedFile(destWs, decisionPath, markdown);
-    return decisionPath;
-  }
-
-  async function buildTraceMarkdown({ modal, sourceNode, parentNode, path }) {
-    const schema = SCHEMAS[modal.schemaKey] || SCHEMAS.topic;
-    const lines = [];
-    lines.push('# Continuity Context', '');
-    lines.push(`- Envelope Schema: [tiinex.root.v1](${SCHEMA_DOC_BASE}tiinex.root.v1.schema.md)`);
-    if (parentNode) {
-      const rel = relativePath(path, parentNode.path);
-      const browse = parseMarkdownLink(parentNode.parentOriginBrowse).href || parentNode.browseUrl || '';
-      lines.push('- Parent');
-      lines.push(`  - Parent Schema: ${formatSchemaRef(parentNode.currentSchemaText || parentNode.currentSchema || 'unknown')}`);
-      if (parentNode.createdAt) lines.push(`  - Created At: ${parentNode.createdAt}`);
-      lines.push(`  - Trace: [${fileNameFromPath(parentNode.path)}](${rel})`);
-      lines.push('  - Origin:');
-      lines.push(`    - [relative](${rel})`);
-      if (browse) lines.push(`    - [browse + git](${browse})`);
-      else lines.push('    - [browse + git](pending-placement)');
-    }
-    lines.push('- Current');
-    lines.push(`  - Current Schema: [${schema.id}](${SCHEMA_DOC_BASE}${schema.schemaFile})`);
-    lines.push(`  - Created At: ${nowStamp()}`);
-    if (modal.authors.trim()) lines.push(`  - Authors: ${modal.authors.trim()}`);
-    if (modal.why.trim()) lines.push(`  - Why: ${quoteIfNeeded(modal.why.trim())}`);
-    lines.push(`  - Summary: ${quoteIfNeeded(modal.summary.trim())}`);
-    lines.push('', '---', '');
-    lines.push(buildBody(modal, sourceNode, parentNode));
-    lines.push('', '---', '', '# Continuity Integrity', '');
-    const method = 'sha256-base64url-c14n-v1';
-    if (parentNode) {
-      const rel = relativePath(path, parentNode.path);
-      const hash = await sha256Base64Url(stripIntegritySection(parentNode.rawMarkdown));
-      lines.push(`- ${method}`);
-      lines.push(`  - Towards: [${fileNameFromPath(parentNode.path)}](${rel})`);
-      lines.push(`  - Value: ${hash}`);
-      return lines.join('\n') + '\n';
-    }
-    const withoutIntegrity = lines.join('\n') + '\n';
-    const hash = await sha256Base64Url(stripIntegritySection(withoutIntegrity));
-    lines.push(`- ${method}`);
-    lines.push('  - Towards: self');
-    lines.push(`  - Value: ${hash}`);
-    return lines.join('\n') + '\n';
-  }
-
-  function quoteIfNeeded(text) {
-    const s = String(text || '').replace(/\n+/g, ' ').trim();
-    if (!s) return '""';
-    if (/[:#\[\]{}]|^[-*]|\s{2,}/.test(s)) return `"${s.replace(/"/g, '\\"')}"`;
-    return s;
-  }
-
-  function formatSchemaRef(schemaText) {
-    const id = stripMarkdownInline(schemaText).replace(/\.schema\.md$/i, '');
-    if (!id || id === 'unknown') return 'unknown';
-    const file = id.endsWith('.schema.md') ? id : `${id}.schema.md`;
-    return `[${id}](${SCHEMA_DOC_BASE}${file})`;
-  }
-
-  function buildBody(modal, sourceNode, parentNode) {
-    const title = modal.summary.trim();
-    const f = modal.fields || {};
-    const ref = sourceNode && (modal.mode === 'reference' || modal.mode === 'policy-decision') ? referenceSection(sourceNode) : '';
-    if (modal.schemaKey === 'task') {
-      return `# ${title}\n\nThis task artifact was generated as a local lineage leaf.\n\n## Objective\n\n${f.objective || 'Define the concrete work requested by this leaf.'}\n\n## Done Criteria\n\n${f.done || '- The task can be reviewed from this artifact and its declared context.'}\n\n## Scope\n\n${f.scope || '- Keep the task bounded and reversible.'}\n\n## Dependencies\n\n${f.dependencies || '- No external dependency recorded.'}${ref}`;
-    }
-    if (modal.schemaKey === 'decision') {
-      const review = f.review ? `\n\n## Review Conditions\n\n${f.review}` : '';
-      return `# ${title}\n\nThis decision artifact records what now governs for this lineage slice.\n\n## Decision\n\n${f.decision || '- State: provisional\n- Decision: describe the operative outcome'}\n\n## Basis\n\n${f.basis || '- Basis not yet expanded.'}\n\n## Consequences\n\n${f.consequences || '- Consequences not yet expanded.'}${review}${ref}`;
-    }
-    if (modal.schemaKey === 'evidence') {
-      return `# ${title}\n\n## Supported Claim\n\n${f.claim || 'State the claim this evidence supports.'}\n\n## Provenance\n\n${sourceNode ? `- Source lineage: ${sourceNode.title}\n- Source path: ${sourceNode.path}` : '- Source not specified.'}\n\n## Evidence Material\n\n${f.material || 'Preserve the readable supporting material here.'}\n\n## Interpretation Limits\n\n${f.limits || '- State fidelity, scope, and uncertainty limits.'}${ref}`;
-    }
-    return `# ${title}\n\nThis topic artifact preserves a readable lineage surface for future continuation.\n\n## Current Read\n\n${f.currentRead || 'Current state of this topic.'}\n\n## Design Direction\n\n${f.direction || 'Where this lineage should move next.'}\n\n## Next Artifacts\n\n${f.next || '- continue with a narrower artifact when the next step is concrete'}${ref}`;
-  }
-
-  function referenceSection(node) {
-    const browse = node.browseUrl || parseMarkdownLink(node.parentOriginBrowse).href || '';
-    const lines = ['\n\n## Referenced Lineage\n'];
-    lines.push(`- Title: ${node.title}`);
-    lines.push(`- Trace: ${node.path}`);
-    if (browse) lines.push(`- Origin: [browse + git](${browse})`);
-    else lines.push('- Origin: browse + git pending placement');
-    if (node.integrity?.value) lines.push(`- Integrity Signal: ${node.integrity.method} / ${node.integrity.value}`);
-    lines.push('- Relation: referenced context, not continuity parent');
-    return lines.join('\n');
+    if (!field) return;
+    app.modal[field] = event.currentTarget.type === 'checkbox'
+      ? event.currentTarget.checked
+      : event.currentTarget.value;
   }
 
   function downloadText(filename, text, type) {
@@ -2356,10 +1978,11 @@
     if (action === 'toggle-node-expand') { toggleNodeExpand(wsId, nodeId); setRouteState('replace'); return; }
     if (action === 'open-detail-modal') { app.modal = { type: 'detail', wsId, nodeId }; render(); return; }
     if (action === 'open-markdown-modal') { app.modal = { type: 'markdown', wsId, nodeId }; render(); return; }
-    if (action === 'open-create') { openCreateModal(event.currentTarget.dataset.mode, wsId, nodeId); return; }
+    if (action === 'open-create') {
+      openArtifactCreateIntent({ mode: event.currentTarget.dataset.mode, wsId, nodeId, schemaId: event.currentTarget.dataset.schemaId || event.currentTarget.dataset.schema || '' });
+      return;
+    }
     if (action === 'close-modal') { app.modal = null; render(); return; }
-    if (action === 'select-schema') { selectSchema(event.currentTarget.dataset.schema); return; }
-    if (action === 'generate-trace') { await generateTraceFromModal(); setRouteState('push'); return; }
   }
 
 
@@ -4983,9 +4606,6 @@
       el.addEventListener('change', onModalField);
     });
 
-    root.querySelectorAll('textarea[data-subfield]').forEach((el) => {
-      el.addEventListener('input', onModalSubField);
-    });
 
     root.querySelectorAll('.search-box input, input[data-search], input[data-mode], input[data-search-mode]').forEach((el) => {
       if (targetLooksSearchInput(el)) el.addEventListener('input', onSearchInput);
@@ -5548,6 +5168,8 @@
       return wrapper(ws, modal, option, title, next);
     };
   }
+
+
 
   function registerWizardDescribeStepWrapper(wrapper) {
     const next = wizardDescribeStep;
@@ -8001,9 +7623,6 @@ ${bodySections}
 
 
 
-  const renderCreateModalOriginal = renderCreateModal;
-
-
   function renderCreateModal(modal) {
     if (modal?.mode === 'workspace') {
       if (typeof mobileCreateSheetActive === 'function' && mobileCreateSheetActive()) {
@@ -8054,7 +7673,7 @@ ${bodySections}
         </div>
       </div>`;
     }
-    return renderCreateWizardFromRouteInput(modal || {}) || renderCreateRouteUnavailable(modal || {});
+    return '';
   }
 
 
@@ -9562,68 +9181,27 @@ ${integrityFooter('self', 'pending')}`;
   // late event wrappers and not every build exposes those names.
   window.addEventListener('input', handleEditAddFieldEvent, true);
   window.addEventListener('change', handleEditAddFieldEvent, true);
-  function nextSiblingTracePath(node) {
-    const path = String(node?.path || '.topics/new.trace.md');
-    const match = path.match(/^(.*?)(\d+(?:-\d+)*)(\.trace\.md)$/i);
-    if (!match) {
-      const dir = dirname(path) || '.topics';
-      return joinPath(dir, 'new.trace.md');
-    }
-    return `${match[1]}${match[2]}-1${match[3]}`;
-  }
+  function nextSiblingTracePath(node, ws = null) {
+    const path = canonicalWorkspacePath(node?.path || '.topics/new.trace.md');
+    const dir = dirname(path) || '.topics';
+    const dim = traceDimensionFromPath(path);
 
-  function continuationTemplate(ws, node, path) {
-    const title = `${node?.title || 'Selected artifact'} continuation`;
-    const schema = schemaIdFromText(node?.currentSchemaText || node?.currentSchema || '', 'tiinex.topic.v1');
-    const body = schemaTemplate(schema).body || schemaTemplate('tiinex.topic.v1').body;
-    const parent = node || null;
-    return `# Continuity Context
-
-- Envelope Schema: ${envelopeSchemaReference(path)}
-${parent ? parentContinuityBlock(parent, path) : ''}${currentBlockForPath(schema, 'Draft continuation created in Tiinex Viewer.', path)}
----
-
-# ${title}
-
-${body}
-
----
-
-${integrityFooterForPath(parent, path)}`;
-  }
-
-  function openContinuationAddModal(ws, node) {
-    const path = nextSiblingTracePath(node);
-    app.modal = {
-      type: 'add-artifact',
-      wsId: ws.id,
-      kind: 'trace',
-      path,
-      title: `${node?.title || 'Selected artifact'} continuation`,
-      text: continuationTemplate(ws, node, path),
-      continuationOf: node?.id || ''
-    };
-    render();
-  }
-  registerActionHandler(async function continueRepairAction(event, next) {
-    const action = event.currentTarget?.dataset?.action || '';
-    const label = String(event.currentTarget?.textContent || '').trim().toLowerCase();
-
-    if (action === 'continue' || action === 'continue-node' || (label === 'continue' && event.currentTarget?.dataset?.ws && event.currentTarget?.dataset?.node)) {
-      event.preventDefault();
-      event.stopPropagation();
-      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
-      const node = ws?.nodeById?.get?.(event.currentTarget.dataset.node || '');
-      if (!ws || !node) return toast('No node selected to continue.', 'warn');
-      openContinuationAddModal(ws, node);
-      return;
+    if (dim) {
+      const occupied = ws ? occupiedSiblingIndices(ws, dir, dim) : new Set();
+      let next = 1;
+      while (occupied.has(next)) next += 1;
+      for (let guard = 0; guard < 9999; guard += 1, next += 1) {
+        const childDim = formatSiblingDimension(dim, next);
+        const candidate = replaceDimensionPrefix(path, dim, childDim);
+        if (!ws || !workspaceAnyHasPath(ws, candidate)) return candidate;
+      }
     }
 
-    return next(event);
-  });
-
-
-
+    const parentSlug = slugifyTitle(node?.title || fileNameFromPath(path).replace(/\.trace\.md$/i, '') || 'new');
+    return ws
+      ? uniquePathInFolder(ws, dir, `${parentSlug}-continuation`, '.trace.md')
+      : joinPath(dir, `${parentSlug}-continuation.trace.md`);
+  }
 
   function canEditNode(ws, node) {
     if (!ws || !node) return false;
@@ -9634,85 +9212,6 @@ ${integrityFooterForPath(parent, path)}`;
     if (node.file?.sourceKind === 'local' || node.file?.sourceId === 'local') return true;
     return false;
   }
-
-  function referenceTracePath(node) {
-    const dir = dirname(String(node?.path || '.topics/reference.trace.md')) || '.topics';
-    const base = fileNameFromPath(String(node?.path || 'reference')).replace(/\.(trace|schema|workspace)\.md$/i, '');
-    return joinPath(dir, `${base}-reference.trace.md`);
-  }
-
-  function referenceTemplate(ws, node, path) {
-    const title = `${node?.title || 'Selected artifact'} reference`;
-    const targetRel = relativePathFromTo(path, node?.path || '');
-    const targetHref = targetRel || node?.browseUrl || node?.rawUrl || node?.path || '';
-    const targetLabel = displayFileName(node?.path || 'reference target');
-    return `# Continuity Context
-
-- Envelope Schema: ${envelopeSchemaReference(path)}
-${currentBlockForPath('tiinex.evidence.v1', 'Draft reference created in Tiinex Viewer.', path)}
----
-
-# ${title}
-
-## Supported Claim
-
-- This artifact preserves a reference to selected source material.
-
-## Provenance
-
-- Source: ${linkForPath(targetLabel, targetHref)}
-- Representation: reference target
-
-## Evidence Material
-
-- Reference target: ${linkForPath(targetLabel, targetHref)}
-
-## Interpretation Limits
-
-- This artifact points at source material but does not by itself validate the target content.
-
----
-
-${integrityFooter('self', 'pending')}`;
-  }
-
-  function openReferenceAddModal(ws, node) {
-    const path = referenceTracePath(node);
-    app.modal = {
-      type: 'add-artifact',
-      wsId: ws.id,
-      kind: 'trace',
-      path,
-      title: `${node?.title || 'Selected artifact'} reference`,
-      text: referenceTemplate(ws, node, path),
-      referenceOf: node?.id || ''
-    };
-    render();
-  }
-  registerActionHandler(async function referenceAddAction(event, next) {
-    const action = event.currentTarget?.dataset?.action || '';
-    const label = String(event.currentTarget?.textContent || '').trim().toLowerCase();
-    const hasNodeContext = Boolean(event.currentTarget?.dataset?.ws && event.currentTarget?.dataset?.node);
-
-    if ((action === 'reference' || action === 'open-reference' || action === 'add-reference' || (label === 'reference' && hasNodeContext)) && hasNodeContext) {
-      event.preventDefault();
-      event.stopPropagation();
-      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
-      const node = ws?.nodeById?.get?.(event.currentTarget.dataset.node || '');
-      if (!ws || !node) return toast('No node selected to reference.', 'warn');
-      openReferenceAddModal(ws, node);
-      return;
-    }
-
-    return next(event);
-  });
-
-
-
-
-
-
-
 
   function markdownPreviewInline(text) {
     return escapeHtml(text || '')
@@ -9883,16 +9382,16 @@ ${integrityFooter('self', 'pending')}`;
     const text = typeof modal.text === 'string' ? modal.text : (node.rawMarkdown || node.file?.text || '');
     return `
       <div class="modal-backdrop-custom focus-modal edit-node-backdrop" role="dialog" aria-modal="true" aria-labelledby="edit-node-title">
-        <div class="modal-panel edit-node-panel markdown-studio-panel">
-          <div class="modal-header-lite edit-node-head">
-            <div>
+        <div class="modal-panel edit-node-panel markdown-studio-panel authoring-dialog-panel">
+          <div class="modal-header-lite edit-node-head authoring-dialog-head">
+            <div class="authoring-dialog-title">
               <p class="kicker">Local edit</p>
               <h2 class="modal-title-lite" id="edit-node-title">Edit local markdown</h2>
               <p class="text-secondary mb-0">${escapeHtml(node.title || node.path || '')}</p>
             </div>
-            <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+            <button class="tv-btn small subtle authoring-dialog-close" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
           </div>
-          <div class="edit-node-body">
+          <div class="edit-node-body authoring-dialog-body">
             <div class="add-relation-card local-edit">
               <div class="add-relation-icon"><i class="fa-solid fa-pen-to-square"></i></div>
               <div>
@@ -9902,10 +9401,10 @@ ${integrityFooter('self', 'pending')}`;
               </div>
             </div>
             ${markdownStudio({ field: 'editNodeText', text, textareaId: 'edit-node-markdown', label: 'Markdown' })}
-            <div class="modal-footer-actions edit-node-actions">
-              <button class="tv-btn primary" data-action="save-node-edit" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}"><i class="fa-solid fa-floppy-disk"></i>Save local edit</button>
-              <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
-            </div>
+          </div>
+          <div class="modal-footer-actions edit-node-actions authoring-dialog-actions">
+            <button class="tv-btn primary" data-action="save-node-edit" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}"><i class="fa-solid fa-floppy-disk"></i>Save local edit</button>
+            <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
           </div>
         </div>
       </div>`;
@@ -9922,16 +9421,16 @@ ${integrityFooter('self', 'pending')}`;
 
     return `
       <div class="modal-backdrop-custom focus-modal add-artifact-backdrop" role="dialog" aria-modal="true" aria-labelledby="add-artifact-title">
-        <div class="modal-panel add-artifact-panel markdown-studio-panel ${escapeAttr(copy.className)}">
-          <div class="modal-header-lite add-artifact-head">
-            <div>
+        <div class="modal-panel add-artifact-panel markdown-studio-panel authoring-dialog-panel ${escapeAttr(copy.className)}">
+          <div class="modal-header-lite add-artifact-head authoring-dialog-head">
+            <div class="authoring-dialog-title">
               <p class="kicker">${escapeHtml(copy.kicker)}</p>
               <h2 class="modal-title-lite" id="add-artifact-title"><i class="fa-solid ${escapeAttr(copy.icon)}"></i>${escapeHtml(copy.title)}</h2>
               <p class="text-secondary mb-0">${escapeHtml(copy.lead)}</p>
             </div>
-            <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+            <button class="tv-btn small subtle authoring-dialog-close" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
           </div>
-          <div class="add-artifact-body">
+          <div class="add-artifact-body authoring-dialog-body">
             ${relationCardForAddModal(ws, modal)}
             <div class="add-artifact-grid">
               <label class="field-label">Kind
@@ -9950,10 +9449,10 @@ ${integrityFooter('self', 'pending')}`;
             </div>
             ${markdownStudio({ field: 'addArtifactText', text, textareaId: 'add-artifact-markdown', label: 'Markdown' })}
             <p class="form-text add-artifact-hint">The file is added to the current local workspace source. Use Export to preserve it outside this browser.</p>
-            <div class="modal-footer-actions add-artifact-actions">
-              <button class="tv-btn primary" data-action="save-new-artifact" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid ${escapeAttr(copy.icon)}"></i>${escapeHtml(copy.button)}</button>
-              <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
-            </div>
+          </div>
+          <div class="modal-footer-actions add-artifact-actions authoring-dialog-actions">
+            <button class="tv-btn primary" data-action="save-new-artifact" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid ${escapeAttr(copy.icon)}"></i>${escapeHtml(copy.button)}</button>
+            <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
           </div>
         </div>
       </div>`;
@@ -10545,22 +10044,423 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
 
 
 
+  const WIZARD_SCHEMA_ORDER = Object.freeze([
+    'tiinex.topic.v1',
+    'tiinex.evidence.v1',
+    'tiinex.feedback.v1',
+    'tiinex.reduction.v1',
+    'tiinex.task.v1',
+    'tiinex.decision.v1',
+    'tiinex.pointer.v1',
+    'tiinex.lineage.upgrade.deferral.v1',
+    'tiinex.workspace.v1',
+    'raw'
+  ]);
+
+  const WIZARD_SCHEMA_REGISTRY = Object.freeze({
+    'tiinex.topic.v1': {
+      id: 'tiinex.topic.v1',
+      label: 'Topic',
+      icon: 'fa-diagram-project',
+      suffix: '.trace.md',
+      kind: 'trace',
+      humanArtifact: true,
+      summary: 'A bounded topic thread with current read, design direction, and next artifacts.',
+      bodyLabel: 'Topic body',
+      body: 'This topic captures the current direction for the work.\n\n## Current Read\n\nDescribe the present topic state.\n\n## Design Direction\n\nState where this topic should move next.\n\n## Next Artifacts\n\n- ',
+      fields: [
+        { key: 'currentRead', label: 'Current read', type: 'textarea', placeholder: 'What is true or useful to know right now?', required: true },
+        { key: 'designDirection', label: 'Design direction', type: 'textarea', placeholder: 'Where should this thread move next?' },
+        { key: 'nextArtifacts', label: 'Next artifacts', type: 'list', placeholder: 'One continuation or artifact idea per line' }
+      ],
+      defaults: () => ({ currentRead: '', designDirection: '', nextArtifacts: '' }),
+      bodyFromForm: (f) => `${paragraph(f.currentRead, 'Describe the present topic state.')}
+
+## Design Direction
+
+${paragraph(f.designDirection, 'State where this topic should move next.')}
+
+## Next Artifacts
+
+${listBlock(f.nextArtifacts)}`,
+      formStateFromSections: (sections) => ({
+        currentRead: plainBlock(sections._intro || sections['current read'] || ''),
+        designDirection: plainBlock(sections['design direction'] || ''),
+        nextArtifacts: plainBlock(sections['next artifacts'] || '')
+      })
+    },
+    'tiinex.evidence.v1': {
+      id: 'tiinex.evidence.v1',
+      label: 'Evidence',
+      icon: 'fa-paperclip',
+      suffix: '.trace.md',
+      kind: 'trace',
+      humanArtifact: true,
+      summary: 'Preserved supporting material with claim, provenance, evidence, and limits.',
+      describeStep: renderEvidenceWizardDescribeStep,
+      bodyLabel: 'Evidence body',
+      body: '## Supported Claim\n\n- State what this evidence bears on.\n\n## Provenance\n\n- Source: \n- Representation: \n\n## Evidence Material\n\nPreserve the readable supporting material here.\n\n## Interpretation Limits\n\n- State fidelity, scope, excerpting, transformation, or uncertainty limits.',
+      fields: [
+        { key: 'supportedClaim', label: 'Supported claim', type: 'textarea', placeholder: 'What does this evidence bear on?', required: true },
+        { key: 'source', label: 'Source', type: 'input', placeholder: 'URL, path, file, screenshot, or local source' },
+        { key: 'representation', label: 'Representation', type: 'input', placeholder: 'quote, screenshot, generated image, observation, etc.' },
+        { key: 'evidenceMaterial', label: 'Evidence material', type: 'textarea', placeholder: 'Paste or summarize the material to preserve.' },
+        { key: 'interpretationLimits', label: 'Interpretation limits', type: 'list', placeholder: 'One limit per line' }
+      ],
+      defaults: (modal, option) => ({
+        supportedClaim: defaultWizardSummary(modal || {}, option || schemaOptionById('tiinex.evidence.v1')),
+        source: '',
+        representation: '',
+        evidenceMaterial: '',
+        interpretationLimits: ''
+      }),
+      bodyFromForm: (f, context = {}) => {
+        const artifactPath = context.path || app.modal?.path || '.topics/evidence.trace.md';
+        const attachments = evidenceAttachments(context.modal || app.modal);
+        const blocks = evidenceAttachmentsMarkdown(artifactPath, attachments);
+        return `## Supported Claim
+
+${listBlock(f.supportedClaim)}
+
+## Provenance
+
+${blocks.provenance}
+
+## Evidence Material
+
+${blocks.material}
+
+## Interpretation Limits
+
+${blocks.limits}`;
+      },
+      formStateFromSections: (sections) => ({
+        supportedClaim: plainBlock(sections['supported claim'] || ''),
+        evidenceMaterial: plainBlock(sections['evidence material'] || ''),
+        interpretationLimits: plainBlock(sections['interpretation limits'] || '')
+      })
+    },
+    'tiinex.feedback.v1': {
+      id: 'tiinex.feedback.v1',
+      label: 'Feedback',
+      icon: 'fa-comment-dots',
+      suffix: '.trace.md',
+      kind: 'trace',
+      humanArtifact: true,
+      summary: 'Directed feedback with target, received feedback, disposition, and limits.',
+      bodyLabel: 'Feedback body',
+      body: '## Feedback Target\n\n- Target: \n\n## Feedback Received\n\n- Preserve or summarize the feedback.\n\n## Disposition\n\n- State: pending\n- Follow-Up: \n\n## Limits\n\n- State fidelity, scope, or interpretation limits.',
+      fields: [
+        { key: 'feedbackTarget', label: 'Feedback target', type: 'input', placeholder: 'What artifact, claim, UI, or action is this feedback about?', required: true },
+        { key: 'feedbackReceived', label: 'Feedback received', type: 'textarea', placeholder: 'What was said or observed?' },
+        { key: 'dispositionState', label: 'Disposition', type: 'select', options: ['pending', 'accepted', 'rejected', 'deferred', 'narrowed'] },
+        { key: 'followUp', label: 'Follow-up', type: 'textarea', placeholder: 'Smallest next correction or continuation.' },
+        { key: 'limits', label: 'Limits', type: 'list', placeholder: 'One uncertainty or scope limit per line' }
+      ],
+      defaults: () => ({ feedbackTarget: '', feedbackReceived: '', dispositionState: 'pending', followUp: '', limits: '' }),
+      bodyFromForm: (f) => `## Feedback Target
+
+- Target: ${paragraph(f.feedbackTarget)}
+
+## Feedback Received
+
+${paragraph(f.feedbackReceived, 'Preserve or summarize the feedback.')}
+
+## Disposition
+
+- State: ${paragraph(f.dispositionState, 'pending')}
+- Follow-Up: ${paragraph(f.followUp)}
+
+## Limits
+
+${listBlock(f.limits, 'State fidelity, scope, or interpretation limits.')}`,
+      formStateFromSections: (sections) => ({
+        feedbackTarget: singleFieldFromBullet(sections['feedback target'] || '', 'Target'),
+        feedbackReceived: plainBlock(sections['feedback received'] || ''),
+        dispositionState: singleFieldFromBullet(sections.disposition || '', 'State') || 'pending',
+        followUp: singleFieldFromBullet(sections.disposition || '', 'Follow-Up'),
+        limits: plainBlock(sections.limits || '')
+      })
+    },
+    'tiinex.reduction.v1': {
+      id: 'tiinex.reduction.v1',
+      label: 'Reduction',
+      icon: 'fa-compress',
+      suffix: '.trace.md',
+      kind: 'trace',
+      humanArtifact: true,
+      summary: 'Observable reduction with source, carry-forward state, loss, and validation.',
+      bodyLabel: 'Reduction body',
+      body: '## Source Context\n\n- Source: \n\n## Carry-Forward State\n\n- State what later work may rely on.\n\n## Loss And Uncertainty\n\n- State what was omitted, compressed, degraded, or remains uncertain.\n\n## Validation\n\n- State human review, runtime validation, source checks, or explicit limits.',
+      fields: [
+        { key: 'sourceContext', label: 'Source context', type: 'textarea', placeholder: 'What was reduced, summarized, or carried forward?' },
+        { key: 'carryForwardState', label: 'Carry-forward state', type: 'textarea', placeholder: 'What later work may rely on?', required: true },
+        { key: 'lossAndUncertainty', label: 'Loss and uncertainty', type: 'list', placeholder: 'What was omitted, compressed, degraded, or remains uncertain?' },
+        { key: 'validation', label: 'Validation', type: 'list', placeholder: 'How can a later reader check this reduction?' }
+      ],
+      defaults: () => ({ sourceContext: '', carryForwardState: '', lossAndUncertainty: '', validation: '' }),
+      bodyFromForm: (f) => `## Source Context
+
+${paragraph(f.sourceContext, '- Source: ')}
+
+## Carry-Forward State
+
+${paragraph(f.carryForwardState, '- State what later work may rely on.')}
+
+## Loss And Uncertainty
+
+${listBlock(f.lossAndUncertainty, 'State what was omitted, compressed, degraded, or remains uncertain.')}
+
+## Validation
+
+${listBlock(f.validation, 'State human review, runtime validation, source checks, or explicit limits.')}`,
+      formStateFromSections: (sections) => ({
+        sourceContext: plainBlock(sections['source context'] || ''),
+        carryForwardState: plainBlock(sections['carry-forward state'] || ''),
+        lossAndUncertainty: plainBlock(sections['loss and uncertainty'] || ''),
+        validation: plainBlock(sections.validation || '')
+      })
+    },
+    'tiinex.task.v1': {
+      id: 'tiinex.task.v1',
+      label: 'Task',
+      icon: 'fa-list-check',
+      suffix: '.trace.md',
+      kind: 'trace',
+      humanArtifact: true,
+      summary: 'Bounded work with objective, done criteria, scope, and dependencies.',
+      bodyLabel: 'Task body',
+      body: '## Objective\n\nDescribe the concrete work being asked for.\n\n## Done Criteria\n\n- \n\n## Scope\n\n- In scope: \n- Out of scope: \n\n## Dependencies\n\n- ',
+      fields: [
+        { key: 'objective', label: 'Objective', type: 'textarea', placeholder: 'What concrete work is being asked for?', required: true },
+        { key: 'doneCriteria', label: 'Done criteria', type: 'list', placeholder: 'One completion signal per line' },
+        { key: 'inScope', label: 'In scope', type: 'list', placeholder: 'What is allowed or expected?' },
+        { key: 'outOfScope', label: 'Out of scope', type: 'list', placeholder: 'What should not be changed?' },
+        { key: 'dependencies', label: 'Dependencies', type: 'list', placeholder: 'Required inputs, constraints, or blockers' }
+      ],
+      defaults: () => ({ objective: '', doneCriteria: '', inScope: '', outOfScope: '', dependencies: '' }),
+      bodyFromForm: (f) => `## Objective
+
+${paragraph(f.objective, 'Describe the concrete work being asked for.')}
+
+## Done Criteria
+
+${listBlock(f.doneCriteria)}
+
+## Scope
+
+- In scope:
+${listBlock(f.inScope).split('\n').map((line) => `  ${line}`).join('\n')}
+- Out of scope:
+${listBlock(f.outOfScope).split('\n').map((line) => `  ${line}`).join('\n')}
+
+## Dependencies
+
+${listBlock(f.dependencies)}`,
+      formStateFromSections: (sections) => ({
+        objective: plainBlock(sections.objective || ''),
+        doneCriteria: plainBlock(sections['done criteria'] || ''),
+        inScope: plainBlock((sections.scope || '').match(/In scope:\s*([\s\S]*?)(?:\n\s*-\s*Out of scope:|$)/i)?.[1] || ''),
+        outOfScope: plainBlock((sections.scope || '').match(/Out of scope:\s*([\s\S]*)$/i)?.[1] || ''),
+        dependencies: plainBlock(sections.dependencies || '')
+      })
+    },
+    'tiinex.decision.v1': {
+      id: 'tiinex.decision.v1',
+      label: 'Decision',
+      icon: 'fa-scale-balanced',
+      suffix: '.trace.md',
+      kind: 'trace',
+      humanArtifact: true,
+      summary: 'Landed decision with operative outcome, basis, and consequences.',
+      bodyLabel: 'Decision body',
+      body: 'This decision records what now governs.\n\n## Decision\n\n- State: accepted\n- Subject: \n- Decision: \n\n## Basis\n\n- \n\n## Consequences\n\n- ',
+      fields: [
+        { key: 'state', label: 'State', type: 'select', options: ['accepted', 'pending', 'rejected', 'deferred'] },
+        { key: 'subject', label: 'Subject', type: 'input', placeholder: 'What does this decision govern?', required: true },
+        { key: 'decision', label: 'Decision', type: 'textarea', placeholder: 'What is the selected path?' },
+        { key: 'basis', label: 'Basis', type: 'list', placeholder: 'Why this decision is justified' },
+        { key: 'consequences', label: 'Consequences', type: 'list', placeholder: 'What follows from this decision?' }
+      ],
+      defaults: () => ({ state: 'accepted', subject: '', decision: '', basis: '', consequences: '' }),
+      bodyFromForm: (f) => `This decision records what now governs.
+
+## Decision
+
+- State: ${paragraph(f.state, 'accepted')}
+- Subject: ${paragraph(f.subject)}
+- Decision: ${paragraph(f.decision)}
+
+## Basis
+
+${listBlock(f.basis)}
+
+## Consequences
+
+${listBlock(f.consequences)}`,
+      formStateFromSections: (sections) => ({
+        state: singleFieldFromBullet(sections.decision || '', 'State') || 'accepted',
+        subject: singleFieldFromBullet(sections.decision || '', 'Subject'),
+        decision: singleFieldFromBullet(sections.decision || '', 'Decision'),
+        basis: plainBlock(sections.basis || ''),
+        consequences: plainBlock(sections.consequences || '')
+      })
+    },
+    'tiinex.pointer.v1': {
+      id: 'tiinex.pointer.v1',
+      label: 'Pointer',
+      icon: 'fa-link',
+      suffix: '.trace.md',
+      kind: 'trace',
+      humanArtifact: true,
+      summary: 'Thin redirect or destination-list artifact with a clear next hop.',
+      bodyLabel: 'Pointer body',
+      body: 'This pointer keeps one thin hop toward the current target.\n\n## Current Read\n\nExplain what this pointer currently points toward.\n\n## Destinations\n\n- Target: \n\n## Next Artifacts\n\n- ',
+      fields: [
+        { key: 'currentRead', label: 'Current read', type: 'textarea', placeholder: 'What does this pointer currently tell the reader?' },
+        { key: 'destinations', label: 'Destinations', type: 'list', placeholder: 'One target URL/path/artifact per line', required: true },
+        { key: 'nextArtifacts', label: 'Next artifacts', type: 'list', placeholder: 'Suggested next hops or follow-ups' }
+      ],
+      defaults: () => ({ currentRead: '', destinations: '', nextArtifacts: '' }),
+      bodyFromForm: (f) => `This pointer keeps one thin hop toward the current target.
+
+## Current Read
+
+${paragraph(f.currentRead, 'Explain what this pointer currently points toward.')}
+
+## Destinations
+
+${listBlock(f.destinations)}
+
+## Next Artifacts
+
+${listBlock(f.nextArtifacts)}`,
+      formStateFromSections: (sections) => ({
+        currentRead: plainBlock(sections['current read'] || sections._intro || ''),
+        destinations: plainBlock(sections.destinations || ''),
+        nextArtifacts: plainBlock(sections['next artifacts'] || '')
+      })
+    },
+    'tiinex.lineage.upgrade.deferral.v1': {
+      id: 'tiinex.lineage.upgrade.deferral.v1',
+      label: 'Lineage Upgrade Deferral',
+      icon: 'fa-clock-rotate-left',
+      suffix: '.trace.md',
+      kind: 'trace',
+      humanArtifact: true,
+      summary: 'Decision to acknowledge but defer a lineage repair or latest upgrade.',
+      bodyLabel: 'Deferral body',
+      body: '## Decision\n\n- State: accepted\n- Decision: do not adopt the known upstream repair or latest replacement for this local range yet\n\n## Deferral\n\n- Deferral Type: lineage-upgrade\n- Known Issue: \n- Deferred Upgrade: \n- Affected Local Range: \n- Adoption Decision: deferred\n- Material Impact: unknown\n- Warning Policy: keep-warning\n- Review Condition: \n\n## Basis\n\n- \n\n## Consequences\n\n- ',
+      fields: [
+        { key: 'knownIssue', label: 'Known issue', type: 'textarea', placeholder: 'What lineage repair or upgrade is known?', required: true },
+        { key: 'deferredUpgrade', label: 'Deferred upgrade', type: 'textarea', placeholder: 'What would be adopted later?' },
+        { key: 'affectedRange', label: 'Affected local range', type: 'input', placeholder: 'Path, branch, node range, or lineage segment' },
+        { key: 'reviewCondition', label: 'Review condition', type: 'textarea', placeholder: 'When or why should this be revisited?' },
+        { key: 'basis', label: 'Basis', type: 'list', placeholder: 'Why deferral is acceptable for now' },
+        { key: 'consequences', label: 'Consequences', type: 'list', placeholder: 'What warning or limitation remains?' }
+      ],
+      defaults: () => ({ knownIssue: '', deferredUpgrade: '', affectedRange: '', reviewCondition: '', basis: '', consequences: '' }),
+      bodyFromForm: (f) => `## Decision
+
+- State: accepted
+- Decision: do not adopt the known upstream repair or latest replacement for this local range yet
+
+## Deferral
+
+- Deferral Type: lineage-upgrade
+- Known Issue: ${paragraph(f.knownIssue)}
+- Deferred Upgrade: ${paragraph(f.deferredUpgrade)}
+- Affected Local Range: ${paragraph(f.affectedRange)}
+- Adoption Decision: deferred
+- Material Impact: unknown
+- Warning Policy: keep-warning
+- Review Condition: ${paragraph(f.reviewCondition)}
+
+## Basis
+
+${listBlock(f.basis)}
+
+## Consequences
+
+${listBlock(f.consequences)}`,
+      formStateFromSections: (sections) => ({
+        knownIssue: singleFieldFromBullet(sections.deferral || '', 'Known Issue'),
+        deferredUpgrade: singleFieldFromBullet(sections.deferral || '', 'Deferred Upgrade'),
+        affectedRange: singleFieldFromBullet(sections.deferral || '', 'Affected Local Range'),
+        reviewCondition: singleFieldFromBullet(sections.deferral || '', 'Review Condition'),
+        basis: plainBlock(sections.basis || ''),
+        consequences: plainBlock(sections.consequences || '')
+      })
+    },
+    'tiinex.workspace.v1': {
+      id: 'tiinex.workspace.v1',
+      label: 'Workspace',
+      icon: 'fa-folder-tree',
+      suffix: '.workspace.md',
+      kind: 'workspace',
+      humanArtifact: false,
+      summary: 'Markdown-first local/review workspace description.',
+      bodyLabel: 'Workspace body',
+      body: '## Workspace Scope\n\nWhat this workspace contains.\n\n## Sources\n\n- \n\n## Notes\n\nWhat the next reader should know.',
+      fields: [
+        { key: 'workspaceScope', label: 'Workspace scope', type: 'textarea', placeholder: 'What does this workspace contain?', required: true },
+        { key: 'sources', label: 'Sources', type: 'list', placeholder: 'One source per line' },
+        { key: 'notes', label: 'Notes', type: 'textarea', placeholder: 'What should the next reader know?' }
+      ],
+      defaults: () => ({ workspaceScope: '', sources: '', notes: '' }),
+      bodyFromForm: (f) => `## Workspace Scope
+
+${paragraph(f.workspaceScope, 'What this workspace contains.')}
+
+## Sources
+
+${listBlock(f.sources)}
+
+## Notes
+
+${paragraph(f.notes, 'What the next reader should know.')}`,
+      formStateFromSections: (sections) => ({
+        workspaceScope: plainBlock(sections['workspace scope'] || ''),
+        sources: plainBlock(sections.sources || ''),
+        notes: plainBlock(sections.notes || '')
+      })
+    },
+    raw: {
+      id: 'raw',
+      label: 'Raw Tiinex Artifact',
+      icon: 'fa-code',
+      suffix: '.trace.md',
+      kind: 'trace',
+      humanArtifact: false,
+      generatesSchemaId: 'tiinex.topic.v1',
+      summary: 'Fallback authoring surface for unusual or not-yet-modeled human artifacts.',
+      bodyLabel: 'Raw body',
+      body: 'Draft body.',
+      fields: null,
+      defaults: () => ({}),
+      bodyFromForm: () => '',
+      formStateFromSections: () => ({})
+    }
+  });
+
+  const WIZARD_HUMAN_SCHEMA_IDS = new Set(WIZARD_SCHEMA_ORDER.filter((id) => WIZARD_SCHEMA_REGISTRY[id]?.humanArtifact));
+
+  function wizardSchemaDefinition(id) {
+    return WIZARD_SCHEMA_REGISTRY[String(id || '').trim()] || WIZARD_SCHEMA_REGISTRY.raw;
+  }
+
   function humanSchemaOptions() {
-    const defs = [
-      ['tiinex.topic.v1', 'Topic', 'fa-diagram-project', '.trace.md', 'A bounded topic thread with current read, design direction, and next artifacts.'],
-      ['tiinex.evidence.v1', 'Evidence', 'fa-paperclip', '.trace.md', 'Preserved supporting material with claim, provenance, evidence, and limits.'],
-      ['tiinex.feedback.v1', 'Feedback', 'fa-comment-dots', '.trace.md', 'Directed feedback with target, received feedback, disposition, and limits.'],
-      ['tiinex.reduction.v1', 'Reduction', 'fa-compress', '.trace.md', 'Observable reduction with source, carry-forward state, loss, and validation.'],
-      ['tiinex.task.v1', 'Task', 'fa-list-check', '.trace.md', 'Bounded work with objective, done criteria, scope, and dependencies.'],
-      ['tiinex.decision.v1', 'Decision', 'fa-scale-balanced', '.trace.md', 'Landed decision with operative outcome, basis, and consequences.'],
-      ['tiinex.pointer.v1', 'Pointer', 'fa-link', '.trace.md', 'Thin redirect or destination-list artifact with a clear next hop.'],
-      ['tiinex.lineage.upgrade.deferral.v1', 'Lineage Upgrade Deferral', 'fa-clock-rotate-left', '.trace.md', 'Decision to acknowledge but defer a lineage repair or latest upgrade.'],
-      ['tiinex.workspace.v1', 'Workspace', 'fa-folder-tree', '.workspace.md', 'Markdown-first local/review workspace description.'],
-      ['raw', 'Raw Tiinex Artifact', 'fa-code', '.trace.md', 'Fallback authoring surface for unusual or not-yet-modeled human artifacts.']
-    ];
-    return defs.map(([id, label, icon, suffix, summary]) => {
-      const t = schemaTemplate(id);
-      return { id, label, icon, suffix, summary, bodyLabel: t.bodyLabel, body: t.body };
+    return WIZARD_SCHEMA_ORDER.map((id) => {
+      const def = wizardSchemaDefinition(id);
+      return {
+        id: def.id,
+        label: def.label,
+        icon: def.icon,
+        suffix: def.suffix,
+        summary: def.summary,
+        bodyLabel: def.bodyLabel,
+        body: def.body
+      };
     });
   }
 
@@ -10663,7 +10563,6 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     const summary = defaultWizardSummary(modal, selected);
     const body = typeof modal.body === 'string' ? modal.body : selected.body;
     const step = wizardStep(modal);
-    const stepTitle = step === 'type' ? 'Choose type' : 'Describe leaf';
     const primaryAction = step === 'type' ? 'wizard-next-step' : 'wizard-open-editor';
     const primaryText = step === 'type' ? 'Continue to details' : copy.button;
     const primaryIcon = step === 'type' ? 'fa-arrow-right' : 'fa-pen-nib';
@@ -10672,23 +10571,23 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
       : `<button class="tv-btn primary" data-action="${escapeAttr(primaryAction)}" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid ${escapeAttr(primaryIcon)}"></i>${escapeHtml(primaryText)}</button>`;
 
     return `<div class="modal-backdrop-custom focus-modal artifact-wizard-backdrop" role="dialog" aria-modal="true" aria-labelledby="artifact-wizard-title">
-      <div class="modal-panel artifact-wizard-panel paged">
-        <div class="modal-header-lite artifact-wizard-head">
-          <div>
+      <div class="modal-panel artifact-wizard-panel authoring-dialog-panel paged">
+        <div class="modal-header-lite artifact-wizard-head authoring-dialog-head">
+          <div class="authoring-dialog-title">
             <p class="kicker">${escapeHtml(copy.kicker)}</p>
             <h2 class="modal-title-lite" id="artifact-wizard-title"><i class="fa-solid ${escapeAttr(copy.icon)}"></i>${escapeHtml(copy.title)}</h2>
             <p class="text-secondary mb-0">${escapeHtml(copy.lead)}</p>
           </div>
-          <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+          <button class="tv-btn small subtle authoring-dialog-close" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
         </div>
-        <div class="artifact-wizard-body paged">
+        <div class="artifact-wizard-body authoring-dialog-body paged">
           ${wizardStepIndicator(step)}
           ${step === 'type' ? wizardRelationCardInitial(ws, modal) : ''}
           ${step === 'type'
             ? wizardTypeStep(ws, modal, options, selectedId)
             : wizardDescribeStep(ws, modal, selected, title, summary, body)}
         </div>
-        <div class="modal-footer-actions artifact-wizard-actions paged">
+        <div class="modal-footer-actions artifact-wizard-actions authoring-dialog-actions paged">
           ${step === 'describe' ? `<button class="tv-btn subtle" data-action="wizard-set-step" data-step="type"><i class="fa-solid fa-arrow-left"></i>Back</button>` : ''}
           ${primaryButtons}
           <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
@@ -10726,11 +10625,11 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     const kind = wizardKindForSchema(option.id);
     if (modal.mode === 'continue' && modal.parentNodeId) {
       const parent = wizardNodeById(ws, modal.parentNodeId);
-      if (parent && kind === 'trace') return nextSiblingTracePath(parent);
+      if (parent && kind === 'trace') return nextSiblingTracePath(parent, ws);
     }
     if (modal.mode === 'reference' && modal.parentNodeId) {
       const parent = wizardNodeById(ws, modal.parentNodeId);
-      if (parent && kind === 'trace') return nextSiblingTracePath(parent).replace(/\.trace\.md$/i, '-reference.trace.md');
+      if (parent && kind === 'trace') return nextSiblingTracePath(parent, ws).replace(/\.trace\.md$/i, '-reference.trace.md');
     }
     const slug = slugifyTitle(title || option.label);
     if (kind === 'workspace') return `.topics/workspaces/${slug}.workspace.md`;
@@ -10765,13 +10664,24 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     if (!parentPickerActiveFor(ws)) return html;
     return html.replace('<div class="post-feed', `${renderParentPickerBanner(ws)}<div class="post-feed`);
   });
+  function parentPickerSelectActionItem(ws, node) {
+    return {
+      label: 'Select as parent',
+      icon: 'fa-solid fa-location-crosshairs',
+      className: 'select-parent-action constructive',
+      dataset: { action: 'select-reference-parent', ws: ws?.id || '', node: node?.id || '' },
+      title: 'Select as parent for reference leaf'
+    };
+  }
+
   registerRenderNodePostWrapper(function renderNodePostWithParentPicker(ws, node, options = {}, next) {
-    let html = next(ws, node, options);
+    const html = next(ws, node, options);
     if (!parentPickerActiveFor(ws)) return html;
-    const button = `<button class="post-action select-parent-action" data-action="select-reference-parent" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="Select as parent for reference leaf" aria-label="Select as parent"><i class="fa-solid fa-location-crosshairs"></i>Select as parent</button>`;
-    const footerIndex = html.lastIndexOf('</div>');
-    if (footerIndex < 0) return html + button;
-    return html.slice(0, footerIndex) + button + html.slice(footerIndex);
+    const button = renderNodeActionItem(parentPickerSelectActionItem(ws, node));
+    if (html.includes('<div class="post-actions">')) {
+      return html.replace('<div class="post-actions">', `<div class="post-actions">${button}`);
+    }
+    return html.replace('</article>', `<div class="post-actions">${button}</div></article>`);
   });
   registerRenderWrapper(function renderWithParentPickerClass(next) {
     const result = next();
@@ -10833,8 +10743,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
       event.stopPropagation();
       const ws = getWorkspace(event.currentTarget.dataset.ws || '');
       const node = ws?.nodeById?.get?.(event.currentTarget.dataset.node || '');
-      if (!ws || !node) return toast('No node selected to continue.', 'warn');
-      openArtifactWizard(ws, { mode: 'continue', parentNodeId: node.id, schemaId: node.currentSchemaText || node.currentSchema || 'tiinex.topic.v1' });
+      openArtifactCreateIntent({ mode: 'continue', ws, node });
       return;
     }
 
@@ -10843,8 +10752,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
       event.stopPropagation();
       const ws = getWorkspace(event.currentTarget.dataset.ws || '');
       const node = ws?.nodeById?.get?.(event.currentTarget.dataset.node || '');
-      if (!ws || !node) return toast('No node selected to reference.', 'warn');
-      enterReferenceParentPicker(ws, node);
+      openArtifactCreateIntent({ mode: 'reference', ws, node });
       return;
     }
 
@@ -10995,16 +10903,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
 
 
   function knownHumanSchemaIds() {
-    return new Set([
-      'tiinex.topic.v1',
-      'tiinex.evidence.v1',
-      'tiinex.feedback.v1',
-      'tiinex.reduction.v1',
-      'tiinex.task.v1',
-      'tiinex.decision.v1',
-      'tiinex.pointer.v1',
-      'tiinex.lineage.upgrade.deferral.v1'
-    ]);
+    return new Set(WIZARD_HUMAN_SCHEMA_IDS);
   }
 
   function schemaArtifactPath(schemaId) {
@@ -11050,61 +10949,19 @@ ${why ? `  - Why: ${why}\n` : ''}${summary ? `  - Summary: ${summary}\n` : ''}`;
     return integrityFooter(towards, 'pending');
   }
 
-  function bodyTemplates() {
-    return {
-      'tiinex.topic.v1': {
-        bodyLabel: 'Topic body',
-        body: 'This topic captures the current direction for the work.\n\n## Current Read\n\nDescribe the present topic state.\n\n## Design Direction\n\nState where this topic should move next.\n\n## Next Artifacts\n\n- '
-      },
-      'tiinex.evidence.v1': {
-        bodyLabel: 'Evidence body',
-        body: '## Supported Claim\n\n- State what this evidence bears on.\n\n## Provenance\n\n- Source: \n- Representation: \n\n## Evidence Material\n\nPreserve the readable supporting material here.\n\n## Interpretation Limits\n\n- State fidelity, scope, excerpting, transformation, or uncertainty limits.'
-      },
-      'tiinex.feedback.v1': {
-        bodyLabel: 'Feedback body',
-        body: '## Feedback Target\n\n- Target: \n\n## Feedback Received\n\n- Preserve or summarize the feedback.\n\n## Disposition\n\n- State: pending\n- Follow-Up: \n\n## Limits\n\n- State fidelity, scope, or interpretation limits.'
-      },
-      'tiinex.reduction.v1': {
-        bodyLabel: 'Reduction body',
-        body: '## Source Context\n\n- Source: \n\n## Carry-Forward State\n\n- State what later work may rely on.\n\n## Loss And Uncertainty\n\n- State what was omitted, compressed, degraded, or remains uncertain.\n\n## Validation\n\n- State human review, runtime validation, source checks, or explicit limits.'
-      },
-      'tiinex.task.v1': {
-        bodyLabel: 'Task body',
-        body: '## Objective\n\nDescribe the concrete work being asked for.\n\n## Done Criteria\n\n- \n\n## Scope\n\n- In scope: \n- Out of scope: \n\n## Dependencies\n\n- '
-      },
-      'tiinex.decision.v1': {
-        bodyLabel: 'Decision body',
-        body: 'This decision records what now governs.\n\n## Decision\n\n- State: accepted\n- Subject: \n- Decision: \n\n## Basis\n\n- \n\n## Consequences\n\n- '
-      },
-      'tiinex.pointer.v1': {
-        bodyLabel: 'Pointer body',
-        body: 'This pointer keeps one thin hop toward the current target.\n\n## Current Read\n\nExplain what this pointer currently points toward.\n\n## Destinations\n\n- Target: \n\n## Next Artifacts\n\n- '
-      },
-      'tiinex.lineage.upgrade.deferral.v1': {
-        bodyLabel: 'Deferral body',
-        body: '## Decision\n\n- State: accepted\n- Decision: do not adopt the known upstream repair or latest replacement for this local range yet\n\n## Deferral\n\n- Deferral Type: lineage-upgrade\n- Known Issue: \n- Deferred Upgrade: \n- Affected Local Range: \n- Adoption Decision: deferred\n- Material Impact: unknown\n- Warning Policy: keep-warning\n- Review Condition: \n\n## Basis\n\n- \n\n## Consequences\n\n- '
-      },
-      'tiinex.workspace.v1': {
-        bodyLabel: 'Workspace body',
-        body: '## Workspace Scope\n\nWhat this workspace contains.\n\n## Sources\n\n- \n\n## Notes\n\nWhat the next reader should know.'
-      },
-      raw: {
-        bodyLabel: 'Raw body',
-        body: 'Draft body.'
-      }
-    };
-  }
-
   function schemaTemplate(id) {
-    return bodyTemplates()[id] || bodyTemplates().raw;
+    const def = wizardSchemaDefinition(id);
+    return { bodyLabel: def.bodyLabel, body: def.body };
   }
 
   function wizardKindForSchema(schemaId) {
-    return schemaId === 'tiinex.workspace.v1' ? 'workspace' : 'trace';
+    return wizardSchemaDefinition(schemaId).kind || 'trace';
   }
 
   function wizardSchemaId(option) {
-    return option.id === 'raw' ? 'tiinex.topic.v1' : option.id;
+    const id = typeof option === 'string' ? option : option?.id;
+    const def = wizardSchemaDefinition(id);
+    return def.generatesSchemaId || def.id;
   }
 
   function relationReferenceBody(ws, modal, path) {
@@ -11119,70 +10976,8 @@ ${why ? `  - Why: ${why}\n` : ''}${summary ? `  - Summary: ${summary}\n` : ''}`;
 
 
 
-  function schemaFormDefinitions() {
-    return {
-      'tiinex.topic.v1': [
-        { key: 'currentRead', label: 'Current read', type: 'textarea', placeholder: 'What is true or useful to know right now?', required: true },
-        { key: 'designDirection', label: 'Design direction', type: 'textarea', placeholder: 'Where should this thread move next?' },
-        { key: 'nextArtifacts', label: 'Next artifacts', type: 'list', placeholder: 'One continuation or artifact idea per line' }
-      ],
-      'tiinex.evidence.v1': [
-        { key: 'supportedClaim', label: 'Supported claim', type: 'textarea', placeholder: 'What does this evidence bear on?', required: true },
-        { key: 'source', label: 'Source', type: 'input', placeholder: 'URL, path, file, screenshot, or local source' },
-        { key: 'representation', label: 'Representation', type: 'input', placeholder: 'quote, screenshot, generated image, observation, etc.' },
-        { key: 'evidenceMaterial', label: 'Evidence material', type: 'textarea', placeholder: 'Paste or summarize the material to preserve.' },
-        { key: 'interpretationLimits', label: 'Interpretation limits', type: 'list', placeholder: 'One limit per line' }
-      ],
-      'tiinex.feedback.v1': [
-        { key: 'feedbackTarget', label: 'Feedback target', type: 'input', placeholder: 'What artifact, claim, UI, or action is this feedback about?', required: true },
-        { key: 'feedbackReceived', label: 'Feedback received', type: 'textarea', placeholder: 'What was said or observed?' },
-        { key: 'dispositionState', label: 'Disposition', type: 'select', options: ['pending', 'accepted', 'rejected', 'deferred', 'narrowed'] },
-        { key: 'followUp', label: 'Follow-up', type: 'textarea', placeholder: 'Smallest next correction or continuation.' },
-        { key: 'limits', label: 'Limits', type: 'list', placeholder: 'One uncertainty or scope limit per line' }
-      ],
-      'tiinex.reduction.v1': [
-        { key: 'sourceContext', label: 'Source context', type: 'textarea', placeholder: 'What was reduced, summarized, or carried forward?' },
-        { key: 'carryForwardState', label: 'Carry-forward state', type: 'textarea', placeholder: 'What later work may rely on?', required: true },
-        { key: 'lossAndUncertainty', label: 'Loss and uncertainty', type: 'list', placeholder: 'What was omitted, compressed, degraded, or remains uncertain?' },
-        { key: 'validation', label: 'Validation', type: 'list', placeholder: 'How can a later reader check this reduction?' }
-      ],
-      'tiinex.task.v1': [
-        { key: 'objective', label: 'Objective', type: 'textarea', placeholder: 'What concrete work is being asked for?', required: true },
-        { key: 'doneCriteria', label: 'Done criteria', type: 'list', placeholder: 'One completion signal per line' },
-        { key: 'inScope', label: 'In scope', type: 'list', placeholder: 'What is allowed or expected?' },
-        { key: 'outOfScope', label: 'Out of scope', type: 'list', placeholder: 'What should not be changed?' },
-        { key: 'dependencies', label: 'Dependencies', type: 'list', placeholder: 'Required inputs, constraints, or blockers' }
-      ],
-      'tiinex.decision.v1': [
-        { key: 'state', label: 'State', type: 'select', options: ['accepted', 'pending', 'rejected', 'deferred'] },
-        { key: 'subject', label: 'Subject', type: 'input', placeholder: 'What does this decision govern?', required: true },
-        { key: 'decision', label: 'Decision', type: 'textarea', placeholder: 'What is the selected path?' },
-        { key: 'basis', label: 'Basis', type: 'list', placeholder: 'Why this decision is justified' },
-        { key: 'consequences', label: 'Consequences', type: 'list', placeholder: 'What follows from this decision?' }
-      ],
-      'tiinex.pointer.v1': [
-        { key: 'currentRead', label: 'Current read', type: 'textarea', placeholder: 'What does this pointer currently tell the reader?' },
-        { key: 'destinations', label: 'Destinations', type: 'list', placeholder: 'One target URL/path/artifact per line', required: true },
-        { key: 'nextArtifacts', label: 'Next artifacts', type: 'list', placeholder: 'Suggested next hops or follow-ups' }
-      ],
-      'tiinex.lineage.upgrade.deferral.v1': [
-        { key: 'knownIssue', label: 'Known issue', type: 'textarea', placeholder: 'What lineage repair or upgrade is known?', required: true },
-        { key: 'deferredUpgrade', label: 'Deferred upgrade', type: 'textarea', placeholder: 'What would be adopted later?' },
-        { key: 'affectedRange', label: 'Affected local range', type: 'input', placeholder: 'Path, branch, node range, or lineage segment' },
-        { key: 'reviewCondition', label: 'Review condition', type: 'textarea', placeholder: 'When or why should this be revisited?' },
-        { key: 'basis', label: 'Basis', type: 'list', placeholder: 'Why deferral is acceptable for now' },
-        { key: 'consequences', label: 'Consequences', type: 'list', placeholder: 'What warning or limitation remains?' }
-      ],
-      'tiinex.workspace.v1': [
-        { key: 'workspaceScope', label: 'Workspace scope', type: 'textarea', placeholder: 'What does this workspace contain?', required: true },
-        { key: 'sources', label: 'Sources', type: 'list', placeholder: 'One source per line' },
-        { key: 'notes', label: 'Notes', type: 'textarea', placeholder: 'What should the next reader know?' }
-      ]
-    };
-  }
-
   function schemaFormFor(schemaId) {
-    return schemaFormDefinitions()[schemaId] || null;
+    return wizardSchemaDefinition(schemaId).fields || null;
   }
 
   function wizardFormState(modal) {
@@ -11205,18 +11000,8 @@ ${why ? `  - Why: ${why}\n` : ''}${summary ? `  - Summary: ${summary}\n` : ''}`;
   }
 
   function defaultFormValues(schemaId, modal, option) {
-    const summary = defaultWizardSummary(modal || {}, option || schemaOptionById(schemaId));
-    return {
-      'tiinex.topic.v1': { currentRead: '', designDirection: '', nextArtifacts: '' },
-      'tiinex.evidence.v1': { supportedClaim: summary, source: '', representation: '', evidenceMaterial: '', interpretationLimits: '' },
-      'tiinex.feedback.v1': { feedbackTarget: '', feedbackReceived: '', dispositionState: 'pending', followUp: '', limits: '' },
-      'tiinex.reduction.v1': { sourceContext: '', carryForwardState: '', lossAndUncertainty: '', validation: '' },
-      'tiinex.task.v1': { objective: '', doneCriteria: '', inScope: '', outOfScope: '', dependencies: '' },
-      'tiinex.decision.v1': { state: 'accepted', subject: '', decision: '', basis: '', consequences: '' },
-      'tiinex.pointer.v1': { currentRead: '', destinations: '', nextArtifacts: '' },
-      'tiinex.lineage.upgrade.deferral.v1': { knownIssue: '', deferredUpgrade: '', affectedRange: '', reviewCondition: '', basis: '', consequences: '' },
-      'tiinex.workspace.v1': { workspaceScope: '', sources: '', notes: '' }
-    }[schemaId] || {};
+    const def = wizardSchemaDefinition(schemaId);
+    return typeof def.defaults === 'function' ? def.defaults(modal, option) : {};
   }
 
   function ensureWizardFormDefaults(modal, option) {
@@ -11230,159 +11015,8 @@ ${why ? `  - Why: ${why}\n` : ''}${summary ? `  - Summary: ${summary}\n` : ''}`;
   }
 
   function bodyFromForm(schemaId, f, context = {}) {
-    f = f || {};
-    switch (schemaId) {
-      case 'tiinex.topic.v1':
-        return `${paragraph(f.currentRead, 'Describe the present topic state.')}
-
-## Design Direction
-
-${paragraph(f.designDirection, 'State where this topic should move next.')}
-
-## Next Artifacts
-
-${listBlock(f.nextArtifacts)}`;
-      case 'tiinex.evidence.v1': {
-        const artifactPath = context.path || app.modal?.path || '.topics/evidence.trace.md';
-        const attachments = evidenceAttachments(context.modal || app.modal);
-        const blocks = evidenceAttachmentsMarkdown(artifactPath, attachments);
-        return `## Supported Claim
-
-${listBlock(f.supportedClaim)}
-
-## Provenance
-
-${blocks.provenance}
-
-## Evidence Material
-
-${blocks.material}
-
-## Interpretation Limits
-
-${blocks.limits}`;
-      }
-      case 'tiinex.feedback.v1':
-        return `## Feedback Target
-
-- Target: ${paragraph(f.feedbackTarget)}
-
-## Feedback Received
-
-${paragraph(f.feedbackReceived, 'Preserve or summarize the feedback.')}
-
-## Disposition
-
-- State: ${paragraph(f.dispositionState, 'pending')}
-- Follow-Up: ${paragraph(f.followUp)}
-
-## Limits
-
-${listBlock(f.limits, 'State fidelity, scope, or interpretation limits.')}`;
-      case 'tiinex.reduction.v1':
-        return `## Source Context
-
-${paragraph(f.sourceContext, '- Source: ')}
-
-## Carry-Forward State
-
-${paragraph(f.carryForwardState, '- State what later work may rely on.')}
-
-## Loss And Uncertainty
-
-${listBlock(f.lossAndUncertainty, 'State what was omitted, compressed, degraded, or remains uncertain.')}
-
-## Validation
-
-${listBlock(f.validation, 'State human review, runtime validation, source checks, or explicit limits.')}`;
-      case 'tiinex.task.v1':
-        return `## Objective
-
-${paragraph(f.objective, 'Describe the concrete work being asked for.')}
-
-## Done Criteria
-
-${listBlock(f.doneCriteria)}
-
-## Scope
-
-- In scope:
-${listBlock(f.inScope).split('\n').map((line) => `  ${line}`).join('\n')}
-- Out of scope:
-${listBlock(f.outOfScope).split('\n').map((line) => `  ${line}`).join('\n')}
-
-## Dependencies
-
-${listBlock(f.dependencies)}`;
-      case 'tiinex.decision.v1':
-        return `This decision records what now governs.
-
-## Decision
-
-- State: ${paragraph(f.state, 'accepted')}
-- Subject: ${paragraph(f.subject)}
-- Decision: ${paragraph(f.decision)}
-
-## Basis
-
-${listBlock(f.basis)}
-
-## Consequences
-
-${listBlock(f.consequences)}`;
-      case 'tiinex.pointer.v1':
-        return `This pointer keeps one thin hop toward the current target.
-
-## Current Read
-
-${paragraph(f.currentRead, 'Explain what this pointer currently points toward.')}
-
-## Destinations
-
-${listBlock(f.destinations)}
-
-## Next Artifacts
-
-${listBlock(f.nextArtifacts)}`;
-      case 'tiinex.lineage.upgrade.deferral.v1':
-        return `## Decision
-
-- State: accepted
-- Decision: do not adopt the known upstream repair or latest replacement for this local range yet
-
-## Deferral
-
-- Deferral Type: lineage-upgrade
-- Known Issue: ${paragraph(f.knownIssue)}
-- Deferred Upgrade: ${paragraph(f.deferredUpgrade)}
-- Affected Local Range: ${paragraph(f.affectedRange)}
-- Adoption Decision: deferred
-- Material Impact: unknown
-- Warning Policy: keep-warning
-- Review Condition: ${paragraph(f.reviewCondition)}
-
-## Basis
-
-${listBlock(f.basis)}
-
-## Consequences
-
-${listBlock(f.consequences)}`;
-      case 'tiinex.workspace.v1':
-        return `## Workspace Scope
-
-${paragraph(f.workspaceScope, 'What this workspace contains.')}
-
-## Sources
-
-${listBlock(f.sources)}
-
-## Notes
-
-${paragraph(f.notes, 'What the next reader should know.')}`;
-      default:
-        return '';
-    }
+    const def = wizardSchemaDefinition(schemaId);
+    return typeof def.bodyFromForm === 'function' ? def.bodyFromForm(f || {}, context) : '';
   }
 
   function renderWizardField(field, value) {
@@ -11400,6 +11034,8 @@ ${paragraph(f.notes, 'What the next reader should know.')}`;
 
   function wizardDescribeStep(ws, modal, selected, title, summary, body) {
     const schemaId = wizardSchemaId(selected);
+    const renderer = wizardSchemaDefinition(schemaId).describeStep;
+    if (typeof renderer === 'function') return renderer(ws, modal, selected, title, summary, body);
     const fields = schemaFormFor(schemaId);
     ensureWizardFormDefaults(modal, selected);
     const state = wizardFormState(modal);
@@ -11533,26 +11169,25 @@ ${integrityFooterForPath(parent, path)}`,
     </section>`;
   }
 
-  registerWizardDescribeStepWrapper(function wizardDescribeStepWithEvidenceCollector(ws, modal, selected, title, summary, body, next) {
+  function renderEvidenceWizardDescribeStep(ws, modal, selected, title, summary, body) {
     const schemaId = wizardSchemaId(selected);
-    if (schemaId !== 'tiinex.evidence.v1') return next(ws, modal, selected, title, summary, body);
     ensureWizardFormDefaults(modal, selected);
     const state = wizardFormState(modal);
-    return `<section class="wizard-step wizard-step-page wizard-describe-step schema-aware-describe evidence-describe">
-      <div class="wizard-step-head"><span>2</span><div><strong>Collect the evidence</strong><p>Keep focus on what the material supports. Attachments can be URLs or files.</p></div></div>
-      <div class="wizard-selected-type-strip">
+    return `<section class="wizard-step wizard-step-page wizard-describe-step schema-aware-describe evidence-describe compact polished">
+      <div class="wizard-step-head compact polished"><span>2</span><div><strong>Collect evidence</strong><p>State the claim, then attach the material.</p></div></div>
+      <div class="wizard-selected-type-strip compact polished">
         <i class="fa-solid ${escapeAttr(selected.icon)}"></i>
         <div><strong>${escapeHtml(selected.label)}</strong><span>${escapeHtml(schemaId)}</span></div>
         <button class="tv-btn tiny subtle" data-action="wizard-set-step" data-step="type"><i class="fa-solid fa-rotate-left"></i>Change</button>
       </div>
-      <div class="wizard-fields paged schema-aware-fields evidence-fields">
-        <label class="field-label">Title<input class="form-control tv-input" data-field="wizardTitle" value="${escapeAttr(title)}"></label>
-        <label class="field-label">Summary<input class="form-control tv-input" data-field="wizardSummary" value="${escapeAttr(summary)}"></label>
-        <label class="field-label evidence-claim-field">Supported claim <span class="wizard-required">required</span><textarea class="form-control tv-textarea evidence-claim-textarea" data-wizard-form-field="supportedClaim" placeholder="What does this evidence show or support?">${escapeHtml(state.supportedClaim || '')}</textarea></label>
+      <div class="wizard-fields paged schema-aware-fields evidence-fields compact polished">
+        <label class="field-label">Title<input class="form-control tv-input compact" data-field="wizardTitle" value="${escapeAttr(title)}"></label>
+        <label class="field-label">Summary<input class="form-control tv-input compact" data-field="wizardSummary" value="${escapeAttr(summary)}"></label>
+        <label class="field-label evidence-claim-field compact polished">Supported claim <span class="wizard-required">required</span><textarea class="form-control tv-textarea evidence-claim-textarea compact polished" data-wizard-form-field="supportedClaim" placeholder="What does this evidence show or support?">${escapeHtml(state.supportedClaim || '')}</textarea></label>
         ${renderEvidenceAttachmentCollector(modal)}
       </div>
     </section>`;
-  });
+  }
 
   function updateEvidenceAttachmentField(id, field, value) {
     const attachment = evidenceAttachments().find((item) => item.id === id);
@@ -11696,28 +11331,6 @@ ${integrityFooterForPath(parent, path)}`,
     return wizardSchemaId(option) === 'tiinex.evidence.v1';
   }
 
-  registerWizardDescribeStepWrapper(function wizardDescribeStepCompactEvidence(ws, modal, selected, title, summary, body, next) {
-    const schemaId = wizardSchemaId(selected);
-    if (schemaId !== 'tiinex.evidence.v1') return next(ws, modal, selected, title, summary, body);
-    ensureWizardFormDefaults(modal, selected);
-    const state = wizardFormState(modal);
-    return `<section class="wizard-step wizard-step-page wizard-describe-step schema-aware-describe evidence-describe compact">
-      <div class="wizard-step-head compact"><span>2</span><div><strong>Collect evidence</strong><p>Claim first. Add URLs/files as supporting material.</p></div></div>
-      <div class="wizard-selected-type-strip compact">
-        <i class="fa-solid ${escapeAttr(selected.icon)}"></i>
-        <div><strong>${escapeHtml(selected.label)}</strong><span>${escapeHtml(schemaId)}</span></div>
-        <button class="tv-btn tiny subtle" data-action="wizard-set-step" data-step="type"><i class="fa-solid fa-rotate-left"></i>Change</button>
-      </div>
-      <div class="wizard-fields paged schema-aware-fields evidence-fields compact">
-        <label class="field-label">Title<input class="form-control tv-input compact" data-field="wizardTitle" value="${escapeAttr(title)}"></label>
-        <label class="field-label">Summary<input class="form-control tv-input compact" data-field="wizardSummary" value="${escapeAttr(summary)}"></label>
-        <label class="field-label evidence-claim-field compact">Supported claim <span class="wizard-required">required</span><textarea class="form-control tv-textarea evidence-claim-textarea compact" data-wizard-form-field="supportedClaim" placeholder="What does this evidence show or support?">${escapeHtml(state.supportedClaim || '')}</textarea></label>
-        ${renderEvidenceAttachmentCollector(modal)}
-      </div>
-      <p class="evidence-global-drop-hint"><i class="fa-solid fa-cloud-arrow-up"></i> Drop files anywhere on this dialog to attach evidence.</p>
-    </section>`;
-  });
-
   function addEvidenceDroppedFiles(files) {
     const list = Array.from(files || []).filter(Boolean);
     if (!list.length || !evidenceWizardActive()) return false;
@@ -11770,27 +11383,6 @@ ${integrityFooterForPath(parent, path)}`,
     const result = next();
     document.body.classList.toggle('evidence-details-active', evidenceDetailsActive());
     return result;
-  });
-
-  registerWizardDescribeStepWrapper(function wizardDescribeStepEvidencePolish(ws, modal, selected, title, summary, body, next) {
-    const schemaId = wizardSchemaId(selected);
-    if (schemaId !== 'tiinex.evidence.v1') return next(ws, modal, selected, title, summary, body);
-    ensureWizardFormDefaults(modal, selected);
-    const state = wizardFormState(modal);
-    return `<section class="wizard-step wizard-step-page wizard-describe-step schema-aware-describe evidence-describe compact polished">
-      <div class="wizard-step-head compact polished"><span>2</span><div><strong>Collect evidence</strong><p>State the claim, then attach the material.</p></div></div>
-      <div class="wizard-selected-type-strip compact polished">
-        <i class="fa-solid ${escapeAttr(selected.icon)}"></i>
-        <div><strong>${escapeHtml(selected.label)}</strong><span>${escapeHtml(schemaId)}</span></div>
-        <button class="tv-btn tiny subtle" data-action="wizard-set-step" data-step="type"><i class="fa-solid fa-rotate-left"></i>Change</button>
-      </div>
-      <div class="wizard-fields paged schema-aware-fields evidence-fields compact polished">
-        <label class="field-label">Title<input class="form-control tv-input compact" data-field="wizardTitle" value="${escapeAttr(title)}"></label>
-        <label class="field-label">Summary<input class="form-control tv-input compact" data-field="wizardSummary" value="${escapeAttr(summary)}"></label>
-        <label class="field-label evidence-claim-field compact polished">Supported claim <span class="wizard-required">required</span><textarea class="form-control tv-textarea evidence-claim-textarea compact polished" data-wizard-form-field="supportedClaim" placeholder="What does this evidence show or support?">${escapeHtml(state.supportedClaim || '')}</textarea></label>
-        ${renderEvidenceAttachmentCollector(modal)}
-      </div>
-    </section>`;
   });
 
   function defaultAttachmentLimit(attachment) {
@@ -12128,75 +11720,9 @@ ${integrityFooterForPath(parent, path)}`,
 
   function formStateFromNode(node) {
     const schemaId = schemaIdForNode(node);
-    const sections = sectionMap(node?.body || '');
-    switch (schemaId) {
-      case 'tiinex.topic.v1':
-        return {
-          currentRead: plainBlock(sections._intro || sections['current read'] || ''),
-          designDirection: plainBlock(sections['design direction'] || ''),
-          nextArtifacts: plainBlock(sections['next artifacts'] || '')
-        };
-      case 'tiinex.evidence.v1':
-        return {
-          supportedClaim: plainBlock(sections['supported claim'] || ''),
-          evidenceMaterial: plainBlock(sections['evidence material'] || ''),
-          interpretationLimits: plainBlock(sections['interpretation limits'] || '')
-        };
-      case 'tiinex.feedback.v1':
-        return {
-          feedbackTarget: singleFieldFromBullet(sections['feedback target'] || '', 'Target'),
-          feedbackReceived: plainBlock(sections['feedback received'] || ''),
-          dispositionState: singleFieldFromBullet(sections.disposition || '', 'State') || 'pending',
-          followUp: singleFieldFromBullet(sections.disposition || '', 'Follow-Up'),
-          limits: plainBlock(sections.limits || '')
-        };
-      case 'tiinex.reduction.v1':
-        return {
-          sourceContext: plainBlock(sections['source context'] || ''),
-          carryForwardState: plainBlock(sections['carry-forward state'] || ''),
-          lossAndUncertainty: plainBlock(sections['loss and uncertainty'] || ''),
-          validation: plainBlock(sections.validation || '')
-        };
-      case 'tiinex.task.v1':
-        return {
-          objective: plainBlock(sections.objective || ''),
-          doneCriteria: plainBlock(sections['done criteria'] || ''),
-          inScope: plainBlock((sections.scope || '').match(/In scope:\s*([\s\S]*?)(?:\n\s*-\s*Out of scope:|$)/i)?.[1] || ''),
-          outOfScope: plainBlock((sections.scope || '').match(/Out of scope:\s*([\s\S]*)$/i)?.[1] || ''),
-          dependencies: plainBlock(sections.dependencies || '')
-        };
-      case 'tiinex.decision.v1':
-        return {
-          state: singleFieldFromBullet(sections.decision || '', 'State') || 'accepted',
-          subject: singleFieldFromBullet(sections.decision || '', 'Subject'),
-          decision: singleFieldFromBullet(sections.decision || '', 'Decision'),
-          basis: plainBlock(sections.basis || ''),
-          consequences: plainBlock(sections.consequences || '')
-        };
-      case 'tiinex.pointer.v1':
-        return {
-          currentRead: plainBlock(sections['current read'] || sections._intro || ''),
-          destinations: plainBlock(sections.destinations || ''),
-          nextArtifacts: plainBlock(sections['next artifacts'] || '')
-        };
-      case 'tiinex.lineage.upgrade.deferral.v1':
-        return {
-          knownIssue: singleFieldFromBullet(sections.deferral || '', 'Known Issue'),
-          deferredUpgrade: singleFieldFromBullet(sections.deferral || '', 'Deferred Upgrade'),
-          affectedRange: singleFieldFromBullet(sections.deferral || '', 'Affected Local Range'),
-          reviewCondition: singleFieldFromBullet(sections.deferral || '', 'Review Condition'),
-          basis: plainBlock(sections.basis || ''),
-          consequences: plainBlock(sections.consequences || '')
-        };
-      case 'tiinex.workspace.v1':
-        return {
-          workspaceScope: plainBlock(sections['workspace scope'] || ''),
-          sources: plainBlock(sections.sources || ''),
-          notes: plainBlock(sections.notes || '')
-        };
-      default:
-        return {};
-    }
+    const def = wizardSchemaDefinition(schemaId);
+    if (typeof def.formStateFromSections !== 'function') return {};
+    return def.formStateFromSections(sectionMap(node?.body || ''));
   }
 
   function openSchemaAwareEditWizard(ws, node) {
@@ -15042,31 +14568,6 @@ See _tiinex/export.manifest.json for source and output path metadata.
   }
 
 
-  function openCreateWizardFromMobileAction(modeRaw, ws, node, seed = {}) {
-    const mode = modeRaw === 'reference' ? 'reference' : modeRaw === 'continue' ? 'continue' : '';
-    if (!mode || !ws || !node || typeof openArtifactWizard !== 'function') return false;
-    if (mode === 'reference') {
-      enterReferenceParentPicker(ws, node);
-      return true;
-    }
-    const selected = (typeof selectedNodeSafe === 'function' ? selectedNodeSafe(ws) : null) || null;
-    const schemaId = typeof schemaIdFromCreate === 'function'
-      ? schemaIdFromCreate(seed.schemaId || seed.schema || '', mode === 'reference' ? 'tiinex.evidence.v1' : (node.currentSchemaText || node.currentSchema || 'tiinex.topic.v1'))
-      : (mode === 'reference' ? 'tiinex.evidence.v1' : (node.currentSchemaText || node.currentSchema || 'tiinex.topic.v1'));
-    openArtifactWizard(ws, {
-      mode,
-      parentNodeId: mode === 'continue' ? node.id : (seed.parentNodeId || selected?.id || node.id),
-      referencedNodeId: mode === 'reference' ? node.id : '',
-      schemaId,
-      wizardStep: seed.wizardStep || 'type',
-      title: seed.title || (mode === 'reference' ? `${node.title || 'Selected artifact'} reference` : `${node.title || 'Selected artifact'} continuation`),
-      summary: seed.summary || ''
-    });
-    try { app.mobileActionSheet = null; } catch (_) {}
-    try { document.querySelectorAll('.mobile-action-backdrop, #mobile-more-capture-sheet, #mobile-more-direct-sheet').forEach((el) => el.remove()); } catch (_) {}
-    if (typeof render === 'function') render();
-    return true;
-  }
   registerActionHandler(async function mobileLensActions(event, next) {
     const action = event.currentTarget?.dataset?.action || '';
 
@@ -15118,7 +14619,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
       const chosenMode = chosenDataset.mode || '';
       if (chosenDataset.action === 'open-create' && (chosenMode === 'continue' || chosenMode === 'reference')) {
         closeMobileActionSheet();
-        openCreateWizardFromMobileAction(chosenMode, ws, node, chosenDataset);
+        openArtifactCreateIntent(Object.assign({}, chosenDataset, { mode: chosenMode, ws, node }));
         return;
       }
       closeMobileActionSheet();
@@ -15154,15 +14655,24 @@ See _tiinex/export.manifest.json for source and output path metadata.
     if (!mobileLensActive()) return html;
     if (!ws || !node) return html;
 
+    const parentPickerActive = typeof parentPickerActiveFor === 'function' && parentPickerActiveFor(ws);
+    const parentPickerChip = `<button class="badge-soft mobile-card-select-parent-chip select-parent-action" data-action="select-reference-parent" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="Select as parent for reference leaf" aria-label="Select as parent"><i class="fa-solid fa-location-crosshairs"></i></button>`;
     const moreChip = `<button class="badge-soft mobile-card-more-chip" data-action="mobile-card-more" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="More actions" aria-label="More actions"><i class="fa-solid fa-ellipsis"></i></button>`;
+    const actionChip = parentPickerActive ? parentPickerChip : moreChip;
 
-    // Mobile card primary action is the card itself. Keep the secondary actions
-    // behind a compact badge-row More affordance so mobile does not need a full
-    // action row, and so the DOM has one canonical click target for the sheet.
-    if (!/mobile-card-more-chip/u.test(html)) {
+    // Mobile card primary action is the card itself. Keep secondary actions
+    // behind the compact More affordance, except during parent picking where
+    // the single task is selecting the card as parent and a one-item sheet is
+    // unnecessary indirection. In parent-picker mode the Select affordance stays
+    // in the same reserved right-side action rail as the normal ellipsis so it
+    // does not consume or reorder semantic badges.
+    if (!/mobile-card-more-chip|mobile-card-select-parent-chip/u.test(html)) {
       html = html.replace(/(<div class="post-chips)([^"]*)(">)([\s\S]*?)(<\/div>)/u, (_, open, classes, endOpen, body, close) => {
-        const nextClasses = /mobile-card-more-row/u.test(classes) ? classes : `${classes} mobile-card-more-row`;
-        return `${open}${nextClasses}${endOpen}${body}${moreChip}${close}`;
+        const baseClasses = /mobile-card-more-row/u.test(classes) ? classes : `${classes} mobile-card-more-row`;
+        const nextClasses = parentPickerActive && !/mobile-card-parent-select-row/u.test(baseClasses)
+          ? `${baseClasses} mobile-card-parent-select-row`
+          : baseClasses;
+        return `${open}${nextClasses}${endOpen}${body}${actionChip}${close}`;
       });
     }
 
@@ -15298,6 +14808,9 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
   function mobileNodeActions(ws, node, lineage = false) {
     if (!ws || !node || typeof nodeActionItems !== 'function') return [];
+    if (typeof parentPickerActiveFor === 'function' && parentPickerActiveFor(ws)) {
+      return [parentPickerSelectActionItem(ws, node)];
+    }
     const actions = nodeActionItems(ws, node, { lineage });
     return actions.filter((action) => action?.dataset?.action !== 'toggle-node-expand');
   }
@@ -15528,44 +15041,6 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
   document.addEventListener('click', mobileOnlyActionClick, true);
 
-  function mobilePostChipPriority(chip) {
-    const text = String(chip.textContent || '').toLowerCase();
-    const cls = String(chip.className || '').toLowerCase();
-    if (/mismatch|missing|error|fail/.test(text + cls)) return 0;
-    if (/verified|open|out of date/.test(text + cls)) return 1;
-    if (/evidence|topic|feedback|reduction|decision|task|pointer|schema|root|signal|lineage/.test(text)) return 2;
-    if (/refs?|image|trace/.test(text)) return 3;
-    if (/\d{4}-\d{2}-\d{2}/.test(text)) return 6;
-    if (/tiinex\/docs|github|local/.test(text)) return 8;
-    return 5;
-  }
-
-
-  function mobileWorkspaceChrome() {
-    if (!mobileLensActive()) return;
-    document.querySelectorAll('.workspace').forEach((workspace) => {
-      const sourceRow = workspace.querySelector('.workspace-source-tabs, .source-tabs, .workspace-sources');
-      const modeToggle = workspace.querySelector('.feed-mode');
-      if (sourceRow) {
-        const sourceChips = sourceRow.querySelectorAll('.source-pill, .workspace-source-pill, .source-chip');
-        workspace.classList.toggle('single-source', sourceChips.length <= 1);
-        if (modeToggle && !sourceRow.querySelector('.feed-mode')) {
-          sourceRow.appendChild(modeToggle);
-          modeToggle.classList.add('mobile-hoisted-mode');
-        }
-      }
-    });
-  }
-
-  function applyMobileLensDomPolish() {
-    mobileWorkspaceChrome();
-    compactMobilePostChipsBase();
-  }
-  registerRenderWrapper(function renderWithMobileLensDomPolish(next) {
-    const result = next();
-    requestAnimationFrame(applyMobileLensDomPolish);
-    return result;
-  });
 
   document.addEventListener('click', (event) => {
     const btn = event.target?.closest?.('[data-mobile-action="toggle-card-chips"]');
@@ -15575,6 +15050,10 @@ See _tiinex/export.manifest.json for source and output path metadata.
     const row = btn.closest('.post-chips');
     if (!row) return;
     row.classList.toggle('mobile-chip-expanded');
+    row.dataset.mobileChipSignature = '';
+    requestAnimationFrame(() => {
+      try { compactMobilePostChips(); } catch (_) {}
+    });
   }, true);
 
 
@@ -15604,14 +15083,6 @@ See _tiinex/export.manifest.json for source and output path metadata.
     requestAnimationFrame(() => {
       unifySourceAndModeRows();
       tagOpenModalForMobile();
-      if (typeof compactMobilePostChipsBase === 'function') {
-        document.querySelectorAll('.post-chips[data-mobile-chips="1"]').forEach((row) => {
-          row.dataset.mobileChipsReadablePacked = '';
-          row.querySelectorAll('.mobile-chip-more').forEach((el) => el.remove());
-          row.querySelectorAll('.mobile-chip-hidden').forEach((el) => el.classList.remove('mobile-chip-hidden'));
-        });
-        compactMobilePostChipsBase();
-      }
     });
     return result;
   });
@@ -15619,53 +15090,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
 
 
-  function isSingleSourceWorkspace(wsEl) {
-    if (!wsEl) return false;
-    const chips = wsEl.querySelectorAll('.source-pill, .workspace-source-pill, .source-chip');
-    return chips.length <= 1;
-  }
 
-  function mobileSourceSimplify() {
-    document.querySelectorAll('.workspace').forEach((wsEl) => {
-      wsEl.classList.toggle('mobile-single-source', isSingleSourceWorkspace(wsEl));
-    });
-  }
-
-  function compactMobilePostChipsBase() {
-    if (!mobileLensActive()) return;
-    document.querySelectorAll('.lineage-post .post-chips').forEach((row) => {
-      if (row.dataset.mobileChipsReadablePacked === '1') return;
-      row.dataset.mobileChipsReadablePacked = '1';
-      const chips = Array.from(row.children).filter((el) => !el.classList.contains('mobile-chip-more'));
-      chips.sort((a, b) => mobilePostChipPriority(a) - mobilePostChipPriority(b));
-      chips.forEach((chip) => row.appendChild(chip));
-      const keep = row.closest('.preview-post') ? 3 : 4;
-      const hidden = chips.slice(keep);
-      hidden.forEach((chip) => chip.classList.add('mobile-chip-hidden'));
-      if (hidden.length) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'badge-soft mobile-chip-more';
-        btn.dataset.mobileAction = 'toggle-card-chips';
-        btn.textContent = `+${hidden.length}`;
-        row.appendChild(btn);
-      }
-    });
-  }
-  registerRenderWrapper(function renderWithMobileSourceSimplify(next) {
-    const result = next();
-    requestAnimationFrame(() => {
-      mobileSourceSimplify();
-      document.querySelectorAll('.post-chips[data-mobile-chips="1"]').forEach((row) => {
-        row.dataset.mobileChipsSourceSimplified = '';
-        row.dataset.mobileChipsReadablePacked = '';
-        row.querySelectorAll('.mobile-chip-more').forEach((el) => el.remove());
-        row.querySelectorAll('.mobile-chip-hidden').forEach((el) => el.classList.remove('mobile-chip-hidden'));
-      });
-      compactMobilePostChipsBase();
-    });
-    return result;
-  });
 
   function isParentLikeMaterialRef(ws, node, ref) {
     const kind = String(ref?.kind || '').toLowerCase();
@@ -15761,127 +15186,6 @@ See _tiinex/export.manifest.json for source and output path metadata.
     if (Array.isArray(ws.loadedSources)) return ws.loadedSources.length;
     return ws.source || ws.sourceName || ws.sourceLabel ? 1 : 0;
   }
-
-  function workspaceForChipRow(row) {
-    const wsId = row?.closest?.('[data-ws]')?.dataset?.ws || row?.closest?.('.workspace')?.dataset?.ws || '';
-    if (wsId) {
-      try { return getWorkspace(wsId); } catch (_) {}
-    }
-    try { return typeof activeWorkspace === 'function' ? activeWorkspace() : null; } catch (_) { return null; }
-  }
-
-  function markSingleSourceWorkspacesWithChips() {
-    document.querySelectorAll('.workspace').forEach((el, index) => {
-      const ws = el.dataset.ws ? getWorkspace(el.dataset.ws) : ((app.workspaces || [])[index] || null);
-      const count = workspaceDisplaySourceCount(ws);
-      const single = count <= 1;
-      el.classList.remove('single-source-state');
-      el.classList.toggle('single-source-state', single);
-      el.dataset.sourceCount = String(count);
-    });
-  }
-
-  function chipTextInitial(chip) {
-    return String(chip?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
-  }
-
-  function chipIsDateInitial(chip) {
-    return /\b\d{4}-\d{2}-\d{2}\b/.test(chipTextInitial(chip));
-  }
-
-  function chipIsSchemaInitial(chip) {
-    const text = chipTextInitial(chip);
-    const cls = String(chip?.className || '').toLowerCase();
-    return /badge-schema|schema-nav-badge/.test(cls) || /\b(topic|task|decision|evidence|feedback|reduction|signal|pointer|runtime|machine runtime|ai runtime|lineage\.upgrade\.deferral|lineage upgrade|root|schema|continuation|capability|archive|broken|encrypted)\b/.test(text);
-  }
-
-  function chipIsSourceInitial(chip) {
-    const text = chipTextInitial(chip);
-    const cls = String(chip?.className || '').toLowerCase();
-    return /source-chip|source-badge|source-github|source-local|source-url|source-draft/.test(cls) || /tiinex\/docs|github|local state|local\b/.test(text);
-  }
-
-  function chipPriorityInitial(chip, ws) {
-    const text = chipTextInitial(chip);
-    const cls = String(chip?.className || '').toLowerCase();
-    if (/mismatch|missing|error|fail|danger/.test(text + ' ' + cls)) return 0;
-    if (/verified|out of date|integrity|ok/.test(text + ' ' + cls)) return 1;
-    if (/refs?|image|material|attachment|asset|pdf|zip/.test(text + ' ' + cls)) return 2;
-    if (/selected leaf|parent|child|ancestor|descendant/.test(text)) return 4;
-    if (chipIsSchemaInitial(chip)) return 7;
-    if (chipIsDateInitial(chip)) return 8;
-    if (chipIsSourceInitial(chip)) return workspaceDisplaySourceCount(ws) <= 1 ? 10 : 6;
-    return 5;
-  }
-
-  function chipForcedHiddenInitial(chip, ws) {
-    const singleSource = workspaceDisplaySourceCount(ws) <= 1;
-    if (singleSource && chipIsSourceInitial(chip)) return true;
-    if (chipIsSchemaInitial(chip)) return true;
-    if (chipIsDateInitial(chip)) return true;
-    return false;
-  }
-
-  function resetChipRowInitial(row) {
-    row.dataset.mobileChipsReadablePacked = '';
-    row.dataset.mobileChipsSourceSimplified = '';
-    row.dataset.mobileChipsSourceAware = '';
-    row.querySelectorAll('.mobile-chip-more').forEach((el) => el.remove());
-    row.querySelectorAll('.mobile-chip-hidden').forEach((el) => el.classList.remove('mobile-chip-hidden'));
-  }
-
-  function compactMobilePostChipsSourceAware() {
-    const rows = Array.from(document.querySelectorAll('.lineage-post .post-chips'));
-    if (!mobileLayoutActive()) {
-      rows.forEach(resetChipRowInitial);
-      return;
-    }
-
-    rows.forEach((row) => {
-      resetChipRowInitial(row);
-      row.dataset.mobileChipsSourceAware = '1';
-      row.dataset.mobileChipsReadablePacked = '1';
-      row.dataset.mobileChipsSourceSimplified = '1';
-
-      const ws = workspaceForChipRow(row);
-      const chips = Array.from(row.children).filter((el) => !el.classList.contains('mobile-chip-more'));
-      chips.sort((a, b) => chipPriorityInitial(a, ws) - chipPriorityInitial(b, ws));
-
-      const forcedHidden = [];
-      const candidates = [];
-      chips.forEach((chip) => {
-        if (chipForcedHiddenInitial(chip, ws)) forcedHidden.push(chip);
-        else candidates.push(chip);
-      });
-
-      const keep = row.closest('.preview-post') ? 2 : 3;
-      const visible = candidates.slice(0, keep);
-      const hidden = candidates.slice(keep).concat(forcedHidden);
-      if (!visible.length && hidden.length) visible.push(hidden.shift());
-
-      visible.concat(hidden).forEach((chip) => row.appendChild(chip));
-      hidden.forEach((chip) => chip.classList.add('mobile-chip-hidden'));
-
-      if (hidden.length) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'badge-soft mobile-chip-more';
-        btn.dataset.mobileAction = 'toggle-card-chips';
-        btn.textContent = `+${hidden.length}`;
-        btn.title = 'Show hidden badges';
-        row.appendChild(btn);
-      }
-    });
-  }
-  registerRenderWrapper(function renderWithMobileDensity(next) {
-    const result = next();
-    requestAnimationFrame(() => {
-      markSingleSourceWorkspacesWithChips();
-      compactMobilePostChipsSourceAware();
-    });
-    return result;
-  });
-
 
 
 
@@ -18007,28 +17311,70 @@ window.addEventListener('popstate', () => {
     const text = mobileChipText(chip);
     const cls = mobileChipClass(chip);
     const joined = `${text} ${cls}`;
-    // be packed behind the hidden-badges counter. Keep it in the measured set
-    // so row packing reserves width, then CSS orders it to the far right.
     if (chip?.classList?.contains('mobile-card-more-chip')) return -1;
     if (/mismatch|missing|error|fail|danger/u.test(joined)) return 0;
     if (/verified|open|out of date|integrity|ok/u.test(joined)) return 1;
     if (mobileChipIsSchema(chip)) return 2;
     if (mobileChipIsDate(chip)) return 3;
     if (/refs?|image|material|attachment|asset|pdf|zip/u.test(joined)) return 4;
-    if (/selected leaf|parent|child|ancestor|descendant/u.test(text)) return 5;
-    if (mobileChipIsSource(chip)) return sourceCount <= 1 ? 10 : 6;
+    if (mobileChipIsSource(chip)) return sourceCount <= 1 ? 10 : 5;
+    if (/selected leaf|parent|child|ancestor|descendant/u.test(text)) return 6;
     return 7;
+  }
+
+  function mobileChipIsCoreStatus(chip) {
+    const text = mobileChipText(chip);
+    const cls = mobileChipClass(chip);
+    return /mismatch|missing|error|fail|danger|verified|open|out of date|integrity|ok/u.test(`${text} ${cls}`);
+  }
+
+  function mobileCollapsedChipPlan(candidates, forcedHidden) {
+    const status = candidates.find((chip) => mobileChipIsCoreStatus(chip));
+    const schema = candidates.find((chip) => chip !== status && mobileChipIsSchema(chip));
+    const date = candidates.find((chip) => chip !== status && chip !== schema && mobileChipIsDate(chip));
+    const visible = [];
+    if (status) visible.push(status);
+    if (schema) visible.push(schema);
+    if (date) visible.push(date);
+    if (!visible.length && candidates.length) visible.push(candidates[0]);
+    const visibleSet = new Set(visible);
+    const hidden = candidates.filter((chip) => !visibleSet.has(chip)).concat(forcedHidden);
+    return { visible, hidden };
   }
 
   function mobileChipWidthEstimate(chip) {
     if (!chip) return 0;
-    if (!chip.classList?.contains('mobile-chip-hidden')) {
-      const rect = chip.getBoundingClientRect?.();
-      const measured = rect && Number.isFinite(rect.width) ? Math.ceil(rect.width) : 0;
-      if (measured > 0) return measured;
+    const text = String(chip.textContent || '').replace(/\s+/g, ' ').trim();
+    const textChars = Array.from(text).length;
+
+    // Estimate the constrained mobile visual width, not the desktop/natural
+    // chip width. The collapsed rail intentionally caps semantic chips so
+    // status + schema + date can fit when the rendered mobile row visibly has
+    // room for them. Using measured flex-compressed widths creates feedback
+    // loops; using desktop-ish natural widths hides the date too early.
+    let minWidth = 34;
+    let maxWidth = 96;
+    let charWidth = 5.1;
+    let baseWidth = 22;
+
+    if (mobileChipIsCoreStatus(chip)) {
+      minWidth = 54;
+      maxWidth = 76;
+      charWidth = 4.8;
+      baseWidth = 25;
+    } else if (mobileChipIsSchema(chip)) {
+      minWidth = 48;
+      maxWidth = 88;
+      charWidth = 4.9;
+      baseWidth = 22;
+    } else if (mobileChipIsDate(chip)) {
+      minWidth = 62;
+      maxWidth = 72;
+      charWidth = 4.6;
+      baseWidth = 24;
     }
-    const text = String(chip.textContent || '').trim();
-    return Math.min(126, Math.max(34, 20 + text.length * 7));
+
+    return Math.min(maxWidth, Math.max(minWidth, baseWidth + textChars * charWidth));
   }
 
   function mobileChipGap(row) {
@@ -18039,44 +17385,74 @@ window.addEventListener('popstate', () => {
 
   function mobileMoreWidth(hiddenCount) {
     const digits = String(Math.max(1, hiddenCount || 1)).length;
-    return 30 + Math.max(0, digits - 1) * 7;
+    return 34 + Math.max(0, digits - 1) * 8;
+  }
+
+  function mobileCardActionChip(row) {
+    return row?.querySelector?.(':scope > .mobile-card-select-parent-chip, :scope > .mobile-card-more-chip') || null;
+  }
+
+  function mobileActionChipWidthEstimate(row) {
+    const actionChip = mobileCardActionChip(row);
+    if (!actionChip) return 0;
+    const rect = actionChip.getBoundingClientRect?.();
+    const measured = rect && Number.isFinite(rect.width) ? Math.ceil(rect.width) : 0;
+    const fallback = actionChip.classList?.contains('mobile-card-select-parent-chip') ? 30 : 34;
+    return Math.max(measured || 0, fallback) + mobileChipGap(row);
+  }
+
+  function mobileChipPackingWidth(row) {
+    const rectWidth = Math.floor(row?.getBoundingClientRect?.().width || 0);
+    const clientWidth = Math.floor(row?.clientWidth || 0);
+    const fallbackWidth = Math.floor(row?.closest?.('.lineage-post, article')?.clientWidth || 300);
+    const rawWidth = clientWidth > 0 ? clientWidth : (rectWidth > 0 ? rectWidth : fallbackWidth);
+    const style = window.getComputedStyle?.(row);
+    const paddingLeft = parseFloat(style?.paddingLeft || '0') || 0;
+    const paddingRight = parseFloat(style?.paddingRight || '0') || 0;
+    let available = Math.max(0, Math.floor(rawWidth - paddingLeft - paddingRight));
+
+    // Card action chips live in the first-row rail but are not semantic badges.
+    // CSS reserves that rail through padding-right on the packed row. Only
+    // subtract any action width not already covered by that padding; subtracting
+    // both the padding and the action width makes the collapsed packer too
+    // conservative and hides date/schema badges that visibly fit.
+    const actionWidth = mobileActionChipWidthEstimate(row);
+    available -= Math.max(0, actionWidth - paddingRight);
+    return Math.max(0, available);
   }
 
   function packMobileChips(row, candidates, forcedHidden) {
     const gap = mobileChipGap(row);
-    const rowWidth = Math.floor(row.clientWidth || row.getBoundingClientRect?.().width || 0);
-    const fallbackWidth = Math.floor(row.closest('.lineage-post, article')?.clientWidth || 300);
-    const available = rowWidth > 0 ? rowWidth : fallbackWidth;
-    const hiddenBase = forcedHidden.length;
-    const moreWidth = mobileMoreWidth(Math.max(1, candidates.length + hiddenBase));
+    const available = mobileChipPackingWidth(row);
+    const plan = mobileCollapsedChipPlan(candidates, forcedHidden);
+    const hiddenCount = plan.hidden.length;
+    const moreWidth = hiddenCount > 0 ? mobileMoreWidth(hiddenCount) : 0;
     const visible = [];
     const hidden = [];
     let used = 0;
 
-    candidates.forEach((chip, index) => {
+    plan.visible.forEach((chip) => {
       const width = mobileChipWidthEstimate(chip);
       const nextGap = visible.length ? gap : 0;
-      const usedIfVisible = used + nextGap + width;
-      const hiddenIfVisible = (candidates.length - index - 1) + hiddenBase;
-      const reserve = hiddenIfVisible > 0 ? gap + moreWidth : 0;
-      const canFit = usedIfVisible + reserve <= available;
+      const reserve = hiddenCount > 0 ? gap + moreWidth : 0;
+      const canFit = used + nextGap + width + reserve <= available;
       if (canFit || visible.length === 0) {
         visible.push(chip);
-        used = usedIfVisible;
+        used += nextGap + width;
       } else {
         hidden.push(chip);
       }
     });
 
-    return { visible, hidden: hidden.concat(forcedHidden) };
+    return { visible, hidden: hidden.concat(plan.hidden), available };
   }
 
-  function rowSignature(visible, hidden, moreText, sourceCount, expanded) {
+  function rowSignature(visible, hidden, moreText, sourceCount, expanded, available) {
     const chipSignaturePart = (chips) => chips.map((chip) => {
       const className = mobileChipClass(chip).replace(/\bmobile-chip-hidden\b/gu, '').trim();
       return `${mobileChipText(chip)}::${className}`;
     }).join('|');
-    return `s=${sourceCount};e=${expanded ? 1 : 0};v=${chipSignaturePart(visible)};h=${chipSignaturePart(hidden)};m=${moreText || ''}`;
+    return `s=${sourceCount};e=${expanded ? 1 : 0};w=${Math.floor(available || 0)};v=${chipSignaturePart(visible)};h=${chipSignaturePart(hidden)};m=${moreText || ''}`;
   }
 
   registerCompactMobilePostChipsWrapper(function compactMobilePostChipsIdempotent(next) {
@@ -18099,9 +17475,10 @@ window.addEventListener('popstate', () => {
       const ws = (typeof workspaceForRow === 'function' ? workspaceForRow(row) : null)
         || (workspaceEl?.dataset?.ws ? getWorkspace(workspaceEl.dataset.ws) : null);
       const sourceCount = typeof workspaceSourceCount === 'function' ? workspaceSourceCount(ws, workspaceEl) : 1;
-      const cardMoreChip = row.querySelector('.mobile-card-more-chip');
+      const cardActionChip = mobileCardActionChip(row);
       const chips = Array.from(row.children).filter((el) => el?.classList?.contains('badge-soft')
         && !el.classList.contains('mobile-card-more-chip')
+        && !el.classList.contains('mobile-card-select-parent-chip')
         && !el.classList.contains('mobile-chip-more'));
       if (!chips.length) return;
 
@@ -18117,11 +17494,12 @@ window.addEventListener('popstate', () => {
         if (sourceCount <= 1 && mobileChipIsSource(chip)) forcedHidden.push(chip);
         else candidates.push(chip);
       });
-      const packed = expanded ? { visible: candidates.concat(forcedHidden), hidden: [] } : packMobileChips(row, candidates, forcedHidden);
+      const collapsedPack = packMobileChips(row, candidates, forcedHidden);
+      const packed = expanded ? { visible: candidates.concat(forcedHidden), hidden: [], available: collapsedPack.available } : collapsedPack;
       const visible = packed.visible;
       const hidden = packed.hidden;
       const moreText = hidden.length && !expanded ? `+${hidden.length}` : '';
-      const signature = rowSignature(visible, hidden, moreText, sourceCount, expanded);
+      const signature = rowSignature(visible, hidden, moreText, sourceCount, expanded, packed.available);
 
       if (row.dataset.mobileChipSignature === signature) return;
 
@@ -18142,10 +17520,11 @@ window.addEventListener('popstate', () => {
         btn.title = 'Show hidden badges';
         row.appendChild(btn);
       }
-      if (cardMoreChip) {
-        cardMoreChip.classList.remove('mobile-chip-hidden');
+      if (cardActionChip) {
+        cardActionChip.classList.remove('mobile-chip-hidden');
         row.classList.add('mobile-card-more-row');
-        if (row.lastElementChild !== cardMoreChip) row.appendChild(cardMoreChip);
+        row.classList.toggle('mobile-card-parent-select-row', cardActionChip.classList.contains('mobile-card-select-parent-chip'));
+        if (row.lastElementChild !== cardActionChip) row.appendChild(cardActionChip);
       }
       row.classList.toggle('single-source-chip-row', sourceCount <= 1);
       row.classList.add('mobile-chip-packed');

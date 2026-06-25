@@ -14036,167 +14036,6 @@ body.mobile-discovery-tree .mobile-global-actions-host {
 }
 
 
-@media (max-width: 640px) {
-
-
-  /* The mobile primary action is the card itself. Keep only a compact More chip
-     in the badge row; if an old mobile action row survives a render path, hide
-     it instead of reserving a full extra action row. */
-  body.mobile-chrome .mobile-card-actions,
-  body.mobile-lens .mobile-card-actions {
-    display: none !important;
-  }
-
-  body.mobile-chrome .post-chips .mobile-card-more-chip,
-  body.mobile-lens .post-chips .mobile-card-more-chip {
-    flex: 0 0 auto !important;
-    min-width: 2rem !important;
-    max-width: 2.2rem !important;
-    height: 1.34rem !important;
-    min-height: 1.34rem !important;
-    max-height: 1.34rem !important;
-    padding: 0 0.46rem !important;
-    border-radius: 999px !important;
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    font-size: 0.78rem !important;
-    line-height: 1 !important;
-    margin-left: auto !important;
-  }
-
-  body.mobile-chrome .post-chips .mobile-card-more-chip i,
-  body.mobile-lens .post-chips .mobile-card-more-chip i {
-    font-size: 0.76rem !important;
-    line-height: 1 !important;
-    margin: 0 !important;
-  }
-}
-
-
-@media (max-width: 640px) {
-
-
-  body.mobile-chrome .post-chips > .mobile-card-more-chip,
-  body.mobile-lens .post-chips > .mobile-card-more-chip {
-    order: 999 !important;
-    flex: 0 0 1.86rem !important;
-    width: 1.86rem !important;
-    min-width: 1.86rem !important;
-    max-width: 1.86rem !important;
-    height: 1.36rem !important;
-    min-height: 1.36rem !important;
-    max-height: 1.36rem !important;
-    padding: 0 !important;
-    margin-left: auto !important;
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    overflow: visible !important;
-  }
-
-  
-}
-
-
-@media (max-width: 640px) {
-  /* Keep the card More control as a badge-row affordance without letting it be
-     packed away or pushed outside the nowrap chip row. The row reserves a small
-     right-side rail and the ellipsis is absolutely pinned inside it. */
-  body.mobile-chrome .lineage-post .post-chips,
-  body.mobile-lens .lineage-post .post-chips,
-  body.mobile-chrome article .post-chips,
-  body.mobile-lens article .post-chips {
-    position: relative !important;
-    padding-right: 2.18rem !important;
-    box-sizing: border-box !important;
-  }
-
-  body.mobile-chrome .post-chips > .mobile-card-more-chip,
-  body.mobile-lens .post-chips > .mobile-card-more-chip {
-    position: absolute !important;
-    right: 0 !important;
-    top: 0 !important;
-    z-index: 3 !important;
-    order: initial !important;
-    flex: none !important;
-    width: 1.88rem !important;
-    min-width: 1.88rem !important;
-    max-width: 1.88rem !important;
-    height: 1.36rem !important;
-    min-height: 1.36rem !important;
-    max-height: 1.36rem !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    border-radius: 999px !important;
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    pointer-events: auto !important;
-    overflow: visible !important;
-  }
-
-  body.mobile-chrome .post-chips > .mobile-card-more-chip i,
-  body.mobile-lens .post-chips > .mobile-card-more-chip i {
-    margin: 0 !important;
-    font-size: 0.72rem !important;
-    line-height: 1 !important;
-  }
-
-
-}
-
-
-@media (max-width: 640px) {
-
-
-  body.mobile-chrome .lineage-post .post-chips.mobile-card-more-row,
-  body.mobile-lens .lineage-post .post-chips.mobile-card-more-row,
-  body.mobile-chrome article .post-chips.mobile-card-more-row,
-  body.mobile-lens article .post-chips.mobile-card-more-row {
-    position: relative !important;
-    padding-right: 2.18rem !important;
-  }
-
-  body.mobile-chrome .post-chips > .mobile-card-more-chip,
-  body.mobile-lens .post-chips > .mobile-card-more-chip {
-    position: absolute !important;
-    right: 0 !important;
-    top: 0 !important;
-    z-index: 5 !important;
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    width: 1.88rem !important;
-    min-width: 1.88rem !important;
-    max-width: 1.88rem !important;
-    height: 1.36rem !important;
-    min-height: 1.36rem !important;
-    max-height: 1.36rem !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    pointer-events: auto !important;
-  }
-}
-
-
-@media (max-width: 640px) {
-  body.mobile-chrome .post-chips > .mobile-card-more-chip,
-  body.mobile-lens .post-chips > .mobile-card-more-chip {
-    cursor: pointer !important;
-    touch-action: manipulation !important;
-    -webkit-tap-highlight-color: transparent !important;
-    z-index: 12 !important;
-  }
-}
-
-
 .create-lineage-backdrop {
   padding: 0.65rem !important;
   overflow: hidden !important;
@@ -15000,118 +14839,6 @@ body.mobile-discovery-tree .mobile-global-actions-host {
 }
 
 
-/* Mobile card action rail.
-   The card-level More/ellipsis affordance is an action control, not a badge
-   that should consume badge packing width. Keep it visible and pinned while
-   normal badges remain packed in the left rail. */
-@media (max-width: 640px) {
-  body.mobile-chrome .lineage-post .post-chips.mobile-card-more-row,
-  body.mobile-lens .lineage-post .post-chips.mobile-card-more-row,
-  body.mobile-chrome article .post-chips.mobile-card-more-row,
-  body.mobile-lens article .post-chips.mobile-card-more-row {
-    display: flex !important;
-    position: relative !important;
-    min-height: 1.46rem !important;
-    padding-right: 2.22rem !important;
-    box-sizing: border-box !important;
-    overflow: hidden !important;
-  }
-
-  body.mobile-chrome .post-chips.mobile-card-more-row > .mobile-card-more-chip,
-  body.mobile-lens .post-chips.mobile-card-more-row > .mobile-card-more-chip {
-    display: inline-flex !important;
-    position: absolute !important;
-    right: 0 !important;
-    top: 0 !important;
-    z-index: 20 !important;
-    width: 1.88rem !important;
-    min-width: 1.88rem !important;
-    max-width: 1.88rem !important;
-    height: 1.36rem !important;
-    min-height: 1.36rem !important;
-    max-height: 1.36rem !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    align-items: center !important;
-    justify-content: center !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    pointer-events: auto !important;
-    cursor: pointer !important;
-    touch-action: manipulation !important;
-    -webkit-tap-highlight-color: transparent !important;
-  }
-
-  body.mobile-chrome .post-chips.mobile-card-more-row > .mobile-card-more-chip.mobile-chip-hidden,
-  body.mobile-lens .post-chips.mobile-card-more-row > .mobile-card-more-chip.mobile-chip-hidden {
-    display: inline-flex !important;
-  }
-}
-
-
-/* Mobile badge/action rail hardening.
-   Keep the badge row visible and the ellipsis action pinned without
-   reintroducing a separate mobile action row. */
-@media (max-width: 640px) {
-  html body.mobile-chrome.mobile-lens .workspace .lineage-post .post-main > .post-chips.mobile-card-more-row,
-  html body.mobile-chrome .workspace .lineage-post .post-main > .post-chips.mobile-card-more-row,
-  html body.mobile-lens .workspace .lineage-post .post-main > .post-chips.mobile-card-more-row,
-  html body.mobile-chrome.mobile-lens .workspace article .post-main > .post-chips.mobile-card-more-row,
-  html body.mobile-chrome .workspace article .post-main > .post-chips.mobile-card-more-row,
-  html body.mobile-lens .workspace article .post-main > .post-chips.mobile-card-more-row {
-    display: flex !important;
-    flex-wrap: nowrap !important;
-    align-items: center !important;
-    gap: 0.28rem !important;
-    min-height: 1.46rem !important;
-    max-width: 100% !important;
-    padding-right: 2.22rem !important;
-    margin: 0 0 0.5rem !important;
-    position: relative !important;
-    box-sizing: border-box !important;
-    overflow: hidden !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-  }
-
-  html body.mobile-chrome.mobile-lens .workspace .post-chips.mobile-card-more-row > .mobile-card-more-chip,
-  html body.mobile-chrome .workspace .post-chips.mobile-card-more-row > .mobile-card-more-chip,
-  html body.mobile-lens .workspace .post-chips.mobile-card-more-row > .mobile-card-more-chip {
-    display: inline-flex !important;
-    position: absolute !important;
-    right: 0 !important;
-    top: 0 !important;
-    z-index: 40 !important;
-    width: 1.88rem !important;
-    min-width: 1.88rem !important;
-    max-width: 1.88rem !important;
-    height: 1.36rem !important;
-    min-height: 1.36rem !important;
-    max-height: 1.36rem !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    align-items: center !important;
-    justify-content: center !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    pointer-events: auto !important;
-    cursor: pointer !important;
-    touch-action: manipulation !important;
-    overflow: visible !important;
-  }
-
-  html body.mobile-chrome.mobile-lens .workspace .post-chips.mobile-card-more-row > .mobile-card-more-chip i,
-  html body.mobile-chrome .workspace .post-chips.mobile-card-more-row > .mobile-card-more-chip i,
-  html body.mobile-lens .workspace .post-chips.mobile-card-more-row > .mobile-card-more-chip i {
-    display: inline-block !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    margin: 0 !important;
-    font-size: 0.72rem !important;
-    line-height: 1 !important;
-  }
-}
-
 /* Node action alignment: desktop and mobile use the same action list; desktop stays one row. */
 .lineage-post > .post-actions {
   display: flex !important;
@@ -15199,3 +14926,742 @@ body.mobile-discovery-tree .mobile-global-actions-host {
   cursor: not-allowed;
 }
 
+
+/* Parent-picker selection mode and mobile markdown-review layout. */
+.parent-picker-active .icon-action:not(.select-parent-action),
+.parent-picker-active .post-action:not(.select-parent-action) {
+  display: none !important;
+}
+
+.parent-picker-active .post-actions {
+  overflow-x: visible !important;
+}
+
+.parent-picker-active .select-parent-action {
+  color: rgba(110, 231, 183, 0.98) !important;
+  border-color: rgba(16, 185, 129, 0.42) !important;
+  background: rgba(6, 78, 59, 0.16) !important;
+}
+
+@media (max-width: 760px) {
+  body.mobile-chrome .markdown-studio-panel {
+    height: calc(100dvh - 1.1rem) !important;
+    max-height: calc(100dvh - 1.1rem) !important;
+  }
+
+  body.mobile-chrome .markdown-studio-panel .add-artifact-body,
+  body.mobile-chrome .markdown-studio-panel .edit-node-body {
+    display: block !important;
+    overflow-y: auto !important;
+    min-height: 0 !important;
+    padding-bottom: 1rem !important;
+  }
+
+  body.mobile-chrome .markdown-studio-panel .add-artifact-grid {
+    grid-template-columns: 1fr !important;
+    max-width: none !important;
+  }
+
+  body.mobile-chrome .markdown-studio-panel .markdown-studio,
+  body.mobile-chrome .markdown-studio-panel .markdown-studio-topline {
+    display: block !important;
+  }
+
+  body.mobile-chrome .markdown-studio-panel .markdown-studio-controls {
+    width: 100% !important;
+    justify-content: space-between !important;
+    gap: 0.45rem !important;
+    margin-top: 0.45rem !important;
+  }
+
+  body.mobile-chrome .markdown-studio-panel .markdown-studio-surface,
+  body.mobile-chrome .markdown-studio-panel .markdown-studio-surface.rich-only,
+  body.mobile-chrome .markdown-studio-panel .markdown-studio-surface.raw-only {
+    height: min(42dvh, 340px) !important;
+    min-height: 230px !important;
+    max-height: min(42dvh, 340px) !important;
+    overflow: hidden !important;
+  }
+
+  body.mobile-chrome .markdown-studio-panel .modal-footer-actions,
+  body.mobile-chrome .markdown-studio-panel .add-artifact-actions,
+  body.mobile-chrome .markdown-studio-panel .edit-node-actions {
+    position: static !important;
+    margin-top: 0.75rem !important;
+    padding-top: 0.75rem !important;
+    background: transparent !important;
+  }
+
+  body.mobile-chrome .markdown-studio-panel .modal-footer-actions .tv-btn {
+    flex: 1 1 auto !important;
+    justify-content: center !important;
+  }
+}
+
+/* Mobile parent-picker affordance and compact wizard/editor headers. */
+.mobile-card-select-parent-chip {
+  color: rgba(110, 231, 183, 0.98) !important;
+  border-color: rgba(16, 185, 129, 0.42) !important;
+  background: rgba(6, 78, 59, 0.16) !important;
+  gap: 0.32rem !important;
+}
+
+.mobile-card-select-parent-chip span {
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+@media (max-width: 760px) {
+  body.mobile-chrome .artifact-wizard-head,
+  body.mobile-chrome .markdown-studio-panel .add-artifact-head,
+  body.mobile-chrome .markdown-studio-panel .edit-node-head {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    align-items: start !important;
+    gap: 0.58rem !important;
+  }
+
+  body.mobile-chrome .artifact-wizard-head > div,
+  body.mobile-chrome .markdown-studio-panel .add-artifact-head > div,
+  body.mobile-chrome .markdown-studio-panel .edit-node-head > div {
+    min-width: 0 !important;
+  }
+
+  body.mobile-chrome .artifact-wizard-head > .tv-btn,
+  body.mobile-chrome .markdown-studio-panel .add-artifact-head > .tv-btn,
+  body.mobile-chrome .markdown-studio-panel .edit-node-head > .tv-btn {
+    width: 2.35rem !important;
+    min-width: 2.35rem !important;
+    height: 2.35rem !important;
+    min-height: 2.35rem !important;
+    padding: 0 !important;
+    border-radius: 999px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+
+  body.mobile-chrome .artifact-wizard-head .modal-title-lite,
+  body.mobile-chrome .markdown-studio-panel .add-artifact-head .modal-title-lite,
+  body.mobile-chrome .markdown-studio-panel .edit-node-head .modal-title-lite {
+    font-size: 1.02rem !important;
+    line-height: 1.08 !important;
+    letter-spacing: -0.04em !important;
+    overflow-wrap: anywhere !important;
+  }
+
+  body.mobile-chrome .artifact-wizard-head .text-secondary,
+  body.mobile-chrome .markdown-studio-panel .add-artifact-head .text-secondary,
+  body.mobile-chrome .markdown-studio-panel .edit-node-head .text-secondary {
+    font-size: 0.86rem !important;
+    line-height: 1.32 !important;
+  }
+
+  body.mobile-chrome .artifact-wizard-body.paged {
+    overscroll-behavior: contain !important;
+  }
+
+  body.mobile-chrome .artifact-wizard-actions.paged {
+    box-shadow: 0 -18px 32px rgba(6, 4, 10, 0.32) !important;
+  }
+}
+
+/* Feed badge dimensions. */
+.post-chips > .badge-soft,
+.post-chips > .badge-schema,
+.post-chips > .material-chip,
+.post-chips > .muted-chip,
+.post-chips > .source-badge,
+.post-chips > .integrity-badge,
+.lineage-post .post-chips > .badge-soft,
+.lineage-post .post-chips > .badge-schema,
+.lineage-post .post-chips > .material-chip,
+.lineage-post .post-chips > .muted-chip,
+.lineage-post .post-chips > .source-badge,
+.lineage-post .post-chips > .integrity-badge {
+  box-sizing: border-box !important;
+  height: 1.42rem !important;
+  min-height: 1.42rem !important;
+  max-height: 1.42rem !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  line-height: 1 !important;
+}
+
+.post-chips > .badge-soft i,
+.post-chips > .badge-schema i,
+.post-chips > .material-chip i,
+.post-chips > .source-badge i,
+.post-chips > .integrity-badge i,
+.lineage-post .post-chips > .badge-soft i,
+.lineage-post .post-chips > .badge-schema i,
+.lineage-post .post-chips > .material-chip i,
+.lineage-post .post-chips > .source-badge i,
+.lineage-post .post-chips > .integrity-badge i {
+  width: 0.72rem !important;
+  height: 0.72rem !important;
+  min-width: 0.72rem !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  line-height: 1 !important;
+  flex: 0 0 auto !important;
+}
+
+
+/* Mobile card badge and action rail.
+   compactMobilePostChips() owns mobile badge membership and order. CSS owns only
+   presentation: collapsed rows are one line with an action rail; expanded rows
+   may wrap hidden badges. Card action controls are not semantic badges. */
+@media (max-width: 640px) {
+  body.mobile-chrome .mobile-card-actions,
+  body.mobile-lens .mobile-card-actions {
+    display: none !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-chip-packed,
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-chip-packed {
+    display: flex !important;
+    align-items: center !important;
+    gap: 0.26rem !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-card-more-row:not(.mobile-chip-expanded),
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-card-more-row:not(.mobile-chip-expanded) {
+    position: relative !important;
+    flex-wrap: nowrap !important;
+    min-height: 1.46rem !important;
+    padding-right: 2.22rem !important;
+    overflow: hidden !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-chip-packed:not(.mobile-chip-expanded),
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-chip-packed:not(.mobile-chip-expanded) {
+    flex-wrap: nowrap !important;
+    overflow: hidden !important;
+    max-height: 1.5rem !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-chip-packed > .badge-soft:not(.mobile-chip-more):not(.mobile-card-more-chip):not(.mobile-card-select-parent-chip),
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-chip-packed > .badge-soft:not(.mobile-chip-more):not(.mobile-card-more-chip):not(.mobile-card-select-parent-chip) {
+    flex: 0 0 auto !important;
+    min-width: max-content !important;
+    max-width: 7.2rem !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-chip-packed > .muted-chip,
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-chip-packed > .muted-chip {
+    max-width: 4.85rem !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-chip-packed > .badge-schema,
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-chip-packed > .badge-schema {
+    max-width: 6.8rem !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-chip-packed:not(.mobile-chip-expanded) > .mobile-chip-hidden,
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-chip-packed:not(.mobile-chip-expanded) > .mobile-chip-hidden {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-chip-packed.mobile-chip-expanded,
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-chip-packed.mobile-chip-expanded {
+    flex-wrap: wrap !important;
+    overflow: visible !important;
+    max-height: none !important;
+    row-gap: 0.32rem !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-chip-packed.mobile-chip-expanded > .mobile-chip-hidden,
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-chip-packed.mobile-chip-expanded > .mobile-chip-hidden {
+    display: inline-flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-chip-packed.mobile-chip-expanded > .mobile-chip-more,
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-chip-packed.mobile-chip-expanded > .mobile-chip-more {
+    display: none !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-chip-packed > .mobile-chip-more,
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-chip-packed > .mobile-chip-more {
+    flex: 0 0 auto !important;
+    min-width: 1.72rem !important;
+    max-width: 2.6rem !important;
+    justify-content: center !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-card-more-row > .mobile-card-more-chip,
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-card-more-row > .mobile-card-more-chip,
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-card-parent-select-row > .mobile-card-select-parent-chip,
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-card-parent-select-row > .mobile-card-select-parent-chip {
+    position: absolute !important;
+    right: 0 !important;
+    top: 0 !important;
+    z-index: 40 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border-radius: 999px !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    cursor: pointer !important;
+    touch-action: manipulation !important;
+    -webkit-tap-highlight-color: transparent !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-card-more-row > .mobile-card-more-chip {
+    width: 1.88rem !important;
+    min-width: 1.88rem !important;
+    max-width: 1.88rem !important;
+    height: 1.36rem !important;
+    min-height: 1.36rem !important;
+    max-height: 1.36rem !important;
+  }
+
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-card-more-row > .mobile-card-more-chip {
+    width: 1.88rem !important;
+    min-width: 1.88rem !important;
+    max-width: 1.88rem !important;
+    height: 1.36rem !important;
+    min-height: 1.36rem !important;
+    max-height: 1.36rem !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-card-more-row > .mobile-card-more-chip i,
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-card-more-row > .mobile-card-more-chip i,
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-card-parent-select-row > .mobile-card-select-parent-chip i,
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-card-parent-select-row > .mobile-card-select-parent-chip i {
+    margin: 0 !important;
+    line-height: 1 !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-card-parent-select-row,
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-card-parent-select-row {
+    position: relative !important;
+    padding-right: 2.15rem !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-card-parent-select-row > .mobile-card-select-parent-chip,
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-card-parent-select-row > .mobile-card-select-parent-chip {
+    width: 1.68rem !important;
+    min-width: 1.68rem !important;
+    max-width: 1.68rem !important;
+    height: 1.34rem !important;
+    min-height: 1.34rem !important;
+    max-height: 1.34rem !important;
+    gap: 0 !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-card-parent-select-row > .mobile-card-select-parent-chip i,
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-card-parent-select-row > .mobile-card-select-parent-chip i {
+    width: 0.82rem !important;
+    min-width: 0.82rem !important;
+  }
+
+  html body.mobile-chrome .workspace .post-main > .post-chips.mobile-card-parent-select-row > .mobile-card-select-parent-chip span,
+  html body.mobile-lens .workspace .post-main > .post-chips.mobile-card-parent-select-row > .mobile-card-select-parent-chip span {
+    display: none !important;
+  }
+}
+
+
+/* Authoring dialog shell: shared wizard, markdown review, and local edit layout. */
+.authoring-dialog-panel {
+  width: min(1040px, calc(100vw - 1.4rem)) !important;
+  height: min(88dvh, 860px) !important;
+  max-height: min(88dvh, 860px) !important;
+  padding: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+  border-radius: 1.22rem !important;
+  border: 1px solid rgba(216, 180, 254, 0.22) !important;
+  background:
+    radial-gradient(circle at 8% 0%, rgba(168, 85, 247, 0.11), transparent 34%),
+    linear-gradient(180deg, rgba(18, 15, 28, 0.985), rgba(11, 10, 18, 0.995)) !important;
+}
+
+.authoring-dialog-head {
+  flex: 0 0 auto !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  align-items: start !important;
+  gap: 0.82rem !important;
+  margin: 0 !important;
+  padding: 0.82rem 1rem !important;
+  border-bottom: 1px solid rgba(216, 180, 254, 0.14) !important;
+  background: rgba(16, 13, 25, 0.92) !important;
+}
+
+.authoring-dialog-title {
+  min-width: 0 !important;
+}
+
+.authoring-dialog-head .kicker {
+  margin: 0 0 0.16rem !important;
+  font-size: 0.68rem !important;
+  line-height: 1.05 !important;
+  letter-spacing: 0.15em !important;
+}
+
+.authoring-dialog-head .modal-title-lite {
+  display: flex !important;
+  align-items: center !important;
+  gap: 0.5rem !important;
+  margin: 0 !important;
+  font-size: clamp(1.08rem, 1.2vw, 1.32rem) !important;
+  line-height: 1.1 !important;
+  letter-spacing: -0.045em !important;
+  min-width: 0 !important;
+  overflow-wrap: anywhere !important;
+}
+
+.authoring-dialog-head .modal-title-lite i {
+  flex: 0 0 auto !important;
+  margin: 0 !important;
+}
+
+.authoring-dialog-head .text-secondary {
+  margin-top: 0.24rem !important;
+  max-width: 74ch !important;
+  font-size: 0.88rem !important;
+  line-height: 1.34 !important;
+}
+
+.authoring-dialog-close {
+  width: 2.2rem !important;
+  min-width: 2.2rem !important;
+  height: 2.2rem !important;
+  min-height: 2.2rem !important;
+  padding: 0 !important;
+  border-radius: 999px !important;
+  display: inline-grid !important;
+  place-items: center !important;
+}
+
+.authoring-dialog-close i {
+  margin: 0 !important;
+}
+
+.authoring-dialog-body {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+  padding: 0.78rem 1rem 0.95rem !important;
+}
+
+.authoring-dialog-actions {
+  flex: 0 0 auto !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 0.52rem !important;
+  margin: 0 !important;
+  padding: 0.64rem 1rem !important;
+  border-top: 1px solid rgba(216, 180, 254, 0.12) !important;
+  background:
+    linear-gradient(180deg, rgba(11, 10, 18, 0.50), rgba(11, 10, 18, 0.90)),
+    rgba(11, 10, 18, 0.80) !important;
+}
+
+.authoring-dialog-actions .tv-btn {
+  min-height: 2.12rem !important;
+}
+
+.artifact-wizard-panel.authoring-dialog-panel {
+  width: min(960px, calc(100vw - 1.4rem)) !important;
+}
+
+.artifact-wizard-body.authoring-dialog-body {
+  display: block !important;
+}
+
+.artifact-wizard-progress {
+  margin-bottom: 0.58rem !important;
+}
+
+.artifact-wizard-panel .wizard-relation-card,
+.artifact-wizard-panel.paged .wizard-relation-card {
+  margin-bottom: 0.64rem !important;
+  padding: 0.62rem 0.74rem !important;
+}
+
+.artifact-wizard-panel .wizard-step,
+.artifact-wizard-panel .wizard-step-page {
+  padding: 0.68rem !important;
+  margin-bottom: 0 !important;
+}
+
+.artifact-wizard-panel .wizard-step-head,
+.artifact-wizard-panel .wizard-step-page .wizard-step-head {
+  margin-bottom: 0.5rem !important;
+}
+
+.artifact-wizard-panel .wizard-selected-type-strip {
+  margin-bottom: 0.58rem !important;
+  padding: 0.58rem 0.68rem !important;
+}
+
+.artifact-wizard-panel .wizard-fields.paged {
+  gap: 0.58rem !important;
+}
+
+.artifact-wizard-panel .wizard-body-textarea.paged {
+  min-height: 10.5rem !important;
+  max-height: 30dvh !important;
+}
+
+.markdown-studio-panel.authoring-dialog-panel {
+  width: min(1120px, calc(100vw - 1.4rem)) !important;
+  height: min(88dvh, 880px) !important;
+  max-height: min(88dvh, 880px) !important;
+}
+
+.markdown-studio-panel.authoring-dialog-panel .add-artifact-body,
+.markdown-studio-panel.authoring-dialog-panel .edit-node-body {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: auto !important;
+}
+
+.markdown-studio-panel.authoring-dialog-panel .add-relation-card,
+.markdown-studio-panel.authoring-dialog-panel .add-artifact-grid,
+.markdown-studio-panel.authoring-dialog-panel .add-artifact-hint {
+  flex: 0 0 auto !important;
+}
+
+.markdown-studio-panel.authoring-dialog-panel .markdown-studio {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.markdown-studio-panel.authoring-dialog-panel .markdown-studio-surface,
+.markdown-studio-panel.authoring-dialog-panel .markdown-studio-surface.rich-only,
+.markdown-studio-panel.authoring-dialog-panel .markdown-studio-surface.raw-only {
+  flex: 1 1 auto !important;
+  min-height: 240px !important;
+  height: auto !important;
+  max-height: none !important;
+}
+
+.markdown-studio-panel.authoring-dialog-panel .add-artifact-actions,
+.markdown-studio-panel.authoring-dialog-panel .edit-node-actions {
+  position: static !important;
+}
+
+@media (max-width: 760px) {
+  .focus-modal.modal-backdrop-custom {
+    padding: 0.35rem !important;
+  }
+
+  .authoring-dialog-panel,
+  .artifact-wizard-panel.authoring-dialog-panel,
+  .markdown-studio-panel.authoring-dialog-panel {
+    width: calc(100vw - 0.7rem) !important;
+    height: calc(100dvh - 0.7rem) !important;
+    max-height: calc(100dvh - 0.7rem) !important;
+    border-radius: 1rem !important;
+  }
+
+  .authoring-dialog-head {
+    padding: 0.62rem 0.7rem !important;
+    gap: 0.5rem !important;
+  }
+
+  .authoring-dialog-head .kicker {
+    margin-bottom: 0.1rem !important;
+    font-size: 0.61rem !important;
+  }
+
+  .authoring-dialog-head .modal-title-lite {
+    font-size: 0.98rem !important;
+    line-height: 1.08 !important;
+  }
+
+  .authoring-dialog-head .text-secondary {
+    margin-top: 0.16rem !important;
+    font-size: 0.78rem !important;
+    line-height: 1.24 !important;
+    display: -webkit-box !important;
+    -webkit-line-clamp: 2 !important;
+    -webkit-box-orient: vertical !important;
+    overflow: hidden !important;
+  }
+
+  .authoring-dialog-close {
+    width: 2rem !important;
+    min-width: 2rem !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+  }
+
+  .authoring-dialog-body {
+    padding: 0.58rem 0.64rem 0.72rem !important;
+  }
+
+  .authoring-dialog-actions {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 0.42rem !important;
+    padding: 0.52rem 0.64rem !important;
+  }
+
+  .authoring-dialog-actions .tv-btn {
+    width: 100% !important;
+    min-height: 2.24rem !important;
+    justify-content: center !important;
+    padding-inline: 0.58rem !important;
+  }
+
+  .authoring-dialog-actions .tv-btn.primary,
+  .artifact-wizard-actions.authoring-dialog-actions .wizard-direct-create {
+    grid-column: 1 / -1 !important;
+  }
+
+  .artifact-wizard-progress {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    gap: 0.28rem !important;
+    margin-bottom: 0.45rem !important;
+  }
+
+  .artifact-wizard-progress span {
+    min-width: 0 !important;
+    justify-content: center !important;
+    gap: 0.22rem !important;
+    padding: 0.2rem 0.28rem !important;
+    font-size: 0.66rem !important;
+    white-space: nowrap !important;
+  }
+
+  .artifact-wizard-progress span b {
+    width: 1rem !important;
+    height: 1rem !important;
+    font-size: 0.62rem !important;
+  }
+
+  .artifact-wizard-panel .wizard-relation-card,
+  .artifact-wizard-panel.paged .wizard-relation-card,
+  .artifact-wizard-panel .wizard-selected-type-strip {
+    padding: 0.5rem 0.58rem !important;
+    margin-bottom: 0.48rem !important;
+  }
+
+  .artifact-wizard-panel .wizard-relation-card p,
+  .artifact-wizard-panel .wizard-selected-type-strip span,
+  .artifact-wizard-panel .wizard-step-head p {
+    font-size: 0.78rem !important;
+    line-height: 1.22 !important;
+  }
+
+  .artifact-wizard-panel .wizard-step,
+  .artifact-wizard-panel .wizard-step-page {
+    padding: 0.52rem !important;
+  }
+
+  .artifact-wizard-panel .wizard-step-head,
+  .artifact-wizard-panel .wizard-step-page .wizard-step-head {
+    margin-bottom: 0.42rem !important;
+  }
+
+  .wizard-fields.paged {
+    gap: 0.5rem !important;
+  }
+
+  .wizard-body-textarea.paged {
+    min-height: 8.5rem !important;
+    max-height: 30dvh !important;
+  }
+
+  .markdown-studio-panel.authoring-dialog-panel .add-artifact-body,
+  .markdown-studio-panel.authoring-dialog-panel .edit-node-body {
+    display: flex !important;
+    overflow: auto !important;
+    padding-bottom: 0.72rem !important;
+  }
+
+  .markdown-studio-panel.authoring-dialog-panel .markdown-studio,
+  .markdown-studio-panel.authoring-dialog-panel .markdown-studio-topline {
+    display: flex !important;
+  }
+
+  .markdown-studio-panel.authoring-dialog-panel .markdown-studio-topline {
+    align-items: flex-start !important;
+  }
+
+  .markdown-studio-panel.authoring-dialog-panel .markdown-studio-surface,
+  .markdown-studio-panel.authoring-dialog-panel .markdown-studio-surface.rich-only,
+  .markdown-studio-panel.authoring-dialog-panel .markdown-studio-surface.raw-only {
+    min-height: 220px !important;
+  }
+}
+
+@media (max-width: 760px) and (max-height: 700px) {
+  .authoring-dialog-head .text-secondary {
+    -webkit-line-clamp: 1 !important;
+  }
+
+  .artifact-wizard-panel .wizard-relation-card.neutral {
+    display: none !important;
+  }
+
+  .artifact-wizard-progress span b {
+    display: none !important;
+  }
+
+  .wizard-body-textarea.paged {
+    min-height: 7.2rem !important;
+  }
+}
+
+@media (max-width: 760px) {
+  body.mobile-chrome .markdown-studio-panel.authoring-dialog-panel .add-artifact-body,
+  body.mobile-chrome .markdown-studio-panel.authoring-dialog-panel .edit-node-body {
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: auto !important;
+    padding-bottom: 0.72rem !important;
+  }
+
+  body.mobile-chrome .markdown-studio-panel.authoring-dialog-panel .markdown-studio {
+    display: flex !important;
+    flex-direction: column !important;
+  }
+
+  body.mobile-chrome .markdown-studio-panel.authoring-dialog-panel .markdown-studio-topline {
+    display: flex !important;
+    align-items: flex-start !important;
+  }
+
+  body.mobile-chrome .markdown-studio-panel.authoring-dialog-panel .modal-footer-actions,
+  body.mobile-chrome .markdown-studio-panel.authoring-dialog-panel .add-artifact-actions,
+  body.mobile-chrome .markdown-studio-panel.authoring-dialog-panel .edit-node-actions,
+  body.mobile-chrome .artifact-wizard-actions.authoring-dialog-actions.paged {
+    position: static !important;
+    margin: 0 !important;
+    background:
+      linear-gradient(180deg, rgba(11, 10, 18, 0.50), rgba(11, 10, 18, 0.90)),
+      rgba(11, 10, 18, 0.80) !important;
+  }
+}

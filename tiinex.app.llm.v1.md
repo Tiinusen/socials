@@ -147,3 +147,22 @@ CP93 is a instrumentation pass. It instruments the single-owner `routeScroll` re
 ## CP94 scroll restore readiness note
 
 CP93 diagnostics showed that Discovery restore could find the correct saved `routeScroll` candidate, but the preferred `.post-feed.discovery` target was still an empty rendered shell with `max: 0`. CP94 treats this as not-ready, keeps the restore pending for a longer content-load window, and avoids applying saved scroll to interim page/workspace fallbacks. Future scroll work should preserve this target-readiness invariant rather than adding competing restore owners.
+
+## CP112 - Mobile Badge Compaction Ownership Repair
+
+- Treats `compactMobilePostChips()` as the single owner for mobile badge packing.
+- Removes older render-time badge compaction passes that directly mutated the same rows.
+- Collapsed mobile badge rows remain one line with `+N` as the overflow affordance.
+- Expanded `+N` rows may wrap instead of compressing every badge into one row.
+- Parent-picker Select remains a direct first-row affordance and is not part of the hidden-badge overflow group.
+- Scroll restore, Discovery auto-more, lineage traversal, storage, schema parsing, and i18n are intentionally unchanged.
+
+
+
+## CP115 Badge Rail Repair
+
+- Keeps CP114 stable mobile badge core but repairs remaining rail math.
+- Reserves the first-row action rail for both normal ellipsis and parent-picker Select before deciding which semantic badges fit.
+- Re-appends parent-picker Select after semantic badges so it remains the right-side action instead of becoming the first badge.
+- Uses collapsed visual chip width estimates that match truncated mobile badge CSS so long schema badges can remain visible when their rendered chip fits.
+- Does not change create-intent, parent semantics, scroll restore, Discovery auto-more, Lineage traversal, storage, schema parsing, or i18n.

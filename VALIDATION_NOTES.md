@@ -1,76 +1,77 @@
 # Validation Notes
 
-Package: v6-388 product CP103
+Package: v6-405 product CP120
 
-Scope:
-- CP100 preserves the CP98 routeScroll restore cleanup and the CP99 Discovery auto-more behavior.
-- It polishes lineage terminal icon spacing so terminal status icons do not visually merge with text.
-- It packages the app from the app root instead of through an internal working-directory wrapper.
-- It preserves the working routeScroll restore implementation from CP97.
-- It keeps retired anchor-scroll runtime helpers removed and leaves only stale-cache pruning for `tiinex.scroll.anchor.*`.
-- It keeps the CP95 flight recorder as explicit opt-in via `tiinex.debug.scrollFlight` / `?debugScrollFlight=1`.
+## Purpose
 
-Readiness signals preserved:
-- architectureScaffoldReady
-- coreExtractionReady
-- serviceStateExtractionReady
-- uiFeatureExtractionReady
-- viewStateIsolationReady
-- publicBuildReady
-- cleanupReadyForProductWork
-- architectureReadyForProductWork
-- singleOwnerRestoreReady
-- stableCompletionRestoreReady
-- discoveryAutoMoreRestoreReady
+CP120 is a wizard shell cleanup release after the CP119 browser-approved wizard registry baseline. It intentionally avoids new product concepts and preserves the current wizard flow. Its goal is to make the wizard and markdown fallback dialogs share a professional authoring shell before deeper flow redesign.
 
-Cleanup details:
-- Removed dead `chaseAnchorScrollForWorkspace`, `restoreAnchorScrollForAll`, `scheduleAnchorScrollRestore`, and related anchor-scroll read/write/apply helpers.
-- Kept `pruneAnchorScrollStorage()` to clear stale retired sessionStorage entries.
-- Kept routeScroll diagnostics behind `tiinex.debug.scrollRestore`.
-- Moved the heavier full-flight diagnostics to `tiinex.debug.scrollFlight`.
-- Added metrics/static guard for scroll cleanup readiness.
+## Cleanup performed
 
-Validation run:
-- node --check app.js
-- node --check tools/*.mjs
-- node --check src/**/*.mjs and src/**/*.js
-- npm test
-- npm run metrics
-- npm run storage:scan
-- npm run build:public
-- npm run public:check
-- node --check .site-publish/tiinex.bundle.js
+- Added shared `authoring-dialog-*` shell classes for authoring modals.
+- Applied the shared shell to the artifact wizard, Review Markdown/add-artifact fallback, and local markdown edit.
+- Moved Review Markdown and local edit footers out of their scroll bodies so header, body, and actions have the same layout contract as the wizard.
+- Reduced mobile header density with smaller kicker/title/lead spacing and clamped lead copy.
+- Gave the scroll body explicit ownership of overflow so footer actions no longer behave like body content.
+- Made mobile footer actions use a compact two-column grid, with primary actions spanning the row.
+- Kept schema registry ownership from CP119 unchanged.
 
-Result: PASS
+## Intentionally unchanged
 
-Browser validation focus for CP100:
-- Discovery auto-more still loads before the Show more footer becomes the normal stopping point.
-- Discovery F5 restore remains unchanged after auto-more has loaded extra cards.
-- Lineage scroll/F5 remains unchanged.
-- Lineage root terminal icon and text have visible spacing on desktop and mobile.
-- Zip opens with app files at the archive root, not inside an internal wrapper folder.
+- wizard step semantics and product flow
+- schema registry contents
+- create-intent semantics
+- parent-picker semantics
+- sibling naming
+- raw markdown review/editor fallback behavior
+- scroll restore
+- Discovery auto-more
+- mobile badge packing
+- lineage traversal
+- storage keys and browser persistence
+- schema parsing
+- i18n
 
-## CP101 Lineage terminal spacing polish
+## Readiness signals
 
-- Fixed lineage terminal row spacing by restoring flex layout after the lineage feed block-level sizing rule.
-- Keeps the terminal icon and text as separate visual items with a stable gap.
-- No lineage traversal, restore, Discovery auto-more, storage, or view-state logic changed.
-- Zip root remains app-root direct, without an internal workspace wrapper directory.
+The authoring-shell cleanup keeps product-readiness signals expected to remain green:
 
+- architectureScaffoldReady: yes
+- coreExtractionReady: yes
+- serviceStateExtractionReady: yes
+- uiFeatureExtractionReady: yes
+- viewStateIsolationReady: yes
+- publicBuildReady: yes
+- cleanupReadyForProductWork: yes
+- architectureReadyForProductWork: yes
 
+## Static validation commands
 
-## CP102 unified node actions polish
+Run from package root:
 
-- Moves node card actions into one shared descriptor list used by desktop cards and the mobile action sheet.
-- Desktop node action rows stay on one horizontal row; local Edit and Remove become compact tail icons to avoid wrapping.
-- Mobile action sheets now expose the same artifact action count as desktop, including More/Less or Anchor, Edit, and disabled Continue when applicable.
-- Mobile action sheet header uses a compact close button and a single title column that can wrap naturally.
-- No lineage traversal, scroll restore, Discovery auto-more, storage, or schema parsing logic changed.
+```bash
+node --check app.js
+for f in tools/*.mjs; do node --check "$f"; done
+find src -type f \( -name '*.mjs' -o -name '*.js' \) -print0 | sort -z | xargs -0 -n1 node --check
+npm test
+npm run metrics
+npm run storage:scan
+npm run build:public
+npm run public:check
+node --check .site-publish/tiinex.bundle.js
+```
 
+## Browser validation focus
 
-## CP103 mobile action sheet toggle cleanup
+Because CP120 changes the dialog shell, browser validation should focus on visual and layout behavior:
 
-- Removes the card expand/collapse More/Less action from the mobile action sheet because mobile cards already expose that behavior through the card tap target.
-- Keeps desktop node action rows unchanged.
-- Keeps lineage Anchor actions in the mobile sheet; only the redundant mobile expand/collapse action is filtered.
-- No lineage traversal, scroll restore, Discovery auto-more, storage, or schema parsing logic changed.
+- desktop Continue opens the wizard and can create a child artifact
+- desktop Reference still asks for parent first, then opens the wizard
+- mobile Continue opens the same wizard flow
+- mobile Reference parent selection still uses the approved icon-only Select affordance
+- wizard type step has more usable body space on mobile
+- wizard details step has a compact header/footer and scrolls in the body
+- Evidence still shows supported claim plus URL/File attachment collector
+- Review Markdown uses the same header/body/footer shell and does not trap the footer inside the scroll body
+- schema-aware local edit opens the wizard with fields prefilled
+- quick sanity check that mobile badges and Discovery auto-more remain unchanged

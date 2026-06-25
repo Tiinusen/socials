@@ -195,77 +195,32 @@ The package is clean enough to continue product development with less risk of ol
 
 Tiinex stores only lightweight browser state. Local/draft workspace edits are saved as local deltas in `localStorage`. Scroll and lens state are session-scoped and should stay compact, content-aware, and safe to clear.
 
-## CP91 scroll restore owner repair
+## Current owned runtime surfaces
 
-CP91 consolidates F5 scroll restore ownership back to the stored `routeScroll` cache. The older `tiinex.scroll.anchor.*` cache is retired at startup and no longer registers scroll listeners, lifecycle writers, intervals, or render restore wrappers. This avoids two independent systems racing to restore Discovery/Lineage after refresh.
+The current product baseline treats these behavior clusters as owned surfaces, not as independent patch layers:
 
-Stored scroll reads now skip zero-position entries and continue to scan for the latest nonzero identity match. Lifecycle flushes write only the rendered active mode, and inactive workspace-shell zero writes are rejected so a Lineage pagehide cannot overwrite the last real Discovery feed scroll. Mode detection prefers the visible rendered feed before falling back to selected-node state.
+- **Scroll restore:** `routeScroll` remains the single F5 restore owner. Discovery, Lineage, and workspace-shell scroll targets are separate per workspace, content-signature guarded, and should not be shadowed by anchor-scroll or lens scroll chasers.
+- **Discovery More:** Discovery feed auto-growth is layered above the same feed windowing path as the manual Show more fallback. It must not write scroll state or become a second restore owner.
+- **Node actions:** desktop cards and mobile action sheets use the same node action descriptor list. Mobile may filter presentation-only actions such as redundant More/Less, but it should not own a separate action model.
+- **Create intent:** Continue and Reference use one create-intent entry point. Reference starts with parent selection; Continue opens the schema-aware artifact wizard directly.
+- **Mobile badges:** `compactMobilePostChips()` owns mobile badge membership, order, collapsed overflow, and expansion. CSS owns only presentation of the packed row and action rail. Do not add separate render-time badge mutators or competing CSS override blocks.
+- **Parent picker:** parent selection is a mode over existing cards. The Select affordance is an action rail control, not a semantic badge and not a separate mobile action-sheet flow.
+- **Artifact wizard schema registry:** wizard schema metadata, default body templates, form fields, form defaults, markdown builders, edit-state readers, artifact kind, and any schema-specific describe renderer are owned from `WIZARD_SCHEMA_REGISTRY`. Do not reintroduce parallel schema option/body/form switch tables.
+- **Authoring dialog shell:** the artifact wizard, Review Markdown fallback, and local markdown edit share the `authoring-dialog-*` shell classes for panel, header, scroll body, close control, and footer actions. Dialog layout changes should extend that shared shell rather than adding separate mobile/desktop modal paths.
 
-## CP92 scroll restore arbitration repair
+## Cleanup status
 
-CP92 keeps `tiinex.routeScroll.state.*` as the only F5 scroll restore owner and retires the remaining durable-lens scroll chase. Durable lens still owns route selection/history semantics, but it no longer schedules `chaseAllScroll` after render. This prevents stale lens scroll fields from racing the stored routeScroll cache and pulling Lineage to an old bottom position or Discovery back to top.
+The package has been cleaned after the recent scroll, action, create-intent, parent-picker, and mobile badge work:
 
-CP92 also makes Lineage stored-scroll content signatures stable across refresh by using the selected artifact path plus the rendered node set as the restore guard. Source/runtime signatures remain useful as direct-key material, but they are too volatile to decide whether a Lineage F5 restore is still valid.
+- no app/runtime identifiers carry implementation chronology
+- duplicate function declarations remain blocked by validation
+- mobile badge packing has one JavaScript owner
+- mobile badge/action rail CSS is consolidated into one canonical presentation block
+- retired create/Continue/Reference shortcuts no longer bypass the artifact wizard
+- raw markdown review remains an explicit fallback/editor surface, not the primary create path
+- schema-aware wizard ownership is centralized in one registry instead of option/body/form/edit switch tables
+- wizard, Review Markdown, and local edit dialog shells share one authoring-dialog layout contract
+- Evidence keeps its attachment-aware describe renderer through the registry, not through stacked describe-step wrappers
+- zip packaging opens directly at the app root
 
-## CP93 scroll restore diagnostics
-
-CP93 adds gated scroll restore instrumentation. It does not change scroll restore behavior. When `sessionStorage.setItem("tiinex.debug.scrollRestore", "1")` is set before reload, routeScroll emits gated startup diagnostics for stored-scroll reads, fallback scans, candidate choice, target readiness, apply attempts, completion, deadline, and zero-write capture skips. The same data is retained in `window.__tiinexScrollRestoreDebugLog` for copy/paste after refresh.
-
-## CP94 scroll restore content-readiness repair
-
-CP94 keeps `routeScroll` as the single F5 scroll restore owner, but changes restore completion timing from a fixed early startup attempt to a content-readiness gate. A saved Discovery or Lineage scroll is not applied to an empty feed shell or interim page/workspace target. The pending restore remains alive until the saved target role is present and scrollable, or until the user interacts/cancels the restore window. This targets the CP93 observed restore trace where a saved Discovery top of 4000 was found, but `.post-feed.discovery` still had `max: 0` when restore attempted to apply it.
-
-## CP95 scroll flight recorder
-
-CP95 is diagnostic-only. It does not change scroll restore ownership or restore policy. When enabled with `sessionStorage.setItem('tiinex.debug.scrollRestore', '1')` or `?debugScroll=1`, it records a structured scroll flight log at `window.__tiinexScrollFlight`.
-
-The flight recorder captures per-workspace scroll state rather than treating the page as one global scroll. Each workspace snapshot includes Discovery feed, Lineage feed, workspace shell, route scroll fields, rendered card count, loading state, visible More/load-more affordances, first visible anchor, decoded URL state, and lens cache state.
-
-For low-noise debugging, CP95 stores most events in memory and only logs key DOM set-scroll attempts to the console unless `sessionStorage.setItem('tiinex.debug.scrollConsole', '1')` or `?debugScrollConsole=1` is used.
-
-## CP96 scroll restore stable-completion notes
-
-- Targeted scroll restore repair based on CP95 flight-recorder logs.
-- Restore completion is now stable: a scroll target must keep the saved top briefly before the restore is considered complete.
-- If a follow-up render resets the target, restore completion is invalidated and the chase resumes.
-
-
-## CP97 More-aware Discovery restore
-
-CP97 extends the stable CP96 restore path for Discovery positions that were saved after the user expanded the feed with Show more. When the saved Discovery top is beyond the currently rendered window, restore increases the same workspace's Discovery window in normal grow-count steps, re-renders, and resumes the pending restore until the saved target is reachable or no more matching content exists.
-
-The guard remains content-signature based: if the Discovery view/filter/search/source content signature no longer matches, restore is rejected instead of scrolling into changed content. Each workspace still keeps its own scroll state; Discovery feed, Lineage feed, and workspace shell remain separate targets.
-
-
-## CP98 scroll cleanup after green restore
-
-CP98 is a cleanup package after CP97 browser validation passed for Discovery, Lineage, and More-expanded Discovery restore. It keeps the working routeScroll behavior intact and removes/contains diagnostic and retired scroll infrastructure that was only useful while isolating the bug.
-
-The retired anchor-scroll runtime helper family is removed; only the startup prune for stale `tiinex.scroll.anchor.*` session entries remains. The structured scroll flight recorder is now explicit opt-in via `sessionStorage.setItem('tiinex.debug.scrollFlight', '1')` or `?debugScrollFlight=1`, rather than being coupled to the lighter `tiinex.debug.scrollRestore` routeScroll diagnostic flag. Render and route-state flight snapshots are also gated before they build heavy snapshots.
-
-RouteScroll remains the single F5 scroll-restore owner. Discovery, Lineage, and workspace shell targets remain separate per-workspace targets, and Discovery More-aware restore remains content-signature guarded so changed views do not auto-scroll into stale content.
-
-
-## CP99 Discovery auto-more
-
-CP99 adds Discovery feed auto-growth near the rendered end of the feed while keeping the existing Show more button as a manual fallback. It is layered on top of the CP97/CP98 routeScroll restore path and does not change the stored-scroll owner.
-
-Mobile More footer layout is also tightened so the visible-count text does not squeeze outside the footer when the fallback button is visible.
-
-## CP100 lineage terminal polish
-
-CP100 keeps the CP99 behavior unchanged and only polishes lineage terminal icon spacing so status icons do not visually merge with their text. The zip is also built from the app root so the archive opens directly on the app files.
-
-
-### CP101 packaging and terminal polish note
-
-CP101 keeps the CP100 app-root zip shape and only adjusts the lineage terminal row so status icons remain visually separated from text.
-
-### CP102 unified node actions polish
-
-CP102 consolidates desktop card actions and mobile action-sheet actions around one shared node action descriptor list. Desktop keeps artifact actions on one row by compacting local Edit/Remove tail actions, while mobile shows the same action set in the sheet with a smaller close affordance.
-
-
-### CP103 mobile action sheet toggle cleanup
-
-CP103 keeps CP102's shared node action descriptor list but filters the redundant mobile More/Less expand action from the action sheet. Mobile cards already use the card body as the expand/collapse affordance, while desktop keeps the explicit More/Less row action. Lineage Anchor remains available in the mobile sheet.
+Before starting larger feature work, keep using the browser checklist above for changed surfaces and run the static validation and metrics commands documented in this README.
