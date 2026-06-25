@@ -86,3 +86,17 @@ export function shouldApplyLens(input = {}) {
 export function shouldRejectDiscoveryScroll(savedSignature, currentSignature) {
   return Boolean(savedSignature && currentSignature && savedSignature !== currentSignature);
 }
+
+
+export function preferredStoredScrollModes(activeMode) {
+  return activeMode === 'lineage'
+    ? ['lineage', 'discovery']
+    : ['discovery', 'lineage'];
+}
+
+export function shouldPreserveStoredScrollOnZeroWrite(input = {}) {
+  if (!input.preserveNonZero) return false;
+  if (Number(input.nextTop || 0) !== 0) return false;
+  return Number(input.existingTop || 0) > 0;
+}
+

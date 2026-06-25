@@ -13,7 +13,7 @@ import { localStateAssetIsPersistent, localStateDataKey, localStateFileIsPersist
 import { escapeAttr, escapeHtml, safeUrl } from '../src/ui/html.mjs';
 import { attachmentFileExtension, attachmentMetaChips, humanSize, shortMime } from '../src/ui/evidence-attachments.mjs';
 import { renderPreviewSections } from '../src/ui/preview.mjs';
-import { decorateLensSource, discoveryScrollSignature, normalizedHistoryKind, routeDescriptorFor, shouldApplyLens, shouldRejectDiscoveryScroll, stripVolatileLensState } from '../src/viewstate/lens.mjs';
+import { decorateLensSource, discoveryScrollSignature, normalizedHistoryKind, preferredStoredScrollModes, routeDescriptorFor, shouldApplyLens, shouldPreserveStoredScrollOnZeroWrite, shouldRejectDiscoveryScroll, stripVolatileLensState } from '../src/viewstate/lens.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '');
 const failures = [];
@@ -544,6 +544,24 @@ function validateJavascriptSurface() {
   note(`function declarations: ${declarationNames.length}`);
 }
 
+
+function validateMobileActionOwnership() {
+  const js = read('app.js');
+  if (!/function\s+genericMobileActionOwnsButton\s*\(\s*button\s*\)/.test(js)) {
+    fail('Mobile generic action dispatcher must declare genericMobileActionOwnsButton(button).');
+  }
+  if (!js.includes(".mobile-global-actions-host, .mobile-action-backdrop")) {
+    fail('Mobile generic action ownership must be scoped to global FAB host and mobile action sheet only. Top rail actions need their own handler.');
+  }
+  if (!js.includes('if (!button || !genericMobileActionOwnsButton(button)) return;')) {
+    fail('mobileOnlyActionClick must ignore mobile actions it does not own before preventing propagation.');
+  }
+  const broadDispatcherPattern = /function\s+mobileOnlyActionClick\s*\([\s\S]*?const\s+button\s*=\s*event\.target\?\.closest\?\.\('\[data-mobile-action\]'\);\s*if\s*\(\s*!button\s*\)\s*return;[\s\S]*?event\.preventDefault\s*\(/;
+  if (broadDispatcherPattern.test(js)) {
+    fail('mobileOnlyActionClick must not claim every [data-mobile-action]. Mobile top rail actions must remain owned by mobileTopRailClick.');
+  }
+}
+
 function validateCssSurface() {
   const css = read('styles.css');
   const balance = countCssBraceBalance(css);
@@ -755,8 +773,44 @@ function validateArchitectureBoundaries() {
   if (normalizedHistoryKind({ kind: 'push', signature: 'b', lastSignature: 'a', lastAt: 0, now: 2000 }).kind !== 'push') fail('src/viewstate/lens.mjs normalizedHistoryKind push contract failed');
   if (shouldApplyLens({ userInteracted: true, isBootingFromUrl: false, routingRestoring: false })) fail('src/viewstate/lens.mjs shouldApplyLens user contract failed');
   if (!shouldRejectDiscoveryScroll('old', 'new')) fail('src/viewstate/lens.mjs shouldRejectDiscoveryScroll contract failed');
+  if (preferredStoredScrollModes('lineage').join(',') !== 'lineage,discovery') fail('src/viewstate/lens.mjs preferredStoredScrollModes lineage contract failed');
+  if (preferredStoredScrollModes('discovery').join(',') !== 'discovery,lineage') fail('src/viewstate/lens.mjs preferredStoredScrollModes discovery contract failed');
+  if (!shouldPreserveStoredScrollOnZeroWrite({ preserveNonZero: true, nextTop: 0, existingTop: 42 })) fail('src/viewstate/lens.mjs shouldPreserveStoredScrollOnZeroWrite preserve contract failed');
+  if (shouldPreserveStoredScrollOnZeroWrite({ preserveNonZero: true, nextTop: 5, existingTop: 42 })) fail('src/viewstate/lens.mjs shouldPreserveStoredScrollOnZeroWrite nonzero contract failed');
 
   const appJs = read('app.js');
+  if (!appJs.includes("function writeStoredScrollSnapshot(reason = 'snapshot')")) fail('app.js must snapshot stored scroll before page lifecycle exits');
+  if (!appJs.includes("writeStoredScrollSnapshot('pagehide')")) fail('app.js must flush stored scroll on pagehide');
+  if (!appJs.includes("writeStoredScrollSnapshot('beforeunload')")) fail('app.js must flush stored scroll on beforeunload');
+  if (!appJs.includes('TiinexViewState.preferredStoredScrollModes(activeMode)')) fail('app.js must prefer active scroll mode when restoring stored scroll');
+  if (!appJs.includes('TiinexViewState.shouldPreserveStoredScrollOnZeroWrite')) fail('app.js must preserve nonzero stored scroll from lifecycle zero-writes');
+  if (!appJs.includes('function storedScrollStableKey(ws, identity = null)')) fail('app.js must write a stable stored scroll fallback key for F5 restore');
+  if (!appJs.includes('sessionStorageJsonSet(stableKey, value)')) fail('app.js must persist stored scroll to the stable fallback key');
+  if (!appJs.includes('storedScrollStableKey(ws, current)')) fail('app.js must read stored scroll from the stable fallback key');
+  if (!appJs.includes('function scanStoredScrollFallback(current)')) fail('app.js must scan stored scroll entries when runtime workspace ids change after F5');
+  if (!appJs.includes('Workspace ids are runtime ids')) fail('app.js must document stored scroll fallback ownership for runtime workspace id changes');
+  if (!appJs.includes('storedScrollMatchesIdentity(saved, current)')) fail('app.js must share stored scroll identity validation between keyed and scanned reads');
+  if (!appJs.includes('function storedScrollContentSignature(ws, mode =')) fail('app.js must guard stored scroll restore with a content signature');
+  if (!appJs.includes('savedContent && currentContent && savedContent !== currentContent')) fail('app.js must reject stored scroll when content signatures differ');
+  if (!appJs.includes('Prefer the rendered/visible feed for the workspace')) fail('app.js must document rendered feed mode ownership for scroll restore');
+  if (!appJs.includes('function preferredStoredScrollCompletionTarget(ws, saved)')) fail('app.js must complete stored scroll restore against the saved target role');
+  if (!appJs.includes('function scrollTargetMatchesSavedTop(target, saved)')) fail('app.js must verify stored scroll target position before marking restore complete');
+  if (!appJs.includes('Complete only once the saved target')) fail('app.js must document stored scroll timing ownership');
+  if (!appJs.includes('function pruneAnchorScrollStorage()')) fail('app.js must retire the legacy anchor-scroll restore cache');
+  if (!appJs.includes('routeScroll is the single F5 scroll-restore owner')) fail('app.js must document single-owner scroll restore ownership');
+  if (!appJs.includes('durable lens owns route selection/history only')) fail('durable lens must not own F5 scroll restore');
+  if (!appJs.includes('STORED_SCROLL_RESTORE_WINDOW_MS = 45000')) fail('stored scroll restore must keep a content-load window for slow Discovery render');
+  if (!appJs.includes('apply:wait-content-ready')) fail('stored scroll restore must wait for the saved target role to become scrollable');
+  if (!appJs.includes('STORED_SCROLL_STABLE_COMPLETION_MS') || !appJs.includes('chase:complete-invalidated') || !appJs.includes('chase:complete-stable')) fail('stored scroll restore completion must survive post-apply render resets');
+  if (!appJs.includes('Lineage restore must be stable across refresh')) fail('lineage stored scroll signature must avoid runtime source identity churn');
+  if (appJs.includes('registerRenderWrapper(function renderWithAnchorScroll')) fail('legacy anchor-scroll restore wrapper must not remain active');
+  if (appJs.includes('function chaseAnchorScrollForWorkspace') || appJs.includes('function writeAnchorScroll')) fail('legacy anchor-scroll runtime helpers must be removed after routeScroll becomes the single owner');
+  if (appJs.includes('if (ws) writeAnchorScroll(ws, null, anchorScrollMode(ws));')) fail('legacy anchor-scroll interval writer must not remain active');
+  if (!appJs.includes("sessionStorage.getItem('tiinex.debug.scrollFlight')") || !appJs.includes('renderWithOptionalScrollFlightRecorder')) fail('scroll flight recorder must be explicit opt-in after diagnostics cleanup');
+  if (appJs.includes('requestAnimationFrame(chaseAllScroll)') || appJs.includes('setTimeout(chaseAllScroll')) fail('durable lens scroll chase must not race routeScroll restore');
+  if (!appJs.includes('Number(saved?.top || 0) > 0 && storedScrollMatchesIdentity(saved, current)')) fail('stored scroll keyed reads must skip zero entries and continue to fallback');
+  if (!appJs.includes('.filter((saved) => Number(saved?.top || 0) > 0)')) fail('stored scroll scan fallback must ignore zero entries');
+  if (!appJs.includes("!String(targetRole || '').startsWith('post-feed.')")) fail('stored scroll writes must reject inactive shell zero overwrites');
   const indexHtml = read('index.html');
   const requiredClassicScripts = [
     '<script src="./src/app/core-runtime.js"></script>',
@@ -929,6 +983,7 @@ function main() {
   validatePublicBuildContracts();
   validateJavascriptSyntax();
   validateJavascriptSurface();
+  validateMobileActionOwnership();
   validateWrapperHygiene();
   validateCanonicalRenderAssignments();
   validateOrdinaryFunctionReassignments();

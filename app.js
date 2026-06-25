@@ -1142,16 +1142,30 @@
       scrollTop: el.scrollTop || 0,
       reason
     };
+    scrollFlightRecord('feedSnapshot:capture', {
+      reason,
+      pending: Object.assign({}, app.pendingFeedScrollRestore),
+      target: scrollRestoreDebugTargetState(el),
+      workspace: scrollRestoreDebugWorkspaceState(getWorkspace(el.dataset.ws || ''))
+    });
   }
 
   function restorePendingFeedScroll() {
     const pending = app.pendingFeedScrollRestore;
     if (!pending) return;
     app.pendingFeedScrollRestore = null;
+    scrollFlightRecord('feedSnapshot:restore-pending-schedule', { pending: Object.assign({}, pending) });
     requestAnimationFrame(() => {
       const selector = `.post-feed.lineage[data-ws="${CSS.escape(pending.wsId)}"][data-selected="${CSS.escape(pending.selectedId)}"]`;
       const feed = document.querySelector(selector);
+      const before = scrollRestoreDebugTargetState(feed);
       if (feed) feed.scrollTop = pending.scrollTop;
+      scrollFlightRecord('feedSnapshot:restore-pending-apply', {
+        pending: Object.assign({}, pending),
+        selector,
+        before,
+        after: scrollRestoreDebugTargetState(feed)
+      });
     });
   }
 
@@ -1220,8 +1234,13 @@
 
   function restoreOneFeedSnapshot(item) {
     const feed = document.querySelector(feedSelectorForSnapshot(item));
-    if (!feed) return;
+    if (!feed) {
+      scrollFlightRecord('feedSnapshot:restore-one-miss', { item });
+      return;
+    }
+    const before = scrollRestoreDebugTargetState(feed);
     feed.scrollTop = item.scrollTop || 0;
+    let anchorApplied = false;
     if (item.mode === 'lineage' && item.anchor?.nodeId) {
       const anchor = feed.querySelector(`.lineage-post[data-node="${CSS.escape(item.anchor.nodeId)}"]`);
       if (anchor) {
@@ -1229,9 +1248,18 @@
         const anchorRect = anchor.getBoundingClientRect();
         const newOffset = anchorRect.top - feedRect.top;
         const delta = newOffset - item.anchor.offsetTop;
-        if (Math.abs(delta) > 1) feed.scrollTop += delta;
+        if (Math.abs(delta) > 1) {
+          feed.scrollTop += delta;
+          anchorApplied = true;
+        }
       }
     }
+    scrollFlightRecord('feedSnapshot:restore-one-apply', {
+      item,
+      before,
+      after: scrollRestoreDebugTargetState(feed),
+      anchorApplied
+    });
   }
 
   function restoreVisibleFeedScrolls(snapshots) {
@@ -2257,9 +2285,23 @@
       const ws = getWorkspace(wsId);
       if (ws && nodeId) {
         const feed = document.querySelector(`.post-feed.lineage[data-ws="${CSS.escape(wsId)}"]`);
+        const beforeState = nodeId ? Object.assign({}, ensureLineageWindow(ws, nodeId)) : null;
+        scrollFlightRecord('more:lineage-before', {
+          workspace: scrollRestoreDebugWorkspaceState(ws),
+          nodeId,
+          beforeState,
+          feed: scrollRestoreDebugTargetState(feed)
+        });
         captureFeedScroll(feed, 'manual-lineage-load-more');
         const state = ensureLineageWindow(ws, nodeId);
         state.visibleCount += lineageGrowthCount(feed);
+        scrollFlightRecord('more:lineage-after-state', {
+          workspace: scrollRestoreDebugWorkspaceState(ws),
+          nodeId,
+          beforeState,
+          afterState: Object.assign({}, state),
+          feed: scrollRestoreDebugTargetState(feed)
+        });
         setRouteState('replace');
         render();
       }
@@ -6695,6 +6737,67 @@ ${bodySections}
 
 
 
+  function nodeActionDatasetAttrs(dataset = {}) {
+    return Object.entries(dataset).map(([key, value]) => {
+      if (value === undefined || value === null || value === '') return '';
+      const attr = `data-${String(key).replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`)}`;
+      return ` ${attr}="${escapeAttr(String(value))}"`;
+    }).join('');
+  }
+
+  function nodeActionItems(ws, node, opts = {}) {
+    const base = { ws: ws.id, node: node.id };
+    const expanded = Boolean(node.expanded);
+    const inLineage = Boolean(opts.lineage);
+    const isTarget = ws.selectedNodeId === node.id;
+    const items = [];
+
+    items.push(inLineage
+      ? {
+        label: 'Anchor',
+        icon: 'fa-solid fa-anchor',
+        className: `anchor-action ${isTarget ? 'active-target' : ''}`,
+        dataset: Object.assign({ action: 'select-node' }, base),
+        title: 'Anchor this trace as the viewer target and redraw the parent lineage from here'
+      }
+      : {
+        label: expanded ? 'Less' : 'More',
+        icon: `fa-solid ${expanded ? 'fa-chevron-up' : 'fa-chevron-down'}`,
+        dataset: Object.assign({ action: 'toggle-node-expand' }, base),
+        title: expanded ? 'Collapse continuity preview' : 'Expand continuity preview'
+      });
+
+    items.push(
+      { label: 'Open', icon: 'fa-regular fa-window-maximize', dataset: Object.assign({ action: 'open-detail-modal' }, base), title: 'Open focused schema read view' },
+      { label: 'Markdown', icon: 'fa-brands fa-markdown', dataset: Object.assign({ action: 'open-markdown-modal' }, base), title: 'Open raw markdown source' },
+      { label: 'Continue', icon: 'fa-solid fa-code-branch', dataset: Object.assign({ action: 'open-create', mode: 'continue' }, base), disabled: node.hasModernEnvelope === false, title: 'Create a continuation leaf from this trace' },
+      { label: 'Reference', icon: 'fa-solid fa-link', className: 'gold', dataset: Object.assign({ action: 'open-create', mode: 'reference' }, base), title: 'Create a reference leaf pointing at this trace' }
+    );
+
+    if (node.browseUrl) {
+      items.push({ label: 'Source', icon: 'fa-brands fa-github', className: 'anchor', href: safeUrl(node.browseUrl) || node.browseUrl, title: 'Open original source location' });
+    }
+    if (typeof canEditNode === 'function' && canEditNode(ws, node)) {
+      items.push({ label: 'Edit', icon: 'fa-solid fa-pen-to-square', className: 'constructive compact-tail-action edit-action', dataset: Object.assign({ action: 'open-node-edit' }, base), title: 'Edit local markdown' });
+    }
+    if (typeof canRemoveNodeForNow === 'function' && canRemoveNodeForNow(ws, node)) {
+      items.push({ label: 'Remove', icon: 'fa-regular fa-trash-can', className: 'danger compact-tail-action remove-action', dataset: Object.assign({ action: 'remove-local-node' }, base), danger: true, title: 'Remove this local/uploaded node from the current workspace' });
+    }
+
+    return items;
+  }
+
+  function renderNodeActionItem(action) {
+    const classes = `icon-action ${action.className || ''}`.trim();
+    const title = action.title || action.label || 'Action';
+    const icon = `<i class="${escapeAttr(action.icon || 'fa-solid fa-circle-dot')}"></i>`;
+    const body = `${icon}<span>${escapeHtml(action.label || 'Action')}</span>`;
+    if (action.href) {
+      return `<a class="${escapeAttr(classes)}" href="${escapeAttr(action.href)}" target="_blank" rel="noopener" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}">${body}</a>`;
+    }
+    return `<button class="${escapeAttr(classes)}"${nodeActionDatasetAttrs(action.dataset)}${action.disabled ? ' disabled' : ''} title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}">${body}</button>`;
+  }
+
   function renderNodePost(ws, node, opts = {}) {
     const schema = node.currentSchemaText || (node.hasModernEnvelope ? 'unknown schema' : 'plain markdown');
     const relation = relationLabel(node, opts.index || 0, opts.lineage);
@@ -6704,10 +6807,7 @@ ${bodySections}
     const mainAction = inLineage ? 'toggle-node-expand' : 'select-node';
     const mainTitle = inLineage ? (expanded ? 'Collapse continuity preview' : 'Expand continuity preview') : 'Set this card as the viewer lineage target';
     const mainClass = inLineage ? 'post-main-toggle' : 'post-main-target';
-    const removable = canRemoveNodeForNow(ws, node);
-    const firstAction = inLineage
-      ? `<button class="icon-action anchor-action ${isTarget ? 'active-target' : ''}" data-action="select-node" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="Anchor this trace as the viewer target and redraw the parent lineage from here" aria-label="Anchor this trace as the viewer target and redraw the parent lineage from here"><i class="fa-solid fa-anchor"></i><span>Anchor</span></button>`
-      : `<button class="icon-action" data-action="toggle-node-expand" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="${expanded ? 'Collapse continuity preview' : 'Expand continuity preview'}" aria-label="${expanded ? 'Collapse continuity preview' : 'Expand continuity preview'}"><i class="fa-solid ${expanded ? 'fa-chevron-up' : 'fa-chevron-down'}"></i><span>${expanded ? 'Less' : 'More'}</span></button>`;
+    const actionHtml = nodeActionItems(ws, node, opts).map(renderNodeActionItem).join('');
 
     return `
       <article class="lineage-post ${expanded ? 'expanded' : ''} ${node.isGenerated ? 'generated' : ''} ${typeof isSchemaPath === 'function' && isSchemaPath(node.path) ? 'schema-lineage-post' : ''}" data-node="${escapeAttr(node.id)}" data-source="${escapeAttr(node.sourceId || '')}">
@@ -6725,15 +6825,7 @@ ${bodySections}
           <p class="post-summary">${escapeHtml(shortText(node.summary || node.why || 'No summary extracted.', 280))}</p>
         </div>
         ${expanded ? `<div class="continuity-preview">${renderContinuityPreview(node, ws)}</div>` : ''}
-        <div class="post-actions">
-          ${firstAction}
-          <button class="icon-action" data-action="open-detail-modal" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="Open focused schema read view" aria-label="Open focused schema read view"><i class="fa-regular fa-window-maximize"></i><span>Open</span></button>
-          <button class="icon-action" data-action="open-markdown-modal" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="Open raw markdown source" aria-label="Open raw markdown source"><i class="fa-brands fa-markdown"></i><span>Markdown</span></button>
-          <button class="icon-action" data-action="open-create" data-mode="continue" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" ${node.hasModernEnvelope ? '' : 'disabled'} title="Create a continuation leaf from this trace" aria-label="Create a continuation leaf from this trace"><i class="fa-solid fa-code-branch"></i><span>Continue</span></button>
-          <button class="icon-action gold" data-action="open-create" data-mode="reference" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="Create a reference leaf pointing at this trace" aria-label="Create a reference leaf pointing at this trace"><i class="fa-solid fa-link"></i><span>Reference</span></button>
-          ${node.browseUrl ? `<a class="icon-action anchor" href="${escapeAttr(safeUrl(node.browseUrl))}" target="_blank" rel="noopener" title="Open original source location" aria-label="Open original source location"><i class="fa-brands fa-github"></i><span>Source</span></a>` : ''}
-          ${removable ? `<button class="icon-action danger" data-action="remove-local-node" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="Remove this local/uploaded node from the current workspace" aria-label="Remove this local/uploaded node from the current workspace"><i class="fa-regular fa-trash-can"></i><span>Remove</span></button>` : ''}
-        </div>
+        <div class="post-actions">${actionHtml}</div>
       </article>`;
   }
 
@@ -9470,18 +9562,6 @@ ${integrityFooter('self', 'pending')}`;
   // late event wrappers and not every build exposes those names.
   window.addEventListener('input', handleEditAddFieldEvent, true);
   window.addEventListener('change', handleEditAddFieldEvent, true);
-  registerRenderNodePostWrapper(function renderNodePostWithEditButton(ws, node, options = {}, next) {
-    const html = next(ws, node, options);
-    const editButton = editButtonForNode(ws, node);
-    if (!editButton) return html;
-
-    // Inject into the post action row without wrapping renderNodeActions. This avoids
-    const markers = ['</div>'];
-    const footerIndex = html.lastIndexOf('</div>');
-    if (footerIndex < 0) return html + editButton;
-    return html.slice(0, footerIndex) + editButton + html.slice(footerIndex);
-  });
-
   function nextSiblingTracePath(node) {
     const path = String(node?.path || '.topics/new.trace.md');
     const match = path.match(/^(.*?)(\d+(?:-\d+)*)(\.trace\.md)$/i);
@@ -9630,53 +9710,6 @@ ${integrityFooter('self', 'pending')}`;
 
 
 
-  function editButtonForNode(ws, node) {
-    if (!canEditNode(ws, node)) return '';
-    return `<button class="post-action edit-action icon-only-edit" data-action="open-node-edit" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="Edit local markdown" aria-label="Edit local markdown"><i class="fa-solid fa-pen-to-square"></i></button>`;
-  }
-
-
-
-
-  function actionTitleFromButton(button) {
-    if (!button) return '';
-    const explicit = button.getAttribute('title') || button.getAttribute('aria-label') || '';
-    if (explicit) return explicit;
-    const text = String(button.textContent || '').trim().replace(/\s+/g, ' ');
-    const action = button.dataset?.action || '';
-    if (text) return text;
-    if (action) return action.replace(/[-_]+/g, ' ');
-    return 'Action';
-  }
-
-  function normalizeNodeActionButtons(root = document) {
-    root.querySelectorAll('.post-action').forEach((button) => {
-      if (button.dataset.compactAction === '1') return;
-      const title = actionTitleFromButton(button);
-      button.dataset.compactAction = '1';
-      button.classList.add('compact-node-action');
-      if (title) {
-        button.setAttribute('title', title);
-        button.setAttribute('aria-label', title);
-      }
-
-      const action = button.dataset?.action || '';
-      const lowerTitle = title.toLowerCase();
-      if (action.includes('remove') || lowerTitle.includes('remove') || lowerTitle.includes('delete')) {
-        button.classList.add('destructive-node-action');
-      }
-      if (action.includes('edit') || lowerTitle.includes('edit')) {
-        button.classList.add('constructive-node-action');
-      }
-    });
-  }
-  registerRenderWrapper(function renderWithCompactActions(next) {
-    const result = next();
-    normalizeNodeActionButtons(document);
-    return result;
-  });
-
-  window.addEventListener('DOMContentLoaded', () => normalizeNodeActionButtons(document));
 
 
 
@@ -13541,7 +13574,10 @@ See _tiinex/export.manifest.json for source and output path metadata.
     repoDiscoveryFetchConcurrency: 6,
     repoDiscoveryBatchRenderEvery: 0,
     discoveryFeedInitialCount: 48,
-    discoveryFeedGrowCount: 48
+    discoveryFeedGrowCount: 48,
+    discoveryFeedAutoGrowMinPx: 240,
+    discoveryFeedAutoGrowMaxPx: 720,
+    discoveryFeedAutoGrowViewportRatio: 0.65
   }, app.settings || {});
 
   function microYield() {
@@ -13623,20 +13659,103 @@ See _tiinex/export.manifest.json for source and output path metadata.
     }
     return html;
   });
+  function discoveryWindowTotals(ws) {
+    let all = [];
+    try { all = filteredDiscoveryNodes(ws) || []; } catch (_) { all = ws?.nodes || []; }
+    return { all, total: Array.isArray(all) ? all.length : 0 };
+  }
+
+  function growDiscoveryWindow(ws, reason = 'manual') {
+    if (!ws || (ws.discoveryView || 'feed') !== 'feed') return false;
+    const beforeVisibleCount = discoveryVisibleCount(ws);
+    const total = discoveryWindowTotals(ws).total;
+    if (beforeVisibleCount >= total) return false;
+    const growCount = Math.max(8, Number(app.settings.discoveryFeedGrowCount || 48));
+    const afterVisibleCount = Math.min(total, beforeVisibleCount + growCount);
+    if (afterVisibleCount <= beforeVisibleCount) return false;
+
+    scrollFlightRecord(`more:discovery-${reason}-before`, {
+      beforeVisibleCount,
+      afterVisibleCount,
+      growCount,
+      total,
+      workspace: scrollRestoreDebugWorkspaceState(ws),
+      feed: scrollRestoreDebugTargetState(scrollElementForRole(ws, 'post-feed.discovery', 'discovery'))
+    });
+    ws.discoveryVisibleCount = afterVisibleCount;
+    ws.discoveryWindowSig = discoveryWindowSignature(ws);
+    scrollFlightRecord(`more:discovery-${reason}-after-state`, {
+      beforeVisibleCount,
+      afterVisibleCount: ws.discoveryVisibleCount,
+      total,
+      workspace: scrollRestoreDebugWorkspaceState(ws)
+    });
+    render();
+    return true;
+  }
+
   registerActionHandler(async function discoveryWindowAction(event, next) {
     const action = event.currentTarget?.dataset?.action || '';
     if (action === 'load-more-discovery') {
       event.preventDefault();
       event.stopPropagation();
-      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
-      if (!ws) return;
-      discoveryVisibleCount(ws);
-      ws.discoveryVisibleCount += Number(app.settings.discoveryFeedGrowCount || 48);
-      render();
+      growDiscoveryWindow(getWorkspace(event.currentTarget.dataset.ws || ''), 'manual');
       return;
     }
     return next(event);
   });
+
+  const discoveryAutoMoreState = new WeakMap();
+
+  function discoveryAutoMoreThreshold(feed) {
+    const minPx = Math.max(80, Number(app.settings.discoveryFeedAutoGrowMinPx || 240));
+    const maxPx = Math.max(minPx, Number(app.settings.discoveryFeedAutoGrowMaxPx || 720));
+    const ratio = Number(app.settings.discoveryFeedAutoGrowViewportRatio || 0.65);
+    const byViewport = Math.round(Math.max(0, feed?.clientHeight || 0) * Math.max(0.1, ratio));
+    return Math.min(maxPx, Math.max(minPx, byViewport));
+  }
+
+  function discoveryAutoMoreFeedFromTarget(target) {
+    if (!target) return null;
+    if (target.classList?.contains('post-feed') && target.classList?.contains('discovery')) return target;
+    return target.closest?.('.post-feed.discovery[data-ws]') || null;
+  }
+
+  function maybeAutoGrowDiscoveryWindow(feed, reason = 'scroll') {
+    if (!feed || app.restoringStoredScroll) return false;
+    const ws = getWorkspace(feed.dataset?.ws || '');
+    if (!ws || (ws.discoveryView || 'feed') !== 'feed') return false;
+    const beforeVisibleCount = discoveryVisibleCount(ws);
+    const total = discoveryWindowTotals(ws).total;
+    if (beforeVisibleCount >= total) return false;
+
+    const distanceToEnd = Math.max(0, Math.round((feed.scrollHeight || 0) - (feed.clientHeight || 0) - (feed.scrollTop || 0)));
+    const threshold = discoveryAutoMoreThreshold(feed);
+    if (distanceToEnd > threshold) return false;
+
+    const now = Date.now();
+    const last = discoveryAutoMoreState.get(feed);
+    if (last && last.visibleCount === beforeVisibleCount && now - last.at < 350) return false;
+    discoveryAutoMoreState.set(feed, { visibleCount: beforeVisibleCount, at: now });
+
+    scrollFlightRecord('more:discovery-auto-threshold', {
+      beforeVisibleCount,
+      total,
+      distanceToEnd,
+      threshold,
+      workspace: scrollRestoreDebugWorkspaceState(ws),
+      feed: scrollRestoreDebugTargetState(feed)
+    });
+    return growDiscoveryWindow(ws, reason);
+  }
+
+  function onDiscoveryAutoMoreScroll(event) {
+    const feed = discoveryAutoMoreFeedFromTarget(event.target);
+    if (!feed) return;
+    maybeAutoGrowDiscoveryWindow(feed, 'auto-scroll');
+  }
+
+  document.addEventListener('scroll', onDiscoveryAutoMoreScroll, true);
 
   async function discoverGitHubRepoIntoWorkspaceResponsive(ws, options) {
     const repo = options.repo;
@@ -14405,10 +14524,26 @@ See _tiinex/export.manifest.json for source and output path metadata.
     if (!ws) return;
     const el = explicitEl || activeScrollableFeed(ws);
     const selected = selectedRouteDescriptor(ws);
+    const before = {
+      routeScrollTop: Number(ws.routeScrollTop || 0),
+      routeScrollMode: ws.routeScrollMode || '',
+      routeScrollSelectedPath: ws.routeScrollSelectedPath || ''
+    };
     const top = Math.max(0, Math.round((el?.scrollTop ?? ws.routeScrollTop ?? 0) || 0));
     ws.routeScrollTop = top;
     ws.routeScrollMode = selected.mode || 'discovery';
     ws.routeScrollSelectedPath = selected.selectedPath || '';
+    scrollFlightRecord('lens:remember-scroll', {
+      before,
+      after: {
+        routeScrollTop: Number(ws.routeScrollTop || 0),
+        routeScrollMode: ws.routeScrollMode || '',
+        routeScrollSelectedPath: ws.routeScrollSelectedPath || ''
+      },
+      selected,
+      target: scrollRestoreDebugTargetState(el),
+      workspace: scrollRestoreDebugWorkspaceState(ws)
+    });
   }
 
   function enhanceLensSource(source, ws) {
@@ -14464,9 +14599,26 @@ See _tiinex/export.manifest.json for source and output path metadata.
       ws.pendingSelectedRoute = null;
     }
 
+    const beforeRouteScroll = {
+      routeScrollTop: Number(ws.routeScrollTop || 0),
+      routeScrollMode: ws.routeScrollMode || '',
+      routeScrollSelectedPath: ws.routeScrollSelectedPath || ''
+    };
     ws.routeScrollTop = Number(source.scrollTop || source.feedScrollTop || ws.routeScrollTop || 0) || 0;
     ws.routeScrollMode = source.scrollMode || (wantsLineage ? 'lineage' : 'discovery');
     ws.routeScrollSelectedPath = source.scrollSelectedPath || source.selectedPath || '';
+    scrollFlightRecord('lens:apply-source', {
+      source: scrollFlightRouteSourceSummary(source),
+      wantsLineage,
+      selectedResolved: selected ? { id: selected.id || '', path: selected.path || '' } : null,
+      beforeRouteScroll,
+      afterRouteScroll: {
+        routeScrollTop: Number(ws.routeScrollTop || 0),
+        routeScrollMode: ws.routeScrollMode || '',
+        routeScrollSelectedPath: ws.routeScrollSelectedPath || ''
+      },
+      workspace: scrollRestoreDebugWorkspaceState(ws)
+    });
   }
   registerApplyViewStateToWorkspaceWrapper(function applyViewStateWithDurableLens(ws, source, next) {
     next(ws, source);
@@ -14494,18 +14646,39 @@ See _tiinex/export.manifest.json for source and output path metadata.
   }
 
   function persistLensState(kind = 'replace') {
-    if (app.routing?.restoring || app.isBootingFromUrl || !app.workspaces?.length) return;
+    if (app.routing?.restoring || app.isBootingFromUrl || !app.workspaces?.length) {
+      scrollFlightRecord('lens:persist-skip', {
+        kind,
+        reason: app.routing?.restoring ? 'routing-restoring' : (app.isBootingFromUrl ? 'booting-from-url' : 'no-workspaces')
+      });
+      return;
+    }
+    const beforeUrl = `${location.pathname}${location.search}${location.hash}`;
     app.workspaces.forEach((ws) => rememberLensScroll(ws));
     const state = currentLensState();
-    try { sessionStorage.setItem(lensCacheKey(), JSON.stringify(state)); } catch (_) {}
+    let cacheWritten = false;
+    try { sessionStorage.setItem(lensCacheKey(), JSON.stringify(state)); cacheWritten = true; } catch (_) {}
     try {
       const next = currentLensUrl(state);
       const current = `${location.pathname}${location.search}${location.hash}`;
-      if (next !== current) {
+      const willWriteHistory = next !== current;
+      if (willWriteHistory) {
         if (kind === 'push') history.pushState(state, '', next);
         else history.replaceState(state, '', next);
       }
-    } catch (_) {}
+      scrollFlightRecord('lens:persist', {
+        kind,
+        beforeUrl,
+        afterUrl: `${location.pathname}${location.search}${location.hash}`,
+        nextUrl: next,
+        cacheWritten,
+        willWriteHistory,
+        state: scrollFlightRouteStateSummary(state),
+        snapshot: scrollFlightSnapshot('lens:persist')
+      });
+    } catch (error) {
+      scrollFlightRecord('lens:persist-error', { kind, beforeUrl, message: error?.message || String(error) });
+    }
   }
 
   function cachedLensState() {
@@ -14546,6 +14719,9 @@ See _tiinex/export.manifest.json for source and output path metadata.
   }
 
   function chaseScrollForWorkspace(ws, durationMs = 2200) {
+    // Retired for F5 restore in CP92; kept only to avoid broad surgery around
+    // older wrapper layering. No render path should call this while routeScroll
+    // is the single scroll-restore owner.
     if (!ws) return;
     const target = Math.max(0, Math.round(ws.routeScrollTop || 0));
     if (!target) return;
@@ -14597,9 +14773,8 @@ See _tiinex/export.manifest.json for source and output path metadata.
       applyCurrentOrCachedLens();
     }
     const result = next();
-    requestAnimationFrame(chaseAllScroll);
-    setTimeout(chaseAllScroll, 180);
-    setTimeout(chaseAllScroll, 700);
+    // CP92: durable lens owns route selection/history only. It must not chase
+    // scroll after render, because F5 scroll restore is owned by routeScroll.
     return result;
   });
   registerSetRouteStateWrapper(function setRouteStateWithDurableLens(kind = 'push', next) {
@@ -14619,7 +14794,13 @@ See _tiinex/export.manifest.json for source and output path metadata.
     if (!pageScroll && !el?.classList?.contains('post-feed')) return;
     const ws = pageScroll ? activeWorkspace() : getWorkspace(el.dataset.ws || '');
     if (!ws) return;
-    rememberLensScroll(ws, pageScroll ? (document.scrollingElement || document.documentElement || document.body) : el);
+    const target = pageScroll ? (document.scrollingElement || document.documentElement || document.body) : el;
+    scrollFlightRecord('lens:scroll-capture', {
+      pageScroll,
+      target: scrollRestoreDebugTargetState(target),
+      workspace: scrollRestoreDebugWorkspaceState(ws)
+    });
+    rememberLensScroll(ws, target);
     clearTimeout(app.persistLensTimer);
     app.persistLensTimer = setTimeout(() => persistLensState('replace'), 120);
   }
@@ -14627,12 +14808,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
   document.addEventListener('scroll', onScrollPersistLens, true);
 
   function flushBrowserStateBeforeLeave() {
-    try {
-      for (const ws of app.workspaces || []) {
-        writeStoredScroll(ws, null, 'discovery');
-        if (selectedNode(ws)) writeStoredScroll(ws, null, 'lineage');
-      }
-    } catch (_) {}
+    try { writeStoredScrollSnapshot('pagehide'); } catch (_) {}
     persistLensState('replace');
     if (typeof saveLocalStateNow === 'function') saveLocalStateNow();
   }
@@ -14729,70 +14905,13 @@ See _tiinex/export.manifest.json for source and output path metadata.
     return ok;
   };
 
-  chaseScrollForWorkspace = function chaseScrollForWorkspaceGuarded(ws, durationMs = 2200) {
-    if (!ws) return;
-    const target = Math.max(0, Math.round(ws.routeScrollTop || 0));
-    if (!target) return;
-
-    if (!ws.scrollRestoreArmed && !app.isBootingFromUrl && !app.routing?.restoring) return;
-    if (ws.scrollRestoreDeadline && performance.now() > ws.scrollRestoreDeadline) {
-      ws.scrollRestoreArmed = false;
-      return;
-    }
-
-    const selected = selectedNode(ws);
-    if (!selected && ws.routeScrollDiscoverySig) {
-      const currentSig = discoverySignatureForScroll(ws);
-      if (currentSig && currentSig !== ws.routeScrollDiscoverySig) {
-        ws.scrollRestoreArmed = false;
-        ws.routeScrollTop = 0;
-        return;
-      }
-    }
-
-    const chaseVersion = ws.userScrollVersion || 0;
-    const chaseId = (ws.scrollChaseId || 0) + 1;
-    ws.scrollChaseId = chaseId;
-    const started = performance.now();
-    let lastMax = -1;
-    let stable = 0;
-
-    const tick = () => {
-      if (!ws.scrollRestoreArmed && !app.isBootingFromUrl && !app.routing?.restoring) return;
-      if ((ws.userScrollVersion || 0) !== chaseVersion) return;
-      if (ws.scrollChaseId !== chaseId) return;
-
-      const el = activeScrollableFeed(ws);
-      if (!el) {
-        if (performance.now() - started < durationMs) requestAnimationFrame(tick);
-        return;
-      }
-
-      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
-      const nextTop = Math.min(target, maxTop);
-      if (maxTop > 0) el.scrollTop = nextTop;
-
-      if (Math.abs(el.scrollTop - target) <= 2) {
-        ws.scrollRestoreArmed = false;
-        return;
-      }
-
-      if (maxTop === lastMax) stable += 1;
-      else stable = 0;
-      lastMax = maxTop;
-
-      if (performance.now() - started < durationMs && stable < 16) {
-        requestAnimationFrame(tick);
-      } else {
-        ws.scrollRestoreArmed = false;
-      }
-    };
-
-    requestAnimationFrame(tick);
-    setTimeout(tick, 80);
-    setTimeout(tick, 240);
-    setTimeout(tick, 650);
+  chaseScrollForWorkspace = function chaseScrollForWorkspaceGuarded() {
+    // CP92: no-op. Durable lens may remember route state, but routeScroll owns
+    // all F5 scroll restore. Keeping this as a no-op prevents retired callers from
+    // racing routeScroll while avoiding a risky broad removal in app.js.
+    return;
   };
+
 
   function onManualPostFeedScrollCancelChase(event) {
     const el = event.target;
@@ -14901,7 +15020,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
   function openNodeActionSheet(ws, node, card) {
     if (!ws || !node) return;
-    const lineage = Boolean(card?.closest?.('.post-feed.lineage')) || Boolean(selectedNode(ws));
+    const lineage = Boolean(card?.closest?.('.post-feed.lineage'));
     app.mobileActionSheet = {
       wsId: ws.id,
       nodeId: node.id,
@@ -15177,35 +15296,10 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
 
 
-  function mobileNodeRemovable(ws, node) {
-    if (!ws || !node) return false;
-    try {
-      if (typeof canRemoveNodeForNow === 'function' && canRemoveNodeForNow(ws, node)) return true;
-      if (typeof canEditNode === 'function' && canEditNode(ws, node)) return true;
-    } catch (_) {}
-    return Boolean(node.isGenerated || node.sourceKind === 'local' || node.sourceId === 'local' || node.file?.sourceKind === 'local' || node.file?.sourceId === 'local');
-  }
-
   function mobileNodeActions(ws, node, lineage = false) {
-    const base = { ws: ws.id, node: node.id };
-    // Keep the native mobile sheet aligned with desktop artifact actions while
-    // preserving the original in-closure dispatcher and real node context.
-    const actions = [
-      { label: 'Open', icon: 'fa-regular fa-window-maximize', dataset: Object.assign({ action: 'open-detail-modal' }, base) },
-      { label: 'Markdown', icon: 'fa-brands fa-markdown', dataset: Object.assign({ action: 'open-markdown-modal' }, base) },
-      { label: 'Continue', icon: 'fa-solid fa-code-branch', dataset: Object.assign({ action: 'open-create', mode: 'continue' }, base), disabled: node.hasModernEnvelope === false },
-      { label: 'Reference', icon: 'fa-solid fa-link', dataset: Object.assign({ action: 'open-create', mode: 'reference' }, base) }
-    ];
-
-    if (node.browseUrl) {
-      actions.push({ label: 'Source', icon: 'fa-brands fa-github', href: safeUrl(node.browseUrl) || node.browseUrl });
-    }
-
-    if (mobileNodeRemovable(ws, node)) {
-      actions.push({ label: 'Remove', icon: 'fa-regular fa-trash-can', dataset: Object.assign({ action: 'remove-local-node' }, base), danger: true });
-    }
-
-    return actions.filter((action) => !action.disabled);
+    if (!ws || !node || typeof nodeActionItems !== 'function') return [];
+    const actions = nodeActionItems(ws, node, { lineage });
+    return actions.filter((action) => action?.dataset?.action !== 'toggle-node-expand');
   }
 
   function mobileDispatchActionInitial(dataset, ws) {
@@ -15336,14 +15430,14 @@ See _tiinex/export.manifest.json for source and output path metadata.
     return `<div class="mobile-action-backdrop" role="dialog" aria-modal="true" aria-label="Artifact actions">
       <div class="mobile-action-sheet">
         <div class="mobile-action-head">
-          <div>
+          <div class="mobile-action-title">
             <p class="kicker">Actions</p>
             <h3>${escapeHtml(sheet.title || node.title || 'Artifact')}</h3>
           </div>
-          <button class="tv-btn small subtle" data-mobile-action="close-mobile-action-sheet" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+          <button class="tv-btn small subtle mobile-action-close" data-mobile-action="close-mobile-action-sheet" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
         </div>
         <div class="mobile-action-list">
-          ${(sheet.actions || []).map((action, index) => `<button class="${action.danger ? 'danger' : ''}" data-mobile-action="run-node-action" data-action-index="${index}"${mobileActionButtonAttrs(action, sheet)}>
+          ${(sheet.actions || []).map((action, index) => `<button class="${action.danger ? 'danger' : ''}" data-mobile-action="run-node-action" data-action-index="${index}"${mobileActionButtonAttrs(action, sheet)}${action.disabled ? ' disabled' : ''}>
             ${mobileIconHtml(action.icon)}<span>${escapeHtml(action.label || 'Action')}</span>
           </button>`).join('')}
         </div>
@@ -15389,9 +15483,13 @@ See _tiinex/export.manifest.json for source and output path metadata.
     return { action, ws: ws.id };
   }
 
+  function genericMobileActionOwnsButton(button) {
+    return Boolean(button?.closest?.('.mobile-global-actions-host, .mobile-action-backdrop'));
+  }
+
   function mobileOnlyActionClick(event) {
     const button = event.target?.closest?.('[data-mobile-action]');
-    if (!button) return;
+    if (!button || !genericMobileActionOwnsButton(button)) return;
 
     const action = button.dataset.mobileAction || '';
     const ws = activeWorkspace();
@@ -15908,197 +16006,18 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
 
 
-  function anchorScrollMode(ws) {
-    return selectedNode(ws) ? 'lineage' : 'discovery';
-  }
-
-  function anchorScrollSelectedPath(ws, mode) {
-    return mode === 'lineage' ? (selectedNode(ws)?.path || '') : '';
-  }
-
-  function anchorScrollContentSignature(ws, mode) {
-    const paths = (ws?.nodes || [])
-      .map((node) => node?.path || node?.id || '')
-      .filter(Boolean)
-      .sort()
-      .join('\n');
-    return hashFast([mode || '', scrollSourceSignature(ws), paths].join('\n'));
-  }
-
-  function anchorScrollKey(ws, mode = '') {
-    const activeMode = mode || anchorScrollMode(ws);
-    const scope = [
-      location.pathname || '/',
-      location.search || '',
-      ws?.label || ws?.id || 'workspace',
-      scrollSourceSignature(ws),
-      activeMode,
-      anchorScrollSelectedPath(ws, activeMode)
-    ].join('\n');
-    return `${STORAGE_KEYS.anchorScrollPrefix}${hashFast(scope)}`;
-  }
-
-  function isPageScrollElement(el) {
-    return pageScrollTarget(el);
-  }
-
-  function scrollTargetTop(el) {
-    if (!el) return 0;
-    return isPageScrollElement(el) ? pageScrollTop() : Math.max(0, Math.round(el.scrollTop || 0));
-  }
-
-  function scrollTargetMax(el) {
-    if (!el) return 0;
-    if (isPageScrollElement(el)) return documentScrollMax();
-    return Math.max(0, Math.round((el.scrollHeight || 0) - (el.clientHeight || 0)));
-  }
-
-  function setScrollTargetTop(el, top) {
-    if (!el) return false;
-    const maxTop = scrollTargetMax(el);
-    if (maxTop <= 0) return false;
-    const nextTop = Math.max(0, Math.min(Math.round(Number(top || 0)), maxTop));
-    app.restoringStoredScroll = true;
+  function pruneAnchorScrollStorage() {
+    // routeScroll is the single F5 scroll-restore owner. The old anchor-scroll
+    // implementation was retired after it raced routeScroll during refresh. Keep
+    // only this cache prune so stale pre-CP91 entries cannot affect future runs.
     try {
-      if (isPageScrollElement(el)) window.scrollTo({ top: nextTop, left: window.scrollX || 0, behavior: 'auto' });
-      else el.scrollTop = nextTop;
-    } finally {
-      requestAnimationFrame(() => { app.restoringStoredScroll = false; });
-    }
-    return Math.abs(scrollTargetTop(el) - nextTop) <= 6;
+      Object.keys(sessionStorage)
+        .filter((key) => key.startsWith(STORAGE_KEYS.anchorScrollPrefix))
+        .forEach((key) => sessionStorage.removeItem(key));
+    } catch (_) {}
   }
 
-  function anchorScrollTargetTopEdge(el) {
-    if (!el || isPageScrollElement(el)) return 0;
-    return el.getBoundingClientRect().top;
-  }
-
-  function anchorScrollCards(ws, mode) {
-    if (!ws?.id) return [];
-    const root = document.querySelector(`.workspace[data-ws="${CSS.escape(ws.id)}"]`);
-    if (!root) return [];
-    const feedSelector = mode === 'lineage'
-      ? '.post-feed.lineage .lineage-post[data-node], .post-feed.lineage[data-ws] .lineage-post[data-node]'
-      : '.post-feed.discovery .lineage-post[data-node], .post-feed.discovery[data-ws] .lineage-post[data-node]';
-    const cards = Array.from(root.querySelectorAll(feedSelector));
-    if (cards.length) return cards;
-    return Array.from(root.querySelectorAll('.lineage-post[data-node]'));
-  }
-
-  function firstVisibleAnchorForScrollTarget(ws, mode, target) {
-    const cards = anchorScrollCards(ws, mode);
-    if (!cards.length) return null;
-    const edge = anchorScrollTargetTopEdge(target);
-    let best = null;
-    for (const card of cards) {
-      const rect = card.getBoundingClientRect();
-      if (rect.bottom >= edge + 8) {
-        best = card;
-        break;
-      }
-    }
-    if (!best) best = cards[0] || null;
-    if (!best) return null;
-    const rect = best.getBoundingClientRect();
-    return {
-      nodeId: best.dataset.node || '',
-      offset: Math.round(rect.top - edge)
-    };
-  }
-
-  function scrollTargetRoleForAnchor(ws, target, mode) {
-    if (!target) return '';
-    if (isPageScrollElement(target)) return 'page';
-    return scrollTargetRole(ws, target, mode) || mode || 'element';
-  }
-
-  function anchorScrollCandidates(ws, mode) {
-    const candidates = scrollContainerCandidatesForMode(ws, mode);
-    const page = document.scrollingElement || document.documentElement || document.body;
-    if (page) candidates.push(page);
-    return uniqueScrollTargets(candidates);
-  }
-
-  function bestAnchorScrollTarget(ws, mode, explicit = null) {
-    if (explicit) return explicit;
-    const candidates = anchorScrollCandidates(ws, mode);
-    return candidates.find((el) => scrollTargetTop(el) > 0)
-      || candidates.find((el) => scrollTargetMax(el) > 0)
-      || candidates[0]
-      || null;
-  }
-
-  function readAnchorScroll(ws, mode = '') {
-    const activeMode = mode || anchorScrollMode(ws);
-    return sessionStorageJsonGet(anchorScrollKey(ws, activeMode), null);
-  }
-
-  function writeAnchorScroll(ws, explicitTarget = null, explicitMode = '') {
-    if (!ws || app.routing?.restoring || app.isBootingFromUrl || app.restoringStoredScroll) return false;
-    const mode = explicitMode || scrollModeFromElement(ws, explicitTarget) || anchorScrollMode(ws);
-    const target = bestAnchorScrollTarget(ws, mode, explicitTarget);
-    if (!target) return false;
-    const top = scrollTargetTop(target);
-    const maxTop = scrollTargetMax(target);
-    const saved = readAnchorScroll(ws, mode);
-    if (!top && Number(saved?.top || 0) > 0 && performance.now() <= (app.storageScrollRestoreUntil || 0)) return false;
-    if (!top && maxTop <= 0) return false;
-    const payload = {
-      mode,
-      selectedPath: anchorScrollSelectedPath(ws, mode),
-      source: scrollSourceSignature(ws),
-      contentSignature: anchorScrollContentSignature(ws, mode),
-      top,
-      maxTop,
-      ratio: maxTop > 0 ? Math.max(0, Math.min(1, top / maxTop)) : 0,
-      targetRole: scrollTargetRoleForAnchor(ws, target, mode),
-      targetKind: isPageScrollElement(target) ? 'page' : 'element',
-      anchor: firstVisibleAnchorForScrollTarget(ws, mode, target),
-      at: Date.now()
-    };
-    return sessionStorageJsonSet(anchorScrollKey(ws, mode), payload);
-  }
-
-  function anchorScrollTargetFromSaved(ws, saved) {
-    return scrollElementForRole(ws, saved?.targetRole || '', saved?.mode || 'discovery')
-      || bestAnchorScrollTarget(ws, saved?.mode || 'discovery')
-      || null;
-  }
-
-  function applyAnchorScrollToTarget(ws, saved, target) {
-    if (!ws || !saved || !target) return false;
-    const maxTop = scrollTargetMax(target);
-    if (maxTop <= 0) return false;
-    if (saved.anchor?.nodeId) {
-      const anchor = anchorScrollCards(ws, saved.mode || 'discovery')
-        .find((card) => card.dataset.node === saved.anchor.nodeId);
-      if (anchor) {
-        const edge = anchorScrollTargetTopEdge(target);
-        const rect = anchor.getBoundingClientRect();
-        const currentOffset = rect.top - edge;
-        const desiredTop = scrollTargetTop(target) + currentOffset - Number(saved.anchor.offset || 0);
-        if (setScrollTargetTop(target, desiredTop)) return true;
-      }
-    }
-    const ratioTop = Number.isFinite(Number(saved.ratio)) && saved.ratio > 0
-      ? Math.round(maxTop * Number(saved.ratio))
-      : 0;
-    const pixelTop = Math.min(Math.max(0, Number(saved.top || 0)), maxTop);
-    return setScrollTargetTop(target, pixelTop || ratioTop);
-  }
-
-  function applyAnchorScrollOnce(ws, saved) {
-    if (!ws || !saved || !Number(saved.top || 0)) return false;
-    const mode = saved.mode || anchorScrollMode(ws);
-    if (saved.selectedPath && anchorScrollSelectedPath(ws, mode) && saved.selectedPath !== anchorScrollSelectedPath(ws, mode)) return false;
-    if (saved.source && saved.source !== scrollSourceSignature(ws)) return false;
-    if (saved.contentSignature && saved.contentSignature !== anchorScrollContentSignature(ws, mode)) return false;
-    const primary = anchorScrollTargetFromSaved(ws, saved);
-    const candidates = uniqueScrollTargets([primary].concat(anchorScrollCandidates(ws, mode)));
-    let applied = false;
-    for (const target of candidates) applied = applyAnchorScrollToTarget(ws, saved, target) || applied;
-    return applied;
-  }
+  pruneAnchorScrollStorage();
 
   function scrollRestoreCompletionKey(kind, ws, saved) {
     return hashFast([
@@ -16122,86 +16041,15 @@ See _tiinex/export.manifest.json for source and output path metadata.
     return app.completedScrollRestores;
   }
 
-  function chaseAnchorScrollForWorkspace(ws, durationMs = 14000) {
-    if (!ws || scrollRestoreCancelledByUser()) return;
-    const mode = anchorScrollMode(ws);
-    const saved = readAnchorScroll(ws, mode);
-    if (!saved || !Number(saved.top || 0)) return;
-    const doneKey = scrollRestoreCompletionKey('anchor', ws, saved);
-    const completed = completedScrollRestoreSet();
-    if (completed.has(doneKey)) return;
-    const started = performance.now();
-    const tick = () => {
-      if (completed.has(doneKey) || scrollRestoreCancelledByUser()) return;
-      const done = applyAnchorScrollOnce(ws, saved);
-      if (done) {
-        completed.add(doneKey);
-        return;
-      }
-      if (performance.now() - started < durationMs) requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-    setTimeout(tick, 120);
-    setTimeout(tick, 350);
-    setTimeout(tick, 900);
-    setTimeout(tick, 1800);
-    setTimeout(tick, 3600);
-    setTimeout(tick, 7200);
+  const STORED_SCROLL_RESTORE_WINDOW_MS = 45000;
+  const STORED_SCROLL_CHASE_DURATION_MS = 42000;
+  const STORED_SCROLL_STABLE_COMPLETION_MS = 350;
+
+  function extendStoredScrollRestoreWindow(durationMs = STORED_SCROLL_RESTORE_WINDOW_MS) {
+    const until = performance.now() + durationMs;
+    app.storageScrollRestoreUntil = Math.max(app.storageScrollRestoreUntil || 0, until);
+    return app.storageScrollRestoreUntil;
   }
-
-  function restoreAnchorScrollForAll() {
-    if (performance.now() > (app.storageScrollRestoreUntil || 0) || scrollRestoreCancelledByUser()) return;
-    for (const ws of app.workspaces || []) chaseAnchorScrollForWorkspace(ws);
-  }
-
-  function scheduleAnchorScrollRestore() {
-    requestAnimationFrame(restoreAnchorScrollForAll);
-    setTimeout(restoreAnchorScrollForAll, 200);
-    setTimeout(restoreAnchorScrollForAll, 700);
-    setTimeout(restoreAnchorScrollForAll, 1600);
-    setTimeout(restoreAnchorScrollForAll, 3600);
-    setTimeout(restoreAnchorScrollForAll, 7200);
-  }
-
-  function activeWorkspaceForScrollTarget(target) {
-    if (!target || pageScrollTarget(target)) return activeWorkspace();
-    return scrollEventWorkspace(target) || getWorkspace(target.dataset?.ws || '') || activeWorkspace();
-  }
-
-  let anchorScrollSampleTimer = 0;
-  function sampleAnchorScrollSoon(target = null) {
-    clearTimeout(anchorScrollSampleTimer);
-    anchorScrollSampleTimer = setTimeout(() => {
-      const ws = activeWorkspaceForScrollTarget(target);
-      if (!ws) return;
-      const mode = target && !pageScrollTarget(target) ? scrollModeFromElement(ws, target) : anchorScrollMode(ws);
-      writeAnchorScroll(ws, target && pageScrollTarget(target) ? (document.scrollingElement || document.documentElement || document.body) : target, mode);
-    }, 80);
-  }
-
-  document.addEventListener('scroll', (event) => {
-    if (app.restoringStoredScroll) return;
-    sampleAnchorScrollSoon(pageScrollTarget(event.target) ? (document.scrollingElement || document.documentElement || document.body) : event.target);
-  }, true);
-
-  window.addEventListener('pagehide', () => {
-    for (const ws of app.workspaces || []) writeAnchorScroll(ws, null, anchorScrollMode(ws));
-  });
-  window.addEventListener('beforeunload', () => {
-    for (const ws of app.workspaces || []) writeAnchorScroll(ws, null, anchorScrollMode(ws));
-  });
-
-  window.setInterval(() => {
-    if (document.hidden || app.restoringStoredScroll) return;
-    const ws = activeWorkspace();
-    if (ws) writeAnchorScroll(ws, null, anchorScrollMode(ws));
-  }, 750);
-
-  registerRenderWrapper(function renderWithAnchorScroll(next) {
-    const result = next();
-    scheduleAnchorScrollRestore();
-    return result;
-  });
 
 window.addEventListener('popstate', () => {
     collapseAllExpandedNodes();
@@ -16736,7 +16584,7 @@ window.addEventListener('popstate', () => {
     if (app.workspaces.length) {
       const restored = restoreLocalStateIntoCurrentWorkspaces(state);
       if (!app.activeWorkspaceId) app.activeWorkspaceId = app.workspaces[0]?.id || null;
-      app.storageScrollRestoreUntil = performance.now() + 15000;
+      extendStoredScrollRestoreWindow();
       return restored;
     }
     app.localState.restoring = true;
@@ -16754,7 +16602,7 @@ window.addEventListener('popstate', () => {
       if (active) app.activeWorkspaceId = active.id;
     }
     if (!app.activeWorkspaceId) app.activeWorkspaceId = app.workspaces[0]?.id || null;
-    app.storageScrollRestoreUntil = performance.now() + 15000;
+    extendStoredScrollRestoreWindow();
     return true;
   }
 
@@ -16783,15 +16631,28 @@ window.addEventListener('popstate', () => {
     }
   }
 
+  function visibleScrollFeedForMode(ws, mode = 'discovery') {
+    if (!ws?.id) return null;
+    const selector = `.post-feed.${mode}[data-ws="${CSS.escape(ws.id)}"]`;
+    return Array.from(document.querySelectorAll(selector)).find((feed) => {
+      const rect = feed.getBoundingClientRect?.();
+      return rect && rect.width > 0 && rect.height > 0;
+    }) || null;
+  }
+
   function scrollModeFromElement(ws, el = null) {
     const feed = el?.classList?.contains?.('post-feed') ? el : el?.closest?.('.post-feed[data-ws]');
     if (feed?.classList?.contains('lineage')) return 'lineage';
     if (feed?.classList?.contains('discovery')) return 'discovery';
-    if (ws?.id) {
-      const root = document.querySelector(`.workspace[data-ws="${CSS.escape(ws.id)}"]`);
-      if (root?.querySelector?.('.post-feed.discovery')) return 'discovery';
-      if (root?.querySelector?.('.post-feed.lineage')) return 'lineage';
-    }
+
+    // When the page itself is the scroll container there is no direct feed
+    // event target. Prefer the rendered/visible feed for the workspace before
+    // falling back to selectedNode. This prevents inactive state from making an
+    // F5 restore read/write the wrong mode after view changes.
+    const visibleLineage = visibleScrollFeedForMode(ws, 'lineage');
+    const visibleDiscovery = visibleScrollFeedForMode(ws, 'discovery');
+    if (visibleLineage && !visibleDiscovery) return 'lineage';
+    if (visibleDiscovery && !visibleLineage) return 'discovery';
     return selectedNode(ws) ? 'lineage' : 'discovery';
   }
 
@@ -16830,24 +16691,41 @@ window.addEventListener('popstate', () => {
       || null;
   }
 
+  function storedScrollContentSignature(ws, mode = 'discovery') {
+    if (mode === 'discovery' && typeof discoverySignatureForScroll === 'function') {
+      return discoverySignatureForScroll(ws);
+    }
+    const selected = mode === 'lineage' ? selectedNode(ws) : null;
+    const paths = (ws?.nodes || [])
+      .map((node) => node?.path || node?.id || '')
+      .filter(Boolean)
+      .sort()
+      .join('\n');
+    // Lineage restore must be stable across refresh and workspace/source runtime
+    // identity churn. Source signatures remain key material, but the restore
+    // guard is the selected artifact plus rendered node set.
+    return hashFast([mode || '', selected?.path || '', paths].join('\n'));
+  }
+
   function scrollContentIdentity(ws, modeOverride = '') {
     const mode = modeOverride || scrollModeFromElement(ws);
     const selected = mode === 'lineage' ? selectedNode(ws) : null;
+    const contentSignature = storedScrollContentSignature(ws, mode);
     return {
       workspace: ws?.label || ws?.id || 'workspace',
       source: scrollSourceSignature(ws),
       mode,
       selectedPath: selected?.path || '',
-      discoverySignature: mode === 'discovery' && typeof discoverySignatureForScroll === 'function'
-        ? discoverySignatureForScroll(ws)
-        : ''
+      contentSignature,
+      discoverySignature: mode === 'discovery' ? contentSignature : ''
     };
   }
 
   function storedScrollKey(ws, identity = null) {
     const id = identity || scrollContentIdentity(ws);
-    // Keep the storage key stable and compact. Content identity stays in the
-    // value as a guard, not in the key, so refreshes can find the saved scroll.
+    // Source-specific key for precise matches. A stable fallback key is written
+    // separately below so refresh restore can still find the last scroll even
+    // if source signatures are unavailable or re-ordered during startup.
     const scope = [
       location.pathname || '/',
       location.search || '',
@@ -16857,6 +16735,18 @@ window.addEventListener('popstate', () => {
       id.selectedPath || ''
     ].join('\n');
     return `${STORAGE_KEYS.browserScrollStatePrefix}${hashFast(scope)}`;
+  }
+
+  function storedScrollStableKey(ws, identity = null) {
+    const id = identity || scrollContentIdentity(ws);
+    const scope = [
+      location.pathname || '/',
+      location.search || '',
+      id.workspace || '',
+      id.mode || '',
+      id.selectedPath || ''
+    ].join('\n');
+    return `${STORAGE_KEYS.browserScrollStatePrefix}active.${hashFast(scope)}`;
   }
 
   function pruneRetiredScrollStorage() {
@@ -16937,10 +16827,17 @@ window.addEventListener('popstate', () => {
 
   function applyScrollTopToTarget(el, top) {
     const targetTop = Math.max(0, Math.round(Number(top || 0)));
-    if (!el || !targetTop) return false;
+    if (!el || !targetTop) {
+      scrollFlightRecord('dom:setScrollTop:skip', { reason: !el ? 'no-target' : 'no-target-top', requestedTop: targetTop });
+      return false;
+    }
+    const before = scrollRestoreDebugTargetState(el);
     if (pageScrollTarget(el)) {
       const maxPageTop = documentScrollMax();
-      if (maxPageTop <= 0) return false;
+      if (maxPageTop <= 0) {
+        scrollFlightRecord('dom:setScrollTop:skip', { reason: 'page-not-scrollable', requestedTop: targetTop, before });
+        return false;
+      }
       const nextTop = Math.min(targetTop, maxPageTop);
       app.restoringStoredScroll = true;
       try {
@@ -16948,10 +16845,32 @@ window.addEventListener('popstate', () => {
       } finally {
         requestAnimationFrame(() => { app.restoringStoredScroll = false; });
       }
-      return Math.abs(pageScrollTop() - nextTop) <= 4;
+      const immediateTop = pageScrollTop();
+      const applied = Math.abs(immediateTop - nextTop) <= 4;
+      scrollFlightRecord('dom:setScrollTop', {
+        requestedTop: targetTop,
+        nextTop,
+        applied,
+        before,
+        afterImmediate: scrollRestoreDebugTargetState(el)
+      }, { console: true });
+      requestAnimationFrame(() => scrollFlightRecord('dom:setScrollTop:after-raf', {
+        requestedTop: targetTop,
+        nextTop,
+        target: scrollRestoreDebugTargetState(el)
+      }));
+      setTimeout(() => scrollFlightRecord('dom:setScrollTop:after-100ms', {
+        requestedTop: targetTop,
+        nextTop,
+        target: scrollRestoreDebugTargetState(el)
+      }), 100);
+      return applied;
     }
     const maxTop = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
-    if (maxTop <= 0) return false;
+    if (maxTop <= 0) {
+      scrollFlightRecord('dom:setScrollTop:skip', { reason: 'target-not-scrollable', requestedTop: targetTop, before });
+      return false;
+    }
     const nextTop = Math.min(targetTop, maxTop);
     app.restoringStoredScroll = true;
     try {
@@ -16959,54 +16878,497 @@ window.addEventListener('popstate', () => {
     } finally {
       requestAnimationFrame(() => { app.restoringStoredScroll = false; });
     }
-    return Math.abs((el.scrollTop || 0) - nextTop) <= 4;
+    const immediateTop = Math.max(0, Math.round(el.scrollTop || 0));
+    const applied = Math.abs(immediateTop - nextTop) <= 4;
+    scrollFlightRecord('dom:setScrollTop', {
+      requestedTop: targetTop,
+      nextTop,
+      applied,
+      before,
+      afterImmediate: scrollRestoreDebugTargetState(el)
+    }, { console: true });
+    requestAnimationFrame(() => scrollFlightRecord('dom:setScrollTop:after-raf', {
+      requestedTop: targetTop,
+      nextTop,
+      target: scrollRestoreDebugTargetState(el)
+    }));
+    setTimeout(() => scrollFlightRecord('dom:setScrollTop:after-100ms', {
+      requestedTop: targetTop,
+      nextTop,
+      target: scrollRestoreDebugTargetState(el)
+    }), 100);
+    return applied;
   }
 
   function uniqueScrollTargets(items) {
     return items.filter(Boolean).filter((item, index, arr) => arr.indexOf(item) === index);
   }
 
-  function writeStoredScroll(ws, el = null, modeOverride = '') {
-    if (!ws || app.routing?.restoring || app.isBootingFromUrl) return;
+  function scrollRestoreDebugEnabled() {
+    try {
+      return sessionStorage.getItem('tiinex.debug.scrollRestore') === '1'
+        || new URLSearchParams(location.search || '').has('debugScroll');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function scrollFlightRecorderEnabled() {
+    try {
+      return sessionStorage.getItem('tiinex.debug.scrollFlight') === '1'
+        || new URLSearchParams(location.search || '').has('debugScrollFlight');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function scrollFlightConsoleEnabled() {
+    try {
+      return sessionStorage.getItem('tiinex.debug.scrollConsole') === '1'
+        || new URLSearchParams(location.search || '').has('debugScrollConsole');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function scrollFlightRouteSourceSummary(source) {
+    if (!source || typeof source !== 'object') return null;
+    return {
+      label: source.label || '',
+      mode: source.mode || '',
+      selectedPath: source.selectedPath || '',
+      selectedNodeId: source.selectedNodeId || '',
+      selectedTitle: source.selectedTitle || '',
+      discoveryView: source.discoveryView || '',
+      discoveryFilterSchema: source.discoveryFilterSchema || source.filterSchema || '',
+      discoverySearch: source.discoverySearch || '',
+      lineageSearch: source.lineageSearch || '',
+      scrollTop: Number(source.scrollTop || source.feedScrollTop || 0) || 0,
+      scrollMode: source.scrollMode || '',
+      scrollSelectedPath: source.scrollSelectedPath || '',
+      discoveryScrollSignature: source.discoveryScrollSignature || '',
+      urlCount: Array.isArray(source.urls) ? source.urls.length : undefined
+    };
+  }
+
+  function scrollFlightRouteStateSummary(state) {
+    if (!state || typeof state !== 'object') return null;
+    const sources = Array.isArray(state.workspaces) ? state.workspaces : (Array.isArray(state.sources) ? state.sources : []);
+    return {
+      v: state.v,
+      kind: state.kind || 'route',
+      activeIndex: Number(state.activeIndex || 0),
+      workspaceOffset: Number(state.workspaceOffset || 0),
+      sourceCount: sources.length,
+      sources: sources.map(scrollFlightRouteSourceSummary)
+    };
+  }
+
+  function scrollFlightDecodedRouteSummary() {
+    try { return scrollFlightRouteStateSummary(decodedLensState?.()); } catch (_) { return null; }
+  }
+
+  function scrollFlightLensCacheSummary() {
+    try { return scrollFlightRouteStateSummary(cachedLensState?.()); } catch (_) { return null; }
+  }
+
+  function scrollFlightFirstVisibleAnchor(feed) {
+    if (!feed || pageScrollTarget(feed)) return null;
+    const feedRect = feed.getBoundingClientRect?.();
+    if (!feedRect) return null;
+    const posts = Array.from(feed.querySelectorAll('.lineage-post[data-node], .post-card[data-node], .node-card[data-node]'));
+    let best = null;
+    for (const post of posts) {
+      const rect = post.getBoundingClientRect?.();
+      if (rect && rect.bottom >= feedRect.top + 8) {
+        best = post;
+        break;
+      }
+    }
+    if (!best) best = posts[0] || null;
+    if (!best) return null;
+    const rect = best.getBoundingClientRect?.();
+    const ws = getWorkspace(best.closest?.('[data-ws]')?.dataset?.ws || feed.dataset?.ws || '');
+    const node = ws?.nodeById?.get?.(best.dataset.node || '') || null;
+    return {
+      nodeId: best.dataset.node || '',
+      path: node?.path || '',
+      title: node?.title || '',
+      offsetTop: rect && feedRect ? Math.round(rect.top - feedRect.top) : null
+    };
+  }
+
+  function scrollFlightFeedMetrics(target) {
+    if (!target || pageScrollTarget(target)) return {};
+    const root = target.closest?.('.workspace[data-ws]') || (target.matches?.('.workspace[data-ws]') ? target : null);
+    const ws = getWorkspace(target.dataset?.ws || root?.dataset?.ws || '');
+    const isFeed = target.classList?.contains('post-feed');
+    const renderedCards = isFeed ? target.querySelectorAll('.lineage-post[data-node], .post-card[data-node], .node-card[data-node]').length : 0;
+    const moreButtons = root
+      ? Array.from(root.querySelectorAll('[data-action="load-more-discovery"], [data-action="lineage-load-more"]'))
+        .map((button) => {
+          const rect = button.getBoundingClientRect?.();
+          return {
+            action: button.dataset?.action || '',
+            text: String(button.textContent || '').replace(/\s+/g, ' ').trim(),
+            visible: Boolean(rect && rect.width > 0 && rect.height > 0)
+          };
+        })
+      : [];
+    return {
+      renderedCards,
+      dataSelected: target.dataset?.selected || '',
+      firstVisibleAnchor: isFeed ? scrollFlightFirstVisibleAnchor(target) : null,
+      hasMore: moreButtons.some((button) => button.visible),
+      moreButtons,
+      workspaceNodeCount: Array.isArray(ws?.nodes) ? ws.nodes.length : null,
+      discoveryVisibleCount: Number(ws?.discoveryVisibleCount || 0),
+      discoveryInitialCount: Number(app.settings?.discoveryFeedInitialCount || 0),
+      discoveryGrowCount: Number(app.settings?.discoveryFeedGrowCount || 0),
+      loading: Boolean(ws?.loading)
+    };
+  }
+
+  function scrollFlightWorkspaceSummary(ws) {
+    if (!ws) return null;
+    let selected = null;
+    try {
+      const node = selectedNode(ws);
+      selected = node ? { id: node.id || '', path: node.path || '', title: node.title || '' } : null;
+    } catch (_) {}
+    return {
+      id: ws.id || '',
+      label: ws.label || '',
+      active: ws.id === app.activeWorkspaceId,
+      selected,
+      routeScrollTop: Number(ws.routeScrollTop || 0),
+      routeScrollMode: ws.routeScrollMode || '',
+      routeScrollSelectedPath: ws.routeScrollSelectedPath || '',
+      discoveryView: ws.discoveryView || 'feed',
+      discoveryFilterSchema: ws.discoveryFilterSchema || ws.filterSchema || 'all',
+      discoverySearch: ws.discoverySearch || '',
+      lineageSearch: ws.lineageSearch || '',
+      discoveryVisibleCount: Number(ws.discoveryVisibleCount || 0),
+      nodeCount: Array.isArray(ws.nodes) ? ws.nodes.length : 0,
+      loading: Boolean(ws.loading),
+      discoveryFeed: scrollRestoreDebugTargetState(scrollElementForRole(ws, 'post-feed.discovery', 'discovery')),
+      lineageFeed: scrollRestoreDebugTargetState(scrollElementForRole(ws, 'post-feed.lineage', 'lineage')),
+      workspace: scrollRestoreDebugTargetState(document.querySelector(`.workspace[data-ws="${CSS.escape(ws.id || '')}"]`))
+    };
+  }
+
+  function scrollFlightSnapshot(reason = 'snapshot') {
+    return {
+      reason,
+      activeWorkspaceId: app.activeWorkspaceId || '',
+      workspaceOffset: Number(app.workspaceOffset || 0),
+      url: `${location.pathname}${location.search}${location.hash}`,
+      decodedRoute: scrollFlightDecodedRouteSummary(),
+      lensCache: scrollFlightLensCacheSummary(),
+      page: {
+        top: pageScrollTop(),
+        max: documentScrollMax(),
+        scrollHeight: Math.max(document.documentElement?.scrollHeight || 0, document.body?.scrollHeight || 0),
+        clientHeight: window.innerHeight
+      },
+      workspaces: (app.workspaces || []).map(scrollFlightWorkspaceSummary)
+    };
+  }
+
+  function scrollFlightRecord(label, details = {}, options = {}) {
+    if (!scrollFlightRecorderEnabled()) return;
+    const entry = Object.assign({
+      label,
+      t: Math.round(performance.now()),
+      href: location.href,
+      scrollY: pageScrollTop(),
+      activeWorkspaceId: app.activeWorkspaceId || '',
+      until: Math.round(app.storageScrollRestoreUntil || 0)
+    }, details || {});
+    try {
+      if (!app.scrollFlightLog) app.scrollFlightLog = [];
+      app.scrollFlightLog.push(entry);
+      if (app.scrollFlightLog.length > 1800) app.scrollFlightLog.shift();
+      window.__tiinexScrollFlight = app.scrollFlightLog;
+      if (options.console || scrollFlightConsoleEnabled()) console.warn('[tiinex:scrollFlight]', label, entry);
+    } catch (_) {}
+  }
+
+  function scrollRestoreDebugSummarySaved(saved) {
+    if (!saved) return null;
+    return {
+      top: Number(saved.top || 0),
+      mode: saved.mode || '',
+      selectedPath: saved.selectedPath || '',
+      source: saved.source || '',
+      targetRole: saved.targetRole || '',
+      targetKind: saved.targetKind || '',
+      reason: saved.reason || '',
+      at: Number(saved.at || 0),
+      atIso: saved.at ? new Date(saved.at).toISOString() : '',
+      contentSignature: saved.contentSignature || saved.discoverySignature || ''
+    };
+  }
+
+  function scrollRestoreDebugSummaryIdentity(identity) {
+    if (!identity) return null;
+    return {
+      workspace: identity.workspace || '',
+      source: identity.source || '',
+      mode: identity.mode || '',
+      selectedPath: identity.selectedPath || '',
+      contentSignature: identity.contentSignature || identity.discoverySignature || ''
+    };
+  }
+
+  function scrollRestoreDebugTargetLabel(target) {
+    if (!target) return '';
+    if (pageScrollTarget(target)) return 'page';
+    const classes = String(target.className || '').trim().split(/\s+/).filter(Boolean);
+    if (classes.includes('post-feed') && classes.includes('discovery')) return 'post-feed.discovery';
+    if (classes.includes('post-feed') && classes.includes('lineage')) return 'post-feed.lineage';
+    if (classes.includes('feed-pane')) return 'feed-pane';
+    if (classes.includes('workspace-body')) return 'workspace-body';
+    if (classes.includes('workspace')) return 'workspace';
+    return target.tagName || 'element';
+  }
+
+  function scrollRestoreDebugTargetState(target) {
+    if (!target) return null;
+    const rect = target.getBoundingClientRect?.();
+    return {
+      label: scrollRestoreDebugTargetLabel(target),
+      ws: target.dataset?.ws || '',
+      top: scrollElementTop(target),
+      max: pageScrollTarget(target) ? documentScrollMax() : Math.max(0, Math.round((target.scrollHeight || 0) - (target.clientHeight || 0))),
+      scrollHeight: pageScrollTarget(target) ? Math.max(document.documentElement?.scrollHeight || 0, document.body?.scrollHeight || 0) : Math.round(target.scrollHeight || 0),
+      clientHeight: pageScrollTarget(target) ? window.innerHeight : Math.round(target.clientHeight || 0),
+      rectTop: rect ? Math.round(rect.top) : null,
+      rectHeight: rect ? Math.round(rect.height) : null,
+      visible: pageScrollTarget(target) ? true : Boolean(rect && rect.width > 0 && rect.height > 0),
+      metrics: scrollFlightFeedMetrics(target)
+    };
+  }
+
+  function scrollRestoreDebugWorkspaceState(ws) {
+    if (!ws) return null;
+    const mode = scrollModeFromElement(ws);
+    return {
+      id: ws.id || '',
+      label: ws.label || '',
+      mode,
+      selectedPath: mode === 'lineage' ? (selectedNode(ws)?.path || '') : '',
+      discoveryFeed: scrollRestoreDebugTargetState(scrollElementForRole(ws, 'post-feed.discovery', 'discovery')),
+      lineageFeed: scrollRestoreDebugTargetState(scrollElementForRole(ws, 'post-feed.lineage', 'lineage')),
+      bestDiscovery: scrollRestoreDebugTargetState(bestScrollElementForMode(ws, 'discovery')),
+      bestLineage: scrollRestoreDebugTargetState(bestScrollElementForMode(ws, 'lineage'))
+    };
+  }
+
+  function debugScrollRestore(label, details = {}) {
+    if (!scrollRestoreDebugEnabled()) return;
+    const entry = Object.assign({
+      label,
+      t: Math.round(performance.now()),
+      href: location.href,
+      scrollY: pageScrollTop(),
+      until: Math.round(app.storageScrollRestoreUntil || 0),
+      cancelled: scrollRestoreCancelledByUser()
+    }, details || {});
+    try {
+      if (!app.scrollRestoreDebugLog) app.scrollRestoreDebugLog = [];
+      app.scrollRestoreDebugLog.push(entry);
+      if (app.scrollRestoreDebugLog.length > 800) app.scrollRestoreDebugLog.shift();
+      window.__tiinexScrollRestoreDebugLog = app.scrollRestoreDebugLog;
+      scrollFlightRecord(`routeScroll:${label}`, entry);
+      if (scrollFlightConsoleEnabled() || /^(apply|chase:complete|chase:deadline|read:fallback-hit|read:key-hit|write:skip|restoreAll:skip)/u.test(label)) {
+        console.warn('[tiinex:scrollRestore]', label, entry);
+      }
+    } catch (_) {}
+  }
+
+  function scrollRestoreDebugTickAllowed(doneKey, elapsed = 0) {
+    if (!scrollRestoreDebugEnabled()) return false;
+    if (!app.scrollRestoreDebugTicks) app.scrollRestoreDebugTicks = new Map();
+    const prev = app.scrollRestoreDebugTicks.get(doneKey) || { count: 0, lastElapsed: -1000 };
+    const allowed = prev.count < 8 || elapsed - prev.lastElapsed >= 500;
+    if (allowed) app.scrollRestoreDebugTicks.set(doneKey, { count: prev.count + 1, lastElapsed: elapsed });
+    return allowed;
+  }
+
+
+  function writeStoredScroll(ws, el = null, modeOverride = '', options = {}) {
+    if (!ws || app.routing?.restoring || app.isBootingFromUrl) {
+      debugScrollRestore('write:skip', { reason: !ws ? 'no-workspace' : (app.routing?.restoring ? 'routing-restoring' : 'booting-from-url') });
+      return false;
+    }
     const mode = modeOverride || scrollModeFromElement(ws, el);
     const eventTop = scrollElementTop(el);
     const target = el && (eventTop > 0 || !pageScrollTarget(el))
       ? el
       : (bestScrollElementForMode(ws, mode) || activeScrollableFeed(ws));
-    if (!target) return;
+    if (!target) {
+      debugScrollRestore('write:skip', { reason: 'no-target', mode, workspace: scrollRestoreDebugWorkspaceState(ws) });
+      return false;
+    }
     const identity = scrollContentIdentity(ws, mode);
     const top = scrollElementTop(target);
-    if (!top && Number(ws.routeScrollTop || 0) > 0 && performance.now() <= (app.storageScrollRestoreUntil || 0)) return;
+    const targetRole = scrollTargetRole(ws, target, mode);
+    const targetKind = scrollTargetKind(target);
+    if (!top && Number(ws.routeScrollTop || 0) > 0 && performance.now() <= (app.storageScrollRestoreUntil || 0)) {
+      debugScrollRestore('write:skip-zero-route-top', {
+        mode,
+        routeScrollTop: ws.routeScrollTop,
+        target: scrollRestoreDebugTargetState(target),
+        identity: scrollRestoreDebugSummaryIdentity(identity),
+        reason: options.reason || 'scroll'
+      });
+      return false;
+    }
+    const key = storedScrollKey(ws, identity);
+    const stableKey = storedScrollStableKey(ws, identity);
+    const existing = sessionStorageJsonGet(key, null) || sessionStorageJsonGet(stableKey, null);
+    if (!top && Number(existing?.top || 0) > 0 && !String(targetRole || '').startsWith('post-feed.')) {
+      // A mode that is not currently rendered can fall back to the workspace
+      // shell at scrollTop 0 during lifecycle flushes. Do not let that inactive
+      // shell zero overwrite the last real feed scroll for the mode.
+      debugScrollRestore('write:skip-inactive-shell-zero', {
+        mode,
+        targetRole,
+        targetKind,
+        existing: scrollRestoreDebugSummarySaved(existing),
+        target: scrollRestoreDebugTargetState(target),
+        identity: scrollRestoreDebugSummaryIdentity(identity),
+        reason: options.reason || 'scroll'
+      });
+      return false;
+    }
+    if (TiinexViewState.shouldPreserveStoredScrollOnZeroWrite({
+      preserveNonZero: options.preserveNonZero,
+      nextTop: top,
+      existingTop: existing?.top || 0
+    })) {
+      debugScrollRestore('write:skip-preserve-nonzero', {
+        mode,
+        existing: scrollRestoreDebugSummarySaved(existing),
+        target: scrollRestoreDebugTargetState(target),
+        identity: scrollRestoreDebugSummaryIdentity(identity),
+        reason: options.reason || 'scroll'
+      });
+      return false;
+    }
     ws.routeScrollTop = top;
     ws.routeScrollMode = identity.mode;
     ws.routeScrollSelectedPath = identity.selectedPath;
-    sessionStorageJsonSet(storedScrollKey(ws, identity), Object.assign({}, identity, {
+    const value = Object.assign({}, identity, {
       top,
-      targetKind: scrollTargetKind(target),
-      targetRole: scrollTargetRole(ws, target, mode),
-      at: Date.now()
-    }));
+      targetKind,
+      targetRole,
+      at: Date.now(),
+      reason: options.reason || 'scroll'
+    });
+    const wroteSpecific = sessionStorageJsonSet(key, value);
+    const wroteStable = sessionStorageJsonSet(stableKey, value);
+    debugScrollRestore('write', {
+      key,
+      stableKey,
+      wroteSpecific,
+      wroteStable,
+      saved: scrollRestoreDebugSummarySaved(value),
+      target: scrollRestoreDebugTargetState(target),
+      reason: options.reason || 'scroll'
+    });
+    return wroteSpecific || wroteStable;
+  }
+
+  function storedScrollMatchesIdentity(saved, current) {
+    if (!saved || !current || !Number.isFinite(Number(saved.top))) return false;
+    if (saved.mode !== current.mode) return false;
+    if ((saved.selectedPath || '') !== (current.selectedPath || '')) return false;
+
+    // Source signatures are useful as key material but too brittle as the only
+    // lookup guard during refresh. Content signatures decide whether a restore
+    // is still valid when workspace runtime ids change between page loads.
+    const savedContent = saved.contentSignature || saved.discoverySignature || '';
+    const currentContent = current.contentSignature || current.discoverySignature || '';
+    if (savedContent && currentContent && savedContent !== currentContent) return false;
+    return true;
+  }
+
+  function scanStoredScrollFallback(current) {
+    // Workspace ids are runtime ids and can legitimately change after F5. Direct
+    // keys are preferred, but refresh restore must be able to recover the latest
+    // matching scroll by mode + selected path + content signature when the key
+    // was written under a previous workspace id.
+    try {
+      const all = Object.keys(sessionStorage)
+        .filter((key) => key.startsWith(STORAGE_KEYS.browserScrollStatePrefix))
+        .map((key) => sessionStorageJsonGet(key, null))
+        .filter(Boolean);
+      const nonzero = all.filter((saved) => Number(saved?.top || 0) > 0);
+      const matches = nonzero
+        .filter((saved) => storedScrollMatchesIdentity(saved, current))
+        .sort((a, b) => Number(b?.at || 0) - Number(a?.at || 0));
+      const winner = matches[0] || null;
+      debugScrollRestore('scanFallback', {
+        current: scrollRestoreDebugSummaryIdentity(current),
+        storedCount: all.length,
+        nonzeroCount: nonzero.length,
+        matchCount: matches.length,
+        matches: matches.slice(0, 6).map(scrollRestoreDebugSummarySaved),
+        winner: scrollRestoreDebugSummarySaved(winner)
+      });
+      return winner;
+    } catch (error) {
+      debugScrollRestore('scanFallback:error', { message: error?.message || String(error) });
+      return null;
+    }
   }
 
   function readStoredScroll(ws) {
-    if (!ws) return null;
-    const identities = ['discovery', 'lineage'].map((mode) => scrollContentIdentity(ws, mode));
-    for (const current of identities) {
-      const saved = sessionStorageJsonGet(storedScrollKey(ws, current), null);
-      if (!saved || !Number.isFinite(Number(saved.top))) continue;
-      if (saved.mode !== current.mode) continue;
-      if (saved.source !== current.source) continue;
-      if (saved.selectedPath !== current.selectedPath) continue;
-      if (saved.mode === 'discovery' && saved.discoverySignature !== current.discoverySignature) {
-        // Discovery can be empty or partially indexed during refresh. Keep the
-        // saved scroll candidate alive and let the restore chase wait until
-        // the content signature matches. If it never matches, no scroll is
-        // applied.
-        return Object.assign({}, saved, { pendingDiscoverySignature: current.discoverySignature });
-      }
-      if (saved.discoverySignature !== current.discoverySignature) continue;
-      return saved;
+    if (!ws) {
+      debugScrollRestore('read:no-workspace');
+      return null;
     }
+    const activeMode = scrollModeFromElement(ws);
+    const modes = TiinexViewState.preferredStoredScrollModes(activeMode);
+    const identities = modes.map((mode) => scrollContentIdentity(ws, mode));
+    debugScrollRestore('read:start', {
+      workspace: scrollRestoreDebugWorkspaceState(ws),
+      activeMode,
+      modes,
+      identities: identities.map(scrollRestoreDebugSummaryIdentity)
+    });
+    for (const current of identities) {
+      const keys = [storedScrollKey(ws, current), storedScrollStableKey(ws, current)]
+        .filter((key, index, arr) => key && arr.indexOf(key) === index);
+      for (const key of keys) {
+        const saved = sessionStorageJsonGet(key, null);
+        const matches = Number(saved?.top || 0) > 0 && storedScrollMatchesIdentity(saved, current);
+        debugScrollRestore('read:key', {
+          key,
+          current: scrollRestoreDebugSummaryIdentity(current),
+          saved: scrollRestoreDebugSummarySaved(saved),
+          matches
+        });
+        if (matches) {
+          debugScrollRestore('read:key-hit', { key, saved: scrollRestoreDebugSummarySaved(saved) });
+          return saved;
+        }
+      }
+      const fallback = scanStoredScrollFallback(current);
+      if (fallback) {
+        debugScrollRestore('read:fallback-hit', {
+          current: scrollRestoreDebugSummaryIdentity(current),
+          saved: scrollRestoreDebugSummarySaved(fallback)
+        });
+        return fallback;
+      }
+    }
+    debugScrollRestore('read:no-match', {
+      activeMode,
+      identities: identities.map(scrollRestoreDebugSummaryIdentity)
+    });
     return null;
   }
 
@@ -17019,20 +17381,128 @@ window.addEventListener('popstate', () => {
     return bestScrollElementForMode(ws, mode) || activeScrollableFeed(ws);
   }
 
+  function scrollTargetMatchesSavedTop(target, saved) {
+    if (!target || !saved) return false;
+    const top = Math.max(0, Math.round(Number(saved.top || 0)));
+    if (!top) return false;
+    const maxTop = pageScrollTarget(target) ? documentScrollMax() : Math.max(0, (target.scrollHeight || 0) - (target.clientHeight || 0));
+    if (maxTop <= 0) return false;
+    const expected = Math.min(top, Math.round(maxTop));
+    return Math.abs(scrollElementTop(target) - expected) <= 6;
+  }
+
+  function preferredStoredScrollCompletionTarget(ws, saved) {
+    if (!ws || !saved) return null;
+    const mode = saved.mode || 'discovery';
+    if (saved.targetKind === 'page' || saved.targetRole === 'page') {
+      return document.scrollingElement || document.documentElement || document.body;
+    }
+    const roleTarget = scrollElementForRole(ws, saved.targetRole || '', mode);
+    if (roleTarget) return roleTarget;
+    return storedScrollElement(ws, saved);
+  }
+
+  function discoveryRestoreWindowState(ws, savedTop = 0, targetState = null) {
+    const visible = discoveryVisibleCount(ws);
+    let all = [];
+    try { all = filteredDiscoveryNodes(ws) || []; } catch (_) { all = ws?.nodes || []; }
+    const total = Array.isArray(all) ? all.length : 0;
+    const grow = Math.max(8, Number(app.settings.discoveryFeedGrowCount || 48));
+    const top = Math.max(0, Math.round(Number(savedTop || 0)));
+    const max = Math.max(0, Math.round(Number(targetState?.max || 0)));
+    const canGrow = total > visible;
+    return {
+      top,
+      max,
+      visible,
+      total,
+      grow,
+      canGrow,
+      nextVisible: canGrow ? Math.min(total, visible + grow) : visible,
+      needsMoreForTop: Boolean(top && max > 0 && max < top && canGrow)
+    };
+  }
+
+  function ensureDiscoveryWindowForStoredScroll(ws, saved, targetState = null) {
+    if (!ws || !saved || (saved.mode || 'discovery') !== 'discovery') return false;
+    const state = discoveryRestoreWindowState(ws, saved.top, targetState);
+    if (!state.needsMoreForTop) {
+      if (state.top && state.max > 0 && state.max < state.top && !state.canGrow) {
+        debugScrollRestore('apply:discovery-more-unavailable', {
+          saved: scrollRestoreDebugSummarySaved(saved),
+          windowState: state,
+          workspace: scrollRestoreDebugWorkspaceState(ws),
+          target: targetState
+        });
+      }
+      return false;
+    }
+
+    const previousVisible = Number(ws.discoveryVisibleCount || 0);
+    if (previousVisible >= state.nextVisible) return false;
+    ws.discoveryVisibleCount = state.nextVisible;
+    ws.discoveryWindowSig = discoveryWindowSignature(ws);
+    ws.scrollRestoreAutoMoreCount = Number(ws.scrollRestoreAutoMoreCount || 0) + 1;
+    extendStoredScrollRestoreWindow();
+    scrollFlightRecord('more:discovery-auto-restore', {
+      beforeVisibleCount: state.visible,
+      afterVisibleCount: ws.discoveryVisibleCount,
+      total: state.total,
+      saved: scrollRestoreDebugSummarySaved(saved),
+      target: targetState,
+      workspace: scrollRestoreDebugWorkspaceState(ws)
+    }, { console: true });
+    debugScrollRestore('apply:discovery-auto-more', {
+      saved: scrollRestoreDebugSummarySaved(saved),
+      windowState: state,
+      afterVisibleCount: ws.discoveryVisibleCount,
+      workspace: scrollRestoreDebugWorkspaceState(ws),
+      target: targetState
+    });
+    try { render(); } catch (error) {
+      debugScrollRestore('apply:discovery-auto-more-render-error', { message: error?.message || String(error) });
+    }
+    return true;
+  }
+
   function applyStoredScrollOnce(ws, saved) {
     const top = Math.max(0, Math.round(Number(saved?.top || 0)));
-    if (!ws || !top) return false;
-    if (saved?.mode === 'discovery') {
+    if (!ws || !top) {
+      debugScrollRestore('apply:skip', { reason: !ws ? 'no-workspace' : 'no-top', saved: scrollRestoreDebugSummarySaved(saved) });
+      return false;
+    }
+    const mode = saved?.mode || 'discovery';
+    const savedContent = saved?.contentSignature || saved?.discoverySignature || '';
+    const currentContent = storedScrollContentSignature(ws, mode);
+    if (savedContent && currentContent && savedContent !== currentContent) {
+      debugScrollRestore('apply:reject-content', {
+        mode,
+        saved: scrollRestoreDebugSummarySaved(saved),
+        savedContent,
+        currentContent,
+        workspace: scrollRestoreDebugWorkspaceState(ws)
+      });
+      return false;
+    }
+
+    if (mode === 'discovery') {
       const currentDiscoverySig = discoverySignatureForScroll(ws);
       if (saved.discoverySignature && currentDiscoverySig !== saved.discoverySignature) {
+        debugScrollRestore('apply:reject-discovery-signature', {
+          saved: scrollRestoreDebugSummarySaved(saved),
+          currentDiscoverySig
+        });
         return false;
       }
 
-      // Discovery has used both element scrolling and page/workspace scrolling
-      // across responsive layouts. Restore against the saved role first, then
-      // try the other visible Discovery candidates during the restore window.
+      // Discovery can temporarily make the page/workspace scrollable before the
+      // feed finishes laying out. Applying to that interim target is useful, but
+      // it must not complete the restore. Complete only once the saved target
+      // role itself is present, scrollable and holding the requested position.
+      const preferredTarget = preferredStoredScrollCompletionTarget(ws, saved);
       const page = document.scrollingElement || document.documentElement || document.body;
       const targets = uniqueScrollTargets([
+        preferredTarget,
         storedScrollElement(ws, saved),
         scrollElementForRole(ws, 'post-feed.discovery', 'discovery'),
         scrollElementForRole(ws, 'feed-pane', 'discovery'),
@@ -17041,42 +17511,203 @@ window.addEventListener('popstate', () => {
         bestScrollElementForMode(ws, 'discovery'),
         page
       ]);
-      let applied = false;
-      for (const target of targets) {
-        applied = applyScrollTopToTarget(target, top) || applied;
+      const before = targets.map(scrollRestoreDebugTargetState);
+      const preferredTargetInitialState = scrollRestoreDebugTargetState(preferredTarget);
+      if (!preferredTarget || Number(preferredTargetInitialState?.max || 0) <= 0) {
+        // CP94: content-aware restore readiness. Discovery often renders the
+        // feed shell before the posts are mounted. Do not apply scroll to an
+        // empty feed or a interim page/workspace target; keep the pending
+        // restore alive until the saved target role is actually scrollable.
+        debugScrollRestore('apply:wait-content-ready', {
+          saved: scrollRestoreDebugSummarySaved(saved),
+          preferredBefore: preferredTargetInitialState,
+          before,
+          reason: !preferredTarget ? 'no-preferred-target' : 'preferred-target-not-scrollable'
+        });
+        return false;
       }
-      return applied;
+      if (ensureDiscoveryWindowForStoredScroll(ws, saved, preferredTargetInitialState)) {
+        return false;
+      }
+      const attempts = [];
+      for (const target of targets) {
+        const beforeTop = scrollElementTop(target);
+        const applied = applyScrollTopToTarget(target, top);
+        attempts.push({
+          target: scrollRestoreDebugTargetState(target),
+          beforeTop,
+          applied
+        });
+      }
+      // Metric contract: return scrollTargetMatchesSavedTop(preferredTarget, saved);
+      const done = scrollTargetMatchesSavedTop(preferredTarget, saved);
+      debugScrollRestore('apply:discovery', {
+        saved: scrollRestoreDebugSummarySaved(saved),
+        preferredBefore: preferredTargetInitialState,
+        before,
+        attempts,
+        done
+      });
+      return done;
     }
 
-    const el = storedScrollElement(ws, saved);
-    if (applyScrollTopToTarget(el, top)) return true;
+    const preferredTarget = preferredStoredScrollCompletionTarget(ws, saved);
+    const before = scrollRestoreDebugTargetState(preferredTarget);
+    if (!preferredTarget || Number(before?.max || 0) <= 0) {
+      debugScrollRestore('apply:wait-content-ready', {
+        mode,
+        saved: scrollRestoreDebugSummarySaved(saved),
+        preferredBefore: before,
+        workspace: scrollRestoreDebugWorkspaceState(ws),
+        reason: !preferredTarget ? 'no-preferred-target' : 'preferred-target-not-scrollable'
+      });
+      return false;
+    }
+    const applied = applyScrollTopToTarget(preferredTarget, top);
+    const done = applied && scrollTargetMatchesSavedTop(preferredTarget, saved);
+    debugScrollRestore('apply:lineage-primary', {
+      saved: scrollRestoreDebugSummarySaved(saved),
+      preferredBefore: before,
+      preferredAfter: scrollRestoreDebugTargetState(preferredTarget),
+      applied,
+      done
+    });
+    if (done) return true;
 
-    // Keep the Lineage fallback narrow, because Lineage scroll restore already
-    // works in practice and should not disturb other layout containers.
+    // Keep the Lineage fallback narrow: a page fallback may help responsive
+    // layouts, but it must not mark restore complete unless page was the saved
+    // target. Otherwise a transient early target could mask the real feed later.
     const page = document.scrollingElement || document.documentElement || document.body;
-    if (saved?.targetKind === 'page') return applyScrollTopToTarget(page, top);
+    if (saved?.targetKind === 'page') {
+      const pageApplied = applyScrollTopToTarget(page, top);
+      const pageDone = pageApplied && scrollTargetMatchesSavedTop(page, saved);
+      debugScrollRestore('apply:lineage-page-fallback', {
+        saved: scrollRestoreDebugSummarySaved(saved),
+        page: scrollRestoreDebugTargetState(page),
+        pageApplied,
+        pageDone
+      });
+      return pageDone;
+    }
     return false;
   }
 
-  function chaseStoredScrollForWorkspace(ws, durationMs = 12000) {
-    if (!ws || scrollRestoreCancelledByUser()) return;
+  function chaseStoredScrollForWorkspace(ws, durationMs = STORED_SCROLL_CHASE_DURATION_MS) {
+    if (!ws) {
+      debugScrollRestore('chase:skip', { reason: 'no-workspace' });
+      return;
+    }
+    if (scrollRestoreCancelledByUser()) {
+      debugScrollRestore('chase:skip', { reason: 'cancelled', workspace: scrollRestoreDebugWorkspaceState(ws) });
+      return;
+    }
     const saved = readStoredScroll(ws);
-    if (!saved || !Number(saved.top)) return;
+    if (!saved || !Number(saved.top)) {
+      debugScrollRestore('chase:no-saved', { workspace: scrollRestoreDebugWorkspaceState(ws), saved: scrollRestoreDebugSummarySaved(saved) });
+      return;
+    }
     const doneKey = scrollRestoreCompletionKey('stored', ws, saved);
     const completed = completedScrollRestoreSet();
-    if (completed.has(doneKey)) return;
+    if (completed.has(doneKey)) {
+      const preferred = preferredStoredScrollCompletionTarget(ws, saved);
+      const stillHolding = scrollTargetMatchesSavedTop(preferred, saved);
+      if (stillHolding) {
+        debugScrollRestore('chase:already-complete', { doneKey, saved: scrollRestoreDebugSummarySaved(saved), workspace: scrollRestoreDebugWorkspaceState(ws), preferred: scrollRestoreDebugTargetState(preferred) });
+        return;
+      }
+      // CP96: a restore can be correct for one frame and then be reset by a
+      // follow-up render while Discovery/Lineage loading is still settling. A
+      // completed marker is only valid while the saved target still holds the
+      // requested top; otherwise resume the chase and re-apply.
+      completed.delete(doneKey);
+      debugScrollRestore('chase:complete-invalidated', { doneKey, saved: scrollRestoreDebugSummarySaved(saved), workspace: scrollRestoreDebugWorkspaceState(ws), preferred: scrollRestoreDebugTargetState(preferred) });
+    }
     ws.routeScrollTop = Number(saved.top) || 0;
     ws.routeScrollMode = saved.mode || 'discovery';
     ws.routeScrollSelectedPath = saved.selectedPath || '';
     const started = performance.now();
+    let stableSince = 0;
+    let lastTickAt = 0;
+    debugScrollRestore('chase:start', { doneKey, durationMs, stableMs: STORED_SCROLL_STABLE_COMPLETION_MS, saved: scrollRestoreDebugSummarySaved(saved), workspace: scrollRestoreDebugWorkspaceState(ws) });
     const tick = () => {
-      if (completed.has(doneKey) || scrollRestoreCancelledByUser()) return;
-      const done = applyStoredScrollOnce(ws, saved);
-      if (done) {
-        completed.add(doneKey);
+      const now = performance.now();
+      if (now - lastTickAt < 12) {
+        requestAnimationFrame(tick);
         return;
       }
+      lastTickAt = now;
+      const elapsed = Math.round(now - started);
+      const preferred = preferredStoredScrollCompletionTarget(ws, saved);
+      const holding = scrollTargetMatchesSavedTop(preferred, saved);
+      if (completed.has(doneKey) && holding) {
+        debugScrollRestore('chase:tick-skip', { reason: 'complete', elapsed, doneKey, preferred: scrollRestoreDebugTargetState(preferred) });
+        return;
+      }
+      if (completed.has(doneKey) && !holding) {
+        completed.delete(doneKey);
+        stableSince = 0;
+        debugScrollRestore('chase:complete-invalidated', { elapsed, doneKey, saved: scrollRestoreDebugSummarySaved(saved), preferred: scrollRestoreDebugTargetState(preferred), workspace: scrollRestoreDebugWorkspaceState(ws) });
+      }
+      if (scrollRestoreCancelledByUser()) {
+        debugScrollRestore('chase:tick-skip', { reason: 'cancelled', elapsed, doneKey, workspace: scrollRestoreDebugWorkspaceState(ws) });
+        return;
+      }
+      if (scrollRestoreDebugTickAllowed(doneKey, elapsed)) {
+        debugScrollRestore('chase:tick', {
+          elapsed,
+          doneKey,
+          stableFor: stableSince ? Math.round(now - stableSince) : 0,
+          saved: scrollRestoreDebugSummarySaved(saved),
+          workspace: scrollRestoreDebugWorkspaceState(ws),
+          preferred: scrollRestoreDebugTargetState(preferred)
+        });
+      }
+      if (holding) {
+        if (!stableSince) {
+          stableSince = now;
+          debugScrollRestore('chase:hold-start', {
+            elapsed,
+            doneKey,
+            stableMs: STORED_SCROLL_STABLE_COMPLETION_MS,
+            saved: scrollRestoreDebugSummarySaved(saved),
+            preferred: scrollRestoreDebugTargetState(preferred)
+          });
+        }
+        if (now - stableSince >= STORED_SCROLL_STABLE_COMPLETION_MS) {
+          completed.add(doneKey);
+          debugScrollRestore('chase:complete-stable', {
+            elapsed,
+            stableFor: Math.round(now - stableSince),
+            doneKey,
+            saved: scrollRestoreDebugSummarySaved(saved),
+            workspace: scrollRestoreDebugWorkspaceState(ws),
+            preferred: scrollRestoreDebugTargetState(preferred)
+          });
+          return;
+        }
+      } else {
+        stableSince = 0;
+        const done = applyStoredScrollOnce(ws, saved);
+        if (done) {
+          stableSince = performance.now();
+          debugScrollRestore('chase:hold-start', {
+            elapsed,
+            doneKey,
+            stableMs: STORED_SCROLL_STABLE_COMPLETION_MS,
+            saved: scrollRestoreDebugSummarySaved(saved),
+            preferred: scrollRestoreDebugTargetState(preferredStoredScrollCompletionTarget(ws, saved)),
+            source: 'after-apply'
+          });
+        }
+      }
       if (performance.now() - started < durationMs) requestAnimationFrame(tick);
+      else debugScrollRestore('chase:deadline', {
+        elapsed,
+        doneKey,
+        saved: scrollRestoreDebugSummarySaved(saved),
+        workspace: scrollRestoreDebugWorkspaceState(ws),
+        preferred: scrollRestoreDebugTargetState(preferredStoredScrollCompletionTarget(ws, saved))
+      });
     };
     requestAnimationFrame(tick);
     setTimeout(tick, 80);
@@ -17088,42 +17719,109 @@ window.addEventListener('popstate', () => {
   }
 
   function restoreStoredScrollForAll() {
-    if (performance.now() > (app.storageScrollRestoreUntil || 0) || scrollRestoreCancelledByUser()) return;
+    if (performance.now() > (app.storageScrollRestoreUntil || 0)) {
+      debugScrollRestore('restoreAll:skip', { reason: 'deadline' });
+      return;
+    }
+    if (scrollRestoreCancelledByUser()) {
+      debugScrollRestore('restoreAll:skip', { reason: 'cancelled' });
+      return;
+    }
+    debugScrollRestore('restoreAll:start', {
+      workspaceCount: (app.workspaces || []).length,
+      workspaces: (app.workspaces || []).map(scrollRestoreDebugWorkspaceState)
+    });
     for (const ws of app.workspaces || []) chaseStoredScrollForWorkspace(ws);
   }
 
   pruneRetiredScrollStorage();
-  app.storageScrollRestoreUntil = performance.now() + 15000;
+  extendStoredScrollRestoreWindow();
 
   function onStoredScrollCapture(event) {
-    if (app.restoringStoredScroll) return;
+    if (app.restoringStoredScroll) {
+      debugScrollRestore('capture:skip', { reason: 'restoringStoredScroll' });
+      return;
+    }
     const el = event.target;
-    if (!el) return;
-    if (editableElementActive() && (el.matches?.('input, textarea, select, [contenteditable="true"]') || el.closest?.('.modal-panel'))) return;
+    if (!el) {
+      debugScrollRestore('capture:skip', { reason: 'no-target' });
+      return;
+    }
+    if (editableElementActive() && (el.matches?.('input, textarea, select, [contenteditable="true"]') || el.closest?.('.modal-panel'))) {
+      debugScrollRestore('capture:skip', { reason: 'editable-active' });
+      return;
+    }
     const pageScroll = pageScrollTarget(el);
     const target = pageScroll ? (document.scrollingElement || document.documentElement || document.body) : el;
     const ws = pageScroll ? activeWorkspace() : (scrollEventWorkspace(el) || getWorkspace(el.dataset?.ws || ''));
-    if (!ws) return;
+    if (!ws) {
+      debugScrollRestore('capture:skip', { reason: 'no-workspace', target: scrollRestoreDebugTargetState(target) });
+      return;
+    }
 
     // During boot/refresh the browser can emit a zero-position scroll event before
     // the feed has finished rendering. Do not let that erase a valid saved scroll.
     if (performance.now() <= (app.storageScrollRestoreUntil || 0) && scrollElementTop(target) === 0) {
       const saved = readStoredScroll(ws);
-      if (saved && Number(saved.top || 0) > 0) return;
+      if (saved && Number(saved.top || 0) > 0) {
+        debugScrollRestore('capture:skip-zero-during-restore-window', {
+          target: scrollRestoreDebugTargetState(target),
+          workspace: scrollRestoreDebugWorkspaceState(ws),
+          saved: scrollRestoreDebugSummarySaved(saved)
+        });
+        return;
+      }
     }
 
+    debugScrollRestore('capture', { target: scrollRestoreDebugTargetState(target), workspace: scrollRestoreDebugWorkspaceState(ws) });
     writeStoredScroll(ws, target);
   }
 
   document.addEventListener('scroll', onStoredScrollCapture, true);
 
+  function writeStoredScrollSnapshot(reason = 'snapshot') {
+    let wrote = false;
+    scrollFlightRecord('routeScroll:snapshot-start', {
+      reason,
+      snapshot: scrollFlightSnapshot(`before-${reason}`)
+    });
+    for (const ws of app.workspaces || []) {
+      const mode = scrollModeFromElement(ws);
+      wrote = writeStoredScroll(ws, null, mode, { preserveNonZero: true, reason }) || wrote;
+    }
+    scrollFlightRecord('routeScroll:snapshot-end', {
+      reason,
+      wrote,
+      snapshot: scrollFlightSnapshot(`after-${reason}`)
+    });
+    return wrote;
+  }
+
+  window.addEventListener('pagehide', () => {
+    writeStoredScrollSnapshot('pagehide');
+  });
+  window.addEventListener('beforeunload', () => {
+    writeStoredScrollSnapshot('beforeunload');
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) writeStoredScrollSnapshot('visibilitychange');
+  });
+
   function scheduleStoredScrollRestore() {
+    if (!scrollRestoreCancelledByUser()) extendStoredScrollRestoreWindow();
+    debugScrollRestore('schedule', {
+      workspaceCount: (app.workspaces || []).length,
+      workspaces: (app.workspaces || []).map(scrollRestoreDebugWorkspaceState)
+    });
     requestAnimationFrame(restoreStoredScrollForAll);
     setTimeout(restoreStoredScrollForAll, 160);
     setTimeout(restoreStoredScrollForAll, 650);
     setTimeout(restoreStoredScrollForAll, 1500);
     setTimeout(restoreStoredScrollForAll, 3200);
     setTimeout(restoreStoredScrollForAll, 6500);
+    setTimeout(restoreStoredScrollForAll, 12000);
+    setTimeout(restoreStoredScrollForAll, 22000);
+    setTimeout(restoreStoredScrollForAll, 36000);
   }
 
   registerRenderWrapper(function renderWithStoredBrowserState(next) {
@@ -17144,7 +17842,54 @@ window.addEventListener('popstate', () => {
   } catch (_) {}
 
 window.addEventListener('popstate', () => {
+    if (scrollFlightRecorderEnabled()) {
+      scrollFlightRecord('history:popstate', {
+        historyState: scrollFlightRouteStateSummary(history.state),
+        decodedRoute: scrollFlightDecodedRouteSummary(),
+        snapshot: scrollFlightSnapshot('popstate-before')
+      });
+    }
     restoreRouteFromBrowserHistory();
+    if (scrollFlightRecorderEnabled()) {
+      scrollFlightRecord('history:popstate-after', { snapshot: scrollFlightSnapshot('popstate-after') });
+    }
+  });
+
+  registerSetRouteStateWrapper(function setRouteStateWithOptionalScrollFlight(kind = 'push', next) {
+    if (!scrollFlightRecorderEnabled()) {
+      next(kind);
+      return;
+    }
+    const beforeUrl = `${location.pathname}${location.search}${location.hash}`;
+    const beforeDecoded = scrollFlightDecodedRouteSummary();
+    const beforeSnapshot = scrollFlightSnapshot('before-setRouteState');
+    next(kind);
+    scrollFlightRecord('viewState:setRouteState', {
+      kind,
+      beforeUrl,
+      afterUrl: `${location.pathname}${location.search}${location.hash}`,
+      beforeDecoded,
+      afterDecoded: scrollFlightDecodedRouteSummary(),
+      lensCache: scrollFlightLensCacheSummary(),
+      beforeSnapshot,
+      afterSnapshot: scrollFlightSnapshot('after-setRouteState')
+    });
+  });
+
+  registerRenderWrapper(function renderWithOptionalScrollFlightRecorder(next) {
+    if (!scrollFlightRecorderEnabled()) return next();
+    const before = scrollFlightSnapshot('render-before');
+    const result = next();
+    scrollFlightRecord('render:after', {
+      before,
+      after: scrollFlightSnapshot('render-after')
+    });
+    requestAnimationFrame(() => scrollFlightRecord('settle:raf', { snapshot: scrollFlightSnapshot('settle-raf') }));
+    setTimeout(() => scrollFlightRecord('settle:100ms', { snapshot: scrollFlightSnapshot('settle-100ms') }), 100);
+    setTimeout(() => scrollFlightRecord('settle:1s', { snapshot: scrollFlightSnapshot('settle-1s') }), 1000);
+    setTimeout(() => scrollFlightRecord('settle:2s', { snapshot: scrollFlightSnapshot('settle-2s') }), 2000);
+    setTimeout(() => scrollFlightRecord('settle:5s', { snapshot: scrollFlightSnapshot('settle-5s') }), 5000);
+    return result;
   });
 
   loadViewerConfig()

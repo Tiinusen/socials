@@ -90,12 +90,27 @@
     return Boolean(savedSignature && currentSignature && savedSignature !== currentSignature);
   }
 
+
+  function preferredStoredScrollModes(activeMode) {
+    return activeMode === 'lineage'
+      ? ['lineage', 'discovery']
+      : ['discovery', 'lineage'];
+  }
+
+  function shouldPreserveStoredScrollOnZeroWrite(input = {}) {
+    if (!input.preserveNonZero) return false;
+    if (Number(input.nextTop || 0) !== 0) return false;
+    return Number(input.existingTop || 0) > 0;
+  }
+
   global.TiinexViewState = Object.freeze({
     decorateLensSource,
     discoveryScrollSignature,
     normalizedHistoryKind,
+    preferredStoredScrollModes,
     routeDescriptorFor,
     shouldApplyLens,
+    shouldPreserveStoredScrollOnZeroWrite,
     shouldRejectDiscoveryScroll,
     stripVolatileLensState,
   });

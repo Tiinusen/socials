@@ -1,148 +1,76 @@
 # Validation Notes
 
-Current package state: public repository handoff candidate with static quality gates and browser-state guardrails.
+Package: v6-388 product CP103
 
-## Static validation
+Scope:
+- CP100 preserves the CP98 routeScroll restore cleanup and the CP99 Discovery auto-more behavior.
+- It polishes lineage terminal icon spacing so terminal status icons do not visually merge with text.
+- It packages the app from the app root instead of through an internal working-directory wrapper.
+- It preserves the working routeScroll restore implementation from CP97.
+- It keeps retired anchor-scroll runtime helpers removed and leaves only stale-cache pruning for `tiinex.scroll.anchor.*`.
+- It keeps the CP95 flight recorder as explicit opt-in via `tiinex.debug.scrollFlight` / `?debugScrollFlight=1`.
 
-Validated for this package:
+Readiness signals preserved:
+- architectureScaffoldReady
+- coreExtractionReady
+- serviceStateExtractionReady
+- uiFeatureExtractionReady
+- viewStateIsolationReady
+- publicBuildReady
+- cleanupReadyForProductWork
+- architectureReadyForProductWork
+- singleOwnerRestoreReady
+- stableCompletionRestoreReady
+- discoveryAutoMoreRestoreReady
 
-- `node tools/validate-static.mjs` passes.
-- `npm test` passes and delegates to the same static validation tool as a convenience alias.
-- `npm run metrics` reports current static cleanup metrics as a convenience alias.
-- `npm run storage:scan` reports browser storage usage and canonical storage key constants as a convenience alias.
-- `package.json` is maintainer tooling only; it is not a runtime, dependency, or build requirement.
-- `node --check app.js` passes.
-- Source module syntax under `src/` passes.
-- CSS brace balance passes.
-- Zip integrity test passes.
-- Static file structure remains suitable for GitHub Pages-style hosting.
-- Root markdown is intentional and limited to public-facing documentation.
-- Root package entries are checked against the intentional static-app file set, including `src/`.
-- Debug and dynamic-code surfaces are checked.
-- Public-facing scaffold wording is checked.
-- Wrapper and saved-function alias naming are checked.
-- Known single function reassignment inventory is checked so new hidden reassignment paths cannot appear silently.
-- Architecture boundary layers are checked from `src/architecture/boundaries.mjs`.
-- Core extraction contracts are checked from `src/core/text.mjs`, `src/core/path.mjs`, `src/core/markdown.mjs`, `src/core/schema.mjs`, and `src/app/core-runtime.js`.
-- Services/state contracts are checked from `src/services/storage.mjs`, `src/state/local-workspace.mjs`, `src/app/services-runtime.js`, and `src/app/state-runtime.js`.
-- UI helper contracts are checked from `src/ui/html.mjs`, `src/ui/evidence-attachments.mjs`, `src/ui/preview.mjs`, and `src/app/ui-runtime.js`.
-- View-state helper contracts are checked from `src/viewstate/lens.mjs` and `src/app/viewstate-runtime.js`.
-- Public build contracts are checked from `tools/build-public.mjs`, `tools/check-public-build.mjs`, and `.github/workflows/publish-public.yml`.
-- The only remaining ordinary function reassignments must be the parked scroll/viewState hooks.
-- Packaged continuity markdown is checked for pinned schema links and non-placeholder integrity values.
-- The embedded default workspace is checked against `.topics/.workspaces/viewer.workspace.md`.
+Cleanup details:
+- Removed dead `chaseAnchorScrollForWorkspace`, `restoreAnchorScrollForAll`, `scheduleAnchorScrollRestore`, and related anchor-scroll read/write/apply helpers.
+- Kept `pruneAnchorScrollStorage()` to clear stale retired sessionStorage entries.
+- Kept routeScroll diagnostics behind `tiinex.debug.scrollRestore`.
+- Moved the heavier full-flight diagnostics to `tiinex.debug.scrollFlight`.
+- Added metrics/static guard for scroll cleanup readiness.
 
-## Current cleanup status
+Validation run:
+- node --check app.js
+- node --check tools/*.mjs
+- node --check src/**/*.mjs and src/**/*.js
+- npm test
+- npm run metrics
+- npm run storage:scan
+- npm run build:public
+- npm run public:check
+- node --check .site-publish/tiinex.bundle.js
 
-The application is versions-clean at the ordinary app-code level:
+Result: PASS
 
-- no version-stamped ordinary JavaScript identifiers
-- no version-stamped function declarations
-- no version-stamped app CSS class tokens
-- no duplicate function declarations
-- no package-local audit reports in the package root
-- no embedded base64 logo blob in `app.js`
-- no inline `data:`/`blob:` logo payload path
-- no debug console or dynamic-code runtime surface in `app.js`; caught browser storage write failures report through `console.error`
-- browser storage key names are centralized in `STORAGE_KEYS`
-- local workspace drafts autosave through canonical local workspace state keys as local deltas
-- saved local workspace state is reconnected on startup unless an explicit shared URL state is being opened
-- quota errors prune stale local-state snapshots, retry once, and report through the single storage console-error path
-- retired storage and route-scroll-cache tokens are blocked by static validation
+Browser validation focus for CP100:
+- Discovery auto-more still loads before the Show more footer becomes the normal stopping point.
+- Discovery F5 restore remains unchanged after auto-more has loaded extra cards.
+- Lineage scroll/F5 remains unchanged.
+- Lineage root terminal icon and text have visible spacing on desktop and mobile.
+- Zip opens with app files at the archive root, not inside an internal wrapper folder.
 
-Domain-versioned values remain intentional and valid, including schema IDs such as `tiinex.root.v1` and checksum formats such as `sha256-base64url-c14n-v1`.
+## CP101 Lineage terminal spacing polish
 
-## Metrics
+- Fixed lineage terminal row spacing by restoring flex layout after the lineage feed block-level sizing rule.
+- Keeps the terminal icon and text as separate visual items with a stable gap.
+- No lineage traversal, restore, Discovery auto-more, storage, or view-state logic changed.
+- Zip root remains app-root direct, without an internal workspace wrapper directory.
 
-Current metrics are generated by the package instead of maintained by hand:
 
-```bash
-node tools/collect-metrics.mjs
-npm run metrics
-```
 
-The metrics output includes:
+## CP102 unified node actions polish
 
-- JavaScript and CSS size
-- duplicate declaration status
-- app-level versioned identifier status
-- render and hook registration inventory
-- known single function reassignment inventory
-- product-work readiness from the structural cleanup inventory
-- architecture scaffold readiness, core extraction readiness, services/state extraction readiness, view-state isolation readiness, public build readiness, and source module inventory
-- active scroll-state family inventory
-- browser storage family inventory
-- packaged markdown continuity hygiene
-- public-facing marker hygiene
+- Moves node card actions into one shared descriptor list used by desktop cards and the mobile action sheet.
+- Desktop node action rows stay on one horizontal row; local Edit and Remove become compact tail icons to avoid wrapping.
+- Mobile action sheets now expose the same artifact action count as desktop, including More/Less or Anchor, Edit, and disabled Continue when applicable.
+- Mobile action sheet header uses a compact close button and a single title column that can wrap naturally.
+- No lineage traversal, scroll restore, Discovery auto-more, storage, or schema parsing logic changed.
 
-## Static validation command
 
-From the package root:
+## CP103 mobile action sheet toggle cleanup
 
-```bash
-node tools/validate-static.mjs
-# optional convenience alias
-npm test
-
-node tools/collect-metrics.mjs
-# optional convenience alias
-npm run metrics
-
-node tools/inspect-storage.mjs
-# optional convenience alias
-npm run storage:scan
-
-node tools/build-public.mjs
-# optional convenience alias
-npm run build:public
-
-node tools/check-public-build.mjs
-# optional convenience alias
-npm run public:check
-```
-
-This is a static quality gate only. It does not replace browser testing.
-
-## Browser validation required
-
-Browser behavior must still be checked by a human after each package update.
-
-Minimum golden flow:
-
-- desktop startup
-- desktop Discovery and Lineage headers
-- Open / Markdown / Source
-- Continue
-- Reference parent selection flow
-- mobile Discovery
-- mobile Lineage
-- mobile `...` card action sheet
-- mobile `+N` hidden-badge expansion when present
-- mobile source badges right-align when visible
-- mobile FAB Create
-- export if source, archive, workspace state, or storage behavior changed
-
-## Expected local-environment warnings
-
-When running from `file://`, browser origin/storage warnings can be expected. Public GitHub raw-file `404` responses can also be expected when a probed optional source file does not exist.
-
-## Known improvement surface
-
-The package is clean enough to continue product development, but these improvements remain open:
-
-- continue moving JavaScript runtime responsibility from `app.js` into the validated `src/` layers
-- split the stylesheet into semantic files
-- keep the remaining five scroll/viewState hook assignments parked for a dedicated design pass
-- treat `cleanupReadyForProductWork: yes` as the static signal that non-scroll/viewState cleanup is clear
-- treat `architectureScaffoldReady: yes` as the static signal that the boundary map is active
-- treat `coreExtractionReady: yes` as the static signal that pure core helper extraction is active
-- treat `serviceStateExtractionReady: yes` as the static signal that storage/local workspace state helper extraction is active
-- treat `uiFeatureExtractionReady: yes` as the static signal that the first UI helper extraction is active
-- treat `viewStateIsolationReady: yes` as the static signal that route, lens, and scroll policy helpers have an owned module surface
-- treat `publicBuildReady: yes` as the static signal that publish output is built from a single local app bundle
-- treat `architectureReadyForProductWork: yes` as the static signal that the current module boundary, public build, and product-work readiness checks are green
-- consolidate scroll and view-state behavior deliberately instead of treating the current layered behavior as final
-- investigate render-pipeline performance and avoid full re-render churn where possible
-- add a browser test harness if the project moves beyond static manual validation
-
-Do not reintroduce app-level version suffixes, package-local audit reports, or wrapper layers as the default way to make changes.
+- Removes the card expand/collapse More/Less action from the mobile action sheet because mobile cards already expose that behavior through the card tap target.
+- Keeps desktop node action rows unchanged.
+- Keeps lineage Anchor actions in the mobile sheet; only the redundant mobile expand/collapse action is filtered.
+- No lineage traversal, scroll restore, Discovery auto-more, storage, or schema parsing logic changed.

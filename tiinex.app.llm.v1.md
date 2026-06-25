@@ -131,3 +131,19 @@ Local workspace persistence stores local/draft deltas only. Remote/default works
 Render wrappers are `(next, ...args)` continuations. Do not pass Promise callback values before `next`; startup/render wrappers must keep the continuation as the first argument.
 
 - `publicBuildReady: yes` means the publish path builds a bundled public site from the modular source.
+
+## CP91 browser scroll ownership
+
+F5 scroll restore is owned by `tiinex.routeScroll.state.*`. The older `tiinex.scroll.anchor.*` cache is retired and pruned at startup because it used runtime workspace/source identifiers and could race routeScroll after refresh. Future scroll changes should keep one restore owner; improve routeScroll policy or move the single owner into `src/viewstate/` instead.
+
+## CP92 scroll restore note
+
+F5 scroll restore must remain single-owner. `routeScroll` owns browser-session scroll restore. Durable lens may preserve and apply route selection/history state, but it must not chase scroll after render. Lineage scroll identity should be guarded by selected artifact path plus node-set content, not volatile source/runtime signatures.
+
+## CP93 scroll restore diagnostic note
+
+CP93 is a instrumentation pass. It instruments the single-owner `routeScroll` restore path behind `sessionStorage.setItem("tiinex.debug.scrollRestore", "1")` / `?debugScroll=1`, and stores the captured startup trace in `window.__tiinexScrollRestoreDebugLog`. It should be used to determine whether restore misses are caused by candidate selection, content-signature rejection, early non-scrollable targets, completion timing, or later zero-scroll writes before making another behavioral change.
+
+## CP94 scroll restore readiness note
+
+CP93 diagnostics showed that Discovery restore could find the correct saved `routeScroll` candidate, but the preferred `.post-feed.discovery` target was still an empty rendered shell with `max: 0`. CP94 treats this as not-ready, keeps the restore pending for a longer content-load window, and avoids applying saved scroll to interim page/workspace fallbacks. Future scroll work should preserve this target-readiness invariant rather than adding competing restore owners.

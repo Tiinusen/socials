@@ -420,6 +420,16 @@ function inventoryStructuralCleanup(directFunctionReassignments) {
   };
 }
 
+
+function inventoryMobileActionOwnership(source) {
+  return {
+    genericDispatcherScoped: source.includes('function genericMobileActionOwnsButton(button)')
+      && source.includes(".mobile-global-actions-host, .mobile-action-backdrop")
+      && source.includes('if (!button || !genericMobileActionOwnsButton(button)) return;'),
+    genericDispatcherClaimsAllMobileActions: /function\s+mobileOnlyActionClick\s*\([\s\S]*?const\s+button\s*=\s*event\.target\?\.closest\?\.\('\[data-mobile-action\]'\);\s*if\s*\(\s*!button\s*\)\s*return;[\s\S]*?event\.preventDefault\s*\(/.test(source)
+  };
+}
+
 function inventoryScrollSystems(source) {
   const families = [
     {
@@ -443,9 +453,9 @@ function inventoryScrollSystems(source) {
       markers: ['rememberLensScroll', 'persistLensState', 'chaseScrollForWorkspace', 'renderWithDurableLens']
     },
     {
-      name: 'anchor-scroll',
-      role: 'anchor/card based scroll restore',
-      markers: ['anchorScrollKey', 'writeAnchorScroll', 'readAnchorScroll', 'chaseAnchorScrollForWorkspace', 'renderWithAnchorScroll']
+      name: 'anchor-scroll-retired',
+      role: 'retired legacy anchor/card based scroll restore',
+      markers: ['pruneAnchorScrollStorage']
     },
     {
       name: 'stored-browser-scroll',
@@ -464,6 +474,66 @@ function inventoryScrollSystems(source) {
       markerCounts
     };
   });
+}
+
+
+function inventoryScrollRestorePolicy(source) {
+  return {
+    lifecycleSnapshotReady: source.includes("function writeStoredScrollSnapshot(reason = 'snapshot')")
+      && source.includes("writeStoredScrollSnapshot('pagehide')")
+      && source.includes("writeStoredScrollSnapshot('beforeunload')"),
+    activeModePreferenceReady: source.includes('TiinexViewState.preferredStoredScrollModes(activeMode)'),
+    zeroWritePreserveReady: source.includes('TiinexViewState.shouldPreserveStoredScrollOnZeroWrite'),
+    stableFallbackKeyReady: source.includes('function storedScrollStableKey(ws, identity = null)')
+      && source.includes('sessionStorageJsonSet(stableKey, value)')
+      && source.includes('storedScrollStableKey(ws, current)'),
+    scanFallbackReady: source.includes('function scanStoredScrollFallback(current)')
+      && source.includes('Workspace ids are runtime ids')
+      && source.includes('storedScrollMatchesIdentity(saved, current)'),
+    contentSignatureGuardReady: source.includes('function storedScrollContentSignature(ws, mode =')
+      && source.includes('contentSignature,')
+      && source.includes('savedContent && currentContent && savedContent !== currentContent'),
+    renderedFeedModeReady: source.includes('function visibleScrollFeedForMode(ws, mode =')
+      && source.includes('Prefer the rendered/visible feed for the workspace'),
+    zeroEntryFallbackReady: source.includes('Number(saved?.top || 0) > 0 && storedScrollMatchesIdentity(saved, current)')
+      && source.includes('.filter((saved) => Number(saved?.top || 0) > 0)'),
+    inactiveShellZeroGuardReady: source.includes("!String(targetRole || '').startsWith('post-feed.')")
+      && source.includes('shell zero overwrite'),
+    singleOwnerRestoreReady: source.includes('function pruneAnchorScrollStorage()')
+      && source.includes('routeScroll is the single F5 scroll-restore owner')
+      && source.includes('durable lens owns route selection/history only')
+      && !source.includes('registerRenderWrapper(function renderWithAnchorScroll')
+      && !source.includes('requestAnimationFrame(chaseAllScroll)')
+      && !source.includes('setTimeout(chaseAllScroll'),
+    lineageStableContentSignatureReady: source.includes('Lineage restore must be stable across refresh')
+      && source.includes("return hashFast([mode || '', selected?.path || '', paths].join('\\n'))"),
+    preferredTargetCompletionReady: source.includes('function preferredStoredScrollCompletionTarget(ws, saved)')
+      && source.includes('function scrollTargetMatchesSavedTop(target, saved)')
+      && source.includes('Complete only once the saved target')
+      && source.includes('return scrollTargetMatchesSavedTop(preferredTarget, saved);'),
+    contentReadinessRestoreReady: source.includes('STORED_SCROLL_RESTORE_WINDOW_MS = 45000')
+      && source.includes('apply:wait-content-ready')
+      && source.includes('saved target role is actually scrollable'),
+    scrollFlightRecorderReady: source.includes('function scrollFlightRecord(label, details = {}, options = {})')
+      && source.includes('window.__tiinexScrollFlight')
+      && source.includes('viewState:setRouteState')
+      && source.includes('dom:setScrollTop:after-100ms')
+      && (source.includes('more:discovery-before') || source.includes('more:discovery-${reason}-before')),
+    scrollCleanupReady: source.includes('function scrollFlightRecorderEnabled()')
+      && source.includes("sessionStorage.getItem('tiinex.debug.scrollFlight')")
+      && source.includes('function pruneAnchorScrollStorage()')
+      && !source.includes('function chaseAnchorScrollForWorkspace')
+      && !source.includes('function writeAnchorScroll')
+      && source.includes('renderWithOptionalScrollFlightRecorder'),
+    stableCompletionRestoreReady: source.includes('STORED_SCROLL_STABLE_COMPLETION_MS')
+      && source.includes('chase:complete-invalidated')
+      && source.includes('chase:complete-stable')
+      && source.includes('completed marker is only valid while the saved target still holds'),
+    discoveryAutoMoreRestoreReady: source.includes('function ensureDiscoveryWindowForStoredScroll(ws, saved, targetState = null)')
+      && source.includes('more:discovery-auto-restore')
+      && source.includes('apply:discovery-auto-more'),
+    discoveryContentGuardReady: source.includes('saved.discoverySignature && currentDiscoverySig !== saved.discoverySignature'),
+  };
 }
 
 function inventoryStorageFamilies(source) {
@@ -593,6 +663,8 @@ const metrics = {
     activeFamilies: activeScrollSystems.map((family) => family.name),
     families: scrollSystems
   },
+  mobileActionOwnership: inventoryMobileActionOwnership(js),
+  scrollRestorePolicy: inventoryScrollRestorePolicy(js),
   storageFamilies,
   architecture,
   publicBuild,
@@ -664,6 +736,32 @@ if (asJson) {
   for (const family of metrics.scrollSystems.families) {
     console.log(`- ${family.name}: ${family.active ? 'active' : 'absent'} (${family.hitCount} marker hits)`);
   }
+  console.log('');
+  console.log('scroll restore policy');
+  console.log(`- lifecycleSnapshotReady: ${metrics.scrollRestorePolicy.lifecycleSnapshotReady ? 'yes' : 'no'}`);
+  console.log(`- activeModePreferenceReady: ${metrics.scrollRestorePolicy.activeModePreferenceReady ? 'yes' : 'no'}`);
+  console.log(`- zeroWritePreserveReady: ${metrics.scrollRestorePolicy.zeroWritePreserveReady ? 'yes' : 'no'}`);
+  console.log(`- stableFallbackKeyReady: ${metrics.scrollRestorePolicy.stableFallbackKeyReady ? 'yes' : 'no'}`);
+  console.log(`- scanFallbackReady: ${metrics.scrollRestorePolicy.scanFallbackReady ? 'yes' : 'no'}`);
+  console.log(`- contentSignatureGuardReady: ${metrics.scrollRestorePolicy.contentSignatureGuardReady ? 'yes' : 'no'}`);
+  console.log(`- renderedFeedModeReady: ${metrics.scrollRestorePolicy.renderedFeedModeReady ? 'yes' : 'no'}`);
+  console.log(`- zeroEntryFallbackReady: ${metrics.scrollRestorePolicy.zeroEntryFallbackReady ? 'yes' : 'no'}`);
+  console.log(`- inactiveShellZeroGuardReady: ${metrics.scrollRestorePolicy.inactiveShellZeroGuardReady ? 'yes' : 'no'}`);
+  console.log(`- singleOwnerRestoreReady: ${metrics.scrollRestorePolicy.singleOwnerRestoreReady ? 'yes' : 'no'}`);
+  console.log(`- lineageStableContentSignatureReady: ${metrics.scrollRestorePolicy.lineageStableContentSignatureReady ? 'yes' : 'no'}`);
+  console.log(`- preferredTargetCompletionReady: ${metrics.scrollRestorePolicy.preferredTargetCompletionReady ? 'yes' : 'no'}`);
+  console.log(`- contentReadinessRestoreReady: ${metrics.scrollRestorePolicy.contentReadinessRestoreReady ? 'yes' : 'no'}`);
+  console.log(`- scrollFlightRecorderReady: ${metrics.scrollRestorePolicy.scrollFlightRecorderReady ? 'yes' : 'no'}`);
+  console.log(`- scrollCleanupReady: ${metrics.scrollRestorePolicy.scrollCleanupReady ? 'yes' : 'no'}`);
+  console.log(`- stableCompletionRestoreReady: ${metrics.scrollRestorePolicy.stableCompletionRestoreReady ? 'yes' : 'no'}`);
+  console.log(`- discoveryAutoMoreRestoreReady: ${metrics.scrollRestorePolicy.discoveryAutoMoreRestoreReady ? 'yes' : 'no'}`);
+  console.log(`- discoveryContentGuardReady: ${metrics.scrollRestorePolicy.discoveryContentGuardReady ? 'yes' : 'no'}`);
+
+  console.log('');
+  console.log('mobile action ownership');
+  console.log(`- genericDispatcherScoped: ${metrics.mobileActionOwnership.genericDispatcherScoped ? 'yes' : 'no'}`);
+  console.log(`- genericDispatcherClaimsAllMobileActions: ${metrics.mobileActionOwnership.genericDispatcherClaimsAllMobileActions ? 'yes' : 'no'}`);
+
   console.log('');
   console.log('storage families');
   for (const item of metrics.storageFamilies) {
