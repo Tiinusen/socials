@@ -468,6 +468,23 @@ function validateWizardArchitecture() {
   if (!js.includes("const api = `https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(resolvedRef)}?recursive=1`;") || !js.includes('discoverGitHubTracePathsViaJsdelivr(repo, resolvedRef, effectiveRoots)')) {
     fail('GitHub discovery must use the GitHub tree API as primary origin with static flat fallback.');
   }
+  const gitSortTokens = [
+    'function nodeSortTimestamp(node)',
+    'function createdAtMidnightDate(value)',
+    'function scheduleGitCommitSortEnrichment(ws)',
+    'function fetchGitCommitSortDate(node)',
+    'repoCommitDateSortFetchLimit',
+    'skipCommitSortEnrichment'
+  ];
+  for (const token of gitSortTokens) {
+    if (!js.includes(token)) fail(`Feed sort git commit-date enrichment missing app token: ${token}`);
+  }
+  if (!/function\s+compareNodesDesc\(a, b\)\s*{\s*return nodeSortTimestamp\(b\) - nodeSortTimestamp\(a\)/.test(js)) {
+    fail('Feed sort must use nodeSortTimestamp so midnight Created At values can be enriched by matching Git commit dates.');
+  }
+  if (!js.includes('utcDatePart(result.committedAt) === midnightDate') || !js.includes('utcDatePart(committedAt) !== midnightDate')) {
+    fail('Git commit-date feed sorting must only override midnight Created At when the commit date matches the markdown date.');
+  }
   if (!js.includes('function isStructuralMaterialRef') || !js.includes('if (isStructuralMaterialRef(ref)) continue;')) {
     fail('Referenced Material must exclude structural Tiinex links before openable attachment filtering.');
   }
@@ -479,6 +496,13 @@ function validateWizardArchitecture() {
   }
   if (!js.includes('function renderMaterialSection(ws, node, opts = {}) {\n    const refs = nodeMaterialRefs(ws, node);') || !js.includes('function materialSchemaBadges(ws, node) {\n    const refs = nodeMaterialRefs(ws, node);')) {
     fail('Rendered material sections and material badges must use the canonical nodeMaterialRefs pipeline so wrappers apply consistently.');
+  }
+  if (!js.includes('function insertPreviewMaterialAfterPostMain(html, material)') || js.includes("const insertAfterMain = html.indexOf('</div>')") || js.includes("const firstClose = html.indexOf('</div>')")) {
+    fail('Preview material sections must be inserted after the post-main click target, not inside the selectable card body.');
+  }
+  if (!js.includes("if (action === 'open-material-lightbox') {\n      event.preventDefault();\n      event.stopPropagation();")
+    || !js.includes("if (action === 'open-material-preview') {\n      event.preventDefault();\n      event.stopPropagation();")) {
+    fail('Material preview actions must stop event propagation so preview does not also select or anchor the card.');
   }
   const materialWrapperCalls = (js.match(/registerNodeMaterialRefsWrapper\s*\(function/g) || []).length;
   if (materialWrapperCalls !== 1) {
@@ -497,6 +521,16 @@ function validateWizardArchitecture() {
   }
   if (!js.includes('validationMethodIdFromLabel') || !js.includes('methodHref') || !js.includes('methodDefinitionUrl')) {
     fail('Integrity parser must preserve linked validation method entries while normalizing the method id.');
+  }
+
+  if (!js.includes('methodDefinitionChipHtml(node)') || !js.includes('method-definition-lineage-post')) {
+    fail('Validation method definition artifacts must be visibly distinct from ordinary content cards.');
+  }
+  if (!js.includes('open-integrity-method-definition') || !js.includes('copy-integrity-method-definition')) {
+    fail('Integrity diagnostics must expose direct method-definition open/copy actions.');
+  }
+  if (!js.includes('byteIntegrityAuditLabel(status)') || !js.includes('schemaAuthorityLabelForNode(node)')) {
+    fail('Integrity diagnostics must distinguish byte-integrity result, method-definition availability, and schema authority.');
   }
 
   const ordinaryWizardPolicies = [...js.matchAll(new RegExp("schemaPolicyEntry\\('[^']+', '[^']+', '[^']+', [^,]+, '[^']+', '([^']+)', '([^']+)', '([^']+)', 'ordinary-wizard'", 'g'))];
@@ -882,8 +916,17 @@ function validateIntegrityLifecycleUxContract() {
     'finalizeCreatedArtifactIntegrity',
     'finalizeSavedLocalIntegrity',
     'Method definition',
+    'Validation method authority',
+    'Method Definition Availability',
+    'Byte integrity result',
+    'Schema authority',
     'renderIntegrityLinkKv',
-    'validationMethodDefinitionUrl'
+    'renderIntegrityMethodAuthority',
+    'validationMethodDefinitionUrl',
+    'validationMethodDefinitionStatus',
+    'findValidationMethodDefinitionNode',
+    'copyIntegrityMethodDefinitionLink',
+    'openIntegrityMethodDefinitionFromDiagnostics'
   ];
   for (const token of requiredTokens) {
     if (!js.includes(token)) fail(`Integrity lifecycle/diagnostics contract missing app token: ${token}`);
@@ -900,7 +943,7 @@ function validateIntegrityLifecycleUxContract() {
   if (/const canOpenDiagnostics = integrityHasClaim\(node\.integrity\)/.test(js)) {
     fail('Integrity badges must open diagnostics for no-claim/draft states, not only claimed footer states.');
   }
-  const requiredCss = ['integrity-meaning-grid', 'integrity-summary.byte-integrity-verified', 'integrity-badge.draft', 'body.mobile-chrome .integrity-modal-card .modal-actions', 'position: static !important'];
+  const requiredCss = ['integrity-meaning-grid', 'integrity-method-authority', 'integrity-authority-signals', 'integrity-summary.byte-integrity-verified', 'integrity-badge.draft', 'body.mobile-chrome .integrity-modal-card .modal-actions', 'position: static !important'];
   for (const token of requiredCss) {
     if (!css.includes(token)) fail(`Integrity diagnostics UX CSS missing: ${token}`);
   }

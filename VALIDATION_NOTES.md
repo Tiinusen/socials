@@ -240,3 +240,28 @@ Passed locally:
 - Real image/text Evidence attachments should still render and preview.
 - New Topic should still receive linked validator footer and byte ok.
 - Browser Back after Create should still not reopen the saved wizard dialog.
+
+## CP144 Feed Sort Commit-Date Enrichment
+
+- `Created At` remains the displayed and authored continuity timestamp.
+- If a node has `Created At` ending in `00:00:00`, GitHub discovery may enrich the sort key with the latest file commit timestamp.
+- The commit timestamp is only used when its UTC date matches the markdown `Created At` date.
+- This prevents date-only schema/validator artifacts from sorting unpredictably inside the same day while avoiding cross-date provenance rewrites.
+- The enrichment is sort metadata only; it does not mutate artifact markdown.
+
+
+## CP145 Method Definition Authority
+
+- Integrity Diagnostics shows a dedicated validation method authority card.
+- Diagnostics distinguish byte-integrity result, method-definition availability, and schema authority.
+- The method-definition permalink can be opened or copied from diagnostics.
+- When the validator artifact is loaded in the workspace, diagnostics can open it directly.
+- Validator artifacts display a `method definition` chip on cards.
+- Plain method identifiers remain readable; linked method entries remain preferred for generated artifacts.
+
+## CP145b Preview Action Ownership
+
+- Opening material preview from Discovery must not also select the card or switch into Lineage mode.
+- Preview material renders outside the primary card target rather than inside `post-main`.
+- Material preview/open/copy actions stop click propagation.
+- Lineage anchoring remains owned by explicit card selection, Open, Anchor, Continue, and Reference actions.

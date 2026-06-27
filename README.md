@@ -298,3 +298,16 @@ Image attachment preview dialogs contain images inside the available dialog view
 ### CP143j ownership audit note
 
 Discovery, Tiinex markdown artifact suffix detection, and Referenced Material now have clearer single-owner boundaries. GitHub discovery has one canonical implementation, `.trace.md`/`.schema.md`/`.validator.md`/`.workspace.md` suffix detection delegates to one helper, and Referenced Material has one wrapper owner over the `nodeMaterialRefs` pipeline. Structural Tiinex navigation such as trace/schema/validator links is not rendered through attachment actions.
+
+
+### CP144 feed sort note
+
+Feed and leaf sorting use markdown `Created At` as the primary authored timestamp. When `Created At` is only a date-level midnight value (`00:00:00`) and GitHub can resolve a latest commit for the same file on the same UTC date, the app uses that commit timestamp for ordering. This keeps recently changed schema, validator, and trace artifacts near the top without rewriting their authored continuity timestamp.
+
+### CP145 method definition authority note
+
+Integrity diagnostics now separate three signals: byte-integrity result, method-definition availability, and schema authority. The canonical method definition for `sha256-base64url-c14n-v1` is shown as its own authority surface with open/copy actions when available in the workspace or as a pinned source link. Validation method definition artifacts also carry a visible `method definition` chip so they are not presented as ordinary narrative content.
+
+### CP145b preview action ownership note
+
+Material preview actions are modal-only actions. Preview material is rendered outside the card's primary selection target, and preview/open/copy controls stop click propagation so opening an attachment preview does not also select or anchor the artifact in Lineage mode.

@@ -186,3 +186,13 @@ Generated `Continuity Integrity` method entries should link `sha256-base64url-c1
 - Generic Referenced Material excludes structural Tiinex links such as schemas, validator definitions, trace/workspace artifacts, parent/origin links, and method-definition links.
 - Structural navigation remains owned by Source, schema actions, integrity diagnostics, and lineage controls rather than attachment UI.
 
+
+## CP145 method definition handoff note
+
+- Integrity diagnostics should keep byte-integrity result, method-definition availability, and schema authority as separate signals.
+- `sha256-base64url-c14n-v1` method definitions are authority surfaces, not generic attachments or ordinary narrative content.
+- The app should keep accepting plain method ids while generated artifacts prefer linked validator method entries.
+
+## CP145b preview action handoff note
+
+Material preview controls are modal-only controls. They must not also select, anchor, or navigate the artifact card. Keep preview material outside primary card click targets, and keep preview/open/copy controls from bubbling into card-selection actions.

@@ -325,15 +325,39 @@
   }
 
   function compareNodesDesc(a, b) {
-    return sortableDate(b.createdAt) - sortableDate(a.createdAt) || a.path.localeCompare(b.path);
+    return nodeSortTimestamp(b) - nodeSortTimestamp(a) || a.path.localeCompare(b.path);
   }
 
   function sortableDate(value) {
     const s = String(value || '').trim();
     if (!s) return 0;
-    const iso = s.replace(' ', 'T') + 'Z';
+    const hasZone = /(?:z|[+-]\d{2}:?\d{2})$/i.test(s);
+    const iso = hasZone ? s : `${s.replace(' ', 'T')}Z`;
     const t = Date.parse(iso);
     return Number.isFinite(t) ? t : 0;
+  }
+
+  function createdAtMidnightDate(value) {
+    const s = String(value || '').trim();
+    const match = s.match(/^(\d{4}-\d{2}-\d{2})(?:[ T]00:00:00)?$/);
+    if (!match) return '';
+    return match[1];
+  }
+
+  function utcDatePart(value) {
+    const t = sortableDate(value);
+    if (!t) return '';
+    return new Date(t).toISOString().slice(0, 10);
+  }
+
+  function nodeSortTimestamp(node) {
+    const createdAt = node?.createdAt || '';
+    const createdTime = sortableDate(createdAt);
+    const midnightDate = createdAtMidnightDate(createdAt);
+    const committedAt = node?.gitCommittedAt || node?.file?.gitCommittedAt || '';
+    if (!midnightDate || !committedAt) return createdTime;
+    if (utcDatePart(committedAt) !== midnightDate) return createdTime;
+    return sortableDate(committedAt) || createdTime;
   }
 
 
@@ -1872,6 +1896,8 @@
     const nodeId = event.currentTarget.dataset.node;
 
     if (action === 'open-material-lightbox') {
+      event.preventDefault();
+      event.stopPropagation();
       const { ws, node, ref } = materialRefFromEvent(event.currentTarget);
       if (ws && node && ref) {
         app.modal = { type: 'material-lightbox', wsId: ws.id, nodeId: node.id, refIndex: materialRefIndex(ws, node, ref) };
@@ -1881,12 +1907,16 @@
     }
 
     if (action === 'open-material-preview') {
+      event.preventDefault();
+      event.stopPropagation();
       const { ws, node, ref } = materialRefFromEvent(event.currentTarget);
       if (ws && node && ref) await openMaterialPreview(ws, node, ref);
       return;
     }
 
     if (action === 'copy-material-ref') {
+      event.preventDefault();
+      event.stopPropagation();
       const { ref } = materialRefFromEvent(event.currentTarget);
       const text = ref?.sourceUrl || ref?.rawUrl || ref?.href || ref?.path || '';
       if (text && navigator.clipboard) {
@@ -2993,7 +3023,11 @@
       repo: file.repo || '',
       ref: file.ref || '',
       isGenerated: Boolean(file.isGenerated),
-      generatedAt: file.generatedAt || ''
+      generatedAt: file.generatedAt || '',
+      gitCommittedAt: file.gitCommittedAt || '',
+      gitCommitSha: file.gitCommitSha || '',
+      gitCommitSortCheckedAt: file.gitCommitSortCheckedAt || '',
+      gitCommitSortStatus: file.gitCommitSortStatus || ''
     });
     if (file.isGenerated || file.preserveAsAsset) {
       storeWorkspaceAsset(ws, path, content, { type: 'text/markdown;charset=utf-8', source: file.isGenerated ? 'generated' : 'trace', sourceId });
@@ -3051,6 +3085,9 @@
       rawUrl: file.rawUrl || '',
       repo: file.repo || '',
       ref: file.ref || '',
+      gitCommittedAt: file.gitCommittedAt || '',
+      gitCommitSha: file.gitCommitSha || '',
+      gitCommitSortStatus: file.gitCommitSortStatus || '',
       envelopeReason: hasModernEnvelope ? '' : 'No # Continuity Context envelope found.'
     };
   }
@@ -3456,6 +3493,7 @@
     ws.integrityCache = previousIntegrity;
     ws.parentFetches = previousParentFetches;
     if (!options.skipIntegrity && typeof scheduleIntegrityVerification === 'function') scheduleIntegrityVerification(ws);
+    if (!options.skipCommitSortEnrichment && typeof scheduleGitCommitSortEnrichment === 'function') scheduleGitCommitSortEnrichment(ws);
     if (typeof resolvePendingSelectedRoutes === 'function') resolvePendingSelectedRoutes();
   }
 
@@ -4520,6 +4558,76 @@
     if (methodHref) return methodHref;
     if (id === TIINEX_SHA256_C14N_METHOD_ID) return TIINEX_SHA256_C14N_VALIDATOR_URL;
     return '';
+  }
+
+  function methodDefinitionDisplayLabel(methodId, definitionUrl = '') {
+    const id = validationMethodIdFromLabel(methodId || '');
+    if (id === TIINEX_SHA256_C14N_METHOD_ID) return 'sha256-base64url-c14n-v1.validator.md';
+    if (definitionUrl) return fileNameFromPath(stripUrlDecorations(definitionUrl)) || id || 'method definition';
+    return id || 'method definition';
+  }
+
+  function validationMethodDefinitionStatus(methodId, definitionUrl = '') {
+    const id = validationMethodIdFromLabel(methodId || '');
+    if (!id) {
+      return { status: 'none', label: 'No method entry', message: 'No validation method is declared.' };
+    }
+    if (definitionUrl) {
+      return { status: 'available', label: 'Definition linked', message: 'The method id resolves to an explicit validation method definition.' };
+    }
+    return { status: 'unavailable', label: 'Definition unavailable', message: 'The method id is readable, but this viewer has no method-definition authority link for it.' };
+  }
+
+  function validatorPathFromMethodDefinitionUrl(url = '') {
+    const clean = stripUrlDecorations(url || '');
+    const marker = '/.topics/.validators/';
+    const index = clean.indexOf(marker);
+    if (index >= 0) return `.topics/.validators/${clean.slice(index + marker.length)}`;
+    const file = fileNameFromPath(clean);
+    return isValidatorPath(file) ? file : '';
+  }
+
+  function isValidationMethodDefinitionNode(node) {
+    if (!node) return false;
+    if (isValidatorPath(node.path)) return true;
+    return schemaKey(node.currentSchemaText || node.currentSchema || '') === 'validation.method';
+  }
+
+  function findValidationMethodDefinitionNode(ws, methodId, definitionUrl = '') {
+    if (!ws) return null;
+    const id = validationMethodIdFromLabel(methodId || '');
+    const expectedPath = validatorPathFromMethodDefinitionUrl(definitionUrl) || (id ? `.topics/.validators/${id}.validator.md` : '');
+    const expectedFile = fileNameFromPath(expectedPath || '');
+    const safeUrlValue = safeUrl(definitionUrl || '');
+    for (const candidate of ws.nodes || []) {
+      if (!isValidationMethodDefinitionNode(candidate)) continue;
+      if (safeUrlValue && (candidate.browseUrl === safeUrlValue || candidate.rawUrl === safeUrlValue)) return candidate;
+      if (expectedPath && normalizeRepoPath(candidate.path || '') === normalizeRepoPath(expectedPath)) return candidate;
+      if (expectedFile && fileNameFromPath(candidate.path || '') === expectedFile) return candidate;
+      if (id && stripMarkdownInline(candidate.body || '').includes(`Canonical Identifier: ${id}`)) return candidate;
+    }
+    return null;
+  }
+
+  function schemaAuthorityLabelForNode(node) {
+    const schemaText = String(node?.currentSchema || node?.currentSchemaText || '').trim();
+    if (!schemaText) return 'not declared';
+    const link = parseMarkdownLink(schemaText);
+    const href = link.href || '';
+    if (/github\.com\/Tiinex\/docs\/blob\/[0-9a-f]{40}\//i.test(href)) return 'commit-pinned schema authority';
+    if (href) return 'linked schema authority';
+    return 'plain schema id';
+  }
+
+  function byteIntegrityAuditLabel(status) {
+    if (status === 'byte-integrity-verified') return 'byte-integrity match';
+    if (status === 'mismatch') return 'byte-integrity mismatch';
+    if (status === 'draft-pending') return 'no integrity claim';
+    if (status === 'malformed-claim') return 'malformed integrity claim';
+    if (status === 'method-unsupported') return 'unsupported method';
+    if (status === 'target-unavailable') return 'target unavailable';
+    if (status === 'target-ambiguous') return 'target ambiguous';
+    return status || 'open';
   }
 
   function continuityTimestamp() {
@@ -6486,6 +6594,11 @@ ${bodySections}
     return `<button class="${escapeAttr(classes)}"${nodeActionDatasetAttrs(action.dataset)}${action.disabled ? ' disabled' : ''} title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}">${body}</button>`;
   }
 
+  function methodDefinitionChipHtml(node) {
+    if (!isValidationMethodDefinitionNode(node)) return '';
+    return '<span class="badge-soft method-definition-chip"><i class="fa-solid fa-shield-halved"></i>method definition</span>';
+  }
+
   function renderNodePost(ws, node, opts = {}) {
     const schema = node.currentSchemaText || (node.hasModernEnvelope ? 'unknown schema' : 'plain markdown');
     const relation = relationLabel(node, opts.index || 0, opts.lineage);
@@ -6498,11 +6611,12 @@ ${bodySections}
     const actionHtml = nodeActionItems(ws, node, opts).map(renderNodeActionItem).join('');
 
     return `
-      <article class="lineage-post ${expanded ? 'expanded' : ''} ${node.isGenerated ? 'generated' : ''} ${typeof isSchemaPath === 'function' && isSchemaPath(node.path) ? 'schema-lineage-post' : ''}" data-node="${escapeAttr(node.id)}" data-source="${escapeAttr(node.sourceId || '')}">
+      <article class="lineage-post ${expanded ? 'expanded' : ''} ${node.isGenerated ? 'generated' : ''} ${typeof isSchemaPath === 'function' && isSchemaPath(node.path) ? 'schema-lineage-post' : ''} ${isValidationMethodDefinitionNode(node) ? 'method-definition-lineage-post' : ''}" data-node="${escapeAttr(node.id)}" data-source="${escapeAttr(node.sourceId || '')}">
         <div class="post-main ${mainClass}" data-action="${mainAction}" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="${escapeAttr(mainTitle)}" aria-label="${escapeAttr(mainTitle)}">
           <div class="post-chips">
             ${integrityBadge(node)}
             ${typeof schemaBadgeHtml === 'function' ? schemaBadgeHtml(ws, node, schema) : `<span class="badge-soft badge-schema ${schemaBadgeClass(schema)}">${escapeHtml(shortSchema(schema))}</span>`}
+            ${methodDefinitionChipHtml(node)}
             ${node.createdAt ? `<span class="badge-soft muted-chip">${escapeHtml(node.createdAt.slice(0, 10))}</span>` : ''}
             ${relationChipHtml(ws, node, relation, isTarget, inLineage)}
             ${typeof materialSchemaBadges === 'function' ? materialSchemaBadges(ws, node) : ''}
@@ -7042,6 +7156,36 @@ ${bodySections}
     </div>`;
   }
 
+  function renderIntegrityMethodAuthority(diagnostics) {
+    const method = diagnostics?.method || '—';
+    const definitionUrl = diagnostics?.methodDefinitionUrl || '';
+    const definitionStatus = diagnostics?.methodDefinitionStatusLabel || 'Definition unavailable';
+    const definitionMessage = diagnostics?.methodDefinitionMessage || 'No method-definition authority is available in this viewer context.';
+    const openButton = diagnostics?.methodDefinitionNodeId
+      ? `<button class="tv-btn subtle" data-action="open-integrity-method-definition" data-node="${escapeAttr(diagnostics.methodDefinitionNodeId)}"><i class="fa-solid fa-shield-halved"></i>Open in workspace</button>`
+      : '';
+    const sourceLink = safeUrl(definitionUrl)
+      ? `<a class="tv-btn subtle" href="${escapeAttr(safeUrl(definitionUrl))}" target="_blank" rel="noopener noreferrer"><i class="fa-brands fa-github"></i>Open source</a>`
+      : '';
+    const copyButton = definitionUrl
+      ? `<button class="tv-btn subtle" data-action="copy-integrity-method-definition"><i class="fa-regular fa-copy"></i>Copy method link</button>`
+      : '';
+
+    return `<section class="integrity-method-authority" aria-label="Validation method authority">
+      <div class="integrity-method-authority-main">
+        <p class="kicker-inline">Validation method authority</p>
+        <h3>${escapeHtml(method)}</h3>
+        <p>${escapeHtml(definitionMessage)}</p>
+      </div>
+      <dl class="integrity-authority-signals">
+        <div><dt>Byte integrity result</dt><dd>${escapeHtml(diagnostics?.byteIntegrityResult || 'open')}</dd></div>
+        <div><dt>Method definition</dt><dd>${escapeHtml(definitionStatus)}</dd></div>
+        <div><dt>Schema authority</dt><dd>${escapeHtml(diagnostics?.schemaAuthority || 'not declared')}</dd></div>
+      </dl>
+      <div class="integrity-method-authority-actions">${openButton}${sourceLink}${copyButton}</div>
+    </section>`;
+  }
+
   function integrityDiagnosticsText(diagnostics) {
     const hashes = Array.isArray(diagnostics.hashes) ? diagnostics.hashes : [];
     return [
@@ -7053,8 +7197,15 @@ ${bodySections}
       `Status: ${diagnostics.status || ''}`,
       `Status Label: ${diagnostics.statusLabel || ''}`,
       '',
+      'Audit Signals:',
+      `- Byte Integrity Result: ${diagnostics.byteIntegrityResult || ''}`,
+      `- Method Definition Availability: ${diagnostics.methodDefinitionStatusLabel || ''}`,
+      `- Schema Authority: ${diagnostics.schemaAuthority || ''}`,
+      '',
       `Method: ${diagnostics.method || ''}`,
       `Method Definition: ${diagnostics.methodDefinitionUrl || ''}`,
+      `Method Definition Status: ${diagnostics.methodDefinitionStatus || ''}`,
+      `Method Definition Workspace Node: ${diagnostics.methodDefinitionNodeId || ''}`,
       `Towards: ${diagnostics.towards || ''}`,
       `Expected: ${diagnostics.expected || ''}`,
       '',
@@ -7154,12 +7305,16 @@ ${bodySections}
               <strong>${escapeHtml(integrityHumanTitle(status))}</strong>
               <span>${escapeHtml(integrityHumanMessage(diagnostics))}</span>
             </div>
+            ${renderIntegrityMethodAuthority(diagnostics)}
             ${renderIntegrityMeaning(diagnostics)}
             <details class="integrity-raw integrity-technical">
               <summary>Technical details</summary>
               <dl class="integrity-kv-grid">
                 ${renderIntegrityKv('Method', diagnostics.method, true)}
                 ${renderIntegrityLinkKv('Method definition', diagnostics.methodDefinitionUrl, diagnostics.methodDefinitionLabel || 'Open validator definition')}
+                ${renderIntegrityKv('Method definition status', diagnostics.methodDefinitionStatusLabel)}
+                ${renderIntegrityKv('Byte integrity result', diagnostics.byteIntegrityResult)}
+                ${renderIntegrityKv('Schema authority', diagnostics.schemaAuthority)}
                 ${renderIntegrityKv('Towards', diagnostics.towards, true)}
                 ${renderIntegrityKv('Expected', diagnostics.expected, true)}
                 ${renderIntegrityKv('Target', diagnostics.targetLabel)}
@@ -7187,13 +7342,24 @@ ${bodySections}
   async function computeIntegrityDiagnostics(ws, node) {
     const target = integrityTowardsRef(node);
     const initialStatus = initialIntegrityStatusForNode(node);
+    const declaredMethod = node?.integrity?.method || '';
+    const declaredDefinitionUrl = validationMethodDefinitionUrl(declaredMethod, node?.integrity?.methodHref || '');
+    const declaredDefinitionStatus = validationMethodDefinitionStatus(declaredMethod, declaredDefinitionUrl);
+    const declaredDefinitionNode = findValidationMethodDefinitionNode(ws, declaredMethod, declaredDefinitionUrl);
     const base = {
       title: node?.title || '',
       path: node?.path || '',
       schema: node?.currentSchemaText || node?.currentSchema || '',
-      method: node?.integrity?.method || '',
-      methodDefinitionUrl: validationMethodDefinitionUrl(node?.integrity?.method || '', node?.integrity?.methodHref || ''),
-      methodDefinitionLabel: node?.integrity?.method === TIINEX_SHA256_C14N_METHOD_ID ? 'sha256-base64url-c14n-v1.validator.md' : '',
+      schemaAuthority: schemaAuthorityLabelForNode(node),
+      method: declaredMethod,
+      methodDefinitionUrl: declaredDefinitionUrl,
+      methodDefinitionLabel: methodDefinitionDisplayLabel(declaredMethod, declaredDefinitionUrl),
+      methodDefinitionStatus: declaredDefinitionStatus.status,
+      methodDefinitionStatusLabel: declaredDefinitionStatus.label,
+      methodDefinitionMessage: declaredDefinitionStatus.message,
+      methodDefinitionNodeId: declaredDefinitionNode?.id || '',
+      methodDefinitionWorkspaceAvailable: Boolean(declaredDefinitionNode),
+      byteIntegrityResult: byteIntegrityAuditLabel(initialStatus),
       towards: target.raw || node?.integrity?.towards || '',
       expected: node?.integrity?.value || '',
       targetStatus: '',
@@ -7240,12 +7406,24 @@ ${bodySections}
             ? 'mismatch'
             : (node.integrityStatus || result?.status || 'unresolved');
 
+    const resultMethod = node.integrity?.method || TIINEX_SHA256_C14N_METHOD_ID;
+    const resultDefinitionUrl = validationMethodDefinitionUrl(resultMethod, node.integrity?.methodHref || '');
+    const resultDefinitionStatus = validationMethodDefinitionStatus(resultMethod, resultDefinitionUrl);
+    const resultDefinitionNode = findValidationMethodDefinitionNode(ws, resultMethod, resultDefinitionUrl);
+
     return Object.assign(base, {
       status,
       statusLabel: match ? `Matched ${match.variant}` : (node.integrityStatusLabel || result?.label || ''),
-      method: node.integrity?.method || TIINEX_SHA256_C14N_METHOD_ID,
-      methodDefinitionUrl: validationMethodDefinitionUrl(node.integrity?.method || TIINEX_SHA256_C14N_METHOD_ID, node.integrity?.methodHref || ''),
-      methodDefinitionLabel: node.integrity?.method === TIINEX_SHA256_C14N_METHOD_ID ? 'sha256-base64url-c14n-v1.validator.md' : '',
+      method: resultMethod,
+      methodDefinitionUrl: resultDefinitionUrl,
+      methodDefinitionLabel: methodDefinitionDisplayLabel(resultMethod, resultDefinitionUrl),
+      methodDefinitionStatus: resultDefinitionStatus.status,
+      methodDefinitionStatusLabel: resultDefinitionStatus.label,
+      methodDefinitionMessage: resultDefinitionStatus.message,
+      methodDefinitionNodeId: resultDefinitionNode?.id || '',
+      methodDefinitionWorkspaceAvailable: Boolean(resultDefinitionNode),
+      byteIntegrityResult: byteIntegrityAuditLabel(status),
+      schemaAuthority: schemaAuthorityLabelForNode(node),
       towards: target.raw || '',
       expected,
       targetStatus: result?.status || '',
@@ -7270,6 +7448,33 @@ ${bodySections}
       toast('Could not copy diagnostics from this browser context.', 'warn');
     }
   }
+
+  async function copyIntegrityMethodDefinitionLink() {
+    if (app.modal?.type !== 'integrity-diagnostics' || !app.modal.diagnostics?.methodDefinitionUrl) return;
+    try {
+      await navigator.clipboard.writeText(app.modal.diagnostics.methodDefinitionUrl);
+      toast('Method definition link copied.', 'ok');
+    } catch (_) {
+      toast('Could not copy method definition link from this browser context.', 'warn');
+    }
+  }
+
+  function openIntegrityMethodDefinitionFromDiagnostics() {
+    if (app.modal?.type !== 'integrity-diagnostics' || !app.modal.diagnostics) return;
+    const { ws } = findNodeWorkspace(app.modal.nodeId || '');
+    const target = ws?.nodeById?.get?.(app.modal.diagnostics.methodDefinitionNodeId || '');
+    if (!ws || !target) {
+      toast('Method definition is not loaded in this workspace.', 'warn');
+      return;
+    }
+    app.modal = null;
+    app.activeWorkspaceId = ws.id;
+    ws.selectedNodeId = target.id;
+    focusWorkspaceWindow(ws.id);
+    setRouteState('push');
+    render();
+  }
+
   registerRenderModalWrapper(function renderModalWithIntegrityDiagnostics(modal, next) {
     if (modal?.type === 'integrity-diagnostics') return renderIntegrityDiagnosticsModal(modal);
     return next(modal);
@@ -7285,6 +7490,16 @@ ${bodySections}
       event.preventDefault();
       event.stopPropagation();
       return copyIntegrityDiagnostics();
+    }
+    if (action === 'copy-integrity-method-definition') {
+      event.preventDefault();
+      event.stopPropagation();
+      return copyIntegrityMethodDefinitionLink();
+    }
+    if (action === 'open-integrity-method-definition') {
+      event.preventDefault();
+      event.stopPropagation();
+      return openIntegrityMethodDefinitionFromDiagnostics();
     }
     return next(event);
   });
@@ -8654,6 +8869,89 @@ ${bodySections}
       }
     }
   }
+
+
+  function gitCommitApiUrl(repo, ref, path) {
+    const params = new URLSearchParams({ sha: ref || 'master', path: normalizeRepoPath(path), per_page: '1' });
+    return `https://api.github.com/repos/${repo}/commits?${params.toString()}`;
+  }
+
+  function nodeNeedsGitCommitSortDate(node) {
+    if (!node || node.isGenerated) return false;
+    if (!node.repo || !node.path) return false;
+    if (!createdAtMidnightDate(node.createdAt)) return false;
+    if (node.gitCommitSortStatus || node.file?.gitCommitSortStatus) return false;
+    return true;
+  }
+
+  function gitCommitSortKeyForNode(node) {
+    return `${node.repo || ''}@${node.ref || 'master'}:${normalizeRepoPath(node.path || '')}`;
+  }
+
+  async function fetchGitCommitSortDate(node) {
+    const url = gitCommitApiUrl(node.repo, node.ref || 'master', node.path);
+    const commits = await fetchJson(url);
+    const latest = Array.isArray(commits) ? commits[0] : null;
+    const committedAt = latest?.commit?.committer?.date || latest?.commit?.author?.date || '';
+    const sha = latest?.sha || '';
+    if (!committedAt) throw new Error('No commit date returned for file path.');
+    return { committedAt, sha };
+  }
+
+  function applyGitCommitSortDate(node, result, status = 'checked') {
+    if (!node) return;
+    const committedAt = result?.committedAt || '';
+    const sha = result?.sha || '';
+    const file = node.file || null;
+    node.gitCommittedAt = committedAt;
+    node.gitCommitSha = sha;
+    node.gitCommitSortStatus = status;
+    if (file) {
+      file.gitCommittedAt = committedAt;
+      file.gitCommitSha = sha;
+      file.gitCommitSortStatus = status;
+      file.gitCommitSortCheckedAt = new Date().toISOString();
+    }
+  }
+
+  function scheduleGitCommitSortEnrichment(ws) {
+    if (!ws || ws.gitCommitSortEnrichmentInFlight) return;
+    const limit = Math.max(0, Number(app.settings.repoCommitDateSortFetchLimit || 80));
+    if (!limit) return;
+    const seen = new Set();
+    const candidates = [];
+    for (const node of ws.nodes || []) {
+      if (!nodeNeedsGitCommitSortDate(node)) continue;
+      const key = gitCommitSortKeyForNode(node);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push(node);
+      if (candidates.length >= limit) break;
+    }
+    if (!candidates.length) return;
+
+    ws.gitCommitSortEnrichmentInFlight = true;
+    setTimeout(async () => {
+      try {
+        await runWithConcurrency(candidates, 2, async (node) => {
+          try {
+            const result = await fetchGitCommitSortDate(node);
+            const midnightDate = createdAtMidnightDate(node.createdAt);
+            const status = midnightDate && utcDatePart(result.committedAt) === midnightDate ? 'matched' : 'different-date';
+            applyGitCommitSortDate(node, result, status);
+          } catch (error) {
+            applyGitCommitSortDate(node, {}, 'unavailable');
+            ws.logs?.push?.(`Could not fetch git commit sort date for ${node.path}: ${error.message}`);
+          }
+        });
+        computeWorkspaceIndex(ws, { skipIntegrity: true, skipCommitSortEnrichment: true });
+        render();
+      } finally {
+        ws.gitCommitSortEnrichmentInFlight = false;
+      }
+    }, 0);
+  }
+
 
   function renderPolicyDocumentModal(modal) {
     const ws = getWorkspace(modal.wsId);
@@ -13931,6 +14229,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
   app.settings = Object.assign({
     repoDiscoveryFetchConcurrency: 6,
+    repoCommitDateSortFetchLimit: 80,
     repoDiscoveryBatchRenderEvery: 0,
     discoveryFeedInitialCount: 48,
     discoveryFeedGrowCount: 48,
@@ -14298,6 +14597,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
     if (typeof scheduleIntegrityVerification === 'function') {
       await scheduleIntegrityVerification(ws, { discoveryProgress: true });
     }
+    if (typeof scheduleGitCommitSortEnrichment === 'function') scheduleGitCommitSortEnrichment(ws);
     if (typeof resolvePendingSelectedRoutes === 'function') resolvePendingSelectedRoutes();
     applyDurableLensAfterProgressiveIndex(ws);
   }
@@ -14524,6 +14824,13 @@ See _tiinex/export.manifest.json for source and output path metadata.
     </section>`;
   }
 
+  function insertPreviewMaterialAfterPostMain(html, material) {
+    if (!material || !html || html.includes('preview-material-section')) return html;
+    const summaryClose = /(<p class="post-summary">[\s\S]*?<\/p>\s*<\/div>)/u;
+    if (!summaryClose.test(html)) return html;
+    return html.replace(summaryClose, `$1${material}`);
+  }
+
   registerFilteredDiscoveryNodesWrapper(function filteredDiscoveryNodesWithPreview(ws, next) {
     const nodes = next(ws);
     if (!previewMaterialActive(ws)) return nodes;
@@ -14537,9 +14844,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
     const material = renderPreviewMaterialSection(ws, node);
     if (!material) return html;
     html = html.replace('class="lineage-post ', 'class="lineage-post preview-post ');
-    const insertAfterMain = html.indexOf('</div>');
-    if (insertAfterMain < 0) return html;
-    return html.slice(0, insertAfterMain + 6) + material + html.slice(insertAfterMain + 6);
+    return insertPreviewMaterialAfterPostMain(html, material);
   });
   registerRenderWorkspaceFeedWrapper(function renderWorkspaceFeedWithPreviewMode(ws, selected, next) {
     let html = next(ws, selected);
@@ -14666,9 +14971,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
       html = html.replace('class="lineage-post ', 'class="lineage-post preview-post ');
     }
 
-    const firstClose = html.indexOf('</div>');
-    if (firstClose < 0 || html.includes('preview-material-section')) return html;
-    return html.slice(0, firstClose + 6) + material + html.slice(firstClose + 6);
+    return insertPreviewMaterialAfterPostMain(html, material);
   });
   registerRenderWorkspaceFeedWrapper(function renderWorkspaceFeedWithPreviewLineage(ws, selected, next) {
     let html = next(ws, selected);
