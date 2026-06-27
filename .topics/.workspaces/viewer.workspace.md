@@ -1,8 +1,8 @@
 # Continuity Context
 
-- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/cca53fc8c52fd27b92b9429420efd613913a88bd/.topics/.schemas/tiinex.root.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.root.v1.schema.md)
 - Current
-  - Current Schema: [tiinex.workspace.v1](../.schemas/tiinex.workspace.v1.schema.md)
+  - Current Schema: [tiinex.workspace.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.workspace.v1.schema.md)
   - Created At: 2026-06-16 00:00:00
   - Why: Defines a portable multi-lineage workspace entrypoint.
   - Summary: Opens the Tiinex docs workspace and declares the default viewer discovery lens.
@@ -77,6 +77,6 @@ A useful validation note names the selected artifact, the source inspected, the 
 
 # Continuity Integrity
 
-- sha256-base64url-c14n-v1
+- [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)
   - Towards: [viewer.workspace.md](viewer.workspace.md)
-  - Value: 6vM2gDbZwBwAFL5ZsH8hVXRnsdLd3gpyHcIetgRS7GQ
+  - Value: yYTlX5mSB-hhxKkSmT5-7GIAzW2Phq0krm-XdhRY1oA

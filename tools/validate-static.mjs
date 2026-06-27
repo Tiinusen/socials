@@ -144,7 +144,6 @@ const ALLOWED_ORDINARY_FUNCTION_REASSIGNMENTS = Object.freeze({
   rememberLensScroll: 'rememberLensScrollWithDiscoverySignature',
   enhanceLensSource: 'enhanceLensSourceWithDiscoverySignature',
   applyCurrentOrCachedLens: 'applyCurrentOrCachedLensOnce',
-  chaseScrollForWorkspace: 'chaseScrollForWorkspaceGuarded',
   persistLensState: 'persistLensStateWithHistoryDedupe',
 });
 
@@ -286,9 +285,6 @@ function validateCanonicalRenderAssignments() {
   const nodeMaterialRefsWrapperShape = 'function registerNodeMaterialRefsWrapper(wrapper) { const next = nodeMaterialRefs; nodeMaterialRefs = function registeredNodeMaterialRefsWrapper(ws, node) { return wrapper(ws, node, next); }; }';
   const filteredDiscoveryNodesWrapperShape = 'function registerFilteredDiscoveryNodesWrapper(wrapper) { const next = filteredDiscoveryNodes; filteredDiscoveryNodes = function registeredFilteredDiscoveryNodesWrapper(ws) { return wrapper(ws, next); }; }';
   const computeWorkspaceIndexWrapperShape = 'function registerComputeWorkspaceIndexWrapper(wrapper) { const next = computeWorkspaceIndex; computeWorkspaceIndex = function registeredComputeWorkspaceIndexWrapper(ws) { return wrapper(ws, next); }; }';
-  const openArtifactWizardWrapperShape = 'function registerOpenArtifactWizardWrapper(wrapper) { const next = openArtifactWizard; openArtifactWizard = function registeredOpenArtifactWizardWrapper(ws, options = {}) { return wrapper(ws, options, next); }; }';
-  const wizardPathForWrapperShape = 'function registerWizardPathForWrapper(wrapper) { const next = wizardPathFor; wizardPathFor = function registeredWizardPathForWrapper(ws, modal, option, title) { return wrapper(ws, modal, option, title, next); }; }';
-  const wizardDescribeStepWrapperShape = 'function registerWizardDescribeStepWrapper(wrapper) { const next = wizardDescribeStep; wizardDescribeStep = function registeredWizardDescribeStepWrapper(ws, modal, selected, title, summary, body) { return wrapper(ws, modal, selected, title, summary, body, next); }; }';
   const scheduleMobileDensityWrapperShape = 'function registerScheduleMobileDensityWrapper(wrapper) { const next = scheduleMobileDensity; scheduleMobileDensity = function registeredScheduleMobileDensityWrapper() { return wrapper(next); }; }';
   const ensureMobileTopRailWrapperShape = 'function registerEnsureMobileTopRailWrapper(wrapper) { const next = ensureMobileTopRail; ensureMobileTopRail = function registeredEnsureMobileTopRailWrapper() { return wrapper(next); }; }';
   const syncMobileEmptyWorkspaceHintsWrapperShape = 'function registerSyncMobileEmptyWorkspaceHintsWrapper(wrapper) { const next = syncMobileEmptyWorkspaceHintsInitial; syncMobileEmptyWorkspaceHintsInitial = function registeredSyncMobileEmptyWorkspaceHintsWrapper() { return wrapper(next); }; }';
@@ -311,15 +307,6 @@ function validateCanonicalRenderAssignments() {
   }
   if (!compactJs.includes(computeWorkspaceIndexWrapperShape)) {
     fail('registerComputeWorkspaceIndexWrapper must pass only workspace and next index function. Do not forward incidental caller arguments into workspace indexing wrappers.');
-  }
-  if (!compactJs.includes(openArtifactWizardWrapperShape)) {
-    fail('registerOpenArtifactWizardWrapper must pass only workspace, options, and next wizard opener. Do not forward incidental caller arguments into wizard opener wrappers.');
-  }
-  if (!compactJs.includes(wizardPathForWrapperShape)) {
-    fail('registerWizardPathForWrapper must pass only workspace, modal, option, title, and next path function. Do not forward incidental caller arguments into wizard path wrappers.');
-  }
-  if (!compactJs.includes(wizardDescribeStepWrapperShape)) {
-    fail('registerWizardDescribeStepWrapper must pass only workspace, modal, selected option, title, summary, body, and next describe-step function. Do not forward incidental caller arguments into wizard describe wrappers.');
   }
   if (!compactJs.includes(scheduleMobileDensityWrapperShape)) {
     fail('registerScheduleMobileDensityWrapper must pass only next density scheduler. Do not forward incidental caller arguments into mobile density wrappers.');
@@ -348,9 +335,6 @@ function validateCanonicalRenderAssignments() {
     ['nodeMaterialRefs', 'registeredNodeMaterialRefsWrapper'],
     ['filteredDiscoveryNodes', 'registeredFilteredDiscoveryNodesWrapper'],
     ['computeWorkspaceIndex', 'registeredComputeWorkspaceIndexWrapper'],
-    ['openArtifactWizard', 'registeredOpenArtifactWizardWrapper'],
-    ['wizardPathFor', 'registeredWizardPathForWrapper'],
-    ['wizardDescribeStep', 'registeredWizardDescribeStepWrapper'],
     ['scheduleMobileDensity', 'registeredScheduleMobileDensityWrapper'],
     ['ensureMobileTopRail', 'registeredEnsureMobileTopRailWrapper'],
     ['syncMobileEmptyWorkspaceHintsInitial', 'registeredSyncMobileEmptyWorkspaceHintsWrapper'],
@@ -371,6 +355,241 @@ function validateCanonicalRenderAssignments() {
   if (disallowed.length) {
     fail(`Core render/state assignments must go through canonical wrapper registration: ${disallowed.map((entry) => `${entry.target}->${entry.replacement}@${entry.line}`).join(', ')}`);
   }
+}
+
+
+function validateWizardArchitecture() {
+  const js = read('app.js');
+  const forbidden = [
+    'registerOpenArtifactWizardWrapper',
+    'registerWizardPathForWrapper',
+    'registerWizardDescribeStepWrapper',
+    'registeredOpenArtifactWizardWrapper',
+    'registeredWizardPathForWrapper',
+    'registeredWizardDescribeStepWrapper'
+  ].filter((token) => js.includes(token));
+  if (forbidden.length) {
+    fail(`Wizard opener/path/describe behavior must not use wrapper stacks: ${forbidden.join(', ')}`);
+  }
+  const requiredTokens = [
+    'const WIZARD_SCHEMA_REQUIRED_KEYS',
+    'const WIZARD_SCHEMA_PUBLIC_KEYS',
+    'function validateWizardSchemaRegistryContract',
+    'function freezeWizardSchemaRegistry',
+    'const WIZARD_SCHEMA_REGISTRY = freezeWizardSchemaRegistry',
+    'const SCHEMA_CREATE_POLICY_REQUIRED_KEYS',
+    'const SCHEMA_CREATE_POLICY_ORDER',
+    'const SCHEMA_CREATE_POLICY_MANUAL_CREATABILITY',
+    'const SCHEMA_CREATE_POLICY_RELATIONSHIP_CREATABILITY',
+    'const SCHEMA_CREATE_POLICY_UI_SURFACES',
+    'const TIINEX_SCHEMA_PERMALINK_COMMIT',
+    'const TIINEX_VALIDATOR_PERMALINK_COMMIT',
+    'const TIINEX_SHA256_C14N_VALIDATOR_URL',
+    'function validationMethodEntryLabel',
+    'function validateSchemaCreatePolicyRegistryContract',
+    'const SCHEMA_CREATE_POLICY_REGISTRY = freezeSchemaCreatePolicyRegistry',
+    'function schemaCreatePolicy',
+    'function schemaPermalink',
+    'function policyAllowsOrdinaryWizardSchema',
+    'function policyKnownSchemaId',
+    'function optionFromWizardSchemaDefinition',
+    'function wizardSchemaDefinition',
+    'function schemaFormFor',
+    'function bodyFromForm',
+    'function formStateFromNode'
+  ];
+  const missing = requiredTokens.filter((token) => !js.includes(token));
+  if (missing.length) {
+    fail(`Wizard schema registry contract is incomplete: ${missing.join(', ')}`);
+  }
+  const stalePolicyTokens = [
+    'SCHEMA_CREATE_POLICY_CREATABILITY',
+    'SCHEMA_CREATE_POLICY_SURFACES',
+    'def.creatability',
+    'def.wizardSurface',
+    'support-only',
+    'runtime-only',
+    'governance-only',
+    'recovery-only',
+    'not-created',
+    'current-wizard',
+    'contextual',
+    'discouraged'
+  ].filter((token) => js.includes(token));
+  if (stalePolicyTokens.length) {
+    fail(`Schema create policy must keep schema-facing docs vocabulary separate from UI surface policy: ${stalePolicyTokens.join(', ')}`);
+  }
+  if (!js.includes("'manuallyCreatable',") || !js.includes("'creatableAsContinuation',") || !js.includes("'creatableAsReference',") || !js.includes("'uiSurface',")) {
+    fail('Schema create policy must expose schema-facing creatability fields separately from uiSurface.');
+  }
+  if (!js.includes(".filter((id) => policyAllowsOrdinaryWizardSchema(id))")) {
+    fail('humanSchemaOptions must derive ordinary Type-step choices from schema create policy.');
+  }
+  if (!js.includes("if (def && policyAllowsOrdinaryWizardSchema(def.id))")) {
+    fail('schemaOptionById must reject schemas that are not allowed by ordinary wizard policy.');
+  }
+  if (!js.includes('if (!policyKnownSchemaId(id)) return') || !js.includes('return schemaCreatePolicy(id).schemaPath')) {
+    fail('schemaArtifactPath must use the schema create policy registry rather than only wizard-visible schema ids.');
+  }
+  if (!js.includes("'schemaPermalink',") || !js.includes('schemaCreatePolicy(id).schemaPath') || !js.includes('policy?.schemaPermalink')) {
+    fail('Generated schema references must prefer policy-owned commit-pinned schema permalinks when available.');
+  }
+  if (/function schemaReferenceForPath[\s\S]*relativePathFromTo[\s\S]*return `\[\$\{id\}\]\(\$\{relative \|\| schemaPath\}\)`/.test(js) && !/function schemaReferenceForPath[\s\S]*schemaPermalink/.test(js)) {
+    fail('schemaReferenceForPath must not fall back to relative schema paths before checking pinned schema permalinks.');
+  }
+
+  const validatorDiscoveryTokens = [
+    'function isValidatorPath',
+    '/\\.(trace|schema|workspace|validator)\\.md$/i',
+    'showValidator',
+    'validatorPaths',
+    'Show .validator.md'
+  ];
+  for (const token of validatorDiscoveryTokens) {
+    if (!js.includes(token)) fail(`Validator definition discovery/display contract missing app token: ${token}`);
+  }
+  if (!js.includes('function isTiinexMarkdownArtifactPath(value)') || !js.includes("return /\\.(trace|schema|workspace|validator)\\.md(?:$|[?#])/i.test(String(value || ''));") ) {
+    fail('Tiinex markdown artifact suffix ownership must be centralized and include .validator.md.');
+  }
+  if (!js.includes('function pathLooksUsefulLineageArtifact(path) {\n    return isTiinexMarkdownArtifactPath(path);')
+    || !js.includes('function isLineageArtifactPath(value) {\n    return isTiinexMarkdownArtifactPath(value);')
+    || !js.includes('function isIndexableTiinexMarkdownPath(path) {\n    return isTiinexMarkdownArtifactPath(path);')) {
+    fail('Lineage/discovery/indexing suffix helpers must delegate to the canonical Tiinex markdown artifact suffix helper.');
+  }
+  if (js.includes('data-action="refresh-discovery"') || js.includes('function renderGitHubDiscoveryRefreshButton')) {
+    fail('GitHub discovery must not expose a separate refresh button for validator discovery; origin ingest must load supported artifact suffixes directly.');
+  }
+  if (/discoverGitHubRepoIntoWorkspace(?:Responsive|Progress)/.test(js) || js.includes('\ndiscoverGitHubRepoIntoWorkspace =') || js.includes('\n  discoverGitHubRepoIntoWorkspace =')) {
+    fail('GitHub discovery must have one canonical discoverGitHubRepoIntoWorkspace implementation, not overwritten replacement implementations.');
+  }
+  if (js.includes('githubTreeApiCorsUnsafe') || js.includes('GitHub API tree discovery is disabled in static file mode')) {
+    fail('GitHub discovery must query the GitHub tree origin first so newly committed .validator.md files are visible before static flat-package cache fallback.');
+  }
+  if (!js.includes("const api = `https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(resolvedRef)}?recursive=1`;") || !js.includes('discoverGitHubTracePathsViaJsdelivr(repo, resolvedRef, effectiveRoots)')) {
+    fail('GitHub discovery must use the GitHub tree API as primary origin with static flat fallback.');
+  }
+  if (!js.includes('function isStructuralMaterialRef') || !js.includes('if (isStructuralMaterialRef(ref)) continue;')) {
+    fail('Referenced Material must exclude structural Tiinex links before openable attachment filtering.');
+  }
+  if (!js.includes("['schema', 'validator', 'trace'].includes(kind)") || !js.includes("/\\.(schema|validator|trace|workspace)\\.md(?:$|[?#])/i.test(target)")) {
+    fail('Referenced Material must not list schema, validator, trace, or workspace artifacts as generic attachments.');
+  }
+  if (!js.includes('/^sha256-base64url-c14n-v\\d+$/.test(label)') || !js.includes('commit-pinned permalink|validator artifact|validation method artifact|method definition')) {
+    fail('Referenced Material must exclude linked validation-method examples and validator placeholders, not only real .validator.md URLs.');
+  }
+  if (!js.includes('function renderMaterialSection(ws, node, opts = {}) {\n    const refs = nodeMaterialRefs(ws, node);') || !js.includes('function materialSchemaBadges(ws, node) {\n    const refs = nodeMaterialRefs(ws, node);')) {
+    fail('Rendered material sections and material badges must use the canonical nodeMaterialRefs pipeline so wrappers apply consistently.');
+  }
+  const materialWrapperCalls = (js.match(/registerNodeMaterialRefsWrapper\s*\(function/g) || []).length;
+  if (materialWrapperCalls !== 1) {
+    fail(`Referenced Material must have one canonical wrapper owner; found ${materialWrapperCalls}.`);
+  }
+  const structuralMaterialActions = ['load-material-trace', 'open-trace-reference', 'external-trace', 'confirm-open-external-trace'];
+  const structuralMaterialHits = structuralMaterialActions.filter((token) => js.includes(token));
+  if (structuralMaterialHits.length) {
+    fail(`Structural Tiinex navigation must not be owned by Referenced Material actions: ${structuralMaterialHits.join(', ')}`);
+  }
+  if (!js.includes("total} attachment") || js.includes('counts.validator) bits.push') || js.includes('counts.schema) bits.push') || js.includes('counts.trace) bits.push')) {
+    fail('Referenced Material summary must describe attachments, not schema/validator/trace structural references.');
+  }
+  if (/action === 'wizard-next-step'[\s\S]{0,180}setRouteState\('push'\)/.test(js) || /action === 'wizard-set-step'[\s\S]{0,180}setRouteState\('push'\)/.test(js)) {
+    fail('Wizard step navigation must replace route state so saving an artifact does not leave an older dialog route behind browser Back.');
+  }
+  if (!js.includes('validationMethodIdFromLabel') || !js.includes('methodHref') || !js.includes('methodDefinitionUrl')) {
+    fail('Integrity parser must preserve linked validation method entries while normalizing the method id.');
+  }
+
+  const ordinaryWizardPolicies = [...js.matchAll(new RegExp("schemaPolicyEntry\\('[^']+', '[^']+', '[^']+', [^,]+, '[^']+', '([^']+)', '([^']+)', '([^']+)', 'ordinary-wizard'", 'g'))];
+  const nonOrdinaryManualPolicies = ordinaryWizardPolicies.filter((match) => match[1] !== 'yes');
+  if (nonOrdinaryManualPolicies.length) {
+    fail('ordinary-wizard UI policy requires Manually Creatable: yes.');
+  }
+  for (const id of ['tiinex.workspace.v1', 'raw']) {
+    const ordinaryPattern = new RegExp(`${escapeRegExp(id)}[\\s\\S]{0,180}ordinary-wizard`);
+    if (ordinaryPattern.test(js)) fail(`${id} must not appear as an ordinary wizard schema card.`);
+  }
+
+
+  const staleRegistryFunctions = [
+    'function bodyTemplates',
+    'function schemaFormDefinitions',
+    'function buildTraceMarkdown',
+    'function generateTraceFromModal',
+    'function wizardRelationCardInitial'
+  ].filter((token) => js.includes(token));
+  if (staleRegistryFunctions.length) {
+    fail(`Stale wizard/create switch-table functions found: ${staleRegistryFunctions.join(', ')}`);
+  }
+  const wizardSelectSchemaHandlers = (js.match(/if \(action === 'wizard-select-schema'\)/g) || []).length;
+  if (wizardSelectSchemaHandlers !== 1) {
+    fail(`wizard-select-schema must have exactly one action handler; found ${wizardSelectSchemaHandlers}.`);
+  }
+  if (js.includes('function wizardContextStrip')) {
+    fail('Wizard relation context must live in the header via wizardHeaderContext, not body-level wizardContextStrip.');
+  }
+  if (!js.includes('function wizardHeaderContext')) {
+    fail('Wizard relation context must use header-level wizardHeaderContext.');
+  }
+  const css = read('styles.css');
+  const staleWizardBodyContext = [
+    'wizard-context-strip',
+    'wizard-context-chip',
+    'wizard-relation-card'
+  ].filter((token) => css.includes(token) || js.includes(token));
+  if (staleWizardBodyContext.length) {
+    fail(`Stale wizard body relation context found: ${staleWizardBodyContext.join(', ')}`);
+  }
+  if (!css.includes('wizard-header-context')) {
+    fail('Wizard header relation context styles are missing.');
+  }
+  if (!css.includes('asset-image-preview-body') || !css.includes('overflow: hidden !important') || !css.includes('max-height: 100% !important')) {
+    fail('Image attachment previews must contain images inside the dialog viewport without introducing inner image scroll.');
+  }
+  const policyIds = [
+    'tiinex.relation.v1',
+    'tiinex.validation.method.v1',
+    'tiinex.schema.family.v1',
+    'tiinex.attestation.v1',
+    'tiinex.external.payload.v1',
+    'tiinex.privacy.boundary.v1',
+    'tiinex.consent.v1',
+    'tiinex.redaction.v1',
+    'tiinex.traversal.runtime.v1',
+    'tiinex.quantum.traversal.runtime.v1'
+  ];
+  const missingPolicyIds = policyIds.filter((id) => !js.includes(`'${id}': schemaPolicyEntry(`));
+  if (missingPolicyIds.length) {
+    fail(`Schema create policy registry is missing newly maintained schema ids: ${missingPolicyIds.join(', ')}`);
+  }
+  if (!js.includes("'tiinex.quantum.traversal.runtime.v1', 'Quantum Traversal Runtime', 'traversal-runtime', 'tiinex.traversal.runtime.v1'")) {
+    fail('Quantum traversal runtime create policy must remain child-scoped under traversal.runtime.');
+  }
+  note('wizard architecture uses direct services, header-level context, registry contract guards, and schema create-policy metadata');
+}
+
+function validateRenderBoundaryArchitecture() {
+  const js = read('app.js');
+  const css = read('styles.css');
+  const required = [
+    'function renderChromeSignature',
+    'function renderFullAppHtml',
+    'function patchRender',
+    'function renderWorkspaceGridHtml',
+    'function renderModalRootHtml',
+    'root.dataset.renderChromeSignature',
+    'root.dataset.renderBoundary'
+  ];
+  const missing = required.filter((token) => !js.includes(token));
+  if (missing.length) {
+    fail(`Render boundary architecture is incomplete: ${missing.join(', ')}`);
+  }
+  if (!js.includes('<div id="modal-root" class="modal-root">')) {
+    fail('Modal content must render through #modal-root so it can be patched without replacing the full app shell.');
+  }
+  if (!css.includes('.modal-root') || !css.includes('display: contents')) {
+    fail('The modal-root outlet must be layout-neutral via display: contents.');
+  }
+  note('render boundary supports chrome-preserving workspace/modal patches');
 }
 
 function validateOrdinaryFunctionReassignments() {
@@ -401,7 +620,7 @@ function validateOrdinaryFunctionReassignments() {
   if (stale.length) {
     fail(`Ordinary function reassignment inventory is stale: ${stale.join(', ')}`);
   }
-  const parkedTargets = new Set(['rememberLensScroll', 'enhanceLensSource', 'applyCurrentOrCachedLens', 'chaseScrollForWorkspace', 'persistLensState']);
+  const parkedTargets = new Set(['rememberLensScroll', 'enhanceLensSource', 'applyCurrentOrCachedLens', 'persistLensState']);
   const nonParked = ordinary
     .filter((entry) => !parkedTargets.has(entry.target))
     .map((entry) => `${entry.target}->${entry.replacement}@${entry.line}`);
@@ -480,19 +699,19 @@ function validateJavascriptSurface() {
 
   if (/data:image/i.test(js)) fail('Inline data:image payload found in app.js. Logo should resolve through workspace Icon or packaged asset.');
 
-  const retiredStorageTokens = [
+  const obsoleteStorageTokens = [
     'tiinex-viewer-authors',
     'tiinex.localWorkspace.registry.v1',
     'tiinex.localWorkspace.state.v1',
     'tiinex-scroll:',
     'tiinex-lens:'
   ];
-  const retiredStorageHits = retiredStorageTokens.filter((token) => js.includes(token));
-  if (retiredStorageHits.length) {
-    fail(`Retired browser storage key tokens found: ${retiredStorageHits.join(', ')}`);
+  const obsoleteStorageHits = obsoleteStorageTokens.filter((token) => js.includes(token));
+  if (obsoleteStorageHits.length) {
+    fail(`Obsolete browser storage key tokens found: ${obsoleteStorageHits.join(', ')}`);
   }
 
-  const retiredRouteScrollStateTokens = [
+  const obsoleteRouteScrollStateTokens = [
     'routeScrollStateForWorkspace',
     'applyRouteScrollStateToWorkspace',
     'restoreRouteScrollForWorkspace',
@@ -514,11 +733,10 @@ function validateJavascriptSurface() {
     'copyShareLinkWithRobustScroll',
     'routeScrollStatePrefix',
     'prunePersistentRouteScrollStorage',
-    'retiredPersistentRouteScrollPrefix'
   ];
-  const retiredRouteScrollHits = retiredRouteScrollStateTokens.filter((token) => countTokenReferences(js, token) > 0);
-  if (retiredRouteScrollHits.length) {
-    fail(`Retired route-scroll-state tokens found: ${retiredRouteScrollHits.join(', ')}`);
+  const obsoleteRouteScrollHits = obsoleteRouteScrollStateTokens.filter((token) => countTokenReferences(js, token) > 0);
+  if (obsoleteRouteScrollHits.length) {
+    fail(`Obsolete route-scroll-state tokens found: ${obsoleteRouteScrollHits.join(', ')}`);
   }
 
   const requiredRuntimeHelpers = [
@@ -575,6 +793,22 @@ function validateCssSurface() {
 }
 
 
+function validateNoInlineCodeHistory() {
+  const appJs = read('app.js');
+  const blockedPatterns = [
+    [/\bCP\d{2,}\b/u, 'checkpoint marker'],
+    [/\bpre-CP\d{2,}\b/u, 'pre-checkpoint marker'],
+    [/\bpost-CP\d{2,}\b/u, 'post-checkpoint marker'],
+    [/\bretired\b/iu, 'retired wording'],
+    [/\blegacy\b/iu, 'legacy wording'],
+    [/\bno-op\b/iu, 'no-op wording'],
+    [/avoid broad surgery/iu, 'broad-surgery wording']
+  ];
+  for (const [pattern, label] of blockedPatterns) {
+    if (pattern.test(appJs)) fail(`Inline implementation history should not ship in app.js: ${label}`);
+  }
+}
+
 function validateNoScaffoldMarkers() {
   const checkedFiles = [
     'app.js',
@@ -604,18 +838,71 @@ function validateMarkdownContinuityHygiene() {
   const placeholderHits = [];
   const unpinnedSchemaHits = [];
   const schemaLinkPattern = /https:\/\/github\.com\/Tiinex\/docs\/blob\/(?:master|main)\/\.topics\/\.schemas\/tiinex\.[^)\s]+\.schema\.md/gu;
+  const validatorLinkPattern = /https:\/\/github\.com\/Tiinex\/docs\/blob\/(?:master|main)\/\.topics\/\.validators\/[^)\s]+\.validator\.md/gu;
   const placeholderPattern = /^\s*-\s+Value:\s+(?:pending|test|placeholder|todo)\s*$/imu;
+  const relativeSchemaLinkPattern = /\[[^\]]+\]\((?:\.\.?\/?|\.topics\/)\.?topics?\/?\.schemas\/tiinex\.[^)]+\.schema\.md\)|\[[^\]]+\]\((?:\.\.\/)*\.schemas\/tiinex\.[^)]+\.schema\.md\)/gu;
   for (const path of markdownFiles) {
     const text = read(path);
     if (placeholderPattern.test(text)) placeholderHits.push(path);
     const matches = [...text.matchAll(schemaLinkPattern)].map((match) => match[0]);
     for (const target of matches) unpinnedSchemaHits.push(`${path} -> ${target}`);
+    const validatorMatches = [...text.matchAll(validatorLinkPattern)].map((match) => match[0]);
+    for (const target of validatorMatches) unpinnedSchemaHits.push(`${path} -> ${target}`);
+    const relativeMatches = [...text.matchAll(relativeSchemaLinkPattern)].map((match) => match[0]);
+    for (const target of relativeMatches) unpinnedSchemaHits.push(`${path} -> ${target}`);
   }
   if (placeholderHits.length) {
     fail(`Packaged continuity markdown contains placeholder integrity values: ${placeholderHits.join(', ')}`);
   }
   if (unpinnedSchemaHits.length) {
     fail(`Packaged schema links must be commit-pinned, not master/main: ${unpinnedSchemaHits.slice(0, 20).join(', ')}`);
+  }
+}
+
+function validateIntegrityLifecycleUxContract() {
+  const js = read('app.js');
+  const css = read('styles.css');
+  if (/integrityFooter\([^\n)]*['"]pending['"]/.test(js)) {
+    fail('Generated artifact integrity footers must not use Value: pending. Empty footer means no claim.');
+  }
+  if (/# Continuity Integrity[\s\S]{0,180}-\s+Value:\s+pending/.test(js)) {
+    fail('App-generated continuity integrity output must not contain Value: pending.');
+  }
+  const requiredTokens = [
+    'draft-pending',
+    'malformed-claim',
+    'method-unsupported',
+    'target-unavailable',
+    'target-ambiguous',
+    'byte-integrity-verified',
+    'What this does not verify',
+    'canOpenIntegrityDiagnostics(node)',
+    'markdownWithSelfIntegrity',
+    'markdownWithParentTargetIntegrity',
+    'finalizeCreatedArtifactIntegrity',
+    'finalizeSavedLocalIntegrity',
+    'Method definition',
+    'renderIntegrityLinkKv',
+    'validationMethodDefinitionUrl'
+  ];
+  for (const token of requiredTokens) {
+    if (!js.includes(token)) fail(`Integrity lifecycle/diagnostics contract missing app token: ${token}`);
+  }
+  if (/upsertWorkspaceTextFile\(ws, path, artifact\.text, 'local'\)/.test(js)) {
+    fail('Wizard direct create must finalize minimum integrity before saving local artifact text.');
+  }
+  if (/upsertWorkspaceTextFile\(ws, path, text, 'local'\)/.test(js)) {
+    fail('Manual add flow must finalize minimum integrity before saving local artifact text.');
+  }
+  if (js.split(/\r?\n/).some((line) => line.includes('createArtifactFromWizard(ws, app.modal);') && !line.includes('await createArtifactFromWizard'))) {
+    fail('Wizard direct create must await async integrity finalization.');
+  }
+  if (/const canOpenDiagnostics = integrityHasClaim\(node\.integrity\)/.test(js)) {
+    fail('Integrity badges must open diagnostics for no-claim/draft states, not only claimed footer states.');
+  }
+  const requiredCss = ['integrity-meaning-grid', 'integrity-summary.byte-integrity-verified', 'integrity-badge.draft', 'body.mobile-chrome .integrity-modal-card .modal-actions', 'position: static !important'];
+  for (const token of requiredCss) {
+    if (!css.includes(token)) fail(`Integrity diagnostics UX CSS missing: ${token}`);
   }
 }
 
@@ -799,21 +1086,25 @@ function validateArchitectureBoundaries() {
   if (!appJs.includes('function preferredStoredScrollCompletionTarget(ws, saved)')) fail('app.js must complete stored scroll restore against the saved target role');
   if (!appJs.includes('function scrollTargetMatchesSavedTop(target, saved)')) fail('app.js must verify stored scroll target position before marking restore complete');
   if (!appJs.includes('Complete only once the saved target')) fail('app.js must document stored scroll timing ownership');
-  if (!appJs.includes('function pruneAnchorScrollStorage()')) fail('app.js must retire the legacy anchor-scroll restore cache');
-  if (!appJs.includes('routeScroll is the single F5 scroll-restore owner')) fail('app.js must document single-owner scroll restore ownership');
-  if (!appJs.includes('durable lens owns route selection/history only')) fail('durable lens must not own F5 scroll restore');
+  if (!appJs.includes('stored browser scroll is the single F5/session scroll-restore owner')) fail('app.js must document single-owner scroll restore ownership');
+  if (!appJs.includes('Durable lens owns route selection/history only')) fail('durable lens must not own F5 scroll restore');
   if (!appJs.includes('STORED_SCROLL_RESTORE_WINDOW_MS = 45000')) fail('stored scroll restore must keep a content-load window for slow Discovery render');
   if (!appJs.includes('apply:wait-content-ready')) fail('stored scroll restore must wait for the saved target role to become scrollable');
   if (!appJs.includes('STORED_SCROLL_STABLE_COMPLETION_MS') || !appJs.includes('chase:complete-invalidated') || !appJs.includes('chase:complete-stable')) fail('stored scroll restore completion must survive post-apply render resets');
   if (!appJs.includes('Lineage restore must be stable across refresh')) fail('lineage stored scroll signature must avoid runtime source identity churn');
-  if (appJs.includes('registerRenderWrapper(function renderWithAnchorScroll')) fail('legacy anchor-scroll restore wrapper must not remain active');
-  if (appJs.includes('function chaseAnchorScrollForWorkspace') || appJs.includes('function writeAnchorScroll')) fail('legacy anchor-scroll runtime helpers must be removed after routeScroll becomes the single owner');
-  if (appJs.includes('if (ws) writeAnchorScroll(ws, null, anchorScrollMode(ws));')) fail('legacy anchor-scroll interval writer must not remain active');
+  if (appJs.includes('registerRenderWrapper(function renderWithAnchorScroll')) fail('obsolete anchor-scroll restore wrapper must not remain active');
+  if (appJs.includes('function chaseAnchorScrollForWorkspace') || appJs.includes('function writeAnchorScroll')) fail('obsolete anchor-scroll runtime helpers must be removed after stored browser scroll becomes the single owner');
+  if (appJs.includes('if (ws) writeAnchorScroll(ws, null, anchorScrollMode(ws));')) fail('obsolete anchor-scroll interval writer must not remain active');
   if (!appJs.includes("sessionStorage.getItem('tiinex.debug.scrollFlight')") || !appJs.includes('renderWithOptionalScrollFlightRecorder')) fail('scroll flight recorder must be explicit opt-in after diagnostics cleanup');
-  if (appJs.includes('requestAnimationFrame(chaseAllScroll)') || appJs.includes('setTimeout(chaseAllScroll')) fail('durable lens scroll chase must not race routeScroll restore');
+  if (appJs.includes('chaseScrollForWorkspace') || appJs.includes('chaseAllScroll')) fail('durable lens scroll chase must not remain after stored browser scroll becomes the single owner');
   if (!appJs.includes('Number(saved?.top || 0) > 0 && storedScrollMatchesIdentity(saved, current)')) fail('stored scroll keyed reads must skip zero entries and continue to fallback');
   if (!appJs.includes('.filter((saved) => Number(saved?.top || 0) > 0)')) fail('stored scroll scan fallback must ignore zero entries');
   if (!appJs.includes("!String(targetRole || '').startsWith('post-feed.')")) fail('stored scroll writes must reject inactive shell zero overwrites');
+  if (!appJs.includes('function scheduleRouteHistoryScrollRestore(reason =')) fail('browser history route restores must have a dedicated scroll owner');
+  if (!appJs.includes("scheduleRouteHistoryScrollRestore('popstate')")) fail('popstate restores must re-apply hash route scroll after render');
+  if (!appJs.includes("scheduleRouteHistoryScrollRestore('startup')")) fail('startup route restores must re-apply hash route scroll after render');
+  if (!appJs.includes('function startupHasExplicitRouteModal()')) fail('startup local-state restore must not erase explicit route modals');
+  if (!appJs.includes('startupHasExplicitRouteModal())) return false')) fail('explicit route modal must suppress local-state startup modal clearing');
   const indexHtml = read('index.html');
   const requiredClassicScripts = [
     '<script src="./src/app/core-runtime.js"></script>',
@@ -997,7 +1288,9 @@ function main() {
   validateRootMarkdown();
   validateNoAuditReports();
   validateMarkdownContinuityHygiene();
+  validateIntegrityLifecycleUxContract();
   validateEmbeddedWorkspaceMirror();
+  validateNoInlineCodeHistory();
   validateNoScaffoldMarkers();
   validateToolSyntax();
   validateSourceModuleSyntax();
@@ -1009,6 +1302,8 @@ function main() {
   validateMobileActionOwnership();
   validateWrapperHygiene();
   validateCanonicalRenderAssignments();
+  validateWizardArchitecture();
+  validateRenderBoundaryArchitecture();
   validateOrdinaryFunctionReassignments();
   validateCssSurface();
 
@@ -1023,7 +1318,7 @@ function main() {
   console.log('✓ no ordinary app-level version-stamped identifiers/classes detected');
   console.log('✓ no public scaffold/debug markers detected');
   console.log('✓ root package markdown is intentional');
-  console.log('✓ packaged continuity markdown has pinned schema links and non-placeholder integrity values');
+  console.log('✓ packaged continuity markdown and app integrity lifecycle contracts are valid');
   console.log('✓ embedded default workspace mirrors packaged workspace markdown');
   console.log('✓ architecture boundary manifest and product-readiness contracts are valid');
   console.log('✓ public build and publish workflow contracts are valid');

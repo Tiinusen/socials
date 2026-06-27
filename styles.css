@@ -6319,6 +6319,28 @@ button.tv-btn.primary:hover {
   }
 }
 
+/* Integrity diagnostics owns its mobile action placement; generic mobile modal
+   sticky footers should not cover explanatory content here. */
+@media (max-width: 720px) {
+  body.mobile-chrome .integrity-modal-card .modal-actions,
+  .integrity-modal-card .modal-actions {
+    position: static !important;
+    bottom: auto !important;
+    z-index: auto !important;
+    padding: 0.72rem 0 0 !important;
+    margin: 0 !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    border-top: 0 !important;
+  }
+
+  body.mobile-chrome .integrity-modal-card .modal-actions .tv-btn,
+  .integrity-modal-card .modal-actions .tv-btn {
+    width: 100% !important;
+    justify-content: center !important;
+  }
+}
+
 
 /* Tree view is an index, not a card surface: keep status icons, move text to tooltip. */
 .discovery-tree .integrity-badge,
@@ -7120,7 +7142,7 @@ button.tv-btn.primary:hover {
   min-height: 0 !important;
   display: grid !important;
   place-items: center !important;
-  overflow: auto !important;
+  overflow: hidden !important;
   overscroll-behavior: contain !important;
   padding: clamp(0.65rem, 2vw, 1rem) !important;
   background:
@@ -8371,57 +8393,6 @@ button.tv-btn.primary:hover {
   padding: 1rem 1.1rem 1.15rem;
 }
 
-.wizard-relation-card {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 0.8rem;
-  padding: 0.82rem 0.9rem;
-  border: 1px solid rgba(216, 180, 254, 0.18);
-  border-radius: 1rem;
-  background: radial-gradient(circle at 0% 0%, rgba(168, 85, 247, 0.14), transparent 45%), rgba(255,255,255,0.025);
-  margin-bottom: 0.9rem;
-}
-
-.wizard-relation-icon {
-  width: 2.1rem;
-  height: 2.1rem;
-  border-radius: 999px;
-  display: inline-grid;
-  place-items: center;
-  background: rgba(168, 85, 247, 0.18);
-  border: 1px solid rgba(216, 180, 254, 0.20);
-  color: rgba(248, 246, 255, 0.95);
-}
-
-.wizard-relation-card strong {
-  display: block;
-  color: rgba(248, 246, 255, 0.95);
-}
-
-.wizard-relation-card p {
-  margin: 0.2rem 0 0;
-  color: var(--tv-muted);
-}
-
-.wizard-relation-rows {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 0.45rem;
-  margin-top: 0.55rem;
-}
-
-.wizard-relation-rows div {
-  border: 1px solid rgba(216, 180, 254, 0.12);
-  border-radius: 0.75rem;
-  padding: 0.45rem 0.55rem;
-  background: rgba(0, 0, 0, 0.12);
-}
-
-.wizard-relation-rows span {
-  display: block;
-  color: rgba(216, 180, 254, 0.82);
-  overflow-wrap: anywhere;
-}
 
 .wizard-step {
   border: 1px solid rgba(216, 180, 254, 0.14);
@@ -8648,11 +8619,6 @@ button.tv-btn.primary:hover {
   color: rgba(196, 181, 253, 0.90);
 }
 
-.artifact-wizard-panel.paged .wizard-relation-card {
-  margin-bottom: 0.78rem !important;
-  padding: 0.74rem 0.82rem !important;
-}
-
 .wizard-step-page {
   margin: 0 !important;
 }
@@ -8767,10 +8733,6 @@ button.tv-btn.primary:hover {
     padding: 0.24rem 0.38rem;
   }
 
-  .artifact-wizard-panel.paged .wizard-relation-card {
-    padding: 0.62rem 0.68rem !important;
-  }
-
   .wizard-schema-grid.paged {
     grid-template-columns: 1fr;
     gap: 0.52rem;
@@ -8802,10 +8764,6 @@ button.tv-btn.primary:hover {
 }
 
 @media (max-height: 680px) {
-  .artifact-wizard-panel.paged .wizard-relation-card {
-    display: none !important;
-  }
-
   .wizard-schema-grid.paged .wizard-schema-card p {
     display: none !important;
   }
@@ -9554,12 +9512,14 @@ body.evidence-details-active .artifact-wizard-actions.paged {
   place-items: center;
   padding: 0.8rem;
   background: rgba(0,0,0,0.20);
-  overflow: auto;
+  overflow: hidden;
 }
 
 .evidence-preview-body img {
+  width: auto;
+  height: auto;
   max-width: 100%;
-  max-height: 76vh;
+  max-height: 100%;
   object-fit: contain;
   border-radius: 0.65rem;
   box-shadow: 0 10px 42px rgba(0,0,0,0.45);
@@ -10209,6 +10169,7 @@ select.tv-input option:disabled,
 
 .asset-preview-panel {
   width: min(94vw, 980px);
+  height: min(88dvh, 980px);
   max-height: 88dvh;
   display: flex;
   flex-direction: column;
@@ -10219,10 +10180,23 @@ select.tv-input option:disabled,
   overflow: auto;
 }
 
-.asset-preview-body img {
-  max-width: 100%;
-  max-height: 72dvh;
-  object-fit: contain;
+.asset-image-preview-body {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  display: grid !important;
+  place-items: center !important;
+  overflow: hidden !important;
+  padding: clamp(0.65rem, 2vw, 1rem) !important;
+}
+
+.asset-image-preview-body img[data-attachment-preview] {
+  display: block !important;
+  width: auto !important;
+  height: auto !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  object-fit: contain !important;
+  object-position: center center !important;
 }
 
 @media (max-width: 720px) {
@@ -10246,8 +10220,14 @@ select.tv-input option:disabled,
     flex-wrap: wrap;
   }
 
-  .asset-hidden-notice .tv-btn {
-    margin-left: 0;
+  .asset-preview-panel {
+    width: calc(100vw - 1.3rem) !important;
+    height: calc(100dvh - 1.3rem) !important;
+    max-height: calc(100dvh - 1.3rem) !important;
+  }
+
+  .asset-image-preview-body {
+    padding: 0.5rem !important;
   }
 }
 
@@ -12143,14 +12123,12 @@ select.tv-input option:disabled,
   }
 
   body.mobile-chrome .artifact-wizard-panel .relation-card,
-  body.mobile-chrome .artifact-wizard-panel .wizard-relation-card,
   body.mobile-chrome .artifact-wizard-panel .wizard-selected-type-strip {
     padding: 0.55rem 0.65rem !important;
     min-height: 0 !important;
   }
 
   body.mobile-chrome .artifact-wizard-panel .relation-card p,
-  body.mobile-chrome .artifact-wizard-panel .wizard-relation-card p,
   body.mobile-chrome .artifact-wizard-panel .wizard-selected-type-strip p {
     font-size: 0.82rem !important;
     line-height: 1.25 !important;
@@ -15397,12 +15375,6 @@ body.mobile-discovery-tree .mobile-global-actions-host {
   margin-bottom: 0.58rem !important;
 }
 
-.artifact-wizard-panel .wizard-relation-card,
-.artifact-wizard-panel.paged .wizard-relation-card {
-  margin-bottom: 0.64rem !important;
-  padding: 0.62rem 0.74rem !important;
-}
-
 .artifact-wizard-panel .wizard-step,
 .artifact-wizard-panel .wizard-step-page {
   padding: 0.68rem !important;
@@ -15561,14 +15533,11 @@ body.mobile-discovery-tree .mobile-global-actions-host {
     font-size: 0.62rem !important;
   }
 
-  .artifact-wizard-panel .wizard-relation-card,
-  .artifact-wizard-panel.paged .wizard-relation-card,
   .artifact-wizard-panel .wizard-selected-type-strip {
     padding: 0.5rem 0.58rem !important;
     margin-bottom: 0.48rem !important;
   }
 
-  .artifact-wizard-panel .wizard-relation-card p,
   .artifact-wizard-panel .wizard-selected-type-strip span,
   .artifact-wizard-panel .wizard-step-head p {
     font-size: 0.78rem !important;
@@ -15622,10 +15591,6 @@ body.mobile-discovery-tree .mobile-global-actions-host {
     -webkit-line-clamp: 1 !important;
   }
 
-  .artifact-wizard-panel .wizard-relation-card.neutral {
-    display: none !important;
-  }
-
   .artifact-wizard-progress span b {
     display: none !important;
   }
@@ -15663,5 +15628,389 @@ body.mobile-discovery-tree .mobile-global-actions-host {
     background:
       linear-gradient(180deg, rgba(11, 10, 18, 0.50), rgba(11, 10, 18, 0.90)),
       rgba(11, 10, 18, 0.80) !important;
+  }
+}
+
+
+/* Canonical wizard header context: relation lives in the dialog header, not the body. */
+.wizard-header-context {
+  display: flex !important;
+  align-items: center !important;
+  flex-wrap: wrap !important;
+  gap: 0.34rem !important;
+  margin-top: 0.42rem !important;
+  max-width: 100% !important;
+}
+
+.wizard-header-context-chip {
+  min-width: 0 !important;
+  max-width: min(100%, 34rem) !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 0.34rem !important;
+  padding: 0.23rem 0.48rem !important;
+  border: 1px solid rgba(216, 180, 254, 0.14) !important;
+  border-radius: 999px !important;
+  background: rgba(168, 85, 247, 0.075) !important;
+  color: rgba(216, 180, 254, 0.90) !important;
+  font-size: 0.76rem !important;
+  line-height: 1.15 !important;
+}
+
+.wizard-header-context-chip i {
+  flex: 0 0 auto !important;
+  color: rgba(216, 180, 254, 0.95) !important;
+}
+
+.wizard-header-context-chip strong {
+  flex: 0 0 auto !important;
+  color: rgba(248, 246, 255, 0.78) !important;
+  font-size: 0.66rem !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.045em !important;
+}
+
+.wizard-header-context-chip em {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  font-style: normal !important;
+  color: rgba(216, 180, 254, 0.94) !important;
+}
+
+.artifact-wizard-progress span em {
+  font-style: normal !important;
+}
+
+@media (max-width: 760px) {
+  .wizard-header-context {
+    gap: 0.26rem !important;
+    margin-top: 0.28rem !important;
+  }
+
+  .wizard-header-context-chip {
+    max-width: 100% !important;
+    padding: 0.18rem 0.38rem !important;
+    font-size: 0.68rem !important;
+  }
+
+  .wizard-header-context-chip strong {
+    font-size: 0.60rem !important;
+  }
+
+  .artifact-wizard-progress {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    gap: 0 !important;
+    padding: 0.12rem !important;
+    margin-bottom: 0.38rem !important;
+    border: 1px solid rgba(216, 180, 254, 0.12) !important;
+    border-radius: 999px !important;
+    background: rgba(255, 255, 255, 0.025) !important;
+  }
+
+  .artifact-wizard-progress span {
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    min-width: 0 !important;
+    justify-content: center !important;
+    gap: 0.2rem !important;
+    padding: 0.18rem 0.24rem !important;
+    font-size: 0.64rem !important;
+  }
+
+  .artifact-wizard-progress span.active {
+    background: rgba(168, 85, 247, 0.22) !important;
+    border-radius: 999px !important;
+  }
+
+  .artifact-wizard-progress span b {
+    width: 0.92rem !important;
+    height: 0.92rem !important;
+    font-size: 0.58rem !important;
+  }
+
+  .artifact-wizard-progress span em {
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+}
+
+/* Canonical modal outlet: lets render patch modal content without changing overlay layout. */
+.modal-root {
+  display: contents;
+}
+
+/* Canonical mobile wizard footer actions: mobile uses header close for cancel; footer keeps forward actions compact. */
+@media (max-width: 760px) {
+  .artifact-wizard-actions.authoring-dialog-actions.paged {
+    grid-template-columns: 1fr !important;
+    gap: 0.36rem !important;
+    padding: 0.44rem 0.64rem max(0.44rem, env(safe-area-inset-bottom)) !important;
+  }
+
+  .artifact-wizard-actions.authoring-dialog-actions.paged .wizard-cancel-action {
+    display: none !important;
+  }
+
+  .artifact-wizard-actions.authoring-dialog-actions.paged .tv-btn {
+    min-height: 2.18rem !important;
+  }
+
+  .artifact-wizard-actions.authoring-dialog-actions.paged .wizard-review-markdown {
+    min-height: 2rem !important;
+    font-size: 0.78rem !important;
+  }
+}
+
+/* Wizard type-step height polish: desktop can show the schema chooser without
+   forcing body scroll in normal viewports; mobile keeps the compact single-column
+   card list and primary-only footer behavior. */
+@media (min-width: 761px) {
+  .artifact-wizard-panel.authoring-dialog-panel {
+    width: min(1040px, calc(100vw - 1.25rem)) !important;
+    height: min(92dvh, 900px) !important;
+    max-height: min(92dvh, 900px) !important;
+  }
+
+  .artifact-wizard-body.authoring-dialog-body.paged {
+    padding: 0.64rem 0.9rem 0.62rem !important;
+  }
+
+  .artifact-wizard-progress {
+    margin-bottom: 0.42rem !important;
+  }
+
+  .artifact-wizard-panel .wizard-step,
+  .artifact-wizard-panel .wizard-step-page {
+    padding: 0.56rem !important;
+  }
+
+  .artifact-wizard-panel .wizard-step-head,
+  .artifact-wizard-panel .wizard-step-page .wizard-step-head {
+    gap: 0.5rem !important;
+    margin-bottom: 0.42rem !important;
+  }
+
+  .artifact-wizard-panel .wizard-step-head > span {
+    width: 1.45rem !important;
+    height: 1.45rem !important;
+    font-size: 0.72rem !important;
+  }
+
+  .artifact-wizard-panel .wizard-step-head p {
+    margin-top: 0.08rem !important;
+    line-height: 1.26 !important;
+  }
+
+  .wizard-schema-grid.paged {
+    grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+    gap: 0.5rem !important;
+  }
+
+  .wizard-schema-grid.paged .wizard-schema-card {
+    min-height: 7.15rem !important;
+    padding: 0.58rem !important;
+  }
+
+  .wizard-schema-grid.paged .wizard-schema-card i {
+    margin-bottom: 0.3rem !important;
+  }
+
+  .wizard-schema-grid.paged .wizard-schema-card small {
+    margin-top: 0.06rem !important;
+  }
+
+  .wizard-schema-grid.paged .wizard-schema-card p {
+    margin-top: 0.32rem !important;
+    font-size: 0.78rem !important;
+    line-height: 1.25 !important;
+    display: -webkit-box !important;
+    -webkit-line-clamp: 3 !important;
+    -webkit-box-orient: vertical !important;
+    overflow: hidden !important;
+  }
+
+  .authoring-dialog-actions {
+    padding: 0.54rem 0.9rem !important;
+  }
+
+  .authoring-dialog-actions .tv-btn {
+    min-height: 2rem !important;
+  }
+}
+
+@media (min-width: 761px) and (max-width: 900px) {
+  .wizard-schema-grid.paged {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (min-width: 761px) and (max-height: 760px) {
+  .artifact-wizard-panel.authoring-dialog-panel {
+    height: min(94dvh, 900px) !important;
+    max-height: min(94dvh, 900px) !important;
+  }
+
+  .wizard-schema-grid.paged .wizard-schema-card {
+    min-height: 6.72rem !important;
+  }
+
+  .wizard-schema-grid.paged .wizard-schema-card p {
+    -webkit-line-clamp: 2 !important;
+  }
+}
+
+.integrity-meaning-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.integrity-meaning-card {
+  border: 1px solid rgba(216, 180, 254, 0.16);
+  background: rgba(255, 255, 255, 0.035);
+  border-radius: 1rem;
+  padding: 0.9rem;
+}
+
+.integrity-meaning-card h3 {
+  margin: 0 0 0.55rem;
+  font-size: 0.88rem;
+  color: rgba(248, 246, 255, 0.96);
+}
+
+.integrity-meaning-card ul {
+  margin: 0;
+  padding-left: 1.05rem;
+  color: rgba(224, 216, 236, 0.86);
+}
+
+.integrity-meaning-card li + li {
+  margin-top: 0.35rem;
+}
+
+.integrity-meaning-card.positive {
+  border-color: rgba(74, 222, 128, 0.24);
+  background: rgba(22, 163, 74, 0.075);
+}
+
+.integrity-meaning-card.limited {
+  border-color: rgba(245, 197, 83, 0.22);
+  background: rgba(168, 125, 36, 0.075);
+}
+
+.integrity-summary.byte-integrity-verified {
+  border-color: rgba(74, 222, 128, 0.32) !important;
+  background: rgba(22, 163, 74, 0.12) !important;
+}
+
+.integrity-summary.draft-pending,
+.integrity-summary.target-ambiguous {
+  border-color: rgba(245, 197, 83, 0.28) !important;
+  background: rgba(168, 125, 36, 0.12) !important;
+}
+
+.integrity-summary.malformed-claim,
+.integrity-summary.method-unsupported,
+.integrity-summary.target-unavailable {
+  border-color: rgba(251, 146, 60, 0.34) !important;
+  background: rgba(154, 52, 18, 0.13) !important;
+}
+
+.integrity-technical .integrity-kv-grid {
+  margin-top: 0.8rem;
+}
+
+.integrity-raw-text {
+  margin-top: 0.85rem;
+  border-top: 1px solid rgba(216, 180, 254, 0.13);
+  padding-top: 0.75rem;
+}
+
+.integrity-raw-text pre {
+  overflow: auto;
+  white-space: pre-wrap;
+  margin: 0.75rem 0 0;
+}
+
+.integrity-badge.draft {
+  color: rgba(245, 222, 164, 0.97) !important;
+  background: rgba(168, 125, 36, 0.13) !important;
+  border-color: rgba(245, 197, 83, 0.3) !important;
+}
+
+@media (max-width: 720px) {
+  .integrity-meaning-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .integrity-meaning-card {
+    padding: 0.8rem;
+  }
+
+  .integrity-hash-row {
+    gap: 0.35rem;
+  }
+}
+
+.integrity-summary,
+.integrity-meaning-card,
+.integrity-technical,
+.integrity-kv,
+.integrity-hash-table,
+.integrity-raw-text,
+.integrity-raw-text pre,
+.integrity-raw-text code {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.integrity-summary span,
+.integrity-meaning-card li,
+.integrity-kv dd,
+.integrity-hash-row > *,
+.integrity-raw-text pre,
+.integrity-raw-text code {
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}
+
+.integrity-modal-head .tv-btn.small {
+  width: 2.25rem !important;
+  min-width: 2.25rem !important;
+  height: 2.25rem !important;
+  min-height: 2.25rem !important;
+  padding: 0 !important;
+  border-radius: 999px !important;
+  flex: 0 0 auto !important;
+}
+
+.integrity-modal-card,
+.integrity-diagnostics-body {
+  overflow-x: hidden !important;
+}
+
+@media (max-width: 720px) {
+  .integrity-modal-head {
+    padding: 0.85rem 0.95rem !important;
+  }
+
+  .integrity-modal-head h2 {
+    max-width: calc(100vw - 7rem) !important;
+  }
+
+  .integrity-diagnostics-body {
+    padding: 0.75rem !important;
+  }
+
+  .integrity-summary,
+  .integrity-meaning-card,
+  .integrity-raw {
+    border-radius: 0.85rem !important;
   }
 }

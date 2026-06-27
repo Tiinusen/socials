@@ -343,7 +343,6 @@ const ALLOWED_ORDINARY_FUNCTION_REASSIGNMENTS = Object.freeze({
   rememberLensScroll: 'rememberLensScrollWithDiscoverySignature',
   enhanceLensSource: 'enhanceLensSourceWithDiscoverySignature',
   applyCurrentOrCachedLens: 'applyCurrentOrCachedLensOnce',
-  chaseScrollForWorkspace: 'chaseScrollForWorkspaceGuarded',
   persistLensState: 'persistLensStateWithHistoryDedupe',
 });
 
@@ -450,12 +449,7 @@ function inventoryScrollSystems(source) {
     {
       name: 'durable-lens-scroll',
       role: 'lens/session scroll chase',
-      markers: ['rememberLensScroll', 'persistLensState', 'chaseScrollForWorkspace', 'renderWithDurableLens']
-    },
-    {
-      name: 'anchor-scroll-retired',
-      role: 'retired legacy anchor/card based scroll restore',
-      markers: ['pruneAnchorScrollStorage']
+      markers: ['rememberLensScroll', 'persistLensState', 'renderWithDurableLens']
     },
     {
       name: 'stored-browser-scroll',
@@ -499,12 +493,11 @@ function inventoryScrollRestorePolicy(source) {
       && source.includes('.filter((saved) => Number(saved?.top || 0) > 0)'),
     inactiveShellZeroGuardReady: source.includes("!String(targetRole || '').startsWith('post-feed.')")
       && source.includes('shell zero overwrite'),
-    singleOwnerRestoreReady: source.includes('function pruneAnchorScrollStorage()')
-      && source.includes('routeScroll is the single F5 scroll-restore owner')
-      && source.includes('durable lens owns route selection/history only')
+    singleOwnerRestoreReady: source.includes('stored browser scroll is the single F5/session scroll-restore owner')
+      && source.includes('Durable lens owns route selection/history only')
       && !source.includes('registerRenderWrapper(function renderWithAnchorScroll')
-      && !source.includes('requestAnimationFrame(chaseAllScroll)')
-      && !source.includes('setTimeout(chaseAllScroll'),
+      && !source.includes('chaseScrollForWorkspace')
+      && !source.includes('chaseAllScroll'),
     lineageStableContentSignatureReady: source.includes('Lineage restore must be stable across refresh')
       && source.includes("return hashFast([mode || '', selected?.path || '', paths].join('\\n'))"),
     preferredTargetCompletionReady: source.includes('function preferredStoredScrollCompletionTarget(ws, saved)')
@@ -513,7 +506,8 @@ function inventoryScrollRestorePolicy(source) {
       && source.includes('return scrollTargetMatchesSavedTop(preferredTarget, saved);'),
     contentReadinessRestoreReady: source.includes('STORED_SCROLL_RESTORE_WINDOW_MS = 45000')
       && source.includes('apply:wait-content-ready')
-      && source.includes('saved target role is actually scrollable'),
+      && source.includes('saved target role')
+      && source.includes('actually scrollable'),
     scrollFlightRecorderReady: source.includes('function scrollFlightRecord(label, details = {}, options = {})')
       && source.includes('window.__tiinexScrollFlight')
       && source.includes('viewState:setRouteState')
@@ -521,14 +515,14 @@ function inventoryScrollRestorePolicy(source) {
       && (source.includes('more:discovery-before') || source.includes('more:discovery-${reason}-before')),
     scrollCleanupReady: source.includes('function scrollFlightRecorderEnabled()')
       && source.includes("sessionStorage.getItem('tiinex.debug.scrollFlight')")
-      && source.includes('function pruneAnchorScrollStorage()')
       && !source.includes('function chaseAnchorScrollForWorkspace')
       && !source.includes('function writeAnchorScroll')
       && source.includes('renderWithOptionalScrollFlightRecorder'),
     stableCompletionRestoreReady: source.includes('STORED_SCROLL_STABLE_COMPLETION_MS')
       && source.includes('chase:complete-invalidated')
       && source.includes('chase:complete-stable')
-      && source.includes('completed marker is only valid while the saved target still holds'),
+      && source.includes('completed')
+      && source.includes('saved target still holds'),
     discoveryAutoMoreRestoreReady: source.includes('function ensureDiscoveryWindowForStoredScroll(ws, saved, targetState = null)')
       && source.includes('more:discovery-auto-restore')
       && source.includes('apply:discovery-auto-more'),
@@ -596,7 +590,7 @@ function inventoryMarkdownContinuity() {
 }
 
 function inventoryPublicHygiene(sourceByPath) {
-  const terms = ['TODO', 'FIXME', 'HACK', 'XXX', 'checkpoint', 'refactor', 'legacy', 'temporary', 'iteration'];
+  const terms = ['TODO', 'FIXME', 'HACK', 'XXX', 'checkpoint', 'refactor', 'legacy', 'temporary', 'iteration', 'retired', 'no-op'];
   const hits = [];
   for (const [path, text] of Object.entries(sourceByPath)) {
     const fileLines = text.split(/\r\n|\n|\r/);

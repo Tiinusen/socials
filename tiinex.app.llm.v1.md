@@ -35,7 +35,7 @@ The core product idea is:
 - A reference/destination link is not automatically a parent.
 - A missing parent can be valid for a root or local starting point.
 - A leaf is not permanently final; it is the current tip until a child, repair, continuation, or supersession exists.
-- Integrity warnings are provenance signals, not merely generic errors.
+- Integrity signals are method-scoped provenance context. A checksum match means byte integrity for the declared target, not truth, authorship, consent, or semantic correctness.
 
 ## Current application capabilities
 
@@ -58,7 +58,7 @@ The app can:
 
 The current package is a public handoff candidate with dependency-free static validation available through `node tools/validate-static.mjs`, static metrics through `node tools/collect-metrics.mjs`, and browser storage inventory through `node tools/inspect-storage.mjs`. `npm test`, `npm run metrics`, and `npm run storage:scan` are convenience aliases only; they do not imply a build step, dependencies, or a runtime requirement.
 
-Ordinary app-level version suffixes, duplicate function declarations, package-local audit reports, embedded base64 logo data, inline data/blob logo payload support, version-stamped browser storage-key tokens, debug console/dynamic-code runtime surfaces, and unexpected single function reassignments are blocked by static validation. Packaged continuity markdown is also checked for pinned schema links and non-placeholder integrity values.
+Ordinary app-level version suffixes, duplicate function declarations, package-local audit reports, embedded base64 logo data, inline data/blob logo payload support, version-stamped browser storage-key tokens, debug console/dynamic-code runtime surfaces, and unexpected single function reassignments are blocked by static validation. Packaged continuity markdown is also checked for pinned schema links and non-placeholder integrity values. The app integrity lifecycle treats empty or missing `Continuity Integrity` as no claim yet and treats any method entry with `Value` as a real claim. Local create/save finalizes a minimum checksum claim when the target is safe to compute.
 
 Storage keys are centralized. Local workspace drafts autosave as local deltas without duplicating remote/default source trees. Startup reconnects saved local workspace state unless an explicit shared URL state is being opened. Storage write failures report through one `console.error` diagnostic path. Scroll and view-state behavior remain an active design surface and should be verified in the browser before claiming it is settled.
 
@@ -66,7 +66,7 @@ The viewer brand resolves through workspace markdown (`Viewer Identity` → `Ico
 
 Ordinary app identifiers, CSS classes, actions, and DOM data attributes should remain semantic. Use Git history for implementation history; do not put implementation chronology into runtime names.
 
-The current app is a static client-side package. Prefer improvements that preserve this shape unless the human explicitly chooses a larger architecture. Use the code maps in `app.js` and `styles.css` to navigate current runtime behavior, and use `src/architecture/boundaries.mjs` for the intended module boundaries. Extracted pure helpers live in `src/core/`, storage/state helpers live in `src/services/` and `src/state/`, UI helpers live in `src/ui/`, and route/lens/scroll policy helpers live in `src/viewstate/`; browser bridges under `src/app/` let `app.js` remain a classic static script. Metrics should report `architectureReadyForProductWork: yes` before new product work relies on this architecture baseline.
+The current app is a static client-side package. Prefer improvements that preserve this shape unless the human explicitly chooses a larger architecture. Use the code maps in `app.js` and `styles.css` to navigate current runtime behavior, and use `src/architecture/boundaries.mjs` for the intended module boundaries. Extracted pure helpers live in `src/core/`, storage/state helpers live in `src/services/` and `src/state/`, UI helpers live in `src/ui/`, and route/lens/scroll policy helpers live in `src/viewstate/`; browser bridges under `src/app/` let `app.js` remain a classic static script. Metrics should report `architectureReadyForProductWork: yes` before new product work relies on this architecture baseline. Artifact wizard schema work should extend `WIZARD_SCHEMA_REGISTRY`; do not add parallel option/body/form switch tables, and do not reintroduce wizard opener/path/describe wrapper stacks.
 
 ## Development guidance
 
@@ -115,13 +115,10 @@ The public app origin is expected to be:
 
 The broader Tiinex docs/source lineage may live in public Git repositories or exported local workspaces. When those sources are needed, verify them explicitly instead of assuming they are current.
 
----
+## Generated schema-reference authority
 
-# Continuity Integrity
+Generated `Envelope Schema`, `Current Schema`, and `Parent Schema` references should use commit-pinned Tiinex docs schema permalinks when the schema is known. Relative schema paths are local recovery hints, not the preferred generated authority link when a maintained schema permalink is available.
 
-- sha256-base64url-c14n-v1
-  - Towards: self
-dCbgbwXfSv_COyErT_sF5DoJMq9tJpKmgWkHaCBn8I
 ## Browser State
 
 Local workspace persistence stores local/draft deltas only. Remote/default workspace content must be reloaded from its source and then merged with saved local deltas. Scroll and lens state are session-scoped. Route, lens, and scroll policy helpers now have an owned `src/viewstate/` surface; treat browser restore behavior as active until it is deliberately consolidated.
@@ -132,37 +129,60 @@ Render wrappers are `(next, ...args)` continuations. Do not pass Promise callbac
 
 - `publicBuildReady: yes` means the publish path builds a bundled public site from the modular source.
 
-## CP91 browser scroll ownership
+## Browser scroll ownership
 
-F5 scroll restore is owned by `tiinex.routeScroll.state.*`. The older `tiinex.scroll.anchor.*` cache is retired and pruned at startup because it used runtime workspace/source identifiers and could race routeScroll after refresh. Future scroll changes should keep one restore owner; improve routeScroll policy or move the single owner into `src/viewstate/` instead.
+F5 scroll restore is owned by `tiinex.routeScroll.state.*`. Future scroll changes should keep one restore owner; improve the current stored-scroll policy or move the single owner into `src/viewstate/` instead.
 
-## CP92 scroll restore note
+## Scroll restore boundary
 
-F5 scroll restore must remain single-owner. `routeScroll` owns browser-session scroll restore. Durable lens may preserve and apply route selection/history state, but it must not chase scroll after render. Lineage scroll identity should be guarded by selected artifact path plus node-set content, not volatile source/runtime signatures.
+F5 scroll restore must remain single-owner. Stored browser scroll owns session restore. Durable lens may preserve and apply route selection/history state, but it must not chase scroll after render. Lineage scroll identity should be guarded by selected artifact path plus node-set content, not volatile source/runtime signatures.
 
-## CP93 scroll restore diagnostic note
+## Scroll diagnostic surface
 
-CP93 is a instrumentation pass. It instruments the single-owner `routeScroll` restore path behind `sessionStorage.setItem("tiinex.debug.scrollRestore", "1")` / `?debugScroll=1`, and stores the captured startup trace in `window.__tiinexScrollRestoreDebugLog`. It should be used to determine whether restore misses are caused by candidate selection, content-signature rejection, early non-scrollable targets, completion timing, or later zero-scroll writes before making another behavioral change.
+The scroll diagnostic surface instruments the single-owner restore path behind `sessionStorage.setItem("tiinex.debug.scrollRestore", "1")` / `?debugScroll=1`, and stores the captured startup trace in `window.__tiinexScrollRestoreDebugLog`. Use it to determine whether restore misses are caused by candidate selection, content-signature rejection, early non-scrollable targets, completion timing, or later zero-scroll writes before making another behavioral change.
 
-## CP94 scroll restore readiness note
+## Scroll restore readiness invariant
 
-CP93 diagnostics showed that Discovery restore could find the correct saved `routeScroll` candidate, but the preferred `.post-feed.discovery` target was still an empty rendered shell with `max: 0`. CP94 treats this as not-ready, keeps the restore pending for a longer content-load window, and avoids applying saved scroll to interim page/workspace fallbacks. Future scroll work should preserve this target-readiness invariant rather than adding competing restore owners.
+Discovery restore can find the correct saved candidate before the preferred `.post-feed.discovery` target is scrollable. The restore path treats that as not-ready, keeps the restore pending for the content-load window, and avoids applying saved scroll to interim page/workspace fallbacks. Future scroll work should preserve this target-readiness invariant rather than adding competing restore owners.
 
-## CP112 - Mobile Badge Compaction Ownership Repair
+## Mobile badge compaction ownership
 
 - Treats `compactMobilePostChips()` as the single owner for mobile badge packing.
-- Removes older render-time badge compaction passes that directly mutated the same rows.
+- Removes render-time badge compaction passes that directly mutated the same rows.
 - Collapsed mobile badge rows remain one line with `+N` as the overflow affordance.
 - Expanded `+N` rows may wrap instead of compressing every badge into one row.
 - Parent-picker Select remains a direct first-row affordance and is not part of the hidden-badge overflow group.
 - Scroll restore, Discovery auto-more, lineage traversal, storage, schema parsing, and i18n are intentionally unchanged.
 
+## Badge rail ownership
 
-
-## CP115 Badge Rail Repair
-
-- Keeps CP114 stable mobile badge core but repairs remaining rail math.
-- Reserves the first-row action rail for both normal ellipsis and parent-picker Select before deciding which semantic badges fit.
+- Keeps the stable mobile badge core and reserves the first-row action rail for both normal ellipsis and parent-picker Select before deciding which semantic badges fit.
 - Re-appends parent-picker Select after semantic badges so it remains the right-side action instead of becoming the first badge.
 - Uses collapsed visual chip width estimates that match truncated mobile badge CSS so long schema badges can remain visible when their rendered chip fits.
 - Does not change create-intent, parent semantics, scroll restore, Discovery auto-more, Lineage traversal, storage, schema parsing, or i18n.
+
+
+
+## CP143j ownership audit note
+
+GitHub discovery should have one canonical implementation. Tiinex markdown artifact suffix checks should delegate to the shared helper for `.trace.md`, `.schema.md`, `.validator.md`, and `.workspace.md`. Referenced Material should remain attachment-oriented through one `nodeMaterialRefs` wrapper owner; structural Tiinex navigation belongs to Source, lineage, schema controls, and integrity diagnostics.
+
+## Image attachment preview ownership
+
+Image attachment previews should fit the image inside the dialog viewport with `object-fit: contain` and without inner image scroll. Full-size viewing belongs to saved source/download/open actions; draft or local-only images only need a usable contained preview until they have a stable source.
+
+
+---
+
+# Continuity Integrity
+
+## Validator Definition Integration
+
+Generated `Continuity Integrity` method entries should link `sha256-base64url-c14n-v1` to the commit-pinned `.topics/.validators/sha256-base64url-c14n-v1.validator.md` artifact. Parser logic must continue to normalize both linked and plain method labels to the canonical method id, and Discovery must load `.validator.md` artifacts as visible Tiinex markdown.
+
+## CP143g cleanup note
+
+- `.validator.md` remains discoverable from GitHub origin and visible in tree/feed.
+- Generic Referenced Material excludes structural Tiinex links such as schemas, validator definitions, trace/workspace artifacts, parent/origin links, and method-definition links.
+- Structural navigation remains owned by Source, schema actions, integrity diagnostics, and lineage controls rather than attachment UI.
+

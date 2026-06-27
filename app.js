@@ -96,7 +96,8 @@
     sourceOpen: false,
     modal: null,
     toasts: [],
-    isBootingFromUrl: false
+    isBootingFromUrl: false,
+    closedDialogRouteSessions: new Set()
   };
 
   const STORAGE_KEYS = Object.freeze({
@@ -105,9 +106,49 @@
     localWorkspaceStatePrefix: 'tiinex.localWorkspace.state.',
     localWorkspaceCurrent: 'tiinex.localWorkspace.current',
     browserScrollStatePrefix: 'tiinex.routeScroll.state.',
-    anchorScrollPrefix: 'tiinex.scroll.anchor.',
-    lensSessionPrefix: 'tiinex.lens.'
+    lensSessionPrefix: 'tiinex.lens.',
+    appSettings: 'tiinex.app.settings'
   });
+
+  const APP_SETTING_DEFAULTS = Object.freeze({
+    wizardDraftHashState: true
+  });
+
+  function appSettingSnapshot() {
+    const out = {};
+    for (const key of Object.keys(APP_SETTING_DEFAULTS)) out[key] = app.settings?.[key] !== false;
+    return out;
+  }
+
+  function loadStoredAppSettings() {
+    try {
+      const stored = storageReadJson(localStorage, STORAGE_KEYS.appSettings, {});
+      const clean = {};
+      for (const key of Object.keys(APP_SETTING_DEFAULTS)) {
+        if (typeof stored?.[key] === 'boolean') clean[key] = stored[key];
+      }
+      return clean;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  app.settings = Object.assign({}, APP_SETTING_DEFAULTS, loadStoredAppSettings(), app.settings || {});
+
+  function persistAppSettings() {
+    try { storageWriteJson(localStorage, STORAGE_KEYS.appSettings, appSettingSnapshot()); } catch (_) {}
+  }
+
+  function setAppSetting(key, value) {
+    if (!(key in APP_SETTING_DEFAULTS)) return false;
+    app.settings[key] = Boolean(value);
+    persistAppSettings();
+    return true;
+  }
+
+  function wizardRouteDraftHashEnabled() {
+    return app.settings?.wizardDraftHashState !== false;
+  }
 
   const $ = (id) => document.getElementById(id);
   const uid = (prefix) => prefix + '-' + Math.random().toString(36).slice(2, 10);
@@ -223,14 +264,54 @@
     return out;
   }
 
+  function placeholderIntegrityValue(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized) return false;
+    if (normalized === 'to' + 'do') return true;
+    return /^(?:pending|placeholder|tbd|test|fill\s*(?:me|in)?|fill-in|fill_in|unavailable|unknown|n\/?a|-+)$/.test(normalized);
+  }
+
   function parseIntegrity(text) {
-    const idx = normalizeNewlines(text).search(/^# Continuity Integrity\s*$/m);
-    if (idx < 0) return null;
-    const tail = normalizeNewlines(text).slice(idx);
-    const method = (tail.match(/^-\s+([^\n]+)$/m) || [null, ''])[1].trim();
+    const normalized = normalizeNewlines(text);
+    const heading = normalized.match(/^# Continuity Integrity\s*$/m);
+    if (!heading) return null;
+    const tail = normalized.slice(heading.index);
+    const methodLabel = (tail.match(/^-\s+([^\n]+)$/m) || [null, ''])[1].trim();
+    const methodHref = validationMethodHrefFromLabel(methodLabel);
+    const method = validationMethodIdFromLabel(methodLabel);
     const towards = (tail.match(/^\s+-\s+Towards:\s+(.+)$/m) || [null, ''])[1].trim();
     const value = (tail.match(/^\s+-\s+Value:\s+(.+)$/m) || [null, ''])[1].trim();
-    return { method, towards, value };
+    return {
+      method,
+      methodLabel,
+      methodHref,
+      methodDefinitionUrl: validationMethodDefinitionUrl(method, methodHref),
+      towards,
+      value,
+      footerPresent: true,
+      noClaim: !method && !towards && !value,
+      placeholderValue: placeholderIntegrityValue(value)
+    };
+  }
+
+  function integrityHasClaim(integrity) {
+    return Boolean(integrity && !integrity.noClaim && (integrity.method || integrity.towards || integrity.value));
+  }
+
+  function initialIntegrityStatusForNode(node) {
+    const integrity = node?.integrity || null;
+    if (!integrityHasClaim(integrity)) return 'draft-pending';
+    if (integrity.placeholderValue || !integrity.method || !integrity.towards || !integrity.value) return 'malformed-claim';
+    if (integrity.method !== TIINEX_SHA256_C14N_METHOD_ID) return 'method-unsupported';
+    return 'pending';
+  }
+
+  function initialIntegrityStatusLabelForNode(node) {
+    const status = initialIntegrityStatusForNode(node);
+    if (status === 'draft-pending') return 'No integrity claim is declared yet.';
+    if (status === 'malformed-claim') return 'Integrity claim is present but incomplete or uses a placeholder value.';
+    if (status === 'method-unsupported') return `Unsupported integrity method: ${node?.integrity?.method || 'unknown'}.`;
+    return '';
   }
 
   function inferSummary(body) {
@@ -259,36 +340,75 @@
   // --- Source loading ---
 
   async function loadUrlsIntoWorkspace(ws, urls) {
+    const queue = Array.from(urls || []).filter(Boolean);
     ws.loading = true;
+    ws.discoveryProgress = { phase: 'fetch', loaded: 0, total: queue.length, failed: 0 };
     render();
+    if (typeof progressYield === 'function') await progressYield(ws);
+
     let count = 0;
-    for (const raw of urls) {
-      const item = convertSourceUrl(raw);
-      if (!item) continue;
-      try {
-        if (/\.json($|[?#])/i.test(item.rawUrl)) {
-          const text = await fetchText(item.rawUrl);
-          const manifest = JSON.parse(text);
-          const nested = manifest.traceUrls || manifest.urls || manifest.files || [];
-          const nestedUrls = nested.map((entry) => typeof entry === 'string' ? entry : entry.url).filter(Boolean);
-          if (nestedUrls.length) {
-            ws.logs.push(`Manifest loaded ${nestedUrls.length} trace URLs from ${item.rawUrl}`);
-            await loadUrlsIntoWorkspace(ws, nestedUrls);
-          }
+    let loaded = 0;
+    let failed = 0;
+    let indexed = false;
+
+    try {
+      for (let index = 0; index < queue.length; index += 1) {
+        const raw = queue[index];
+        const item = convertSourceUrl(raw);
+        if (!item) {
+          loaded += 1;
+          ws.discoveryProgress.loaded = loaded;
+          ws.discoveryProgress.total = queue.length;
+          if (typeof progressYield === 'function') await progressYield(ws);
           continue;
         }
-        const content = await fetchText(item.rawUrl);
-        addFileToWorkspace(ws, { ...item, content });
-        count += 1;
-      } catch (error) {
-        ws.logs.push(`Could not fetch ${item.rawUrl}: ${error.message}`);
+
+        try {
+          if (/\.json($|[?#])/i.test(item.rawUrl)) {
+            const text = await fetchText(item.rawUrl);
+            const manifest = JSON.parse(text);
+            const nested = manifest.traceUrls || manifest.urls || manifest.files || [];
+            const nestedUrls = nested.map((entry) => typeof entry === 'string' ? entry : entry.url).filter(Boolean);
+            if (nestedUrls.length) {
+              ws.logs.push(`Manifest loaded ${nestedUrls.length} trace URLs from ${item.rawUrl}`);
+              queue.push(...nestedUrls);
+              ws.discoveryProgress.total = queue.length;
+            }
+          } else {
+            const content = await fetchText(item.rawUrl);
+            addFileToWorkspace(ws, { ...item, content });
+            count += 1;
+          }
+          loaded += 1;
+          ws.discoveryProgress.loaded = loaded;
+        } catch (error) {
+          failed += 1;
+          ws.discoveryProgress.failed = failed;
+          ws.logs.push(`Could not fetch ${item.rawUrl}: ${error.message}`);
+        }
+
+        ws.discoveryProgress.total = queue.length;
+        if (typeof progressYield === 'function') await progressYield(ws);
       }
+
+      if (typeof computeWorkspaceIndexWithDiscoveryProgress === 'function') {
+        await computeWorkspaceIndexWithDiscoveryProgress(ws);
+        indexed = true;
+      } else {
+        computeWorkspaceIndex(ws);
+        indexed = true;
+      }
+
+      ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, { phase: 'policy' });
+      if (typeof progressYield === 'function') await progressYield(ws);
+      await discoverWorkspacePolicy(ws);
+    } finally {
+      ws.loading = false;
+      ws.discoveryProgress = null;
+      if (!indexed) computeWorkspaceIndex(ws);
+      if (!count) toast(`No trace files loaded for ${ws.label}.`, 'warn');
+      render();
     }
-    computeWorkspaceIndex(ws);
-    await discoverWorkspacePolicy(ws);
-    ws.loading = false;
-    if (!count) toast(`No trace files loaded for ${ws.label}.`, 'warn');
-    render();
   }
 
   function getWorkspace(id) {
@@ -473,9 +593,14 @@
     if (!app.modal) return;
     const field = event.currentTarget.dataset.field;
     if (!field) return;
-    app.modal[field] = event.currentTarget.type === 'checkbox'
+    const value = event.currentTarget.type === 'checkbox'
       ? event.currentTarget.checked
       : event.currentTarget.value;
+    if (typeof updateModalField === 'function' && updateModalField(field, value)) {
+      if (app.modal?.type === 'artifact-wizard') scheduleWizardRouteDraftReplace();
+      return;
+    }
+    app.modal[field] = value;
   }
 
   function downloadText(filename, text, type) {
@@ -884,6 +1009,11 @@
     });
   }
 
+  function restoreOneWorkspaceSnapshot(item) {
+    const wsEl = document.querySelector(`.workspace[data-ws="${CSS.escape(item.wsId)}"]`);
+    if (wsEl) wsEl.scrollTop = item.scrollTop || 0;
+  }
+
   function restoreVisibleFeedScrolls(snapshots) {
     if (!snapshots || !snapshots.length) {
       restorePendingFeedScroll();
@@ -892,18 +1022,106 @@
     requestAnimationFrame(() => {
       snapshots.forEach((item) => {
         if (item.type === 'feed') restoreOneFeedSnapshot(item);
-        if (item.type === 'workspace') {
-          const wsEl = document.querySelector(`.workspace[data-ws="${CSS.escape(item.wsId)}"]`);
-          if (wsEl) wsEl.scrollTop = item.scrollTop || 0;
-        }
+        if (item.type === 'workspace') restoreOneWorkspaceSnapshot(item);
       });
       requestAnimationFrame(() => {
         snapshots.forEach((item) => {
           if (item.type === 'feed') restoreOneFeedSnapshot(item);
+          if (item.type === 'workspace') restoreOneWorkspaceSnapshot(item);
         });
         restorePendingFeedScroll();
       });
     });
+  }
+
+  function modalScrollRestoreKey(el) {
+    if (!el) return '';
+    if (el.dataset?.scrollRestore) return `data:${el.dataset.scrollRestore}`;
+    const modalType = app.modal?.type || 'modal';
+    const wsId = app.modal?.wsId || '';
+    const step = modalType === 'artifact-wizard' ? wizardStep(app.modal) : '';
+    const roles = [
+      ['artifact-wizard-body', 'artifact-wizard-body'],
+      ['add-artifact-body', 'add-artifact-body'],
+      ['edit-node-body', 'edit-node-body'],
+      ['modal-read-body', 'modal-read-body'],
+      ['markdown-studio-surface', 'markdown-studio-surface'],
+      ['markdown-studio', 'markdown-studio'],
+      ['authoring-dialog-body', 'authoring-dialog-body'],
+      ['modal-panel', 'modal-panel']
+    ];
+    const match = roles.find(([className]) => el.classList?.contains(className));
+    if (!match) return '';
+    return `modal:${modalType}:${wsId}:${step}:${match[1]}`;
+  }
+
+  function modalScrollRestoreSelector(key) {
+    if (!key) return '';
+    if (key.startsWith('data:')) {
+      return `[data-scroll-restore="${CSS.escape(key.slice(5))}"]`;
+    }
+    const parts = key.split(':');
+    const role = parts[4] || '';
+    if (!role) return '';
+    return `.${CSS.escape(role)}`;
+  }
+
+  function snapshotModalScrolls() {
+    if (!app.modal) return [];
+    const nodes = Array.from(document.querySelectorAll([
+      '[data-scroll-restore]',
+      '.artifact-wizard-body',
+      '.add-artifact-body',
+      '.edit-node-body',
+      '.modal-read-body',
+      '.markdown-studio-surface',
+      '.markdown-studio',
+      '.authoring-dialog-body',
+      '.modal-panel'
+    ].join(',')));
+    const seen = new Set();
+    return nodes.map((el) => {
+      const key = modalScrollRestoreKey(el);
+      if (!key || seen.has(key)) return null;
+      seen.add(key);
+      const scrollTop = el.scrollTop || 0;
+      const scrollLeft = el.scrollLeft || 0;
+      const scrollable = el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1 || scrollTop || scrollLeft;
+      if (!scrollable) return null;
+      return { key, scrollTop, scrollLeft };
+    }).filter(Boolean);
+  }
+
+  function restoreModalScrolls(snapshots) {
+    if (!snapshots || !snapshots.length) return;
+    const apply = () => {
+      snapshots.forEach((item) => {
+        const selector = modalScrollRestoreSelector(item.key);
+        const el = selector ? document.querySelector(selector) : null;
+        if (!el) return;
+        const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+        const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+        el.scrollTop = Math.min(item.scrollTop || 0, maxTop);
+        el.scrollLeft = Math.min(item.scrollLeft || 0, maxLeft);
+      });
+    };
+    requestAnimationFrame(() => {
+      apply();
+      requestAnimationFrame(apply);
+    });
+  }
+
+  function snapshotRenderScrolls() {
+    return {
+      feed: typeof snapshotVisibleFeedScrolls === 'function' ? snapshotVisibleFeedScrolls() : [],
+      modal: snapshotModalScrolls()
+    };
+  }
+
+  function restoreRenderScrolls(snapshots) {
+    if (typeof restoreVisibleFeedScrolls === 'function') restoreVisibleFeedScrolls(snapshots?.feed || []);
+    else if (typeof restorePendingFeedScroll === 'function') restorePendingFeedScroll();
+    restoreModalScrolls(snapshots?.modal || []);
   }
 
 
@@ -1077,7 +1295,10 @@
 
   app.routing = Object.assign({
     restoring: false,
-    suppressNext: false
+    suppressNext: false,
+    currentEntryIndex: Number(history.state?.__tiinexRouteIndex || 0),
+    popDirection: 0,
+    skippingClosedDialogHistory: false
   }, app.routing || {});
 
   function workspaceSourceUrls(ws) {
@@ -1095,6 +1316,40 @@
     const encoded = params.get('state');
     if (!encoded) return null;
     return JSON.parse(b64UrlDecode(encoded));
+  }
+
+  function routeHistoryState(state, kind = 'push') {
+    const current = Number(app.routing?.currentEntryIndex || history.state?.__tiinexRouteIndex || 0);
+    const nextIndex = kind === 'push' ? current + 1 : current;
+    app.routing.currentEntryIndex = nextIndex;
+    return Object.assign({}, state || {}, { __tiinexRouteIndex: nextIndex });
+  }
+
+  function routeHistoryBackAvailable() {
+    const index = Number(history.state?.__tiinexRouteIndex ?? app.routing?.currentEntryIndex ?? 0);
+    return Number.isFinite(index) && index > 0 && typeof history.back === 'function';
+  }
+
+  function runRouteHistoryBackOrFallback(fallback) {
+    if (routeHistoryBackAvailable()) {
+      try {
+        app.routing.pendingUxBackRestore = true;
+        history.back();
+        return true;
+      } catch (_) {
+        app.routing.pendingUxBackRestore = false;
+      }
+    }
+    if (typeof fallback === 'function') fallback();
+    return false;
+  }
+
+  function noteRoutePopState(historyState) {
+    const nextIndex = Number(historyState?.__tiinexRouteIndex || app.routing?.currentEntryIndex || 0);
+    const current = Number(app.routing?.currentEntryIndex || 0);
+    app.routing.popDirection = nextIndex === current ? 0 : (nextIndex < current ? -1 : 1);
+    app.routing.currentEntryIndex = nextIndex;
+    return app.routing.popDirection;
   }
 
   function routeUrl(state) {
@@ -1240,7 +1495,7 @@
 
   function buildDiscoveryTree(ws, nodes) {
     const roots = discoveryRootsForWorkspace(ws);
-    const root = { name: '', path: '', folders: new Map(), nodes: [], traceCount: 0, leafCount: 0 };
+    const root = { name: '', path: '', folders: new Map(), nodes: [], artifactCount: 0, leafCount: 0 };
     const leaves = new Set(ws.leaves.map((node) => node.id));
 
     for (const node of nodes) {
@@ -1248,14 +1503,14 @@
       const parts = relative.split('/').filter(Boolean);
       const file = parts.pop() || fileNameFromPath(node.path);
       let cursor = root;
-      cursor.traceCount += 1;
+      cursor.artifactCount += 1;
       if (leaves.has(node.id)) cursor.leafCount += 1;
       let currentPath = '';
       for (const part of parts) {
         currentPath = currentPath ? `${currentPath}/${part}` : part;
-        if (!cursor.folders.has(part)) cursor.folders.set(part, { name: part, path: currentPath, folders: new Map(), nodes: [], traceCount: 0, leafCount: 0 });
+        if (!cursor.folders.has(part)) cursor.folders.set(part, { name: part, path: currentPath, folders: new Map(), nodes: [], artifactCount: 0, leafCount: 0 });
         cursor = cursor.folders.get(part);
-        cursor.traceCount += 1;
+        cursor.artifactCount += 1;
         if (leaves.has(node.id)) cursor.leafCount += 1;
       }
       cursor.nodes.push({ node, file });
@@ -1300,7 +1555,7 @@
           <i class="fa-solid ${expanded ? 'fa-chevron-down' : 'fa-chevron-right'}"></i>
           <i class="fa-regular fa-folder"></i>
           <span class="tree-name">${escapeHtml(folder.name)}</span>
-          <span class="tree-count">${folder.traceCount} traces</span>
+          <span class="tree-count">${folder.artifactCount} artifacts</span>
           <span class="tree-count">${folder.leafCount} leaves</span>
         </button>
         ${folderAddButton(ws, actualPath, `Add local artifact in ${actualPath}`)}
@@ -1355,6 +1610,7 @@
       const maxOffset = Math.max(0, app.workspaces.length - count);
       app.activeWorkspaceId = app.workspaces[activeIndex]?.id || app.workspaces[0]?.id || null;
       app.workspaceOffset = Math.max(0, Math.min(Number(state.workspaceOffset || activeIndex || 0), maxOffset));
+      applyRouteModalState(state.modal || null);
       return true;
     } finally {
       app.routing.restoring = false;
@@ -1408,7 +1664,7 @@
   }
 
   function materialRefIndex(ws, node, ref) {
-    const refs = extractMaterialRefs(ws, node);
+    const refs = nodeMaterialRefs(ws, node);
     const key = `${ref.kind}|${ref.path}|${ref.rawUrl}|${ref.href}`;
     const index = refs.findIndex((item) => `${item.kind}|${item.path}|${item.rawUrl}|${item.href}` === key);
     return Math.max(0, index);
@@ -1418,73 +1674,9 @@
     const ws = getWorkspace(el.dataset.ws);
     const node = ws?.nodeById.get(el.dataset.node);
     if (!ws || !node) return { ws: null, node: null, ref: null };
-    const refs = extractMaterialRefs(ws, node);
+    const refs = nodeMaterialRefs(ws, node);
     const ref = refs[Number(el.dataset.ref || 0)] || null;
     return { ws, node, ref };
-  }
-
-  async function loadMaterialTrace(ws, node, ref) {
-    if (!ws || !node || !ref || ref.kind !== 'trace') return;
-    if (ref.loadedNodeId) {
-      selectNode(ws.id, ref.loadedNodeId);
-      setRouteState('push');
-      return;
-    }
-    if (!ref.rawUrl) {
-      toast('Trace reference is not resolvable from this workspace.', 'warn');
-      return;
-    }
-    try {
-      const content = await fetchText(ref.rawUrl);
-      addFileToWorkspace(ws, {
-        path: ref.path || fileNameFromPath(ref.rawUrl),
-        content,
-        rawUrl: ref.rawUrl,
-        browseUrl: ref.browseUrl || ref.sourceUrl || '',
-        repo: ref.repo || ws.repo || '',
-        ref: ref.ref || ws.ref || ''
-      });
-      computeWorkspaceIndex(ws);
-      const loaded = sameWorkspacePathLookup(ws, ref.path) || Array.from(ws.nodeById.values()).find((candidate) => candidate.rawUrl === ref.rawUrl);
-      if (loaded) ws.selectedNodeId = loaded.id;
-      setRouteState('push');
-      render();
-    } catch (error) {
-      toast(`Could not load trace reference: ${error.message}`, 'warn');
-    }
-  }
-
-  function renderMaterialPreviewModal(modal) {
-    const ws = getWorkspace(modal.wsId);
-    const node = ws?.nodeById.get(modal.nodeId);
-    const ref = node ? extractMaterialRefs(ws, node)[Number(modal.refIndex || 0)] : null;
-    if (!ws || !node || !ref) return '';
-    const isMd = ref.kind === 'markdown';
-    return `
-      <div class="modal-backdrop-custom focus-modal" role="dialog" aria-modal="true">
-        <div class="modal-panel read-modal-panel material-preview-panel">
-          <div class="modal-header-lite sticky-modal-head">
-            <div>
-              <p class="kicker">${isMd ? 'Markdown attachment' : 'Text attachment'}</p>
-              <h2 class="modal-title-lite">${escapeHtml(ref.label || fileNameFromPath(ref.path || ref.href))}</h2>
-              <p class="text-secondary mb-0">${escapeHtml(ref.path || ref.href)}</p>
-            </div>
-            <button class="tv-btn small subtle" data-action="close-modal"><i class="fa-solid fa-xmark"></i></button>
-          </div>
-          <div class="modal-read-body">
-            ${modal.status === 'loading' ? '<div class="empty-state">Loading preview…</div>' : ''}
-            ${modal.status === 'failed' ? `<div class="policy-callout danger"><strong>Preview unavailable</strong><br>${escapeHtml(modal.error || 'Could not preview this attachment.')}</div>` : ''}
-            ${modal.status === 'loaded' ? `
-              ${modal.truncated ? '<div class="policy-callout"><strong>Preview truncated.</strong> Open source for the full file.</div>' : ''}
-              ${isMd ? `<div class="markdown-rendered">${renderSafeMarkdown(modal.content || '')}</div>` : `<pre class="source-block modal-source"><code>${escapeHtml(modal.content || '')}</code></pre>`}
-            ` : ''}
-          </div>
-          <div class="modal-footer-actions">
-            ${ref.sourceUrl ? `<a class="tv-btn subtle" href="${escapeAttr(safeUrl(ref.sourceUrl) || ref.sourceUrl)}" target="_blank" rel="noopener noreferrer"><i class="fa-solid fa-arrow-up-right-from-square"></i>Open source</a>` : ''}
-            <button class="tv-btn subtle" data-action="close-modal">Close</button>
-          </div>
-        </div>
-      </div>`;
   }
 
   function renderNonLineageOriginCard(ws, origin) {
@@ -1595,6 +1787,7 @@
     const seen = new Set();
 
     for (const ref of refs) {
+      if (isStructuralMaterialRef(ref)) continue;
       if (!materialHasOpenableSource(ref)) continue;
       const key = materialDedupKey(ref);
       if (seen.has(key)) continue;
@@ -1638,7 +1831,7 @@
   }
 
   function renderMaterialSection(ws, node, opts = {}) {
-    const refs = extractMaterialRefs(ws, node);
+    const refs = nodeMaterialRefs(ws, node);
     if (!refs.length) return '';
     const compact = Boolean(opts.compact);
     const limit = compact ? Number(app.settings.materialCompactLimit || 5) : 9999;
@@ -1665,7 +1858,7 @@
   }
 
   function materialSchemaBadges(ws, node) {
-    const refs = extractMaterialRefs(ws, node);
+    const refs = nodeMaterialRefs(ws, node);
     if (!refs.length) return '';
     return materialSummary(refs).slice(0, 2).map((label) => `<span class="badge-soft material-chip"><i class="fa-solid fa-paperclip"></i>${escapeHtml(label)}</span>`).join('');
   }
@@ -1673,170 +1866,10 @@
 
 
 
-  // .trace.md references are lineage navigation, not generic attachments.
-  // The user sees "Open trace"; the viewer decides whether to anchor, load into
-  // the same workspace, or ask before opening an external lineage workspace.
-
-  function traceRefSameLineageContext(ws, node, ref) {
-    const currentRepo = node.repo || ws?.repo || '';
-    const currentRef = node.ref || ws?.ref || '';
-    if (!ref.repo || !ref.ref || !currentRepo || !currentRef) return true;
-    return ref.repo === currentRepo && ref.ref === currentRef;
-  }
-
-  function traceRefStatusLabel(ws, node, ref) {
-    if (ref.loadedNodeId) return 'loaded';
-    if (!ref.rawUrl) return 'unresolved';
-    if (!traceRefSameLineageContext(ws, node, ref)) return 'external lineage';
-    return 'loadable';
-  }
-
-  function renderTraceRefStatus(ws, node, ref) {
-    if (ref.kind !== 'trace') return '';
-    const status = traceRefStatusLabel(ws, node, ref);
-    return `<span class="trace-ref-status ${escapeAttr(status.replace(/\s+/g, '-'))}">${escapeHtml(status)}</span>`;
-  }
-
-  async function loadTraceReferenceIntoWorkspace(targetWs, ref, selectAfterLoad = true) {
-    if (!targetWs || !ref || !ref.rawUrl) throw new Error('Trace reference is not resolvable.');
-    const content = await fetchText(ref.rawUrl);
-    addFileToWorkspace(targetWs, {
-      path: ref.path || fileNameFromPath(ref.rawUrl),
-      content,
-      rawUrl: ref.rawUrl,
-      browseUrl: ref.browseUrl || ref.sourceUrl || '',
-      repo: ref.repo || targetWs.repo || '',
-      ref: ref.ref || targetWs.ref || ''
-    });
-    computeWorkspaceIndex(targetWs);
-    const loaded = sameWorkspacePathLookup(targetWs, ref.path)
-      || Array.from(targetWs.nodeById.values()).find((candidate) => candidate.rawUrl === ref.rawUrl || candidate.browseUrl === ref.browseUrl);
-    if (loaded && selectAfterLoad) {
-      targetWs.selectedNodeId = loaded.id;
-      app.activeWorkspaceId = targetWs.id;
-      focusWorkspaceWindow(targetWs.id);
-    }
-    return loaded;
-  }
-
-  async function openTraceReference(ws, node, ref) {
-    if (!ws || !node || !ref || ref.kind !== 'trace') return;
-
-    if (ref.loadedNodeId) {
-      selectNode(ws.id, ref.loadedNodeId);
-      setRouteState('push');
-      return;
-    }
-
-    if (!ref.rawUrl) {
-      toast('Trace reference is not resolvable from this workspace.', 'warn');
-      return;
-    }
-
-    if (traceRefSameLineageContext(ws, node, ref)) {
-      try {
-        await loadTraceReferenceIntoWorkspace(ws, ref, true);
-        setRouteState('push');
-        render();
-      } catch (error) {
-        toast(`Could not open trace: ${error.message}`, 'warn');
-      }
-      return;
-    }
-
-    app.modal = {
-      type: 'external-trace',
-      sourceWsId: ws.id,
-      sourceNodeId: node.id,
-      refIndex: materialRefIndex(ws, node, ref)
-    };
-    render();
-  }
-
-  async function openExternalTraceWorkspace(modal) {
-    const sourceWs = getWorkspace(modal.sourceWsId);
-    const sourceNode = sourceWs?.nodeById.get(modal.sourceNodeId);
-    const ref = sourceNode ? extractMaterialRefs(sourceWs, sourceNode)[Number(modal.refIndex || 0)] : null;
-    if (!sourceWs || !sourceNode || !ref) {
-      toast('Trace reference no longer exists.', 'warn');
-      app.modal = null;
-      render();
-      return;
-    }
-
-    const label = `${ref.repo || 'External lineage'} · trace`;
-    const ws = createWorkspace(label, `Opened from trace reference in ${sourceWs.label}.`);
-    ws.discoverySource = ref.repo ? { kind: 'trace-reference', repo: ref.repo, ref: ref.ref || '', rootPath: dirname(ref.path || '') } : { kind: 'trace-reference' };
-    ws.repo = ref.repo || '';
-    ws.ref = ref.ref || '';
-    app.modal = null;
-    app.activeWorkspaceId = ws.id;
-    focusWorkspaceWindow(ws.id);
-    render();
-
-    try {
-      await loadTraceReferenceIntoWorkspace(ws, ref, true);
-      await discoverWorkspacePolicy(ws);
-      setRouteState('push');
-      render();
-    } catch (error) {
-      toast(`Could not open external trace: ${error.message}`, 'warn');
-      render();
-    }
-  }
-
-  function renderExternalTraceModal(modal) {
-    const sourceWs = getWorkspace(modal.sourceWsId);
-    const sourceNode = sourceWs?.nodeById.get(modal.sourceNodeId);
-    const ref = sourceNode ? extractMaterialRefs(sourceWs, sourceNode)[Number(modal.refIndex || 0)] : null;
-    if (!sourceWs || !sourceNode || !ref) return '';
-    const source = ref.sourceUrl || ref.browseUrl || ref.rawUrl || ref.href;
-    return `
-      <div class="modal-backdrop-custom focus-modal" role="dialog" aria-modal="true">
-        <div class="modal-panel external-trace-panel">
-          <div class="modal-header-lite">
-            <div>
-              <p class="kicker">External lineage reference</p>
-              <h2 class="modal-title-lite">Open this trace in a new workspace?</h2>
-              <p class="text-secondary mb-0">This .trace.md reference appears to belong to a different repo/ref than the current workspace.</p>
-            </div>
-            <button class="tv-btn small subtle" data-action="close-modal"><i class="fa-solid fa-xmark"></i></button>
-          </div>
-          <div class="external-trace-summary">
-            <span class="material-icon"><i class="fa-solid fa-code-branch"></i></span>
-            <div>
-              <strong>${escapeHtml(ref.label || fileNameFromPath(ref.path || ref.href))}</strong>
-              <p>${escapeHtml(ref.repo ? `${ref.repo}${ref.ref ? '@' + ref.ref : ''}` : 'External trace')}</p>
-              <p>${escapeHtml(ref.path || ref.href)}</p>
-            </div>
-          </div>
-          <div class="policy-callout">
-            The current workspace stays unchanged. A new workspace keeps the lineage context separate and avoids mixing unrelated repos by accident.
-          </div>
-          <div class="modal-footer-actions">
-            <button class="tv-btn primary" data-action="confirm-open-external-trace"><i class="fa-solid fa-layer-group"></i>Open in new workspace</button>
-            ${source ? `<a class="tv-btn subtle" href="${escapeAttr(safeUrl(source) || source)}" target="_blank" rel="noopener noreferrer"><i class="fa-solid fa-arrow-up-right-from-square"></i>Open source</a>` : ''}
-            <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
-          </div>
-        </div>
-      </div>`;
-  }
-
   async function onAction(event) {
     const action = event.currentTarget.dataset.action;
     const wsId = event.currentTarget.dataset.ws;
     const nodeId = event.currentTarget.dataset.node;
-
-    if (action === 'open-trace-reference') {
-      const { ws, node, ref } = materialRefFromEvent(event.currentTarget);
-      if (ws && node && ref) await openTraceReference(ws, node, ref);
-      return;
-    }
-
-    if (action === 'confirm-open-external-trace') {
-      if (app.modal?.type === 'external-trace') await openExternalTraceWorkspace(app.modal);
-      return;
-    }
 
     if (action === 'open-material-lightbox') {
       const { ws, node, ref } = materialRefFromEvent(event.currentTarget);
@@ -1850,12 +1883,6 @@
     if (action === 'open-material-preview') {
       const { ws, node, ref } = materialRefFromEvent(event.currentTarget);
       if (ws && node && ref) await openMaterialPreview(ws, node, ref);
-      return;
-    }
-
-    if (action === 'load-material-trace') {
-      const { ws, node, ref } = materialRefFromEvent(event.currentTarget);
-      if (ws && node && ref) await loadMaterialTrace(ws, node, ref);
       return;
     }
 
@@ -1957,9 +1984,14 @@
     if (action === 'clear-selection') {
       const ws = getWorkspace(wsId);
       if (ws) {
-        ws.selectedNodeId = null;
-        setRouteState('push');
-        render();
+        const clearSelectionFallback = () => {
+          ws.selectedNodeId = null;
+          ws.pendingSelectedRoute = null;
+          setRouteState('push');
+          render();
+          if (typeof scheduleRouteHistoryScrollRestore === 'function') scheduleRouteHistoryScrollRestore('ux-back-fallback');
+        };
+        runRouteHistoryBackOrFallback(clearSelectionFallback);
       }
       return;
     }
@@ -1976,13 +2008,13 @@
     if (action === 'save-workspace') { await saveWorkspace(wsId); return; }
     if (action === 'copy-share') { setRouteState('replace'); copyShareLink(); return; }
     if (action === 'toggle-node-expand') { toggleNodeExpand(wsId, nodeId); setRouteState('replace'); return; }
-    if (action === 'open-detail-modal') { app.modal = { type: 'detail', wsId, nodeId }; render(); return; }
-    if (action === 'open-markdown-modal') { app.modal = { type: 'markdown', wsId, nodeId }; render(); return; }
+    if (action === 'open-detail-modal') { app.modal = { type: 'detail', wsId, nodeId }; updateUrlState({ replace: true }); render(); return; }
+    if (action === 'open-markdown-modal') { app.modal = { type: 'markdown', wsId, nodeId }; updateUrlState({ replace: true }); render(); return; }
     if (action === 'open-create') {
       openArtifactCreateIntent({ mode: event.currentTarget.dataset.mode, wsId, nodeId, schemaId: event.currentTarget.dataset.schemaId || event.currentTarget.dataset.schema || '' });
       return;
     }
-    if (action === 'close-modal') { app.modal = null; render(); return; }
+    if (action === 'close-modal') { closeActiveModalRoute(); return; }
   }
 
 
@@ -2029,102 +2061,6 @@
 
     await Promise.all(Array.from({ length: concurrency }, () => runner()));
   }
-
-  async function discoverGitHubRepoIntoWorkspace(ws, options) {
-    const repo = options.repo;
-    const ref = options.ref || '';
-    const rootPaths = Array.isArray(options.rootPaths) ? options.rootPaths : parseRootPaths(options.rootPath || '.topics');
-    const key = repoDiscoveryKey(repo, ref, rootPaths);
-
-    if (ws.discoverySource?.kind === 'github-tree'
-      && repoDiscoveryKey(ws.discoverySource.repo, ws.discoverySource.ref || '', ws.discoverySource.rootPaths || ws.discoverySource.rootPath || '.topics') === key
-      && ws.nodes.length) {
-      toast(`${ws.label} already has discovery results for ${key}.`, 'warn');
-      return;
-    }
-
-    if (app.repoDiscoveryInFlight.has(key)) {
-      toast(`Discovery already running for ${key}.`, 'warn');
-      return;
-    }
-
-    app.repoDiscoveryInFlight.add(key);
-    ws.loading = true;
-    ws.repo = repo;
-    if (ref) ws.ref = ref;
-    ws.discoverySource = { kind: 'github-tree', repo, ref: ref || '', rootPath: rootPaths[0] || '.topics', rootPaths };
-    ws.sourceNote = `GitHub repo discovery: ${repo}${ref ? '@' + ref : ''} / ${rootPathsLabel(rootPaths)}`;
-    ws.logs.push(`Discovering ${repo}${ref ? '@' + ref : ''} under ${rootPaths.join(', ')} via GitHub tree API.`);
-    render();
-
-    let count = 0;
-    let failed = 0;
-    try {
-      const discovery = await discoverGitHubTracePaths(repo, ref, rootPaths);
-      ws.repo = repo;
-      ws.ref = discovery.ref;
-      ws.discoverySource.ref = discovery.ref;
-      ws.discoverySource.rootPath = discovery.rootPath;
-      ws.discoverySource.rootPaths = discovery.rootPaths;
-      ws.logs.push(`Tree discovery found ${discovery.tracePaths.length} .trace.md file(s).`);
-      if (discovery.truncated) {
-        ws.logs.push('GitHub tree response was truncated. Results may be incomplete; use a manifest for this repo.');
-        toast(`Tree response for ${repo} was truncated; discovery may be incomplete.`, 'warn');
-      }
-      if (discovery.numericLeafGuess.length && discovery.numericLeafGuess.length !== discovery.tracePaths.length) {
-        ws.logs.push(`Filename heuristic suggests ${discovery.numericLeafGuess.length} likely leaf candidate path(s), but full parsing still loads all traces for correctness.`);
-      }
-
-      const paths = discovery.tracePaths.filter((path) => {
-        const rawUrl = githubRawUrl(repo, discovery.ref, path);
-        return !Array.from(ws.files.values()).some((file) => file.rawUrl === rawUrl || file.path === path);
-      });
-
-      const concurrency = Number(app.settings.repoDiscoveryFetchConcurrency || 8);
-      const batchEvery = Number(app.settings.repoDiscoveryBatchRenderEvery || 80);
-      const batchDelay = Number(app.settings.repoDiscoveryBatchRenderDelayMs || 16);
-
-      await runWithConcurrency(paths, concurrency, async (path) => {
-        const rawUrl = githubRawUrl(repo, discovery.ref, path);
-        try {
-          const content = await fetchText(rawUrl);
-          addFileToWorkspace(ws, {
-            path,
-            content,
-            rawUrl,
-            browseUrl: githubBrowseUrl(repo, discovery.ref, path),
-            repo,
-            ref: discovery.ref
-          });
-          count += 1;
-          if (batchEvery > 0 && count % batchEvery === 0) {
-            computeWorkspaceIndex(ws);
-            requestBufferedRender('repo-discovery-batch', batchDelay);
-          }
-        } catch (error) {
-          failed += 1;
-          ws.logs.push(`Could not fetch discovered trace ${path}: ${error.message}`);
-        }
-      });
-
-      computeWorkspaceIndex(ws);
-      await discoverWorkspacePolicy(ws);
-
-      if (!count && !failed) toast(`No new trace files loaded from ${repo}.`, 'warn');
-      if (failed) toast(`${failed} trace file(s) could not be fetched from ${repo}.`, 'warn');
-    } catch (error) {
-      ws.logs.push(`Repo discovery failed for ${repo}: ${error.message}`);
-      toast(`Repo discovery failed for ${repo}: ${error.message}`, 'warn');
-    } finally {
-      app.repoDiscoveryInFlight.delete(key);
-      ws.loading = false;
-      computeWorkspaceIndex(ws);
-      render();
-    }
-  }
-
-
-
 
   // Policy lookup is about the lineage origin, not arbitrary fallback documents.
   // Only these root files count. No README/VALIDATION_NOTES/artifact fallback.
@@ -2596,6 +2532,19 @@
     return false;
   }
 
+  function isStructuralMaterialRef(ref) {
+    const kind = String(ref?.kind || '').toLowerCase();
+    const label = String(ref?.label || ref?.title || '').toLowerCase();
+    const target = String(ref?.path || ref?.href || ref?.rawUrl || ref?.browseUrl || '').toLowerCase();
+
+    if (['schema', 'validator', 'trace'].includes(kind)) return true;
+    if (/\.(schema|validator|trace|workspace)\.md(?:$|[?#])/i.test(target)) return true;
+    if (/\b(envelope schema|current schema|parent schema|parent origin|parent trace|method definition|method identifier)\b/i.test(label)) return true;
+    if (/^sha256-base64url-c14n-v\d+$/.test(label)) return true;
+    if (/commit-pinned permalink|validator artifact|validation method artifact|method definition/.test(target)) return true;
+    return false;
+  }
+
   function renderMaterialItem(ws, node, ref, compact = false) {
     const source = ref.sourceUrl || ref.browseUrl || ref.rawUrl || ref.href;
     const previewable = ref.kind === 'image' || ref.kind === 'text' || ref.kind === 'markdown';
@@ -2610,7 +2559,7 @@
       <div class="material-item kind-${escapeAttr(ref.kind)} ${ref.localAsset ? 'local-asset' : ''}">
         ${thumbnail}
         <div class="material-meta">
-          <div class="material-title">${escapeHtml(shortText(title, compact ? 44 : 90))}${ref.localAsset ? '<span class="trace-ref-status loaded">local asset</span>' : ''}${renderTraceRefStatus(ws, node, ref)}</div>
+          <div class="material-title">${escapeHtml(shortText(title, compact ? 44 : 90))}${ref.localAsset ? '<span class="trace-ref-status loaded">local asset</span>' : ''}</div>
           <div class="material-subtitle">${escapeHtml(shortText(subtitle, compact ? 58 : 140))}</div>
           <div class="material-actions">
             ${renderMaterialPrimaryAction(ws, node, ref)}
@@ -2668,7 +2617,7 @@
   function renderMaterialLightbox(modal) {
     const ws = getWorkspace(modal.wsId);
     const node = ws?.nodeById.get(modal.nodeId);
-    const ref = node ? extractMaterialRefs(ws, node)[Number(modal.refIndex || 0)] : null;
+    const ref = node ? nodeMaterialRefs(ws, node)[Number(modal.refIndex || 0)] : null;
     if (!ws || !node || !ref) return '';
     const src = ref.localUrl || ref.rawUrl || ref.sourceUrl;
     return `
@@ -3237,8 +3186,8 @@
     }
     computeWorkspaceIndex(ws);
     if (!ws.repo) ws.policy = { status: 'local', kind: '', text: '', url: '', note: 'Local or uploaded workspace. No remote lineage policy lookup available.' };
-    ws.logs.push(`Imported ${traceCount} Tiinex trace file(s) and preserved ${assetCount} asset file(s) into Local source.`);
-    if (!traceCount) toast('No Tiinex trace files were indexed. Assets were preserved under Local.', 'warn');
+    ws.logs.push(`Imported ${traceCount} Tiinex markdown artifact file(s) and preserved ${assetCount} asset file(s) into Local source.`);
+    if (!traceCount) toast('No Tiinex markdown artifacts were indexed. Assets were preserved under Local.', 'warn');
     render();
   }
 
@@ -3336,7 +3285,7 @@
                 <input class="visually-hidden-file" id="source-folder" type="file" multiple webkitdirectory directory>
               </label>
 
-              ${renderAddChoiceCard('<i class="fa-brands fa-github"></i>', 'Git source', 'Discover .trace.md files from public GitHub roots.', 'data-action="choose-add-mode" data-mode="git"')}
+              ${renderAddChoiceCard('<i class="fa-brands fa-github"></i>', 'Git source', 'Discover Tiinex markdown artifacts from public GitHub roots.', 'data-action="choose-add-mode" data-mode="git"')}
               ${renderAddChoiceCard('<i class="fa-solid fa-link"></i>', 'Explicit URLs', 'Paste raw/blob trace URLs or manifests.', 'data-action="choose-add-mode" data-mode="urls"')}
               ${renderAddChoiceCard('<i class="fa-solid fa-hand-pointer"></i>', 'Drag and drop', 'Turn the dialog into a focused drop target for this workspace.', 'data-action="choose-add-mode" data-mode="drop"', 'desktop-only-choice')}
             </div>
@@ -3356,7 +3305,7 @@
               <div>
                 <p class="kicker">Git source</p>
                 <h2 class="modal-title-lite">${title}</h2>
-                <p class="text-secondary mb-0">Discover public GitHub repo roots and import matching <code>.trace.md</code> files.</p>
+                <p class="text-secondary mb-0">Discover public GitHub repo roots and import matching <code>.trace.md</code>, <code>.schema.md</code>, <code>.validator.md</code>, and <code>.workspace.md</code> files.</p>
               </div>
               <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
             </div>
@@ -3446,7 +3395,7 @@
 
   // --- Workspace indexing and relationship graph ---
 
-  function computeWorkspaceIndex(ws) {
+  function computeWorkspaceIndex(ws, options = {}) {
     ensureWorkspaceSources(ws);
     const previousSelected = ws.selectedNodeId;
     const previousWindows = ws.lineageWindows || {};
@@ -3467,8 +3416,9 @@
     ws.nodes.forEach((node) => {
       node.children = [];
       node.parentNode = null;
-      node.integrityStatus = previousIntegrity[node.storageKey || node.path]?.status || previousIntegrity[node.path]?.status || (node.integrity ? 'pending' : 'missing');
-      node.integrityStatusLabel = previousIntegrity[node.storageKey || node.path]?.label || previousIntegrity[node.path]?.label || '';
+      const cachedIntegrity = previousIntegrity[node.storageKey || node.path] || previousIntegrity[node.path] || null;
+      node.integrityStatus = cachedIntegrity?.status || initialIntegrityStatusForNode(node);
+      node.integrityStatusLabel = cachedIntegrity?.label || initialIntegrityStatusLabelForNode(node);
     });
 
     ws.nodes.forEach((node) => {
@@ -3505,7 +3455,7 @@
     ws.lineageWindows = previousWindows;
     ws.integrityCache = previousIntegrity;
     ws.parentFetches = previousParentFetches;
-    if (typeof scheduleIntegrityVerification === 'function') scheduleIntegrityVerification(ws);
+    if (!options.skipIntegrity && typeof scheduleIntegrityVerification === 'function') scheduleIntegrityVerification(ws);
     if (typeof resolvePendingSelectedRoutes === 'function') resolvePendingSelectedRoutes();
   }
 
@@ -3825,6 +3775,13 @@
         } else {
           await loadUrlsIntoWorkspace(ws, source.urls || []);
         }
+      } else if (source.kind === 'github-tree' && typeof discoverGitHubRepoIntoWorkspace === 'function') {
+        await discoverGitHubRepoIntoWorkspace(ws, {
+          repo: source.repo,
+          ref: source.ref || '',
+          rootPaths: source.rootPaths || [source.rootPath || '.topics'],
+          refreshExisting: true
+        });
       }
       if (!firstWs) firstWs = ws;
       if (typeof applyViewStateToWorkspace === 'function') applyViewStateToWorkspace(ws, source);
@@ -3933,10 +3890,15 @@
     if (configFiles.length) await openWorkspaceFiles(configFiles, { applyWorkspaceState: true });
 
     if (parsedRepo && typeof discoverGitHubRepoIntoWorkspace === 'function') {
+      const requestedRoots = rootPaths.length ? rootPaths : (typeof parseRootPaths === 'function' ? parseRootPaths(parsedRepo.rootPath || '.topics') : ['.topics']);
+      const requestedRef = refInput || parsedRepo.ref || '';
+      const sameDiscoverySource = ws.discoverySource?.kind === 'github-tree'
+        && repoDiscoveryKey(ws.discoverySource.repo, ws.discoverySource.ref || ws.ref || '', ws.discoverySource.rootPaths || ws.discoverySource.rootPath || '.topics') === repoDiscoveryKey(parsedRepo.repo, requestedRef, requestedRoots);
       await discoverGitHubRepoIntoWorkspace(ws, {
         repo: parsedRepo.repo,
-        ref: refInput || parsedRepo.ref || '',
-        rootPaths: rootPaths.length ? rootPaths : (typeof parseRootPaths === 'function' ? parseRootPaths(parsedRepo.rootPath || '.topics') : ['.topics'])
+        ref: requestedRef,
+        rootPaths: requestedRoots,
+        refreshExisting: Boolean(sameDiscoverySource)
       });
     }
     if (urls.length) await loadUrlsIntoWorkspace(ws, urls);
@@ -4530,7 +4492,35 @@
 
 
 
-  const TIINEX_ROOT_SCHEMA_URL = 'https://github.com/Tiinex/docs/blob/cca53fc8c52fd27b92b9429420efd613913a88bd/.topics/.schemas/tiinex.root.v1.schema.md';
+  const TIINEX_SCHEMA_PERMALINK_COMMIT = '7aecdb99551c4b6850665cdee418f0b9907d9616';
+  const TIINEX_SCHEMA_PERMALINK_BASE = `https://github.com/Tiinex/docs/blob/${TIINEX_SCHEMA_PERMALINK_COMMIT}/.topics/.schemas/`;
+  const TIINEX_ROOT_SCHEMA_URL = `${TIINEX_SCHEMA_PERMALINK_BASE}tiinex.root.v1.schema.md`;
+  const TIINEX_VALIDATOR_PERMALINK_COMMIT = '3466e50d739a9ba65319297cef79c6b09844b1d7';
+  const TIINEX_VALIDATOR_PERMALINK_BASE = `https://github.com/Tiinex/docs/blob/${TIINEX_VALIDATOR_PERMALINK_COMMIT}/.topics/.validators/`;
+  const TIINEX_SHA256_C14N_METHOD_ID = 'sha256-base64url-c14n-v1';
+  const TIINEX_SHA256_C14N_VALIDATOR_URL = `${TIINEX_VALIDATOR_PERMALINK_BASE}${TIINEX_SHA256_C14N_METHOD_ID}.validator.md`;
+
+  function validationMethodIdFromLabel(label) {
+    const parsed = parseMarkdownLink(label || '');
+    return stripMarkdownInline(parsed.text || label || '').trim();
+  }
+
+  function validationMethodHrefFromLabel(label) {
+    return parseMarkdownLink(label || '').href || '';
+  }
+
+  function validationMethodEntryLabel(methodId = TIINEX_SHA256_C14N_METHOD_ID) {
+    const id = String(methodId || TIINEX_SHA256_C14N_METHOD_ID).trim();
+    if (id === TIINEX_SHA256_C14N_METHOD_ID) return `[${id}](${TIINEX_SHA256_C14N_VALIDATOR_URL})`;
+    return id;
+  }
+
+  function validationMethodDefinitionUrl(methodId, methodHref = '') {
+    const id = validationMethodIdFromLabel(methodId || '');
+    if (methodHref) return methodHref;
+    if (id === TIINEX_SHA256_C14N_METHOD_ID) return TIINEX_SHA256_C14N_VALIDATOR_URL;
+    return '';
+  }
 
   function continuityTimestamp() {
     return new Date().toISOString().slice(0, 19).replace('T', ' ');
@@ -4550,7 +4540,8 @@
     const base = String(markdown || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trimEnd()
       + '\n\n---\n\n# Continuity Integrity\n\n';
     const value = await continuitySha256Base64Url(base);
-    return base + `- sha256-base64url-c14n-v1\n  - Towards: ${towards || 'this config document'}\n  - Value: ${value || 'unavailable'}\n`;
+    if (!value) return base;
+    return base + `- ${validationMethodEntryLabel()}\n  - Towards: ${towards || 'this config document'}\n  - Value: ${value}\n`;
   }
 
 
@@ -5012,7 +5003,6 @@
     if (modal.type === 'markdown') return renderNodeModal(modal, 'markdown');
     if (modal.type === 'material-lightbox') return renderMaterialLightbox(modal);
     if (modal.type === 'material-preview') return renderMaterialPreviewModal(modal);
-    if (modal.type === 'external-trace') return renderExternalTraceModal(modal);
     return '';
   }
 
@@ -5155,29 +5145,6 @@
     };
   }
 
-  function registerOpenArtifactWizardWrapper(wrapper) {
-    const next = openArtifactWizard;
-    openArtifactWizard = function registeredOpenArtifactWizardWrapper(ws, options = {}) {
-      return wrapper(ws, options, next);
-    };
-  }
-
-  function registerWizardPathForWrapper(wrapper) {
-    const next = wizardPathFor;
-    wizardPathFor = function registeredWizardPathForWrapper(ws, modal, option, title) {
-      return wrapper(ws, modal, option, title, next);
-    };
-  }
-
-
-
-  function registerWizardDescribeStepWrapper(wrapper) {
-    const next = wizardDescribeStep;
-    wizardDescribeStep = function registeredWizardDescribeStepWrapper(ws, modal, selected, title, summary, body) {
-      return wrapper(ws, modal, selected, title, summary, body, next);
-    };
-  }
-
   function registerScheduleMobileDensityWrapper(wrapper) {
     const next = scheduleMobileDensity;
     scheduleMobileDensity = function registeredScheduleMobileDensityWrapper() {
@@ -5261,16 +5228,22 @@
 
   // --- Main render entrypoint ---
 
-  function render() {
-    const snapshots = typeof snapshotVisibleFeedScrolls === 'function' ? snapshotVisibleFeedScrolls() : [];
-    const root = $('app');
-    ensureWorkspaceWindow();
-    const count = visibleWorkspaceCount();
-    const visible = visibleWorkspaces();
-    const total = app.workspaces.length;
-    const canPage = total > count;
-    root.innerHTML = `
-      <div class="app-shell app-shell-foundation app-shell-main app-shell-layout app-shell-grid app-shell-mobile-safe-area app-shell-mobile-compact app-shell-branded">
+  function renderChromeSignature(count, canPage) {
+    const cfg = app.viewerIdentity || {};
+    return JSON.stringify({
+      viewerLabel: cfg.label || '',
+      viewerDisplay: cfg.displayName || cfg.heading || '',
+      viewerHome: cfg.home || '',
+      viewerIcon: cfg.icon || cfg.iconRaw || '',
+      help: configHasHelp(),
+      workspaceCount: app.workspaces.length,
+      visibleCount: count,
+      canPage
+    });
+  }
+
+  function renderTopbarHtml() {
+    return `
         <header class="topbar topbar-foundation topbar-shell topbar-layout topbar-actions topbar-branded">
           ${renderViewerBrand()}
           <div class="top-actions workspace-top-actions-layout workspace-top-actions-toolbar">
@@ -5279,19 +5252,100 @@
             <button class="tv-btn subtle" data-action="copy-share" title="Copies the current view only. Local uploads, preserved assets, and unsaved workspace contents are not included." aria-label="Copies the current view only. Local uploads, preserved assets, and unsaved workspace contents are not included."><i class="fa-solid fa-link"></i>Copy link</button>
           </div>
           ${renderHelpButton()}
-        </header>
-        ${canPage ? renderWorkspacePager(count) : ''}
+        </header>`;
+  }
+
+  function renderWorkspaceGridHtml(count, visible) {
+    return `
         <main class="workspace-grid workspace-foundation-grid workspace-shell-grid workspace-grid-layout workspace-grid-columns columns-${Math.max(1, Math.min(count, visible.length || 1))}" id="workspace-grid" ${workspaceGridStyleVar(visible)}>
           ${visible.length ? visible.map(renderWorkspace).join('') : renderNoWorkspace()}
-        </main>
+        </main>`;
+  }
+
+  function renderToastsHtml() {
+    return `<div id="toasts" class="toasts">${app.toasts.map((t) => `<div class="toast-item ${t.type || 'info'}">${escapeHtml(t.text)}</div>`).join('')}</div>`;
+  }
+
+  function renderModalRootHtml() {
+    return `<div id="modal-root" class="modal-root">${app.modal ? renderModal(app.modal) : ''}</div>`;
+  }
+
+  function renderFullAppHtml(count, visible, canPage) {
+    return `
+      <div class="app-shell app-shell-foundation app-shell-main app-shell-layout app-shell-grid app-shell-mobile-safe-area app-shell-mobile-compact app-shell-branded">
+        ${renderTopbarHtml()}
+        ${canPage ? renderWorkspacePager(count) : ''}
+        ${renderWorkspaceGridHtml(count, visible)}
       </div>
       <footer class="app-footer">Powered by <a href="https://github.com/Tiinex" target="_blank" rel="noopener">Tiinex</a></footer>
-      <div id="toasts" class="toasts">${app.toasts.map((t) => `<div class="toast-item ${t.type || 'info'}">${escapeHtml(t.text)}</div>`).join('')}</div>
-      ${app.modal ? renderModal(app.modal) : ''}
+      ${renderToastsHtml()}
+      ${renderModalRootHtml()}
     `;
-    bindEvents(root);
-    if (typeof restoreVisibleFeedScrolls === 'function') restoreVisibleFeedScrolls(snapshots);
-    else if (typeof restorePendingFeedScroll === 'function') restorePendingFeedScroll();
+  }
+
+  function replaceHtmlAndBind(selectorRoot, html, bind = true) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html.trim();
+    const nextEl = tmp.firstElementChild;
+    if (!selectorRoot || !nextEl) return null;
+    selectorRoot.replaceWith(nextEl);
+    if (bind) bindEvents(nextEl);
+    return nextEl;
+  }
+
+  function patchWorkspacePager(root, shell, count, canPage) {
+    const oldPager = root.querySelector('.workspace-pager');
+    const grid = root.querySelector('#workspace-grid');
+    if (!canPage) {
+      oldPager?.remove?.();
+      return null;
+    }
+    const html = renderWorkspacePager(count).trim();
+    if (oldPager) return replaceHtmlAndBind(oldPager, html, true);
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    const nextPager = tmp.firstElementChild;
+    if (!nextPager) return null;
+    shell.insertBefore(nextPager, grid || null);
+    bindEvents(nextPager);
+    return nextPager;
+  }
+
+  function patchRender(root, count, visible, canPage, signature) {
+    const shell = root.querySelector('.app-shell');
+    const grid = root.querySelector('#workspace-grid');
+    const toasts = root.querySelector('#toasts');
+    const modalRoot = root.querySelector('#modal-root');
+    if (!shell || !grid || !toasts || !modalRoot) return false;
+
+    patchWorkspacePager(root, shell, count, canPage);
+    replaceHtmlAndBind(grid, renderWorkspaceGridHtml(count, visible), true);
+    replaceHtmlAndBind(toasts, renderToastsHtml(), false);
+    modalRoot.innerHTML = app.modal ? renderModal(app.modal) : '';
+    bindEvents(modalRoot);
+    root.dataset.renderChromeSignature = signature;
+    root.dataset.renderBoundary = 'patched';
+    return true;
+  }
+
+  function render() {
+    const snapshots = typeof snapshotRenderScrolls === 'function' ? snapshotRenderScrolls() : { feed: [], modal: [] };
+    const root = $('app');
+    ensureWorkspaceWindow();
+    const count = visibleWorkspaceCount();
+    const visible = visibleWorkspaces();
+    const total = app.workspaces.length;
+    const canPage = total > count;
+    const signature = renderChromeSignature(count, canPage);
+    const canPatch = root.dataset.renderChromeSignature === signature;
+    const patched = canPatch ? patchRender(root, count, visible, canPage, signature) : false;
+    if (!patched) {
+      root.innerHTML = renderFullAppHtml(count, visible, canPage);
+      root.dataset.renderChromeSignature = signature;
+      root.dataset.renderBoundary = 'full';
+      bindEvents(root);
+    }
+    if (typeof restoreRenderScrolls === 'function') restoreRenderScrolls(snapshots);
     scheduleLocalStateSave();
   }
 
@@ -5452,7 +5506,7 @@
 
 - Envelope Schema: [tiinex.root.v1](${TIINEX_ROOT_SCHEMA_URL})
 - Current
-  - Current Schema: [tiinex.workspace.v1](.topics/.schemas/tiinex.workspace.v1.schema.md)
+  - Current Schema: [tiinex.workspace.v1](${TIINEX_SCHEMA_PERMALINK_BASE}tiinex.workspace.v1.schema.md)
   - Created At: ${continuityTimestamp()}
   - Why: Captures the current Tiinex viewer lens as a portable workspace entrypoint.
   - Summary: ${summary}
@@ -5576,7 +5630,7 @@ ${bodySections}
 
 
 
-  const EMBEDDED_DEFAULT_WORKSPACE_MD = "# Continuity Context\n\n- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/cca53fc8c52fd27b92b9429420efd613913a88bd/.topics/.schemas/tiinex.root.v1.schema.md)\n- Current\n  - Current Schema: [tiinex.workspace.v1](../.schemas/tiinex.workspace.v1.schema.md)\n  - Created At: 2026-06-16 00:00:00\n  - Why: Defines a portable multi-lineage workspace entrypoint.\n  - Summary: Opens the Tiinex docs workspace and declares the default viewer discovery lens.\n\n---\n\n# Tiinex Viewer\n\n## Viewer Identity\n\n- Icon: ../../assets/tiinex-logo-white-transparent.png\n- Home: https://github.com/Tiinex\n\n## Empty Stage\n\n- Subtitle: Every handoff starts somewhere\n- Subtitle: Start where the last thread ends\n- Subtitle: Leave enough for the next mind\n- Subtitle: A thread is waiting\n- Subtitle: Nothing starts from nothing\n\n## Workspace Discovery\n\n- [Tiinex docs workspaces](https://github.com/Tiinex/docs)\n  - Kind: github-tree\n  - Ref: master\n  - Root Path: .topics\n  - Match: *.workspace.md\n  - Label: Tiinex docs workspaces\n  - Open Behavior: chooser\n\n## Workspace Entrypoints\n\n### Tiinex docs\n\n- Source Kind: github-tree\n- Repository: Tiinex/docs\n- Ref: master\n- Root Path: .topics\n- Default View: feed\n- Default Filter: all\n\n## Help\n\n### What is this view?\n\nThis workspace opens Tiinex markdown artifacts so an external reviewer and their LLM helpers can inspect continuity, source material, integrity signals, and continuation paths.\n\n### What should I check first?\n\nStart with what is loaded.\n\nCheck the workspace source, then inspect the visible badges. Treat integrity mismatch, missing integrity, unknown schema, and local-only material as review signals, not automatic failure.\n\n### What should I trust?\n\nTrust only what the artifact and its sources actually show.\n\nUse `Source` to inspect where material came from, `Markdown` to read the artifact, `Open` to inspect the selected node, and `Continue` only when the next step is clear enough to preserve.\n\n### What should an LLM preserve?\n\nDo not collapse Parent and Origin.\n\nParent is the declared continuity edge. Origin is provenance for where the material came from. If either is missing or weak, say so rather than filling the gap.\n\n### What should I send back?\n\nA useful validation note names the selected artifact, the source inspected, the observed signal, and the smallest next correction or continuation.\n\n---\n\n# Continuity Integrity\n\n- sha256-base64url-c14n-v1\n  - Towards: [viewer.workspace.md](viewer.workspace.md)\n  - Value: 6vM2gDbZwBwAFL5ZsH8hVXRnsdLd3gpyHcIetgRS7GQ\n";
+  const EMBEDDED_DEFAULT_WORKSPACE_MD = "# Continuity Context\n\n- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.root.v1.schema.md)\n- Current\n  - Current Schema: [tiinex.workspace.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.workspace.v1.schema.md)\n  - Created At: 2026-06-16 00:00:00\n  - Why: Defines a portable multi-lineage workspace entrypoint.\n  - Summary: Opens the Tiinex docs workspace and declares the default viewer discovery lens.\n\n---\n\n# Tiinex Viewer\n\n## Viewer Identity\n\n- Icon: ../../assets/tiinex-logo-white-transparent.png\n- Home: https://github.com/Tiinex\n\n## Empty Stage\n\n- Subtitle: Every handoff starts somewhere\n- Subtitle: Start where the last thread ends\n- Subtitle: Leave enough for the next mind\n- Subtitle: A thread is waiting\n- Subtitle: Nothing starts from nothing\n\n## Workspace Discovery\n\n- [Tiinex docs workspaces](https://github.com/Tiinex/docs)\n  - Kind: github-tree\n  - Ref: master\n  - Root Path: .topics\n  - Match: *.workspace.md\n  - Label: Tiinex docs workspaces\n  - Open Behavior: chooser\n\n## Workspace Entrypoints\n\n### Tiinex docs\n\n- Source Kind: github-tree\n- Repository: Tiinex/docs\n- Ref: master\n- Root Path: .topics\n- Default View: feed\n- Default Filter: all\n\n## Help\n\n### What is this view?\n\nThis workspace opens Tiinex markdown artifacts so an external reviewer and their LLM helpers can inspect continuity, source material, integrity signals, and continuation paths.\n\n### What should I check first?\n\nStart with what is loaded.\n\nCheck the workspace source, then inspect the visible badges. Treat integrity mismatch, missing integrity, unknown schema, and local-only material as review signals, not automatic failure.\n\n### What should I trust?\n\nTrust only what the artifact and its sources actually show.\n\nUse `Source` to inspect where material came from, `Markdown` to read the artifact, `Open` to inspect the selected node, and `Continue` only when the next step is clear enough to preserve.\n\n### What should an LLM preserve?\n\nDo not collapse Parent and Origin.\n\nParent is the declared continuity edge. Origin is provenance for where the material came from. If either is missing or weak, say so rather than filling the gap.\n\n### What should I send back?\n\nA useful validation note names the selected artifact, the source inspected, the observed signal, and the smallest next correction or continuation.\n\n---\n\n# Continuity Integrity\n\n- [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)\n  - Towards: [viewer.workspace.md](viewer.workspace.md)\n  - Value: yYTlX5mSB-hhxKkSmT5-7GIAzW2Phq0krm-XdhRY1oA\n";
 
   function pageHasExplicitWorkspaceQuery() {
     const params = new URLSearchParams(location.search);
@@ -5881,6 +5935,14 @@ ${bodySections}
     return /\.schema\.md(?:$|[?#])/i.test(String(path || ''));
   }
 
+  function isTiinexMarkdownArtifactPath(value) {
+    return /\.(trace|schema|workspace|validator)\.md(?:$|[?#])/i.test(String(value || ''));
+  }
+
+  function isValidatorPath(path) {
+    return /\.validator\.md(?:$|[?#])/i.test(String(path || ''));
+  }
+
   function schemaFilenameFromText(schemaText) {
     let text = stripMarkdownInline(String(schemaText || '')).trim();
     text = text.replace(/^schema:\s*/i, '').replace(/^[`'"]|[`'"]$/g, '');
@@ -6073,6 +6135,7 @@ ${bodySections}
   function materialKindFor(ref) {
     const path = ref.path || ref.href || ref.rawUrl || ref.sourceUrl || '';
     if (isSchemaPath(path)) return 'schema';
+    if (isValidatorPath(path)) return 'validator';
     if (isTracePath(path)) return 'trace';
     if (ref.image || isImagePath(path)) return 'image';
     if (isTextPreviewPath(path)) return /\.md|\.markdown/i.test(fileExtension(path)) ? 'markdown' : 'text';
@@ -6083,6 +6146,7 @@ ${bodySections}
   function previewMaterialKindLabel(kind) {
     return {
       schema: 'Schema reference',
+      validator: 'Validator definition',
       trace: 'Trace reference',
       image: 'Image',
       markdown: 'Markdown',
@@ -6096,6 +6160,7 @@ ${bodySections}
   function materialIcon(kind) {
     return {
       schema: 'fa-solid fa-scale-balanced',
+      validator: 'fa-solid fa-shield-halved',
       trace: 'fa-solid fa-code-branch',
       image: 'fa-regular fa-image',
       markdown: 'fa-brands fa-markdown',
@@ -6113,15 +6178,15 @@ ${bodySections}
     }, {});
     const total = refs.length;
     const bits = [];
-    if (total) bits.push(`${total} ref${total === 1 ? '' : 's'}`);
-    if (counts.schema) bits.push(`${counts.schema} schema${counts.schema === 1 ? '' : 's'}`);
+    if (total) bits.push(`${total} attachment${total === 1 ? '' : 's'}`);
     if (counts.image) bits.push(`${counts.image} image${counts.image === 1 ? '' : 's'}`);
-    if (counts.trace) bits.push(`${counts.trace} trace`);
+    if (counts.markdown) bits.push(`${counts.markdown} markdown${counts.markdown === 1 ? '' : 's'}`);
+    if (counts.text) bits.push(`${counts.text} text${counts.text === 1 ? '' : 's'}`);
     return bits;
   }
 
   function groupMaterialRefs(refs) {
-    const order = ['schema', 'trace', 'image', 'markdown', 'text', 'file', 'external', 'unresolved'];
+    const order = ['image', 'markdown', 'text', 'file', 'external', 'unresolved'];
     const groups = new Map(order.map((key) => [key, []]));
     refs.forEach((ref) => {
       const key = groups.has(ref.kind) ? ref.kind : 'file';
@@ -6132,19 +6197,6 @@ ${bodySections}
 
   function renderMaterialPrimaryAction(ws, node, ref) {
     const idx = materialRefIndex(ws, node, ref);
-    if (ref.kind === 'schema') {
-      const existing = schemaRefLoadedNode(ws, ref);
-      return `<button class="mini-action primary schema-mini-action" data-action="open-schema-reference" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" data-ref="${escapeAttr(idx)}">${existing ? 'Open schema' : 'Load schema'}</button>`;
-    }
-    if (ref.kind === 'trace') {
-      if (ref.loadedNodeId) {
-        return `<button class="mini-action primary" data-action="select-node" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(ref.loadedNodeId)}">Anchor</button>`;
-      }
-      if (ref.rawUrl) {
-        return `<button class="mini-action primary" data-action="load-material-trace" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" data-ref="${escapeAttr(idx)}">Load trace</button>`;
-      }
-      return `<span class="mini-action disabled">Unresolved trace</span>`;
-    }
     if (ref.kind === 'image' && ref.rawUrl) {
       return `<button class="mini-action primary" data-action="open-material-lightbox" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" data-ref="${escapeAttr(idx)}">Preview</button>`;
     }
@@ -6196,7 +6248,7 @@ ${bodySections}
     }
 
     base.kind = materialKindFor(base);
-    if ((base.kind === 'trace' || base.kind === 'schema') && ws) {
+    if ((base.kind === 'trace' || base.kind === 'schema' || base.kind === 'validator') && ws) {
       const existing = sameWorkspacePathLookup(ws, base.path)
         || Array.from(ws.nodeById?.values?.() || []).find((candidate) => candidate.rawUrl === base.rawUrl || candidate.browseUrl === base.browseUrl);
       if (existing) base.loadedNodeId = existing.id;
@@ -6272,8 +6324,9 @@ ${bodySections}
       const next = viewRouteUrl(state);
       const current = `${location.pathname}${location.search}${location.hash}`;
       if (next === current) return;
-      if (kind === 'replace') history.replaceState(state, '', next);
-      else history.pushState(state, '', next);
+      const historyState = routeHistoryState(state, kind);
+      if (kind === 'replace') history.replaceState(historyState, '', next);
+      else history.pushState(historyState, '', next);
       return;
     }
 
@@ -6286,8 +6339,9 @@ ${bodySections}
     const next = routeUrl(state);
     const current = `${location.pathname}${location.search}${location.hash}`;
     if (next === current) return;
-    if (kind === 'replace') history.replaceState(state, '', next);
-    else history.pushState(state, '', next);
+    const historyState = routeHistoryState(state, kind);
+    if (kind === 'replace') history.replaceState(historyState, '', next);
+    else history.pushState(historyState, '', next);
   }
 
   function updateUrlState(options = {}) {
@@ -6301,8 +6355,8 @@ ${bodySections}
     try {
       if (staticDiskMode()) {
         const viewState = decodeViewRouteFromHash();
-        if (viewState) applyViewRouteState(viewState);
-        else if (/^#state=/i.test(location.hash || '')) cleanHashOnly();
+        if (viewState && !dialogRouteSessionClosed(viewState.modal)) applyViewRouteState(viewState);
+        else if (/^#state=/i.test(location.hash || '') || dialogRouteSessionClosed(viewState?.modal)) cleanHashOnly();
         return;
       }
 
@@ -6338,16 +6392,28 @@ ${bodySections}
       if (staticDiskMode()) {
         const state = decodeViewRouteFromHash();
         if (state) {
+          if (dialogRouteSessionClosed(state.modal)) {
+            skipClosedDialogHistoryEntry(state);
+            return;
+          }
           applyViewRouteState(state);
           render();
+          scheduleRouteHistoryScrollRestore('popstate');
         }
         return;
       }
 
       const state = decodeRouteStateFromHash();
       if (!state) return;
+      if (dialogRouteSessionClosed(state.modal)) {
+        skipClosedDialogHistoryEntry(state);
+        return;
+      }
       const restored = await applyRouteState(state, !routeSourcesMatch(state));
-      if (restored) render();
+      if (restored) {
+        render();
+        scheduleRouteHistoryScrollRestore('popstate');
+      }
     } catch (error) {
       toast(`Could not restore browser history state: ${error.message}`, 'warn');
       render();
@@ -6634,31 +6700,64 @@ ${bodySections}
     return null;
   }
 
-  async function scheduleIntegrityVerification(ws) {
-    if (!ws || ws.integrityInFlight) return;
-    ws.integrityInFlight = true;
+  async function scheduleIntegrityVerification(ws, options = {}) {
+    if (!ws) return;
+    const withProgress = Boolean(options.discoveryProgress);
+    if (ws.integrityInFlight) {
+      if (withProgress && ws.integrityInFlightPromise) await ws.integrityInFlightPromise;
+      return;
+    }
+
     let changed = false;
     const cache = ws.integrityCache || {};
-    try {
-      for (const node of ws.nodes || []) {
-        node.workspace = ws;
-        const cacheKey = node.storageKey || node.path;
-        const previous = cache[cacheKey]?.status || node.integrityStatus || '';
-        const result = await verifyNodeIntegrity(node, ws);
-        cache[cacheKey] = result;
-        cache[node.path] = result;
-        node.integrityStatus = result.status;
-        node.integrityStatusLabel = result.label;
-        if (previous !== result.status) changed = true;
+    const nodes = Array.from(ws.nodes || []);
+    const progressEvery = Math.max(1, Number(app.settings.integrityProgressEvery || 4));
+
+    ws.integrityInFlight = true;
+    const work = (async () => {
+      try {
+        if (withProgress) {
+          ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
+            phase: 'integrity',
+            integrityLoaded: 0,
+            integrityTotal: nodes.length
+          });
+          updateDiscoveryProgressDom(ws);
+          await progressYield(ws);
+        }
+
+        for (let index = 0; index < nodes.length; index += 1) {
+          const node = nodes[index];
+          node.workspace = ws;
+          const cacheKey = node.storageKey || node.path;
+          const previous = cache[cacheKey]?.status || node.integrityStatus || '';
+          const result = await verifyNodeIntegrity(node, ws);
+          cache[cacheKey] = result;
+          cache[node.path] = result;
+          node.integrityStatus = result.status;
+          node.integrityStatusLabel = result.label;
+          if (previous !== result.status) changed = true;
+
+          if (withProgress) {
+            ws.discoveryProgress.integrityLoaded = index + 1;
+            ws.discoveryProgress.integrityTotal = nodes.length;
+            updateDiscoveryProgressDom(ws);
+            if (((index + 1) % progressEvery) === 0) await progressYield(ws);
+          }
+        }
+      } catch (error) {
+        ws.logs = ws.logs || [];
+        ws.logs.push(`Integrity verification failed: ${error.message}`);
+      } finally {
+        ws.integrityCache = cache;
+        ws.integrityInFlight = false;
+        ws.integrityInFlightPromise = null;
+        if (changed) render();
       }
-    } catch (error) {
-      ws.logs = ws.logs || [];
-      ws.logs.push(`Integrity verification failed: ${error.message}`);
-    } finally {
-      ws.integrityCache = cache;
-      ws.integrityInFlight = false;
-      if (changed) render();
-    }
+    })();
+
+    ws.integrityInFlightPromise = work;
+    await work;
   }
 
 
@@ -6910,6 +7009,15 @@ ${bodySections}
     </div>`;
   }
 
+  function renderIntegrityLinkKv(label, href, text = '') {
+    const safeHref = safeUrl(href || '');
+    const labelText = text || href || '';
+    return `<div class="integrity-kv">
+      <dt>${escapeHtml(label)}</dt>
+      <dd>${safeHref ? `<a href="${escapeAttr(safeHref)}" target="_blank" rel="noopener noreferrer">${escapeHtml(labelText || safeHref)}</a>` : '—'}</dd>
+    </div>`;
+  }
+
   function renderIntegrityHashTable(diagnostics) {
     const expected = diagnostics.expected || '';
     const hashes = Array.isArray(diagnostics.hashes) ? diagnostics.hashes : [];
@@ -6946,6 +7054,7 @@ ${bodySections}
       `Status Label: ${diagnostics.statusLabel || ''}`,
       '',
       `Method: ${diagnostics.method || ''}`,
+      `Method Definition: ${diagnostics.methodDefinitionUrl || ''}`,
       `Towards: ${diagnostics.towards || ''}`,
       `Expected: ${diagnostics.expected || ''}`,
       '',
@@ -6961,10 +7070,73 @@ ${bodySections}
     ].join('\n');
   }
 
+  function integrityHumanTitle(status) {
+    const labels = {
+      'byte-integrity-verified': 'Byte integrity verified',
+      mismatch: 'Checksum mismatch',
+      'draft-pending': 'No integrity claim yet',
+      'malformed-claim': 'Malformed integrity claim',
+      'target-unavailable': 'Integrity target unavailable',
+      'target-ambiguous': 'Integrity target ambiguous',
+      'method-unsupported': 'Unsupported integrity method',
+      unresolved: 'Integrity not proven yet',
+      pending: 'Integrity check pending',
+      'schema-unverified': 'Schema validation not proven'
+    };
+    return labels[status] || 'Integrity status open';
+  }
+
+  function integrityHumanMessage(diagnostics) {
+    const status = diagnostics?.status || '';
+    if (status === 'byte-integrity-verified') {
+      return `The declared checksum matches the referenced target${diagnostics?.targetLabel ? `: ${diagnostics.targetLabel}` : ''}.`;
+    }
+    if (status === 'mismatch') return 'The declared checksum does not match the exact target available to this viewer.';
+    if (status === 'draft-pending') return 'This artifact does not declare an integrity method entry yet, so there is no checksum claim to verify.';
+    if (status === 'malformed-claim') return 'This artifact has an integrity method entry, but it is incomplete or contains a placeholder-like value.';
+    if (status === 'target-unavailable') return 'The integrity target could not be read in this viewer context.';
+    if (status === 'target-ambiguous') return 'A possible target exists, but this viewer cannot treat it as the exact declared target.';
+    if (status === 'method-unsupported') return 'The artifact names a validation method this viewer does not support yet.';
+    return diagnostics?.statusLabel || diagnostics?.note || 'The browser verifier has not produced a conclusive integrity signal.';
+  }
+
+  function renderIntegrityMeaning(diagnostics) {
+    const status = diagnostics?.status || '';
+    const target = diagnostics?.targetLabel || diagnostics?.towards || 'the declared target';
+    const verifiedItems = status === 'byte-integrity-verified'
+      ? [
+          `The declared checksum matched ${target}.`,
+          'The check used the named byte-integrity method.',
+          diagnostics?.authority ? `Target authority in this viewer: ${diagnostics.authority}.` : ''
+        ]
+      : status === 'draft-pending'
+        ? ['No integrity claim is being made yet.', 'The artifact should be treated as editable or not yet finalized.']
+        : status === 'malformed-claim'
+          ? ['A method entry exists, but it is not a valid claim this viewer can verify.']
+          : ['This viewer has not proven a matching byte-integrity claim.'];
+    const limitationItems = [
+      'This does not verify that the artifact claims are true.',
+      'This does not verify authorship, intent, consent, or semantic correctness.',
+      'This does not prove full historical provenance beyond the declared target and method.'
+    ];
+    const list = (items) => items.filter(Boolean).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+    return `<div class="integrity-meaning-grid">
+      <section class="integrity-meaning-card positive">
+        <h3>What this means</h3>
+        <ul>${list(verifiedItems)}</ul>
+      </section>
+      <section class="integrity-meaning-card limited">
+        <h3>What this does not verify</h3>
+        <ul>${list(limitationItems)}</ul>
+      </section>
+    </div>`;
+  }
+
   function renderIntegrityDiagnosticsModal(modal) {
-    const { ws, node } = findNodeWorkspace(modal.nodeId || '');
+    const { node } = findNodeWorkspace(modal.nodeId || '');
     const title = node?.title || 'Integrity diagnostics';
     const diagnostics = modal.diagnostics || null;
+    const status = diagnostics?.status || '';
 
     return `<div class="modal-backdrop integrity-modal-backdrop">
       <section class="modal-card integrity-modal-card" role="dialog" aria-modal="true" aria-labelledby="integrity-title">
@@ -6978,25 +7150,30 @@ ${bodySections}
         <div class="integrity-diagnostics-body">
           ${modal.loading ? '<p class="empty-small">Computing browser-side integrity diagnostics…</p>' : ''}
           ${diagnostics ? `
-            <div class="integrity-summary ${escapeAttr(diagnostics.status || '')}">
-              <strong>${escapeHtml(diagnostics.status || 'unknown')}</strong>
-              <span>${escapeHtml(diagnostics.statusLabel || diagnostics.note || '')}</span>
+            <div class="integrity-summary ${escapeAttr(status)}">
+              <strong>${escapeHtml(integrityHumanTitle(status))}</strong>
+              <span>${escapeHtml(integrityHumanMessage(diagnostics))}</span>
             </div>
-            <dl class="integrity-kv-grid">
-              ${renderIntegrityKv('Method', diagnostics.method, true)}
-              ${renderIntegrityKv('Towards', diagnostics.towards, true)}
-              ${renderIntegrityKv('Expected', diagnostics.expected, true)}
-              ${renderIntegrityKv('Target', diagnostics.targetLabel)}
-              ${renderIntegrityKv('Target status', diagnostics.targetStatus)}
-              ${renderIntegrityKv('Authority', diagnostics.authority)}
-              ${renderIntegrityKv('Confidence', diagnostics.confidence)}
-              ${renderIntegrityKv('Artifact path', diagnostics.path)}
-            </dl>
-            <h3>Computed variants</h3>
-            ${renderIntegrityHashTable(diagnostics)}
-            <details class="integrity-raw">
-              <summary>Raw diagnostic text</summary>
-              <pre><code>${escapeHtml(integrityDiagnosticsText(diagnostics))}</code></pre>
+            ${renderIntegrityMeaning(diagnostics)}
+            <details class="integrity-raw integrity-technical">
+              <summary>Technical details</summary>
+              <dl class="integrity-kv-grid">
+                ${renderIntegrityKv('Method', diagnostics.method, true)}
+                ${renderIntegrityLinkKv('Method definition', diagnostics.methodDefinitionUrl, diagnostics.methodDefinitionLabel || 'Open validator definition')}
+                ${renderIntegrityKv('Towards', diagnostics.towards, true)}
+                ${renderIntegrityKv('Expected', diagnostics.expected, true)}
+                ${renderIntegrityKv('Target', diagnostics.targetLabel)}
+                ${renderIntegrityKv('Target status', diagnostics.targetStatus)}
+                ${renderIntegrityKv('Authority', diagnostics.authority)}
+                ${renderIntegrityKv('Confidence', diagnostics.confidence)}
+                ${renderIntegrityKv('Artifact path', diagnostics.path)}
+              </dl>
+              <h3>Computed variants</h3>
+              ${renderIntegrityHashTable(diagnostics)}
+              <details class="integrity-raw-text">
+                <summary>Raw diagnostic text</summary>
+                <pre><code>${escapeHtml(integrityDiagnosticsText(diagnostics))}</code></pre>
+              </details>
             </details>
             <div class="modal-actions">
               <button class="tv-btn subtle" data-action="copy-integrity-diagnostics">Copy diagnostics</button>
@@ -7009,12 +7186,37 @@ ${bodySections}
 
   async function computeIntegrityDiagnostics(ws, node) {
     const target = integrityTowardsRef(node);
+    const initialStatus = initialIntegrityStatusForNode(node);
+    const base = {
+      title: node?.title || '',
+      path: node?.path || '',
+      schema: node?.currentSchemaText || node?.currentSchema || '',
+      method: node?.integrity?.method || '',
+      methodDefinitionUrl: validationMethodDefinitionUrl(node?.integrity?.method || '', node?.integrity?.methodHref || ''),
+      methodDefinitionLabel: node?.integrity?.method === TIINEX_SHA256_C14N_METHOD_ID ? 'sha256-base64url-c14n-v1.validator.md' : '',
+      towards: target.raw || node?.integrity?.towards || '',
+      expected: node?.integrity?.value || '',
+      targetStatus: '',
+      targetLabel: '',
+      confidence: '',
+      authority: '',
+      hashes: []
+    };
+
+    if (initialStatus === 'draft-pending' || initialStatus === 'malformed-claim' || initialStatus === 'method-unsupported') {
+      return Object.assign(base, {
+        status: initialStatus,
+        statusLabel: initialIntegrityStatusLabelForNode(node),
+        note: initialIntegrityStatusLabelForNode(node)
+      });
+    }
+
     let result = null;
     try {
       result = await hashIntegrityTarget(ws, node, target);
     } catch (error) {
       result = {
-        status: 'unavailable',
+        status: 'target-unavailable',
         label: `diagnostic computation failed: ${error.message}`,
         hashes: [],
         confidence: '',
@@ -7027,14 +7229,23 @@ ${bodySections}
       : (result?.hash ? [{ variant: result.variant || 'single', hash: result.hash }] : []);
     const expected = node.integrity?.value || '';
     const match = hashes.find((item) => item.hash === expected);
+    const exactTarget = result?.confidence === 'exact' && (result?.authority === 'local-exact' || result?.authority === 'remote-exact' || result?.authority === 'remote-match');
+    const status = match
+      ? 'byte-integrity-verified'
+      : result?.status === 'unavailable'
+        ? 'target-unavailable'
+        : result?.status === 'unresolved'
+          ? 'target-ambiguous'
+          : exactTarget
+            ? 'mismatch'
+            : (node.integrityStatus || result?.status || 'unresolved');
 
-    return {
-      title: node.title || '',
-      path: node.path || '',
-      schema: node.currentSchemaText || node.currentSchema || '',
-      status: match ? 'verified' : (node.integrityStatus || result?.status || 'unresolved'),
+    return Object.assign(base, {
+      status,
       statusLabel: match ? `Matched ${match.variant}` : (node.integrityStatusLabel || result?.label || ''),
-      method: node.integrity?.method || 'sha256-base64url-c14n-v1',
+      method: node.integrity?.method || TIINEX_SHA256_C14N_METHOD_ID,
+      methodDefinitionUrl: validationMethodDefinitionUrl(node.integrity?.method || TIINEX_SHA256_C14N_METHOD_ID, node.integrity?.methodHref || ''),
+      methodDefinitionLabel: node.integrity?.method === TIINEX_SHA256_C14N_METHOD_ID ? 'sha256-base64url-c14n-v1.validator.md' : '',
       towards: target.raw || '',
       expected,
       targetStatus: result?.status || '',
@@ -7043,9 +7254,9 @@ ${bodySections}
       authority: result?.authority || '',
       hashes,
       note: match
-        ? 'Browser verifier found a matching canonical variant.'
-        : 'Browser verifier could not prove a match. Compare this output with the VS Code validator before treating it as a hard failure.'
-    };
+        ? 'Browser verifier found a matching canonical byte-integrity variant.'
+        : 'Browser verifier could not prove a matching byte-integrity claim.'
+    });
   }
 
 
@@ -7134,34 +7345,41 @@ ${bodySections}
 
 
   async function verifyNodeIntegrity(node, ws = null) {
-    if (!node.integrity) return { status: 'missing', label: 'integrity missing' };
-    if (!node.integrity.value) return { status: 'malformed', label: 'integrity malformed' };
+    const initialStatus = initialIntegrityStatusForNode(node);
+    if (initialStatus === 'draft-pending' || initialStatus === 'malformed-claim' || initialStatus === 'method-unsupported') {
+      return { status: initialStatus, label: initialIntegrityStatusLabelForNode(node) };
+    }
+
     const target = integrityTowardsRef(node);
-    if (!target.raw) return { status: 'malformed', label: 'integrity target missing' };
+    if (!target.raw) return { status: 'malformed-claim', label: 'Integrity claim target is missing.' };
 
     try {
       const result = await hashIntegrityTarget(ws || node.workspace || null, node, target);
-      if (result.status === 'unavailable') return { status: 'unavailable', label: result.label };
-      if (result.status === 'unresolved') return { status: 'unresolved', label: result.label };
+      if (result.status === 'unavailable') return { status: 'target-unavailable', label: result.label };
+      if (result.status === 'unresolved') return { status: 'target-ambiguous', label: result.label };
 
       const match = matchingIntegrityHash(result, node.integrity.value);
-      if (match) return { status: 'verified', label: `integrity verified against ${result.label || 'target'} using ${match.variant}` };
+      if (match) return { status: 'byte-integrity-verified', label: `byte integrity verified against ${result.label || 'target'} using ${match.variant}` };
 
       if (result.confidence === 'exact' && (result.authority === 'local-exact' || result.authority === 'remote-exact')) {
-        return { status: 'mismatch', label: `integrity mismatch against exact target ${result.label || ''}`.trim() };
+        return { status: 'mismatch', label: `checksum mismatch against exact target ${result.label || ''}`.trim() };
       }
 
       return {
-        status: 'unresolved',
-        label: `integrity unresolved for ${result.label || 'target'}`
+        status: 'target-ambiguous',
+        label: `integrity target ambiguous for ${result.label || 'target'}`
       };
     } catch (error) {
-      return { status: 'unavailable', label: `integrity target unavailable: ${error.message}` };
+      return { status: 'target-unavailable', label: `integrity target unavailable: ${error.message}` };
     }
   }
 
   function effectiveIntegrityStatus(node) {
-    return node.integrityStatus || (node.integrity ? 'pending' : 'missing');
+    return node?.integrityStatus || initialIntegrityStatusForNode(node);
+  }
+
+  function canOpenIntegrityDiagnostics(node) {
+    return Boolean(node?.id);
   }
 
 
@@ -7169,12 +7387,17 @@ ${bodySections}
 
   function integrityStatusLabel(status) {
     const labels = {
-      verified: 'verified',
+      'byte-integrity-verified': 'byte ok',
+      'draft-pending': 'draft',
       pending: 'open',
+      'target-unavailable': 'target unavailable',
+      'target-ambiguous': 'open',
+      'method-unsupported': 'unsupported',
       unavailable: 'open',
       unresolved: 'open',
-      missing: 'missing',
+      missing: 'no claim',
       malformed: 'malformed',
+      'malformed-claim': 'malformed',
       mismatch: 'mismatch',
       'schema-unverified': 'open'
     };
@@ -7287,10 +7510,10 @@ ${bodySections}
     if (!ws || !node || !diagnostics) return;
 
     const status = diagnostics.status || '';
-    const accepted = new Set(['verified', 'mismatch', 'open', 'unavailable', 'unresolved', 'missing', 'malformed']);
+    const accepted = new Set(['byte-integrity-verified', 'mismatch', 'open', 'target-unavailable', 'target-ambiguous', 'method-unsupported', 'draft-pending', 'malformed-claim', 'unavailable', 'unresolved', 'missing', 'malformed']);
     if (!accepted.has(status)) return;
 
-    const normalized = status === 'open' ? 'unresolved' : status;
+    const normalized = status === 'open' ? 'unresolved' : status === 'unavailable' ? 'target-unavailable' : status === 'malformed' ? 'malformed-claim' : status === 'missing' ? 'draft-pending' : status;
     const label = diagnostics.statusLabel || diagnostics.note || node.integrityStatusLabel || '';
 
     node.integrityStatus = normalized;
@@ -7367,21 +7590,27 @@ ${bodySections}
   function integrityBadge(node) {
     const status = effectiveIntegrityStatus(node);
     const map = {
-      verified: { cls: 'ok', icon: 'fa-circle-check', title: node.integrityStatusLabel || 'Verified within the current viewer scope.' },
+      'byte-integrity-verified': { cls: 'ok', icon: 'fa-circle-check', title: node.integrityStatusLabel || 'Byte-integrity claim matches the declared target.' },
+      'draft-pending': { cls: 'pending draft', icon: 'fa-pen-nib', title: node.integrityStatusLabel || 'No integrity claim is declared yet.' },
       pending: { cls: 'pending', icon: 'fa-hourglass-half', title: 'Verification is still pending.' },
+      'target-unavailable': { cls: 'pending', icon: 'fa-clock', title: node.integrityStatusLabel || 'The declared integrity target is not available in this viewer context.' },
+      'target-ambiguous': { cls: 'pending unresolved', icon: 'fa-circle-question', title: node.integrityStatusLabel || 'The target candidate is ambiguous in this viewer context.' },
+      'method-unsupported': { cls: 'warn', icon: 'fa-puzzle-piece', title: node.integrityStatusLabel || 'The integrity method is not supported by this viewer.' },
       unavailable: { cls: 'pending', icon: 'fa-clock', title: node.integrityStatusLabel || 'No breakage found, but this browser could not complete verification for the current scope.' },
       unresolved: { cls: 'pending unresolved', icon: 'fa-circle-question', title: node.integrityStatusLabel || 'No breakage found, but verification remains open in this browser context.' },
       'schema-unverified': { cls: 'pending schema-unverified', icon: 'fa-scale-balanced', title: node.integrityStatusLabel || 'Schema continuity is declared but not fully audited in this viewer scope.' },
-      missing: { cls: 'danger missing', icon: 'fa-circle-xmark', title: 'No Continuity Integrity footer was parsed.' },
+      missing: { cls: 'pending draft', icon: 'fa-pen-nib', title: 'No integrity claim is declared.' },
       malformed: { cls: 'warn', icon: 'fa-triangle-exclamation', title: node.integrityStatusLabel || 'Integrity footer was present but incomplete.' },
+      'malformed-claim': { cls: 'warn', icon: 'fa-triangle-exclamation', title: node.integrityStatusLabel || 'Integrity claim is incomplete or placeholder-like.' },
       mismatch: { cls: 'danger', icon: 'fa-circle-xmark', title: node.integrityStatusLabel || 'Checksum does not match the exact target in the current verification scope.' }
     };
     const item = map[status] || map.unresolved;
     const label = integrityStatusLabel(status);
-    const actionable = node.integrity ? ' data-action="open-integrity-diagnostics"' : '';
+    const canOpenDiagnostics = canOpenIntegrityDiagnostics(node);
+    const actionable = canOpenDiagnostics ? ' data-action="open-integrity-diagnostics"' : '';
     const nodeAttr = node.id ? ` data-node="${escapeAttr(node.id)}"` : '';
-    const tag = node.integrity ? 'button' : 'span';
-    const type = node.integrity ? ' type="button"' : '';
+    const tag = canOpenDiagnostics ? 'button' : 'span';
+    const type = canOpenDiagnostics ? ' type="button"' : '';
     return `<${tag}${type} class="badge-soft integrity-badge ${item.cls} integrity-diagnostic-trigger" title="${escapeAttr(item.title)}"${actionable}${nodeAttr}><i class="fa-solid ${item.icon}"></i>${escapeHtml(label)}</${tag}>`;
   }
 
@@ -7395,13 +7624,18 @@ ${bodySections}
   function treeIntegrityBadge(node) {
     const status = effectiveIntegrityStatus(node);
     const map = {
-      verified: { cls: 'ok', icon: 'fa-circle-check', title: node.integrityStatusLabel || 'Verified within the current viewer scope.' },
+      'byte-integrity-verified': { cls: 'ok', icon: 'fa-circle-check', title: node.integrityStatusLabel || 'Byte-integrity claim matches the declared target.' },
+      'draft-pending': { cls: 'pending draft', icon: 'fa-pen-nib', title: node.integrityStatusLabel || 'No integrity claim is declared yet.' },
       pending: { cls: 'pending', icon: 'fa-hourglass-half', title: 'Verification is still pending.' },
+      'target-unavailable': { cls: 'pending', icon: 'fa-clock', title: node.integrityStatusLabel || 'The declared integrity target is not available in this viewer context.' },
+      'target-ambiguous': { cls: 'pending unresolved', icon: 'fa-circle-question', title: node.integrityStatusLabel || 'The target candidate is ambiguous in this viewer context.' },
+      'method-unsupported': { cls: 'warn', icon: 'fa-puzzle-piece', title: node.integrityStatusLabel || 'The integrity method is not supported by this viewer.' },
       unavailable: { cls: 'pending', icon: 'fa-clock', title: node.integrityStatusLabel || 'No breakage found, but this browser could not complete verification for the current scope.' },
       unresolved: { cls: 'pending unresolved', icon: 'fa-circle-question', title: node.integrityStatusLabel || 'No breakage found, but verification remains open in this browser context.' },
       'schema-unverified': { cls: 'pending schema-unverified', icon: 'fa-scale-balanced', title: node.integrityStatusLabel || 'Schema continuity is declared but not fully audited in this viewer scope.' },
-      missing: { cls: 'danger missing', icon: 'fa-circle-xmark', title: 'No Continuity Integrity footer was parsed.' },
+      missing: { cls: 'pending draft', icon: 'fa-pen-nib', title: 'No integrity claim is declared.' },
       malformed: { cls: 'warn', icon: 'fa-triangle-exclamation', title: node.integrityStatusLabel || 'Integrity footer was present but incomplete.' },
+      'malformed-claim': { cls: 'warn', icon: 'fa-triangle-exclamation', title: node.integrityStatusLabel || 'Integrity claim is incomplete or placeholder-like.' },
       mismatch: { cls: 'danger', icon: 'fa-circle-xmark', title: node.integrityStatusLabel || 'Checksum does not match the exact target in the current verification scope.' }
     };
     const item = map[status] || map.unresolved;
@@ -7683,8 +7917,7 @@ ${bodySections}
   // restrict them to discovery/config handling only.
 
   function isIndexableTiinexMarkdownPath(path) {
-    const value = String(path || '');
-    return /\.(trace|schema|workspace)\.md$/i.test(value);
+    return isTiinexMarkdownArtifactPath(path);
   }
 
   function shouldIndexAsTrace(path, content) {
@@ -7722,7 +7955,7 @@ ${bodySections}
 
 
   function isLineageArtifactPath(value) {
-    return /\.(trace|schema|workspace)\.md(?:$|[?#])/i.test(String(value || ''));
+    return isTiinexMarkdownArtifactPath(value);
   }
 
   function candidateLooksTrace(candidate) {
@@ -7981,25 +8214,11 @@ ${bodySections}
 
 
 
-  function staticFileOrigin() {
-    return window.location?.protocol === 'file:' || window.location?.origin === 'null';
-  }
-
-  function githubTreeApiCorsUnsafe() {
-    // GitHub API tree endpoint does not reliably allow origin:null. Static viewer
-    // mode must not depend on it.
-    return staticFileOrigin();
-  }
-
   function pathLooksUsefulLineageArtifact(path) {
-    return /\.(trace|schema|workspace)\.md$/i.test(String(path || ''));
+    return isTiinexMarkdownArtifactPath(path);
   }
 
   async function fetchJson(url) {
-    // Guard direct accidental GitHub API tree calls in static mode too.
-    if (githubTreeApiCorsUnsafe() && /^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+\/git\/trees\//i.test(String(url || ''))) {
-      throw new Error('GitHub API tree discovery is disabled in static file mode; use raw file links, hosted mode, or an explicit workspace entrypoint.');
-    }
     const response = await fetch(url, { mode: 'cors', credentials: 'omit' });
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     return await response.json();
@@ -8102,6 +8321,7 @@ ${bodySections}
     if (typeof ws.displayOptions.leavesOnly !== 'boolean') ws.displayOptions.leavesOnly = true;
     if (typeof ws.displayOptions.showTrace !== 'boolean') ws.displayOptions.showTrace = true;
     if (typeof ws.displayOptions.showSchema !== 'boolean') ws.displayOptions.showSchema = true;
+    if (typeof ws.displayOptions.showValidator !== 'boolean') ws.displayOptions.showValidator = true;
     if (typeof ws.displayOptions.showWorkspace !== 'boolean') ws.displayOptions.showWorkspace = true;
     if (typeof ws.displayOptions.showAssets !== 'boolean') ws.displayOptions.showAssets = false;
     return ws.displayOptions;
@@ -8111,9 +8331,11 @@ ${bodySections}
     const path = String(node?.path || '');
     if (/\.workspace\.md$/i.test(path)) return 'workspace';
     if (/\.schema\.md$/i.test(path)) return 'schema';
+    if (/\.validator\.md$/i.test(path)) return 'validator';
     if (/\.trace\.md$/i.test(path)) return 'trace';
     const schema = schemaKey(node?.currentSchemaText || node?.currentSchema || '');
     if (schema === 'workspace') return 'workspace';
+    if (/validation\.method|validator/i.test(String(node?.currentSchemaText || node?.currentSchema || path || ''))) return 'validator';
     if (/schema/i.test(String(node?.currentSchemaText || node?.currentSchema || ''))) return 'schema';
     return 'trace';
   }
@@ -8123,6 +8345,7 @@ ${bodySections}
     const kind = artifactDisplayKind(node);
     if (kind === 'workspace') return opts.showWorkspace;
     if (kind === 'schema') return opts.showSchema;
+    if (kind === 'validator') return opts.showValidator;
     return opts.showTrace;
   }
 
@@ -8159,10 +8382,12 @@ ${bodySections}
     if (opts.leavesOnly) count += 1;
     if (!opts.showTrace) count += 1;
     if (!opts.showSchema) count += 1;
+    if (!opts.showValidator) count += 1;
     if (!opts.showWorkspace) count += 1;
     if (opts.showAssets) count += 1;
     return count;
   }
+
   registerRenderModalWrapper(function renderModalWithDisplayOptions(modal, next) {
     if (modal?.type === 'display-options') return renderDisplayOptionsModal(modal);
     return next(modal);
@@ -8226,6 +8451,15 @@ ${bodySections}
       const opts = workspaceDisplayOptions(ws);
       opts[key] = Boolean(event.currentTarget.checked);
       render();
+      return;
+    }
+    if (action === 'toggle-app-setting') {
+      event.stopPropagation();
+      const key = event.currentTarget.dataset.key || '';
+      if (setAppSetting(key, Boolean(event.currentTarget.checked))) {
+        if (key === 'wizardDraftHashState' && app.modal?.type === 'artifact-wizard') setRouteState('replace');
+        render();
+      }
       return;
     }
     return next(event);
@@ -8293,6 +8527,14 @@ ${bodySections}
         </span>
         <input type="checkbox" data-action="toggle-display-option" data-ws="${escapeAttr(ws.id)}" data-key="${escapeAttr(key)}" ${checked ? 'checked' : ''}>
       </label>`;
+    const appRow = (key, label, help, checked) => `
+      <label class="display-option-row app-setting-row">
+        <span>
+          <strong>${escapeHtml(label)}</strong>
+          <small>${escapeHtml(help)}</small>
+        </span>
+        <input type="checkbox" data-action="toggle-app-setting" data-key="${escapeAttr(key)}" ${checked ? 'checked' : ''}>
+      </label>`;
 
     return `
       <div class="modal-backdrop-custom focus-modal display-options-backdrop" role="dialog" aria-modal="true" aria-labelledby="display-options-title">
@@ -8315,8 +8557,11 @@ ${bodySections}
             <div class="display-options-section-label">Artifact suffixes</div>
             ${row('showTrace', 'Show .trace.md', 'Regular trace lineage artifacts.', opts.showTrace)}
             ${row('showSchema', 'Show .schema.md', 'Schema lineage artifacts and format rules.', opts.showSchema)}
+            ${row('showValidator', 'Show .validator.md', 'Validation method definitions used by integrity entries.', opts.showValidator)}
             ${row('showWorkspace', 'Show .workspace.md', 'Workspace entrypoints as lineage artifacts.', opts.showWorkspace)}
             ${row('showAssets', 'Show assets', 'Imported non-lineage files such as images, PDFs, zip files, and supporting material.', opts.showAssets)}
+            <div class="display-options-section-label">Link sharing</div>
+            ${appRow('wizardDraftHashState', 'Save wizard draft in URL hash', 'Stores bounded wizard text in the client-side #fragment so copied links can reopen the draft. Turn off to keep links to dialog context only.', wizardRouteDraftHashEnabled())}
           </div>
         </div>
       </div>`;
@@ -8351,6 +8596,7 @@ ${bodySections}
       truncated: false,
       tracePaths: allPaths,
       schemaPaths: allPaths.filter((path) => /\.schema\.md$/i.test(path)),
+      validatorPaths: allPaths.filter((path) => /\.validator\.md$/i.test(path)),
       workspacePaths: allPaths.filter((path) => /\.workspace\.md$/i.test(path)),
       numericLeafGuess: traceOnly.filter((path) => maybeLeafByNumericName(path, traceOnly)),
       discoverySource: 'jsdelivr-flat'
@@ -8361,11 +8607,37 @@ ${bodySections}
     const resolvedRef = ref || 'master';
     const roots = Array.isArray(rootPath) ? rootPath.map(normalizeRepoPath).filter(Boolean) : parseRootPaths(rootPath);
     const effectiveRoots = roots.length ? roots : ['.topics'];
+    const api = `https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(resolvedRef)}?recursive=1`;
 
-    if (githubTreeApiCorsUnsafe()) {
+    try {
+      const data = await fetchJson(api);
+      const tree = Array.isArray(data.tree) ? data.tree : [];
+      const allPaths = tree
+        .filter((item) => item && item.type === 'blob' && pathLooksUsefulLineageArtifact(item.path || ''))
+        .map((item) => item.path)
+        .filter((path) => effectiveRoots.some((root) => !root || path === root || path.startsWith(`${root}/`)))
+        .sort((a, b) => a.localeCompare(b));
+      const traceOnly = allPaths.filter((path) => /\.trace\.md$/i.test(path));
+
+      return {
+        repo,
+        ref: resolvedRef,
+        rootPath: effectiveRoots[0] || '',
+        rootPaths: effectiveRoots,
+        truncated: Boolean(data.truncated),
+        tracePaths: allPaths,
+        schemaPaths: allPaths.filter((path) => /\.schema\.md$/i.test(path)),
+        validatorPaths: allPaths.filter((path) => /\.validator\.md$/i.test(path)),
+        workspacePaths: allPaths.filter((path) => /\.workspace\.md$/i.test(path)),
+        numericLeafGuess: traceOnly.filter((path) => maybeLeafByNumericName(path, traceOnly)),
+        discoverySource: 'github-api'
+      };
+    } catch (apiError) {
       try {
-        return await discoverGitHubTracePathsViaJsdelivr(repo, resolvedRef, effectiveRoots);
-      } catch (error) {
+        const fallback = await discoverGitHubTracePathsViaJsdelivr(repo, resolvedRef, effectiveRoots);
+        fallback.note = `GitHub tree API failed; static flat fallback used: ${apiError.message}`;
+        return fallback;
+      } catch (fallbackError) {
         return {
           repo,
           ref: resolvedRef,
@@ -8374,35 +8646,13 @@ ${bodySections}
           truncated: false,
           tracePaths: [],
           schemaPaths: [],
+          validatorPaths: [],
           workspacePaths: [],
           numericLeafGuess: [],
-          note: `Static Git discovery fallback failed: ${error.message}`
+          note: `GitHub tree discovery failed: ${apiError.message}; fallback failed: ${fallbackError.message}`
         };
       }
     }
-
-    const api = `https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(resolvedRef)}?recursive=1`;
-    const data = await fetchJson(api);
-    const tree = Array.isArray(data.tree) ? data.tree : [];
-    const allPaths = tree
-      .filter((item) => item && item.type === 'blob' && pathLooksUsefulLineageArtifact(item.path || ''))
-      .map((item) => item.path)
-      .filter((path) => effectiveRoots.some((root) => !root || path === root || path.startsWith(`${root}/`)))
-      .sort((a, b) => a.localeCompare(b));
-    const traceOnly = allPaths.filter((path) => /\.trace\.md$/i.test(path));
-
-    return {
-      repo,
-      ref: resolvedRef,
-      rootPath: effectiveRoots[0] || '',
-      rootPaths: effectiveRoots,
-      truncated: Boolean(data.truncated),
-      tracePaths: allPaths,
-      schemaPaths: allPaths.filter((path) => /\.schema\.md$/i.test(path)),
-      workspacePaths: allPaths.filter((path) => /\.workspace\.md$/i.test(path)),
-      numericLeafGuess: traceOnly.filter((path) => maybeLeafByNumericName(path, traceOnly)),
-      discoverySource: 'github-api'
-    };
   }
 
   function renderPolicyDocumentModal(modal) {
@@ -8651,7 +8901,7 @@ ${bodySections}
 
 
   function isLineageMarkdownPath(path) {
-    return /\.(trace|schema|workspace)\.md$/i.test(String(path || ''));
+    return /\.(trace|schema|workspace|validator)\.md$/i.test(String(path || ''));
   }
 
   function fileMatchesSourcePath(file, sourceId, path) {
@@ -9010,7 +9260,7 @@ ${body}
 
 ---
 
-${integrityFooter('self', 'pending')}`;
+${integrityFooter()}`;
   }
   registerRenderModalWrapper(function renderModalWithEditAdd(modal, next) {
     if (modal?.type === 'edit-node') return renderEditNodeModal(modal);
@@ -9080,10 +9330,11 @@ ${integrityFooter('self', 'pending')}`;
     return file;
   }
 
-  function saveNodeEdit(ws, node, text) {
+  async function saveNodeEdit(ws, node, text) {
     const path = node.path || node.file?.path || 'edited.trace.md';
     const sourceId = node.sourceId || node.file?.sourceId || 'local';
-    const file = upsertWorkspaceTextFile(ws, path, text, sourceId);
+    const finalizedText = await finalizeSavedLocalIntegrity(ws, path, text, { existingNode: node });
+    const file = upsertWorkspaceTextFile(ws, path, finalizedText, sourceId);
     // Replace preserved markdown asset too so export/preview sees the edited text.
     const assetKey = sourceFileKey(sourceId, path, false);
     ws.assets = ws.assets || new Map();
@@ -9092,7 +9343,7 @@ ${integrityFooter('self', 'pending')}`;
       sourceId,
       sourceKind: file.sourceKind,
       sourceLabel: file.sourceLabel,
-      text,
+      text: finalizedText,
       mime: 'text/markdown',
       kind: 'text'
     });
@@ -9131,7 +9382,7 @@ ${integrityFooter('self', 'pending')}`;
       const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
       const node = ws?.nodeById?.get?.(event.currentTarget.dataset.node || app.modal?.nodeId || '');
       if (!ws || !node) return toast('No editable node selected.', 'warn');
-      saveNodeEdit(ws, node, app.modal?.text || '');
+      await saveNodeEdit(ws, node, app.modal?.text || '');
       app.modal = null;
       if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
       if (typeof setRouteState === 'function') setRouteState('replace');
@@ -9161,7 +9412,8 @@ ${integrityFooter('self', 'pending')}`;
       if (error) return toast(error, 'warn');
       const text = app.modal?.text || defaultArtifactTemplate(kind, path, app.modal?.title || '');
       if (workspaceHasPathInSource(ws, 'local', path)) return toast('That local path already exists. Edit or remove it first.', 'warn');
-      upsertWorkspaceTextFile(ws, path, text, 'local');
+      const finalizedText = await finalizeSavedLocalIntegrity(ws, path, text, { parentNodeId: app.modal?.parentNodeId || app.modal?.continuationOf || '' });
+      upsertWorkspaceTextFile(ws, path, finalizedText, 'local');
       computeWorkspaceIndex(ws);
       const node = Array.from(ws.nodeById?.values?.() || []).find((candidate) => sameImportedPath(candidate.path, path));
       if (node) ws.selectedNodeId = node.id;
@@ -9842,13 +10094,89 @@ ${created ? `  - Created At: ${created}\n` : ''}  - Trace: ${trace}
 ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
   }
 
-  function integrityFooter(towards = 'self', value = 'pending') {
+  function integrityFooter(towards = '', value = '') {
+    if (!String(value || '').trim()) {
+      return `# Continuity Integrity
+`;
+    }
     return `# Continuity Integrity
 
-- sha256-base64url-c14n-v1
-  - Towards: ${towards}
+- ${validationMethodEntryLabel()}
+  - Towards: ${towards || 'self'}
   - Value: ${value}
 `;
+  }
+
+  function markdownWithIntegrityFooter(markdown, footer) {
+    const normalized = normalizeNewlines(markdown || '').trimEnd();
+    const heading = normalized.match(/^# Continuity Integrity\s*$/m);
+    let base = heading ? normalized.slice(0, heading.index).trimEnd() : normalized;
+    if (!base.trimEnd().endsWith('---')) base = `${base}\n\n---`.trimStart();
+    return `${base}\n\n${String(footer || integrityFooter()).trimEnd()}\n`;
+  }
+
+  async function markdownWithSelfIntegrity(markdown) {
+    const draft = markdownWithIntegrityFooter(markdown, integrityFooter());
+    const value = await traceableContinuityChecksumSha256(draft);
+    if (!value) return draft;
+    return markdownWithIntegrityFooter(draft, integrityFooter('self', value));
+  }
+
+  function markdownDeclaresContinuityParent(markdown) {
+    const fields = extractEnvelopeFields(normalizeNewlines(markdown || ''));
+    return Boolean(fields.parent?.Trace || fields.parent?.['Parent Trace'] || fields.parent?.Origin);
+  }
+
+  function markdownLooksAuthorableTiinexArtifact(markdown) {
+    return looksLikeTraceMarkdown(markdown) || /^#\s+Continuity Integrity\s*$/m.test(markdown || '');
+  }
+
+  function nodeMarkdownForIntegrity(node) {
+    return node?.rawMarkdown || node?.file?.text || node?.file?.content || node?.text || node?.content || '';
+  }
+
+  function integrityTowardsIsSelf(towards) {
+    const raw = String(towards || '').trim();
+    if (!raw) return false;
+    const link = raw.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    const value = (link ? link[2] || link[1] : raw).trim().toLowerCase();
+    return value === 'self';
+  }
+
+  async function markdownWithParentTargetIntegrity(parent, childPath, markdown) {
+    const parentMarkdown = nodeMarkdownForIntegrity(parent);
+    if (!parent || !parentMarkdown) return markdownWithIntegrityFooter(markdown, integrityFooter());
+    const towards = parentTraceReferenceForPath(parent, childPath);
+    const value = await traceableContinuityChecksumSha256(parentMarkdown);
+    if (!value) return markdownWithIntegrityFooter(markdown, integrityFooter());
+    return markdownWithIntegrityFooter(markdown, integrityFooter(towards, value));
+  }
+
+  async function finalizeCreatedArtifactIntegrity(ws, artifact, modal) {
+    const path = canonicalWorkspacePath(artifact?.path || modal?.path || '');
+    const text = artifact?.text || '';
+    if (!markdownLooksAuthorableTiinexArtifact(text)) return text;
+    const parent = wizardNodeById(ws, modal?.parentNodeId) || null;
+    if (parent) return markdownWithParentTargetIntegrity(parent, path, text);
+    return markdownWithSelfIntegrity(text);
+  }
+
+  async function finalizeSavedLocalIntegrity(ws, path, markdown, context = {}) {
+    const text = normalizeNewlines(markdown || '');
+    if (!markdownLooksAuthorableTiinexArtifact(text)) return text;
+
+    const parent = context.parentNodeId ? ws?.nodeById?.get?.(context.parentNodeId) : null;
+    if (parent) return markdownWithParentTargetIntegrity(parent, path, text);
+
+    const integrity = parseIntegrity(text);
+    if (!integrityHasClaim(integrity)) {
+      return markdownDeclaresContinuityParent(text) ? markdownWithIntegrityFooter(text, integrityFooter()) : markdownWithSelfIntegrity(text);
+    }
+
+    if (integrity.placeholderValue || !integrity.method || !integrity.towards || !integrity.value) return text;
+    if (integrity.method !== TIINEX_SHA256_C14N_METHOD_ID) return text;
+    if (!integrityTowardsIsSelf(integrity.towards)) return text;
+    return markdownWithSelfIntegrity(text);
   }
 
 
@@ -9913,6 +10241,262 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     }
   }
 
+
+  function workspaceRouteIndex(wsId) {
+    const index = app.workspaces.findIndex((ws) => ws.id === wsId);
+    return index >= 0 ? index : Math.max(0, workspaceIndex(app.activeWorkspaceId));
+  }
+
+
+  const WIZARD_ROUTE_DRAFT_MAX_CHARS = 9000;
+  const WIZARD_ROUTE_DRAFT_MAX_FIELD_CHARS = 1800;
+  const WIZARD_ROUTE_DRAFT_MAX_BODY_CHARS = 4200;
+
+  function trimRouteDraftText(value, max = WIZARD_ROUTE_DRAFT_MAX_FIELD_CHARS) {
+    const text = String(value || '');
+    return text.length > max ? text.slice(0, max) : text;
+  }
+
+  function dialogRouteSessionId(modal, prefix = 'dialog') {
+    if (!modal || typeof modal !== 'object') return '';
+    if (!modal.routeSessionId) modal.routeSessionId = uid(`${prefix}-session`);
+    return modal.routeSessionId;
+  }
+
+  function markDialogRouteSessionClosed(modal) {
+    const id = modal?.routeSessionId || modal?.sessionId || '';
+    if (id) app.closedDialogRouteSessions.add(id);
+  }
+
+  function dialogRouteSessionClosed(routeModal) {
+    const id = routeModal?.sessionId || routeModal?.routeSessionId || '';
+    return Boolean(id && app.closedDialogRouteSessions?.has?.(id));
+  }
+
+  function safeWizardRouteFormFields(modal) {
+    const fields = modal?.formFields && typeof modal.formFields === 'object' ? modal.formFields : null;
+    if (!fields) return null;
+    const result = {};
+    for (const [key, value] of Object.entries(fields)) {
+      if (typeof value !== 'string') continue;
+      result[key] = trimRouteDraftText(value);
+    }
+    return Object.keys(result).length ? result : null;
+  }
+
+  function safeWizardRouteEvidenceAttachments(modal) {
+    const items = Array.isArray(modal?.evidenceAttachments) ? modal.evidenceAttachments : [];
+    const safe = items
+      .filter((item) => item && item.kind === 'url')
+      .map((item) => ({
+        id: item.id || evidenceAttachmentId(),
+        kind: 'url',
+        url: trimRouteDraftText(item.url, 1200),
+        label: trimRouteDraftText(item.label, 800),
+        representation: trimRouteDraftText(item.representation, 400),
+        notes: trimRouteDraftText(item.notes, 1200),
+        limits: trimRouteDraftText(item.limits, 1200)
+      }));
+    return safe.length ? safe : null;
+  }
+
+  function safeWizardRouteDraft(modal) {
+    if (!wizardRouteDraftHashEnabled()) return null;
+    if (!modal || modal.type !== 'artifact-wizard') return null;
+    const draft = {};
+    if (modal.title) draft.title = trimRouteDraftText(modal.title);
+    if (modal.summary) draft.summary = trimRouteDraftText(modal.summary);
+    if (typeof modal.body === 'string' && modal.body) draft.body = trimRouteDraftText(modal.body, WIZARD_ROUTE_DRAFT_MAX_BODY_CHARS);
+    const formFields = safeWizardRouteFormFields(modal);
+    if (formFields) draft.formFields = formFields;
+    const evidenceAttachments = safeWizardRouteEvidenceAttachments(modal);
+    if (evidenceAttachments) draft.evidenceAttachments = evidenceAttachments;
+    if (!Object.keys(draft).length) return null;
+    return JSON.stringify(draft).length <= WIZARD_ROUTE_DRAFT_MAX_CHARS ? draft : null;
+  }
+
+  function applyWizardRouteDraft(modal, draft) {
+    if (!modal || !draft || typeof draft !== 'object') return modal;
+    if (typeof draft.title === 'string') modal.title = trimRouteDraftText(draft.title);
+    if (typeof draft.summary === 'string') modal.summary = trimRouteDraftText(draft.summary);
+    if (typeof draft.body === 'string') modal.body = trimRouteDraftText(draft.body, WIZARD_ROUTE_DRAFT_MAX_BODY_CHARS);
+    if (draft.formFields && typeof draft.formFields === 'object') {
+      modal.formFields = {};
+      for (const [key, value] of Object.entries(draft.formFields)) {
+        if (typeof value === 'string') modal.formFields[key] = trimRouteDraftText(value);
+      }
+    }
+    if (Array.isArray(draft.evidenceAttachments)) {
+      modal.evidenceAttachments = draft.evidenceAttachments
+        .filter((item) => item && item.kind === 'url')
+        .map((item) => ({
+          id: item.id || evidenceAttachmentId(),
+          kind: 'url',
+          url: trimRouteDraftText(item.url, 1200),
+          label: trimRouteDraftText(item.label, 800),
+          representation: trimRouteDraftText(item.representation, 400) || 'web page',
+          notes: trimRouteDraftText(item.notes, 1200),
+          limits: trimRouteDraftText(item.limits, 1200)
+        }));
+    }
+    return modal;
+  }
+
+  function scheduleWizardRouteDraftReplace() {
+    if (!wizardRouteDraftHashEnabled()) return;
+    if (!app.modal || app.modal.type !== 'artifact-wizard') return;
+    if (app.routing?.restoring || app.isBootingFromUrl) return;
+    clearTimeout(app.wizardRouteDraftTimer);
+    app.wizardRouteDraftTimer = setTimeout(() => {
+      if (!app.modal || app.modal.type !== 'artifact-wizard') return;
+      setRouteState('replace');
+    }, 120);
+  }
+
+  function closedDialogCleanRouteState(state) {
+    if (!state || typeof state !== 'object') return null;
+    return Object.assign({}, state, { modal: null });
+  }
+
+  function closedDialogRouteUrl(state) {
+    const clean = closedDialogCleanRouteState(state);
+    if (!clean) return `${location.pathname}${location.search}`;
+    return clean.kind === 'view' ? viewRouteUrl(clean) : routeUrl(clean);
+  }
+
+  function skipClosedDialogHistoryEntry(state) {
+    const clean = closedDialogCleanRouteState(state);
+    if (!clean || app.routing?.skippingClosedDialogHistory) return false;
+    app.modal = null;
+    app.pendingRouteModal = null;
+    app.routing.skippingClosedDialogHistory = true;
+    history.replaceState(routeHistoryState(clean, 'replace'), '', closedDialogRouteUrl(state));
+    const direction = Number(app.routing?.popDirection || -1) || -1;
+    setTimeout(() => {
+      try {
+        history.go(direction);
+      } catch (_) {
+        render();
+      } finally {
+        setTimeout(() => { app.routing.skippingClosedDialogHistory = false; }, 0);
+      }
+    }, 0);
+    return true;
+  }
+
+  function closeActiveModalRoute(options = {}) {
+    const modal = app.modal;
+    if (modal) markDialogRouteSessionClosed(modal);
+    app.modal = null;
+    app.pendingRouteModal = null;
+    clearTimeout(app.wizardRouteDraftTimer);
+    if (options.updateRoute !== false) setRouteState('replace');
+    if (options.render !== false) render();
+  }
+
+  function routeNodeDescriptor(node) {
+    if (!node) return null;
+    return {
+      selectedNodeId: node.id || '',
+      selectedPath: node.path || '',
+      selectedTitle: node.title || ''
+    };
+  }
+
+  function resolveRouteNodeDescriptor(ws, descriptor) {
+    if (!descriptor) return null;
+    return resolveRouteSelectedNode(ws, {
+      selectedNodeId: descriptor.selectedNodeId || descriptor.nodeId || '',
+      selectedPath: descriptor.selectedPath || descriptor.path || '',
+      selectedTitle: descriptor.selectedTitle || descriptor.title || '',
+      mode: 'lineage'
+    });
+  }
+
+  function routeModalState() {
+    const modal = app.modal;
+    if (!modal || !modal.type) return null;
+    const wsIndex = workspaceRouteIndex(modal.wsId || app.activeWorkspaceId || '');
+    const ws = app.workspaces[wsIndex] || getWorkspace(modal.wsId || app.activeWorkspaceId || '');
+
+    if ((modal.type === 'detail' || modal.type === 'markdown') && ws) {
+      const node = ws.nodeById?.get?.(modal.nodeId || '');
+      if (!node) return null;
+      return { type: modal.type, sessionId: dialogRouteSessionId(modal, modal.type), wsIndex, node: routeNodeDescriptor(node) };
+    }
+
+    if (modal.type === 'artifact-wizard' && ws) {
+      const includeDraftState = wizardRouteDraftHashEnabled();
+      return {
+        type: 'artifact-wizard',
+        sessionId: dialogRouteSessionId(modal, 'wizard'),
+        wsIndex,
+        mode: modal.mode || 'new',
+        schemaId: modal.schemaId || 'tiinex.topic.v1',
+        wizardStep: wizardStep(modal),
+        parent: routeNodeDescriptor(wizardNodeById(ws, modal.parentNodeId)),
+        referenced: routeNodeDescriptor(wizardNodeById(ws, modal.referencedNodeId)),
+        title: includeDraftState ? (modal.title || '') : '',
+        summary: includeDraftState ? (modal.summary || '') : '',
+        folderPath: includeDraftState ? (modal.folderPath || '') : '',
+        draft: includeDraftState ? safeWizardRouteDraft(modal) : null
+      };
+    }
+
+    return null;
+  }
+
+  function applyRouteModalState(state) {
+    if (dialogRouteSessionClosed(state)) {
+      app.pendingRouteModal = null;
+      app.modal = null;
+      return;
+    }
+    app.pendingRouteModal = state && state.type ? state : null;
+    app.modal = null;
+    resolvePendingRouteModal();
+  }
+
+  function resolvePendingRouteModal() {
+    const routeModal = app.pendingRouteModal;
+    if (!routeModal || app.modal) return;
+    const index = Math.max(0, Math.min(Number(routeModal.wsIndex || 0), app.workspaces.length - 1));
+    const ws = app.workspaces[index];
+    if (!ws) return;
+
+    if (routeModal.type === 'detail' || routeModal.type === 'markdown') {
+      const node = resolveRouteNodeDescriptor(ws, routeModal.node);
+      if (!node) return;
+      app.modal = { type: routeModal.type, routeSessionId: routeModal.sessionId || '', wsId: ws.id, nodeId: node.id };
+      app.pendingRouteModal = null;
+      return;
+    }
+
+    if (routeModal.type === 'artifact-wizard') {
+      const parent = resolveRouteNodeDescriptor(ws, routeModal.parent);
+      const referenced = resolveRouteNodeDescriptor(ws, routeModal.referenced);
+      if (routeModal.parent && !parent) return;
+      if (routeModal.referenced && !referenced) return;
+      const schemaId = schemaOptionById(routeModal.schemaId || 'tiinex.topic.v1').id;
+      const option = schemaOptionById(schemaId);
+      app.modal = applyWizardRouteDraft({
+        type: 'artifact-wizard',
+        routeSessionId: routeModal.sessionId || '',
+        wsId: ws.id,
+        mode: routeModal.mode || 'new',
+        parentNodeId: parent?.id || '',
+        referencedNodeId: referenced?.id || '',
+        schemaId,
+        title: routeModal.title || '',
+        summary: routeModal.summary || '',
+        body: option.body,
+        wizardStep: normalizeWizardRouteStep(routeModal.wizardStep || 'type'),
+        folderPath: routeModal.folderPath ? normalizedFolderPath(routeModal.folderPath) : ''
+      }, routeModal.draft);
+      app.pendingRouteModal = null;
+    }
+  }
+
   function viewRouteState() {
     const activeIndex = Math.max(0, app.workspaces.findIndex((ws) => ws.id === app.activeWorkspaceId));
     return {
@@ -9920,6 +10504,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
       kind: 'view',
       activeIndex,
       workspaceOffset: Number(app.workspaceOffset || 0),
+      modal: routeModalState(),
       workspaces: app.workspaces.map((ws) => {
         const selected = selectedNodeRouteDescriptor(ws);
         return {
@@ -9959,6 +10544,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     app.activeWorkspaceId = app.workspaces[activeIndex]?.id || app.workspaces[0]?.id || null;
     app.workspaceOffset = Math.max(0, Math.min(Number(state.workspaceOffset || activeIndex || 0), maxOffset));
     if (app.activeWorkspaceId) focusWorkspaceWindow(app.activeWorkspaceId);
+    applyRouteModalState(state.modal || null);
     return true;
   }
 
@@ -9967,6 +10553,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
       v: 156,
       activeIndex: Math.max(0, workspaceIndex(app.activeWorkspaceId)),
       workspaceOffset: app.workspaceOffset || 0,
+      modal: routeModalState(),
       sources: app.workspaces.map((ws) => {
         const selected = selectedNodeRouteDescriptor(ws);
         return {
@@ -10003,6 +10590,8 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
 
   registerRenderWrapper(function renderWithRouteSelection(next) {
     resolvePendingSelectedRoutes();
+    resolvePendingRouteModal();
+    if (startupHasExplicitRouteModal()) reconcileStartupExplicitRouteModal();
     return next();
   });
 
@@ -10044,6 +10633,248 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
 
 
 
+  const SCHEMA_CREATE_POLICY_FAMILIES = Object.freeze([
+    'continuity-envelope',
+    'core-artifact',
+    'relation-validation-governance',
+    'runtime-family',
+    'reduction-disclosure-privacy',
+    'traversal-runtime',
+    'packaging-recovery'
+  ]);
+
+  const SCHEMA_CREATE_POLICY_MANUAL_CREATABILITY = Object.freeze([
+    'yes',
+    'no',
+    'advanced',
+    'abstract'
+  ]);
+
+  const SCHEMA_CREATE_POLICY_RELATIONSHIP_CREATABILITY = Object.freeze([
+    'yes',
+    'no',
+    'advanced'
+  ]);
+
+  const SCHEMA_CREATE_POLICY_UI_SURFACES = Object.freeze([
+    'ordinary-wizard',
+    'workspace-create',
+    'advanced-candidate',
+    'context-only',
+    'not-suitable'
+  ]);
+
+  const SCHEMA_CREATE_POLICY_REQUIRED_KEYS = Object.freeze([
+    'id',
+    'label',
+    'family',
+    'schemaPath',
+    'schemaPermalink',
+    'parentSchema',
+    'role',
+    'manuallyCreatable',
+    'creatableAsContinuation',
+    'creatableAsReference',
+    'uiSurface',
+    'rationale'
+  ]);
+
+  const SCHEMA_CREATE_POLICY_PUBLIC_KEYS = Object.freeze([
+    ...SCHEMA_CREATE_POLICY_REQUIRED_KEYS,
+    'dependsOn'
+  ]);
+
+  const SCHEMA_CREATE_POLICY_ORDER = Object.freeze([
+    'tiinex.root.v1',
+    'tiinex.topic.v1',
+    'tiinex.task.v1',
+    'tiinex.evidence.v1',
+    'tiinex.feedback.v1',
+    'tiinex.decision.v1',
+    'tiinex.pointer.v1',
+    'tiinex.signal.v1',
+    'tiinex.lineage.upgrade.deferral.v1',
+    'tiinex.workspace.v1',
+    'tiinex.relation.v1',
+    'tiinex.validation.method.v1',
+    'tiinex.schema.family.v1',
+    'tiinex.definition.v1',
+    'tiinex.capability.v1',
+    'tiinex.runtime.v1',
+    'tiinex.ai.runtime.v1',
+    'tiinex.machine.runtime.v1',
+    'tiinex.reduction.v1',
+    'tiinex.redaction.v1',
+    'tiinex.privacy.boundary.v1',
+    'tiinex.consent.v1',
+    'tiinex.attestation.v1',
+    'tiinex.external.payload.v1',
+    'tiinex.traversal.runtime.v1',
+    'tiinex.quantum.traversal.runtime.v1',
+    'tiinex.archive.v1',
+    'tiinex.zip.v1',
+    'tiinex.encrypted.v1',
+    'tiinex.broken.v1'
+  ]);
+
+  function validateSchemaCreatePolicyRegistryContract(registry, order) {
+    const ids = new Set(order || []);
+    for (const id of order || []) {
+      const def = registry?.[id];
+      if (!def) throw new Error(`Missing schema create policy entry: ${id}`);
+      if (def.id !== id) throw new Error(`Schema create policy id mismatch: ${id}`);
+    }
+    for (const [id, def] of Object.entries(registry || {})) {
+      if (!ids.has(id)) throw new Error(`Schema create policy entry is not listed in SCHEMA_CREATE_POLICY_ORDER: ${id}`);
+      for (const key of SCHEMA_CREATE_POLICY_REQUIRED_KEYS) {
+        if (!(key in def)) throw new Error(`Schema create policy ${id} is missing required key: ${key}`);
+      }
+      for (const key of Object.keys(def)) {
+        if (!SCHEMA_CREATE_POLICY_PUBLIC_KEYS.includes(key)) throw new Error(`Schema create policy ${id} uses non-canonical key: ${key}`);
+      }
+      if (!SCHEMA_CREATE_POLICY_FAMILIES.includes(def.family)) throw new Error(`Schema create policy ${id} has unsupported family: ${def.family}`);
+      if (!SCHEMA_CREATE_POLICY_MANUAL_CREATABILITY.includes(def.manuallyCreatable)) throw new Error(`Schema create policy ${id} has unsupported manually creatable policy: ${def.manuallyCreatable}`);
+      if (!SCHEMA_CREATE_POLICY_RELATIONSHIP_CREATABILITY.includes(def.creatableAsContinuation)) throw new Error(`Schema create policy ${id} has unsupported continuation policy: ${def.creatableAsContinuation}`);
+      if (!SCHEMA_CREATE_POLICY_RELATIONSHIP_CREATABILITY.includes(def.creatableAsReference)) throw new Error(`Schema create policy ${id} has unsupported reference policy: ${def.creatableAsReference}`);
+      if (!SCHEMA_CREATE_POLICY_UI_SURFACES.includes(def.uiSurface)) throw new Error(`Schema create policy ${id} has unsupported UI surface: ${def.uiSurface}`);
+      if (!def.schemaPath || typeof def.schemaPath !== 'string') throw new Error(`Schema create policy ${id} must declare schemaPath`);
+      if (!def.schemaPermalink || typeof def.schemaPermalink !== 'string') throw new Error(`Schema create policy ${id} must declare schemaPermalink`);
+      if (!def.schemaPermalink.startsWith(TIINEX_SCHEMA_PERMALINK_BASE)) throw new Error(`Schema create policy ${id} must use the pinned Tiinex docs schema permalink base`);
+      if (def.parentSchema !== null && typeof def.parentSchema !== 'string') throw new Error(`Schema create policy ${id} parentSchema must be a string or null`);
+      if (def.dependsOn !== undefined && !Array.isArray(def.dependsOn)) throw new Error(`Schema create policy ${id} dependsOn must be an array when present`);
+    }
+  }
+
+  function freezeSchemaCreatePolicyRegistry(registry, order) {
+    validateSchemaCreatePolicyRegistryContract(registry, order);
+    return deepFreezeWizardValue(registry);
+  }
+
+  function schemaFilePath(id) {
+    return `.topics/.schemas/${String(id || '').trim()}.schema.md`;
+  }
+
+  function schemaPermalink(id) {
+    return `${TIINEX_SCHEMA_PERMALINK_BASE}${String(id || '').trim()}.schema.md`;
+  }
+
+  function schemaPolicyEntry(id, label, family, parentSchema, role, manuallyCreatable, creatableAsContinuation, creatableAsReference, uiSurface, rationale, dependsOn) {
+    const entry = { id, label, family, schemaPath: schemaFilePath(id), schemaPermalink: schemaPermalink(id), parentSchema, role, manuallyCreatable, creatableAsContinuation, creatableAsReference, uiSurface, rationale };
+    if (dependsOn) entry.dependsOn = dependsOn;
+    return entry;
+  }
+
+  const SCHEMA_CREATE_POLICY_REGISTRY = freezeSchemaCreatePolicyRegistry({
+    'tiinex.root.v1': schemaPolicyEntry('tiinex.root.v1', 'Root', 'continuity-envelope', null, 'Continuity envelope and integrity surface.', 'abstract', 'no', 'no', 'not-suitable', 'Root is the envelope contract, not an ordinary artifact body.'),
+    'tiinex.topic.v1': schemaPolicyEntry('tiinex.topic.v1', 'Topic', 'core-artifact', 'tiinex.root.v1', 'Bounded working or design thread.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Topic is suitable as an ordinary human-authored continuation or reference artifact.'),
+    'tiinex.task.v1': schemaPolicyEntry('tiinex.task.v1', 'Task', 'core-artifact', 'tiinex.root.v1', 'Concrete work item with constraints and done criteria.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Task is suitable when the next artifact is actionable work.'),
+    'tiinex.evidence.v1': schemaPolicyEntry('tiinex.evidence.v1', 'Evidence', 'core-artifact', 'tiinex.root.v1', 'Preserved supporting material with provenance and limits.', 'yes', 'advanced', 'yes', 'ordinary-wizard', 'Evidence is suitable when the main value is material that supports a bounded claim.'),
+    'tiinex.feedback.v1': schemaPolicyEntry('tiinex.feedback.v1', 'Feedback', 'core-artifact', 'tiinex.root.v1', 'Directed feedback with target, received signal, disposition, and limits.', 'yes', 'advanced', 'yes', 'ordinary-wizard', 'Feedback is suitable when the artifact preserves a received response or review signal.'),
+    'tiinex.decision.v1': schemaPolicyEntry('tiinex.decision.v1', 'Decision', 'core-artifact', 'tiinex.root.v1', 'Landed decision and what now governs.', 'yes', 'yes', 'advanced', 'ordinary-wizard', 'Decision is suitable when the artifact makes a governing choice explicit.'),
+    'tiinex.pointer.v1': schemaPolicyEntry('tiinex.pointer.v1', 'Pointer', 'core-artifact', 'tiinex.root.v1', 'Thin redirect or anchor toward an upstream trace or origin.', 'yes', 'advanced', 'yes', 'ordinary-wizard', 'Pointer is mainly for reference or redirect behavior, not for rich continuation content.'),
+    'tiinex.signal.v1': schemaPolicyEntry('tiinex.signal.v1', 'Signal', 'core-artifact', 'tiinex.root.v1', 'Weak bounded observation that should not be overread as feedback.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Signal is useful but should not crowd ordinary create choices until policy UI can explain the boundary.'),
+    'tiinex.lineage.upgrade.deferral.v1': schemaPolicyEntry('tiinex.lineage.upgrade.deferral.v1', 'Lineage Upgrade Deferral', 'core-artifact', 'tiinex.root.v1', 'Bounded deferral for lineage-upgrade work that must not hide integrity errors.', 'yes', 'advanced', 'advanced', 'ordinary-wizard', 'Lineage deferral is an ordinary choice only when the current work is explicitly deferring an upgrade.'),
+    'tiinex.workspace.v1': schemaPolicyEntry('tiinex.workspace.v1', 'Workspace', 'core-artifact', 'tiinex.root.v1', 'Portable workspace entrypoint.', 'advanced', 'no', 'no', 'workspace-create', 'Workspace creation has its own surface and should not appear as an ordinary trace leaf.'),
+    'tiinex.relation.v1': schemaPolicyEntry('tiinex.relation.v1', 'Relation', 'relation-validation-governance', 'tiinex.root.v1', 'Typed non-parent relationship.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Relation should protect Parent by representing typed links only when a relation surface is intentional.'),
+    'tiinex.validation.method.v1': schemaPolicyEntry('tiinex.validation.method.v1', 'Validation Method', 'relation-validation-governance', 'tiinex.root.v1', 'Validation method definition with scope and failure modes.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Validation methods define how checks should be read; they are support artifacts, not ordinary narrative leaves.'),
+    'tiinex.schema.family.v1': schemaPolicyEntry('tiinex.schema.family.v1', 'Schema Family', 'relation-validation-governance', 'tiinex.root.v1', 'Schema family, governance, and creatability description.', 'advanced', 'advanced', 'advanced', 'advanced-candidate', 'Schema-family artifacts govern schemas and create policy, so ordinary creation should require explicit intent.'),
+    'tiinex.definition.v1': schemaPolicyEntry('tiinex.definition.v1', 'Definition', 'relation-validation-governance', 'tiinex.root.v1', 'Shared definition root for schema notes.', 'advanced', 'advanced', 'advanced', 'advanced-candidate', 'Definitions are governance/support surfaces rather than ordinary lineage leaves.'),
+    'tiinex.capability.v1': schemaPolicyEntry('tiinex.capability.v1', 'Capability', 'relation-validation-governance', 'tiinex.root.v1', 'Capability manifest for viewers, validators, and runtimes.', 'advanced', 'advanced', 'advanced', 'advanced-candidate', 'Capabilities describe tool behavior and should be created only when capability scope is explicit.'),
+    'tiinex.runtime.v1': schemaPolicyEntry('tiinex.runtime.v1', 'Runtime', 'runtime-family', 'tiinex.root.v1', 'Broad runtime context, output, and interpretation boundary.', 'advanced', 'yes', 'yes', 'advanced-candidate', 'Runtime artifacts should be created when runtime evidence or execution context is the main value.'),
+    'tiinex.ai.runtime.v1': schemaPolicyEntry('tiinex.ai.runtime.v1', 'AI Runtime', 'runtime-family', 'tiinex.runtime.v1', 'AI-runtime specialization for model, prompt, tools, output, and interpretation.', 'advanced', 'yes', 'yes', 'advanced-candidate', 'AI runtime should stay separate from evidence and decisions unless the runtime context is central.'),
+    'tiinex.machine.runtime.v1': schemaPolicyEntry('tiinex.machine.runtime.v1', 'Machine Runtime', 'runtime-family', 'tiinex.runtime.v1', 'Machine-shaped runtime context, environment, output, and reproducibility boundary.', 'advanced', 'yes', 'yes', 'advanced-candidate', 'Machine runtime belongs to execution context, not ordinary discussion or evidence by default.'),
+    'tiinex.reduction.v1': schemaPolicyEntry('tiinex.reduction.v1', 'Reduction', 'reduction-disclosure-privacy', 'tiinex.root.v1', 'Observable carry-forward state with loss and uncertainty.', 'yes', 'yes', 'advanced', 'ordinary-wizard', 'Reduction is ordinary when the user is intentionally preserving a compacted carry-forward state.'),
+    'tiinex.redaction.v1': schemaPolicyEntry('tiinex.redaction.v1', 'Redaction', 'reduction-disclosure-privacy', 'tiinex.reduction.v1', 'Observable removal, masking, transformation, and residual-risk record.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Redaction is a support surface for disclosure-limiting transformation and should not appear without policy context.'),
+    'tiinex.privacy.boundary.v1': schemaPolicyEntry('tiinex.privacy.boundary.v1', 'Privacy Boundary', 'reduction-disclosure-privacy', 'tiinex.root.v1', 'Sensitivity, sharing, serialization, and disclosure boundary.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Privacy boundaries guide interpretation and tooling caution without replacing consent or redaction.'),
+    'tiinex.consent.v1': schemaPolicyEntry('tiinex.consent.v1', 'Consent', 'reduction-disclosure-privacy', 'tiinex.attestation.v1', 'Consent, refusal, withdrawal, permission, and use-boundary statement.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Consent requires explicit authority and use-boundary context before it should be offered as a normal choice.'),
+    'tiinex.attestation.v1': schemaPolicyEntry('tiinex.attestation.v1', 'Attestation', 'reduction-disclosure-privacy', 'tiinex.root.v1', 'Scoped human, role, organizational, legal, witness, lab, or review statement.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Attestation is useful but should stay distinct from validation, evidence, and consent.'),
+    'tiinex.external.payload.v1': schemaPolicyEntry('tiinex.external.payload.v1', 'External Payload', 'reduction-disclosure-privacy', 'tiinex.root.v1', 'Readable reference to large, private, binary, generated, or machine-shaped payloads.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'External payload references should support other artifacts rather than replace evidence or runtime interpretation.'),
+    'tiinex.traversal.runtime.v1': schemaPolicyEntry('tiinex.traversal.runtime.v1', 'Traversal Runtime', 'traversal-runtime', 'tiinex.runtime.v1', 'Compute-agnostic candidate-space traversal runtime.', 'advanced', 'yes', 'yes', 'advanced-candidate', 'Traversal runtime should be created only when search space, verifier, executor, outcome, and failure boundaries are explicit.'),
+    'tiinex.quantum.traversal.runtime.v1': schemaPolicyEntry('tiinex.quantum.traversal.runtime.v1', 'Quantum Traversal Runtime', 'traversal-runtime', 'tiinex.traversal.runtime.v1', 'Quantum-specific traversal runtime child.', 'advanced', 'yes', 'yes', 'advanced-candidate', 'Quantum traversal is an executor-specialized runtime surface and must not become generic provenance creation.', ['tiinex.traversal.runtime.v1']),
+    'tiinex.archive.v1': schemaPolicyEntry('tiinex.archive.v1', 'Archive', 'packaging-recovery', 'tiinex.root.v1', 'Archive support surface.', 'advanced', 'advanced', 'advanced', 'advanced-candidate', 'Archive creation should remain tied to export or recovery behavior.'),
+    'tiinex.zip.v1': schemaPolicyEntry('tiinex.zip.v1', 'Zip', 'packaging-recovery', 'tiinex.root.v1', 'Zip package support surface.', 'advanced', 'advanced', 'advanced', 'advanced-candidate', 'Zip artifacts should be driven by packaging behavior, not ordinary authoring.'),
+    'tiinex.encrypted.v1': schemaPolicyEntry('tiinex.encrypted.v1', 'Encrypted', 'packaging-recovery', 'tiinex.root.v1', 'Encrypted package or protected material support surface.', 'advanced', 'advanced', 'advanced', 'advanced-candidate', 'Encrypted artifacts need explicit access and disclosure handling before ordinary creation.'),
+    'tiinex.broken.v1': schemaPolicyEntry('tiinex.broken.v1', 'Broken', 'packaging-recovery', 'tiinex.root.v1', 'Broken or degraded artifact support surface.', 'advanced', 'advanced', 'advanced', 'advanced-candidate', 'Broken artifacts should surface recovery state rather than act as ordinary content.')
+  }, SCHEMA_CREATE_POLICY_ORDER);
+
+  function schemaCreatePolicy(id) {
+    return SCHEMA_CREATE_POLICY_REGISTRY[String(id || '').trim()] || null;
+  }
+
+  function policyAllowsOrdinaryWizardSchema(id) {
+    const policy = schemaCreatePolicy(id);
+    return Boolean(policy && policy.manuallyCreatable === 'yes' && policy.uiSurface === 'ordinary-wizard');
+  }
+
+  function policyKnownSchemaId(id) {
+    return Boolean(schemaCreatePolicy(id));
+  }
+
+
+
+
+
+  const WIZARD_SCHEMA_REQUIRED_KEYS = Object.freeze([
+    'id',
+    'label',
+    'icon',
+    'suffix',
+    'kind',
+    'summary',
+    'bodyLabel',
+    'body',
+    'defaults',
+    'bodyFromForm',
+    'formStateFromSections'
+  ]);
+
+  const WIZARD_SCHEMA_PUBLIC_KEYS = Object.freeze([
+    ...WIZARD_SCHEMA_REQUIRED_KEYS,
+    'humanArtifact',
+    'generatesSchemaId',
+    'fields',
+    'describeStep'
+  ]);
+
+  function deepFreezeWizardValue(value, seen = new WeakSet()) {
+    if (!value || typeof value !== 'object' || seen.has(value)) return value;
+    seen.add(value);
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreezeWizardValue(child, seen);
+    return value;
+  }
+
+  function validateWizardSchemaRegistryContract(registry, order) {
+    const ids = new Set(order || []);
+    for (const id of order || []) {
+      const def = registry?.[id];
+      if (!def) throw new Error(`Missing wizard schema registry entry: ${id}`);
+      if (def.id !== id) throw new Error(`Wizard schema registry id mismatch: ${id}`);
+    }
+    for (const [id, def] of Object.entries(registry || {})) {
+      if (!ids.has(id)) throw new Error(`Wizard schema registry entry is not listed in WIZARD_SCHEMA_ORDER: ${id}`);
+      for (const key of WIZARD_SCHEMA_REQUIRED_KEYS) {
+        if (!(key in def)) throw new Error(`Wizard schema ${id} is missing required key: ${key}`);
+      }
+      for (const key of Object.keys(def)) {
+        if (!WIZARD_SCHEMA_PUBLIC_KEYS.includes(key)) throw new Error(`Wizard schema ${id} uses non-canonical key: ${key}`);
+      }
+      if (!['trace', 'workspace'].includes(def.kind)) throw new Error(`Wizard schema ${id} has unsupported artifact kind: ${def.kind}`);
+      if (def.fields !== null && !Array.isArray(def.fields)) throw new Error(`Wizard schema ${id} fields must be an array or null`);
+      if (typeof def.defaults !== 'function') throw new Error(`Wizard schema ${id} defaults must be a function`);
+      if (typeof def.bodyFromForm !== 'function') throw new Error(`Wizard schema ${id} bodyFromForm must be a function`);
+      if (typeof def.formStateFromSections !== 'function') throw new Error(`Wizard schema ${id} formStateFromSections must be a function`);
+      if (def.describeStep && typeof def.describeStep !== 'function') throw new Error(`Wizard schema ${id} describeStep must be a function when present`);
+    }
+  }
+
+  function freezeWizardSchemaRegistry(registry, order) {
+    validateWizardSchemaRegistryContract(registry, order);
+    return deepFreezeWizardValue(registry);
+  }
+
+  // Canonical extension point for schema-aware authoring.
+  // Add a schema here rather than adding parallel switch/case paths elsewhere.
   const WIZARD_SCHEMA_ORDER = Object.freeze([
     'tiinex.topic.v1',
     'tiinex.evidence.v1',
@@ -10057,7 +10888,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     'raw'
   ]);
 
-  const WIZARD_SCHEMA_REGISTRY = Object.freeze({
+  const WIZARD_SCHEMA_REGISTRY = freezeWizardSchemaRegistry({
     'tiinex.topic.v1': {
       id: 'tiinex.topic.v1',
       label: 'Topic',
@@ -10441,7 +11272,7 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
       bodyFromForm: () => '',
       formStateFromSections: () => ({})
     }
-  });
+  }, WIZARD_SCHEMA_ORDER);
 
   const WIZARD_HUMAN_SCHEMA_IDS = new Set(WIZARD_SCHEMA_ORDER.filter((id) => WIZARD_SCHEMA_REGISTRY[id]?.humanArtifact));
 
@@ -10449,23 +11280,29 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
     return WIZARD_SCHEMA_REGISTRY[String(id || '').trim()] || WIZARD_SCHEMA_REGISTRY.raw;
   }
 
+  function optionFromWizardSchemaDefinition(def) {
+    return {
+      id: def.id,
+      label: def.label,
+      icon: def.icon,
+      suffix: def.suffix,
+      summary: def.summary,
+      bodyLabel: def.bodyLabel,
+      body: def.body
+    };
+  }
+
   function humanSchemaOptions() {
-    return WIZARD_SCHEMA_ORDER.map((id) => {
-      const def = wizardSchemaDefinition(id);
-      return {
-        id: def.id,
-        label: def.label,
-        icon: def.icon,
-        suffix: def.suffix,
-        summary: def.summary,
-        bodyLabel: def.bodyLabel,
-        body: def.body
-      };
-    });
+    return WIZARD_SCHEMA_ORDER
+      .filter((id) => policyAllowsOrdinaryWizardSchema(id))
+      .map((id) => optionFromWizardSchemaDefinition(wizardSchemaDefinition(id)));
   }
 
   function schemaOptionById(id) {
-    return humanSchemaOptions().find((option) => option.id === id) || humanSchemaOptions()[0];
+    const requestedId = String(id || '').trim();
+    const def = WIZARD_SCHEMA_REGISTRY[requestedId];
+    if (def && policyAllowsOrdinaryWizardSchema(def.id)) return optionFromWizardSchemaDefinition(def);
+    return humanSchemaOptions()[0];
   }
 
   function slugifyTitle(title) {
@@ -10482,7 +11319,7 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
       return {
         kicker: 'Local edit',
         title: 'Edit Tiinex artifact',
-        lead: 'Edit this local artifact through its schema-aware form.',
+        lead: 'Update the local artifact through its schema-aware form.',
         icon: 'fa-pen-to-square',
         button: 'Save local edit'
       };
@@ -10491,26 +11328,26 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
       return {
         kicker: 'Continue',
         title: 'Create continuation leaf',
-        lead: 'Choose the human-authored Tiinex artifact shape for the child leaf.',
+        lead: 'Choose the child leaf shape.',
         icon: 'fa-code-branch',
-        button: 'Continue to content'
+        button: 'Review markdown'
       };
     }
     if (mode === 'reference') {
       return {
         kicker: 'Reference',
         title: 'Create reference leaf',
-        lead: 'Choose the artifact shape that will carry a reference to the selected material.',
+        lead: 'Choose the reference leaf shape.',
         icon: 'fa-link',
-        button: 'Continue to content'
+        button: 'Review markdown'
       };
     }
     return {
       kicker: 'Add',
       title: 'Create Tiinex artifact',
-      lead: 'Choose a human-authored Tiinex artifact type before editing content.',
+      lead: 'Choose a human-authored Tiinex artifact type.',
       icon: 'fa-file-circle-plus',
-      button: 'Continue to content'
+      button: 'Review markdown'
     };
   }
 
@@ -10518,21 +11355,25 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
     return id ? ws?.nodeById?.get?.(id) || null : null;
   }
 
-  function wizardRelationCardInitial(ws, modal) {
+  function wizardHeaderContext(ws, modal) {
     const mode = modal?.mode || 'new';
     const parent = wizardNodeById(ws, modal?.parentNodeId);
     const referenced = wizardNodeById(ws, modal?.referencedNodeId);
+    const parts = [];
 
-    if (mode === 'new' && !parent && !referenced) {
-      return `<div class="wizard-relation-card neutral"><div class="wizard-relation-icon"><i class="fa-solid fa-seedling"></i></div><div><strong>New local artifact</strong><p>No parent is selected yet. This can become a root, or you can use Continue/Reference from an existing card.</p></div></div>`;
+    if (mode === 'continue' && parent) {
+      parts.push(['fa-code-branch', 'Child of', parent.title || parent.path]);
+    } else if (mode === 'reference') {
+      if (referenced) parts.push(['fa-link', 'Reference target', referenced.title || referenced.path]);
+      if (parent) parts.push(['fa-diagram-project', 'Parent', parent.title || parent.path]);
+    } else if (mode === 'edit' && modal?.path) {
+      parts.push(['fa-pen-to-square', 'Editing', modal.path]);
     }
 
-    const rows = [];
-    if (parent) rows.push(`<div><strong>Parent</strong><span>${escapeHtml(parent.title || parent.path)}</span></div>`);
-    if (referenced) rows.push(`<div><strong>Reference target</strong><span>${escapeHtml(referenced.title || referenced.path)}</span></div>`);
-    const relation = mode === 'continue' ? 'Continuation relation' : mode === 'reference' ? 'Reference relation' : 'Selected relation';
-    const icon = mode === 'continue' ? 'fa-code-branch' : mode === 'reference' ? 'fa-link' : 'fa-diagram-project';
-    return `<div class="wizard-relation-card ${escapeAttr(mode)}"><div class="wizard-relation-icon"><i class="fa-solid ${icon}"></i></div><div><strong>${escapeHtml(relation)}</strong><p>${escapeHtml(mode === 'reference' ? 'This draft will be placed under the selected parent and point back to the referenced artifact.' : 'This draft will be created as a child of the selected parent artifact.')}</p><div class="wizard-relation-rows">${rows.join('')}</div></div></div>`;
+    if (!parts.length) return '';
+    return `<div class="wizard-header-context" aria-label="Wizard relation context">
+      ${parts.map(([icon, label, value]) => `<span class="wizard-header-context-chip"><i class="fa-solid ${escapeAttr(icon)}"></i><strong>${escapeHtml(label)}</strong><em>${escapeHtml(value)}</em></span>`).join('')}
+    </div>`;
   }
 
   function defaultWizardTitle(ws, modal, option) {
@@ -10577,20 +11418,19 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
             <p class="kicker">${escapeHtml(copy.kicker)}</p>
             <h2 class="modal-title-lite" id="artifact-wizard-title"><i class="fa-solid ${escapeAttr(copy.icon)}"></i>${escapeHtml(copy.title)}</h2>
             <p class="text-secondary mb-0">${escapeHtml(copy.lead)}</p>
+            ${wizardHeaderContext(ws, modal)}
           </div>
           <button class="tv-btn small subtle authoring-dialog-close" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
         </div>
-        <div class="artifact-wizard-body authoring-dialog-body paged">
+        <div class="artifact-wizard-body authoring-dialog-body paged" data-scroll-restore="artifact-wizard-body">
           ${wizardStepIndicator(step)}
-          ${step === 'type' ? wizardRelationCardInitial(ws, modal) : ''}
           ${step === 'type'
             ? wizardTypeStep(ws, modal, options, selectedId)
             : wizardDescribeStep(ws, modal, selected, title, summary, body)}
         </div>
         <div class="modal-footer-actions artifact-wizard-actions authoring-dialog-actions paged">
-          ${step === 'describe' ? `<button class="tv-btn subtle" data-action="wizard-set-step" data-step="type"><i class="fa-solid fa-arrow-left"></i>Back</button>` : ''}
           ${primaryButtons}
-          <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+          <button class="tv-btn subtle wizard-cancel-action" data-action="close-modal">Cancel</button>
         </div>
       </div>
     </div>`;
@@ -10616,24 +11456,37 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
       schemaId,
       title: options.title || '',
       summary: options.summary || '',
-      body: typeof options.body === 'string' ? options.body : option.body
+      body: typeof options.body === 'string' ? options.body : option.body,
+      wizardStep: normalizeWizardRouteStep(options.wizardStep),
+      folderPath: options.folderPath ? normalizedFolderPath(options.folderPath) : ''
     };
+    updateUrlState({ replace: false });
     render();
   }
 
   function wizardPathFor(ws, modal, option, title) {
-    const kind = wizardKindForSchema(option.id);
-    if (modal.mode === 'continue' && modal.parentNodeId) {
+    const selected = option || schemaOptionById(modal?.schemaId || 'tiinex.topic.v1');
+    const kind = wizardKindForSchema(selected.id);
+
+    if (modal?.mode === 'edit' && modal.path) return canonicalWorkspacePath(modal.path);
+
+    if (modal?.mode === 'continue' && modal.parentNodeId && kind === 'trace') {
       const parent = wizardNodeById(ws, modal.parentNodeId);
-      if (parent && kind === 'trace') return nextSiblingTracePath(parent, ws);
+      if (parent) return nextSiblingTracePath(parent, ws);
     }
-    if (modal.mode === 'reference' && modal.parentNodeId) {
+
+    if (modal?.mode === 'reference' && modal.parentNodeId && kind === 'trace') {
       const parent = wizardNodeById(ws, modal.parentNodeId);
-      if (parent && kind === 'trace') return nextSiblingTracePath(parent, ws).replace(/\.trace\.md$/i, '-reference.trace.md');
+      if (parent) return nextSiblingTracePath(parent, ws).replace(/\.trace\.md$/i, '-reference.trace.md');
     }
-    const slug = slugifyTitle(title || option.label);
-    if (kind === 'workspace') return `.topics/workspaces/${slug}.workspace.md`;
-    return `.topics/${slug}.trace.md`;
+
+    if (modal?.mode === 'continue' || modal?.mode === 'reference') {
+      const slug = slugifyTitle(title || selected.label);
+      if (kind === 'workspace') return `.topics/workspaces/${slug}.workspace.md`;
+      return `.topics/${slug}.trace.md`;
+    }
+
+    return uniqueWizardRootPath(ws, modal, selected, title);
   }
 
   function enterReferenceParentPicker(ws, referencedNode) {
@@ -10703,16 +11556,6 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
       return;
     }
 
-    if (action === 'wizard-select-schema') {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!app.modal || app.modal.type !== 'artifact-wizard') return;
-      const option = schemaOptionById(event.currentTarget.dataset.schema || 'tiinex.topic.v1');
-      app.modal.schemaId = option.id;
-      app.modal.body = option.body;
-      render();
-      return;
-    }
 
     if (action === 'wizard-open-editor') {
       event.preventDefault();
@@ -10789,22 +11632,28 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
 
 
 
+  function normalizeWizardRouteStep(step) {
+    const value = String(step || '').trim().toLowerCase();
+    if (value === 'describe' || value === 'details') return 'describe';
+    return 'type';
+  }
+
   function wizardStep(modal) {
-    const step = modal?.wizardStep || 'type';
-    return step === 'describe' ? 'describe' : 'type';
+    return normalizeWizardRouteStep(modal?.wizardStep || 'type');
   }
 
   function wizardStepIndicator(step) {
     const steps = [
       ['type', 'Type'],
       ['describe', 'Details'],
-      ['content', 'Content']
+      ['review', 'Review']
     ];
-    return `<div class="artifact-wizard-progress" aria-label="Wizard progress">
+    const currentIndex = step === 'describe' ? 1 : 0;
+    return `<div class="artifact-wizard-progress" data-step="${escapeAttr(step)}" aria-label="Wizard progress">
       ${steps.map(([id, label], index) => {
-        const active = id === step;
-        const done = (step === 'describe' && id === 'type') || (id === 'content' && false);
-        return `<span class="${active ? 'active' : done ? 'done' : ''}"><b>${index + 1}</b>${escapeHtml(label)}</span>`;
+        const active = index === currentIndex;
+        const done = index < currentIndex;
+        return `<span class="${active ? 'active' : done ? 'done' : ''}" aria-current="${active ? 'step' : 'false'}"><b>${index + 1}</b><em>${escapeHtml(label)}</em></span>`;
       }).join('')}
     </div>`;
   }
@@ -10823,13 +11672,6 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
     </section>`;
   }
 
-  registerOpenArtifactWizardWrapper(function openArtifactWizardPaged(ws, options = {}, next) {
-    const result = next(ws, options);
-    if (app.modal?.type === 'artifact-wizard') {
-      app.modal.wizardStep = options.wizardStep || 'type';
-    }
-    return result;
-  });
   registerActionHandler(async function pagedWizardAction(event, next) {
     const action = event.currentTarget?.dataset?.action || '';
 
@@ -10837,7 +11679,8 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
       event.preventDefault();
       event.stopPropagation();
       if (!app.modal || app.modal.type !== 'artifact-wizard') return;
-      app.modal.wizardStep = event.currentTarget.dataset.step === 'describe' ? 'describe' : 'type';
+      app.modal.wizardStep = normalizeWizardRouteStep(event.currentTarget.dataset.step || 'type');
+      setRouteState('replace');
       render();
       return;
     }
@@ -10847,6 +11690,7 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
       event.stopPropagation();
       if (!app.modal || app.modal.type !== 'artifact-wizard') return;
       app.modal.wizardStep = 'describe';
+      setRouteState('replace');
       render();
       return;
     }
@@ -10858,9 +11702,7 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
       const option = schemaOptionById(event.currentTarget.dataset.schema || 'tiinex.topic.v1');
       app.modal.schemaId = option.id;
       app.modal.body = option.body;
-      // Selection advances: the Back button makes changing type cheap, and this
-      // removes one click on mobile.
-      app.modal.wizardStep = 'describe';
+      updateUrlState({ replace: true });
       render();
       return;
     }
@@ -10908,12 +11750,14 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
 
   function schemaArtifactPath(schemaId) {
     const id = String(schemaId || '').trim();
-    if (!knownHumanSchemaIds().has(id) && id !== 'tiinex.root.v1') return '';
-    return `.topics/.schemas/${id}.schema.md`;
+    if (!policyKnownSchemaId(id)) return '';
+    return schemaCreatePolicy(id).schemaPath;
   }
 
   function schemaReferenceForPath(schemaId, artifactPath) {
     const id = String(schemaId || '').trim() || 'tiinex.topic.v1';
+    const policy = policyKnownSchemaId(id) ? schemaCreatePolicy(id) : null;
+    if (policy?.schemaPermalink) return `[${id}](${policy.schemaPermalink})`;
     const schemaPath = schemaArtifactPath(id);
     if (!schemaPath || !artifactPath) return id;
     const relative = relativePathFromTo(artifactPath, schemaPath);
@@ -10946,7 +11790,7 @@ ${why ? `  - Why: ${why}\n` : ''}${summary ? `  - Summary: ${summary}\n` : ''}`;
 
   function integrityFooterForPath(parent, childPath) {
     const towards = parent ? parentTraceReferenceForPath(parent, childPath) : 'self';
-    return integrityFooter(towards, 'pending');
+    return integrityFooter();
   }
 
   function schemaTemplate(id) {
@@ -11098,6 +11942,7 @@ ${integrityFooterForPath(parent, path)}`,
     const key = event.target?.dataset?.wizardFormField || '';
     if (!key || !app.modal || app.modal.type !== 'artifact-wizard') return;
     wizardFormState(app.modal)[key] = event.target.value;
+    scheduleWizardRouteDraftReplace();
   }
 
   window.addEventListener('input', handleWizardFormInput, true);
@@ -11310,6 +12155,7 @@ ${integrityFooterForPath(parent, path)}`,
     const field = event.target?.dataset?.evidenceAttachmentField || '';
     if (id && field) {
       updateEvidenceAttachmentField(id, field, event.target.value);
+      scheduleWizardRouteDraftReplace();
       return;
     }
     if (event.target?.dataset?.evidenceFileInput === '1' && app.modal?.type === 'artifact-wizard') {
@@ -11640,7 +12486,7 @@ ${integrityFooterForPath(parent, path)}`,
 
   // --- Artifact wizard output ---
 
-  function createArtifactFromWizard(ws, modal) {
+  async function createArtifactFromWizard(ws, modal) {
     const artifact = wizardTemplate(ws, modal);
     const kind = artifact.kind || 'trace';
     const path = canonicalWorkspacePath(artifact.path || '');
@@ -11659,12 +12505,16 @@ ${integrityFooterForPath(parent, path)}`,
       storeEvidenceAttachmentFiles(ws, stash, path);
     }
 
-    upsertWorkspaceTextFile(ws, path, artifact.text, 'local');
+    const finalizedText = await finalizeCreatedArtifactIntegrity(ws, artifact, modal);
+    upsertWorkspaceTextFile(ws, path, finalizedText, 'local');
     computeWorkspaceIndex(ws);
     const node = Array.from(ws.nodeById?.values?.() || []).find((candidate) => sameImportedPath(candidate.path, path));
     if (node) ws.selectedNodeId = node.id;
 
+    markDialogRouteSessionClosed(modal);
     app.modal = null;
+    app.pendingRouteModal = null;
+    clearTimeout(app.wizardRouteDraftTimer);
     if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
     if (typeof setRouteState === 'function') setRouteState('replace');
     render();
@@ -11678,7 +12528,7 @@ ${integrityFooterForPath(parent, path)}`,
       event.stopPropagation();
       const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
       if (!ws || !app.modal || app.modal.type !== 'artifact-wizard') return toast('No workspace selected.', 'warn');
-      createArtifactFromWizard(ws, app.modal);
+      await createArtifactFromWizard(ws, app.modal);
       return;
     }
     return next(event);
@@ -11740,15 +12590,9 @@ ${integrityFooterForPath(parent, path)}`,
       wizardStep: 'describe',
       formFields: formStateFromNode(node)
     };
+    updateUrlState({ replace: false });
     render();
   }
-
-  registerWizardPathForWrapper(function wizardPathForWithEdit(ws, modal, option, title, next) {
-    if (modal?.mode === 'edit' && modal.path) return canonicalWorkspacePath(modal.path);
-    return next(ws, modal, option, title);
-  });
-
-
 
   function saveSchemaAwareEditWizard(ws, modal) {
     const node = ws?.nodeById?.get?.(modal.editNodeId || '');
@@ -11762,7 +12606,10 @@ ${integrityFooterForPath(parent, path)}`,
       storeEvidenceAttachmentFiles(ws, stash, artifact.path || node.path || '');
     }
     saveNodeEdit(ws, node, artifact.text);
+    markDialogRouteSessionClosed(modal);
     app.modal = null;
+    app.pendingRouteModal = null;
+    clearTimeout(app.wizardRouteDraftTimer);
     if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
     if (typeof setRouteState === 'function') setRouteState('replace');
     render();
@@ -11874,20 +12721,6 @@ ${integrityFooterForPath(parent, path)}`,
     if (numeric) return numeric;
     return uniquePathInFolder(ws, folder, title || option.label || 'artifact', '.trace.md');
   }
-
-  registerWizardPathForWrapper(function wizardPathForUniqueRoot(ws, modal, option, title, next) {
-    if (modal?.mode === 'edit') return next(ws, modal, option, title);
-    if (modal?.mode === 'continue' || modal?.mode === 'reference') return next(ws, modal, option, title);
-    return uniqueWizardRootPath(ws, modal, option, title);
-  });
-
-  registerOpenArtifactWizardWrapper(function openArtifactWizardWithFolder(ws, options = {}, next) {
-    const result = next(ws, options);
-    if (app.modal?.type === 'artifact-wizard' && options.folderPath) {
-      app.modal.folderPath = normalizedFolderPath(options.folderPath);
-    }
-    return result;
-  });
 
   function folderAddButton(ws, folderPath, label = 'Add artifact in folder') {
     return `<button type="button" class="tree-folder-add" data-action="open-artifact-wizard-folder" data-ws="${escapeAttr(ws.id)}" data-folder="${escapeAttr(folderPath || '')}" title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}">
@@ -12987,7 +13820,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
           </div>
           <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
         </div>
-        <div class="modal-read-body asset-preview-body">
+        <div class="modal-read-body asset-preview-body ${isImage ? 'asset-image-preview-body' : ''}">
           ${isImage ? `<img src="${escapeAttr(url)}" alt="${escapeAttr(assetDisplayName(asset))}" data-attachment-preview>` : ''}
           ${isText ? `<pre class="source-block modal-source"><code>${escapeHtml(text || 'Text preview unavailable for this imported asset.')}</code></pre>` : ''}
           ${!isImage && !isText ? `<div class="empty-state">Preview unavailable for this asset type. Use Download instead.</div>` : ''}
@@ -13118,6 +13951,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
       workspaceDisplayOptions(ws).leavesOnly ? 'leaf' : 'all',
       workspaceDisplayOptions(ws).showTrace ? 'trace' : '',
       workspaceDisplayOptions(ws).showSchema ? 'schema' : '',
+      workspaceDisplayOptions(ws).showValidator ? 'validator' : '',
       workspaceDisplayOptions(ws).showWorkspace ? 'workspace' : '',
       workspaceDisplayOptions(ws).showAssets ? 'assets' : ''
     ].join('|');
@@ -13149,8 +13983,12 @@ See _tiinex/export.manifest.json for source and output path metadata.
     </div>`;
   }
 
+  function workspaceHasActiveDiscoveryProgress(ws) {
+    return Boolean(ws && (ws.loading || ws.discoveryProgress));
+  }
+
   function loadingProgressNotice(ws) {
-    if (!ws?.loading) return '';
+    if (!workspaceHasActiveDiscoveryProgress(ws)) return '';
     const pct = discoveryProgressPercent(ws);
     return `<div class="loading-progress" data-discovery-progress="${escapeAttr(ws.id)}" data-progress="${pct}">
       <div class="progress-head">
@@ -13165,7 +14003,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
   registerRenderWorkspaceFeedWrapper(function renderWorkspaceFeedWindowed(ws, selected, next) {
     if (selected || (ws.discoveryView || 'feed') !== 'feed') {
       const html = next(ws, selected);
-      if (!selected && ws?.loading && html.includes('<div class="post-feed')) {
+      if (!selected && workspaceHasActiveDiscoveryProgress(ws) && html.includes('<div class="post-feed')) {
         return html.replace('<div class="post-feed', `${loadingProgressNotice(ws)}<div class="post-feed`);
       }
       return html;
@@ -13180,7 +14018,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
     const shown = Math.min(limit, all.length);
     const footer = discoveryLoadMoreFooter(ws, all.length, shown);
     if (footer) html = html.replace(/\s*<\/div>\s*$/, `${footer}</div>`);
-    if (ws.loading && html.includes('<div class="post-feed')) {
+    if (workspaceHasActiveDiscoveryProgress(ws) && html.includes('<div class="post-feed')) {
       html = html.replace('<div class="post-feed', `${loadingProgressNotice(ws)}<div class="post-feed`);
     }
     return html;
@@ -13283,134 +14121,69 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
   document.addEventListener('scroll', onDiscoveryAutoMoreScroll, true);
 
-  async function discoverGitHubRepoIntoWorkspaceResponsive(ws, options) {
-    const repo = options.repo;
-    const ref = options.ref || '';
-    const rootPaths = Array.isArray(options.rootPaths) ? options.rootPaths : parseRootPaths(options.rootPath || '.topics');
-    const key = repoDiscoveryKey(repo, ref, rootPaths);
 
-    if (ws.discoverySource?.kind === 'github-tree'
-      && repoDiscoveryKey(ws.discoverySource.repo, ws.discoverySource.ref || '', ws.discoverySource.rootPaths || ws.discoverySource.rootPath || '.topics') === key
-      && ws.nodes.length) {
-      toast(`${ws.label} already has discovery results for ${key}.`, 'warn');
-      return;
-    }
 
-    if (app.repoDiscoveryInFlight?.has?.(key)) {
-      toast(`Discovery already running for ${key}.`, 'warn');
-      return;
-    }
 
-    app.repoDiscoveryInFlight = app.repoDiscoveryInFlight || new Set();
-    app.repoDiscoveryInFlight.add(key);
-    ws.loading = true;
-    ws.repo = repo;
-    if (ref) ws.ref = ref;
-    ws.discoverySource = { kind: 'github-tree', repo, ref: ref || '', rootPath: rootPaths[0] || '.topics', rootPaths };
-    ws.sourceNote = `GitHub repo discovery: ${repo}${ref ? '@' + ref : ''} / ${rootPathsLabel(rootPaths)}`;
-    ws.discoveryProgress = { phase: 'tree', loaded: 0, total: 0, failed: 0 };
-    ws.logs.push(`Discovering ${repo}${ref ? '@' + ref : ''} under ${rootPaths.join(', ')} via GitHub tree API.`);
-    render();
-    await microYield();
 
-    let count = 0;
-    let failed = 0;
-
-    try {
-      const discovery = await discoverGitHubTracePaths(repo, ref, rootPaths);
-      ws.repo = repo;
-      ws.ref = discovery.ref;
-      ws.discoverySource.ref = discovery.ref;
-      ws.discoverySource.rootPath = discovery.rootPath;
-      ws.discoverySource.rootPaths = discovery.rootPaths;
-      ws.logs.push(`Tree discovery found ${discovery.tracePaths.length} .trace.md file(s).`);
-      if (discovery.truncated) {
-        ws.logs.push('GitHub tree response was truncated. Results may be incomplete; use a manifest for this repo.');
-        toast(`Tree response for ${repo} was truncated; discovery may be incomplete.`, 'warn');
-      }
-
-      const paths = discovery.tracePaths.filter((path) => {
-        const rawUrl = githubRawUrl(repo, discovery.ref, path);
-        return !Array.from(ws.files.values()).some((file) => file.rawUrl === rawUrl || file.path === path);
-      });
-
-      ws.discoveryProgress = { phase: 'fetch', loaded: 0, total: paths.length, failed: 0 };
-      requestBufferedRender('repo-discovery-start', 60);
-      await microYield();
-
-      const concurrency = Math.max(1, Number(app.settings.repoDiscoveryFetchConcurrency || 6));
-      const batchEvery = Math.max(0, Number(app.settings.repoDiscoveryBatchRenderEvery || 0));
-      const batchDelay = 120;
-
-      await runWithConcurrency(paths, concurrency, async (path) => {
-        const rawUrl = githubRawUrl(repo, discovery.ref, path);
-        try {
-          const content = await fetchText(rawUrl);
-          addFileToWorkspace(ws, {
-            path,
-            content,
-            rawUrl,
-            browseUrl: githubBrowseUrl(repo, discovery.ref, path),
-            repo,
-            ref: discovery.ref
-          });
-          count += 1;
-          ws.discoveryProgress.loaded = count;
-          if (batchEvery > 0 && count % batchEvery === 0) {
-            computeWorkspaceIndex(ws);
-            requestBufferedRender('repo-discovery-batch', batchDelay);
-            await microYield();
-          }
-        } catch (error) {
-          failed += 1;
-          ws.discoveryProgress.failed = failed;
-          ws.logs.push(`Could not fetch discovered trace ${path}: ${error.message}`);
-        }
-      });
-
-      ws.discoveryProgress.phase = 'index';
-      await microYield();
-      computeWorkspaceIndex(ws);
-      await microYield();
-      await discoverWorkspacePolicy(ws);
-
-      if (!count && !failed) toast(`No new trace files loaded from ${repo}.`, 'warn');
-      if (failed) toast(`${failed} trace file(s) could not be fetched from ${repo}.`, 'warn');
-    } catch (error) {
-      ws.logs.push(`Repo discovery failed for ${repo}: ${error.message}`);
-      toast(`Repo discovery failed for ${repo}: ${error.message}`, 'warn');
-    } finally {
-      app.repoDiscoveryInFlight.delete(key);
-      ws.loading = false;
-      ws.discoveryProgress = null;
-      computeWorkspaceIndex(ws);
-      render();
-    }
+  function discoveryProgressDone(p) {
+    return Math.max(0, Number(p?.loaded || 0)) + Math.max(0, Number(p?.failed || 0));
   }
 
-  discoverGitHubRepoIntoWorkspace = discoverGitHubRepoIntoWorkspaceResponsive;
-
-
-
+  function discoveryProgressRatio(done, total) {
+    const safeTotal = Math.max(0, Number(total || 0));
+    if (!safeTotal) return 0;
+    return Math.max(0, Math.min(1, Number(done || 0) / safeTotal));
+  }
 
   function discoveryProgressPercent(ws) {
     const p = ws?.discoveryProgress || {};
+    const phase = String(p.phase || '');
     const total = Math.max(0, Number(p.total || 0));
-    const loaded = Math.max(0, Number(p.loaded || 0));
-    const failed = Math.max(0, Number(p.failed || 0));
-    if (!total) return p.phase === 'tree' ? 5 : 0;
-    return Math.max(2, Math.min(100, Math.round(((loaded + failed) / total) * 100)));
+    const done = discoveryProgressDone(p);
+
+    // The percentage is intentionally phase-weighted instead of a literal network
+    // request ratio. Discovery has several differently expensive phases; showing
+    // 96-99% while integrity verification still owns many markdown requests feels
+    // false, so verification now gets a meaningful part of the bar.
+    if (phase === 'tree') return 4;
+    if (phase === 'fetch') {
+      if (!total) return 8;
+      return Math.max(8, Math.min(60, Math.round(8 + discoveryProgressRatio(done, total) * 52)));
+    }
+    if (phase === 'index') {
+      const indexTotal = Math.max(0, Number(p.indexTotal || total || 0));
+      const indexDone = Math.max(0, Number(p.indexLoaded || 0));
+      if (!indexTotal) return 64;
+      return Math.max(60, Math.min(72, Math.round(60 + discoveryProgressRatio(indexDone, indexTotal) * 12)));
+    }
+    if (phase === 'integrity') {
+      const integrityTotal = Math.max(0, Number(p.integrityTotal || 0));
+      const integrityDone = Math.max(0, Number(p.integrityLoaded || 0));
+      if (!integrityTotal) return 74;
+      return Math.max(72, Math.min(96, Math.round(72 + discoveryProgressRatio(integrityDone, integrityTotal) * 24)));
+    }
+    if (phase === 'policy') return 98;
+    if (!total) return 0;
+    return Math.max(2, Math.min(100, Math.round(discoveryProgressRatio(done, total) * 100)));
   }
 
   function discoveryProgressTitle(ws) {
     const p = ws?.discoveryProgress || {};
+    const phase = String(p.phase || '');
     const total = Math.max(0, Number(p.total || 0));
-    const loaded = Math.max(0, Number(p.loaded || 0));
-    const failed = Math.max(0, Number(p.failed || 0));
-    if (p.phase === 'tree') return 'Discovering file list';
-    if (p.phase === 'index') return 'Indexing workspace';
+    const done = discoveryProgressDone(p);
+    const indexTotal = Math.max(0, Number(p.indexTotal || total || 0));
+    const indexLoaded = Math.max(0, Number(p.indexLoaded || 0));
+    const integrityTotal = Math.max(0, Number(p.integrityTotal || 0));
+    const integrityLoaded = Math.max(0, Number(p.integrityLoaded || 0));
+
+    if (phase === 'tree') return 'Discovering file list';
+    if (phase === 'fetch') return total ? `Loading markdown files ${done}/${total}` : 'Loading markdown files';
+    if (phase === 'index') return indexTotal ? `Indexing workspace ${indexLoaded}/${indexTotal}` : 'Indexing workspace';
+    if (phase === 'integrity') return integrityTotal ? `Verifying markdown targets ${integrityLoaded}/${integrityTotal}` : 'Verifying markdown targets';
+    if (phase === 'policy') return 'Reading workspace policy';
     if (!total) return 'Loading';
-    return `${loaded + failed}/${total}`;
+    return `${done}/${total}`;
   }
 
   function updateDiscoveryProgressDom(ws) {
@@ -13434,7 +14207,102 @@ See _tiinex/export.manifest.json for source and output path metadata.
     return new Promise((resolve) => requestAnimationFrame(() => resolve()));
   }
 
-  async function discoverGitHubRepoIntoWorkspaceProgress(ws, options) {
+  function applyDurableLensAfterProgressiveIndex(ws) {
+    try {
+      const state = app.pendingDurableLensState || decodedLensState() || cachedLensState();
+      const sources = state?.workspaces || state?.sources || [];
+      const index = app.workspaces.indexOf(ws);
+      if (index >= 0 && sources[index] && typeof applyLensSource === 'function') applyLensSource(ws, sources[index]);
+    } catch (_) {}
+  }
+
+  async function computeWorkspaceIndexWithDiscoveryProgress(ws) {
+    if (!ws) return;
+    ensureWorkspaceSources(ws);
+    if (typeof repairTextBackedWorkspaceFiles === 'function') repairTextBackedWorkspaceFiles(ws);
+
+    const files = Array.from(ws.files?.values?.() || []);
+    const previousSelected = ws.selectedNodeId;
+    const previousWindows = ws.lineageWindows || {};
+    const previousIntegrity = ws.integrityCache || {};
+    const previousParentFetches = ws.parentFetches || {};
+
+    ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
+      phase: 'index',
+      indexLoaded: 0,
+      indexTotal: files.length
+    });
+    updateDiscoveryProgressDom(ws);
+    await progressYield(ws);
+
+    const nodes = [];
+    const chunkSize = Math.max(6, Number(app.settings.repoDiscoveryIndexChunkSize || 18));
+    for (let index = 0; index < files.length; index += chunkSize) {
+      const chunk = files.slice(index, index + chunkSize);
+      for (const file of chunk) nodes.push(parseTraceFile(file));
+      ws.discoveryProgress.indexLoaded = Math.min(files.length, index + chunk.length);
+      updateDiscoveryProgressDom(ws);
+      await progressYield(ws);
+    }
+
+    ws.nodes = nodes;
+    ws.nodeById = new Map(ws.nodes.map((n) => [n.id, n]));
+    ws.nodeByPath = new Map();
+
+    ws.nodes.forEach((node) => {
+      const canonical = canonicalWorkspacePath(node.path);
+      ws.nodeByPath.set(sourcePathLookupKey(node.sourceId, canonical), node);
+      ws.nodeByPath.set(sourceFileKey(node.sourceId, node.path, false), node);
+      if (!ws.nodeByPath.has(canonical)) ws.nodeByPath.set(canonical, node);
+      if (!ws.nodeByPath.has(node.path)) ws.nodeByPath.set(node.path, node);
+    });
+
+    ws.nodes.forEach((node) => {
+      node.children = [];
+      node.parentNode = null;
+      const cachedIntegrity = previousIntegrity[node.storageKey || node.path] || previousIntegrity[node.path] || null;
+      node.integrityStatus = cachedIntegrity?.status || initialIntegrityStatusForNode(node);
+      node.integrityStatusLabel = cachedIntegrity?.label || initialIntegrityStatusLabelForNode(node);
+    });
+
+    ws.nodes.forEach((node) => {
+      if (!node.parentResolvedPath) return;
+      const parent = sameWorkspacePathLookup(ws, node.parentResolvedPath, node.sourceId)
+        || sameWorkspacePathLookup(ws, node.parentResolvedPath, '');
+      if (parent && parent !== node) {
+        node.parentNode = parent;
+        parent.children.push(node);
+      }
+    });
+
+    for (const node of ws.nodes || []) {
+      if (!node.parentHref || node.parentNode) continue;
+      const parent = resolveParentNode(ws, node);
+      if (parent && parent !== node) {
+        node.parentNode = parent;
+        parent.children = parent.children || [];
+        if (!parent.children.includes(node)) parent.children.push(node);
+      }
+    }
+
+    ws.leaves = ws.nodes.filter((node) => !node.children.length);
+    ws.leaves.sort(compareNodesDesc);
+    ws.nodes.sort(compareNodesDesc);
+    ws.selectedNodeId = previousSelected && ws.nodeById.get(previousSelected) ? previousSelected : null;
+    ws.filterSchema = ws.filterSchema || 'all';
+    ws.discoveryFilterSchema = ws.discoveryFilterSchema || ws.filterSchema || 'all';
+    ws.layoutMode = ws.layoutMode || 'expanded';
+    ws.lineageWindows = previousWindows;
+    ws.integrityCache = previousIntegrity;
+    ws.parentFetches = previousParentFetches;
+    if (typeof scheduleIntegrityVerification === 'function') {
+      await scheduleIntegrityVerification(ws, { discoveryProgress: true });
+    }
+    if (typeof resolvePendingSelectedRoutes === 'function') resolvePendingSelectedRoutes();
+    applyDurableLensAfterProgressiveIndex(ws);
+  }
+
+  async function discoverGitHubRepoIntoWorkspace(ws, options) {
     const repo = options.repo;
     const ref = options.ref || '';
     const rootPaths = Array.isArray(options.rootPaths) ? options.rootPaths : parseRootPaths(options.rootPath || '.topics');
@@ -13442,7 +14310,8 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
     if (ws.discoverySource?.kind === 'github-tree'
       && repoDiscoveryKey(ws.discoverySource.repo, ws.discoverySource.ref || '', ws.discoverySource.rootPaths || ws.discoverySource.rootPath || '.topics') === key
-      && ws.nodes.length) {
+      && ws.nodes.length
+      && !options.refreshExisting) {
       toast(`${ws.label} already has discovery results for ${key}.`, 'warn');
       return;
     }
@@ -13466,6 +14335,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
     let count = 0;
     let failed = 0;
+    let indexed = false;
 
     try {
       const discovery = await discoverGitHubTracePaths(repo, ref, rootPaths);
@@ -13474,7 +14344,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
       ws.discoverySource.ref = discovery.ref;
       ws.discoverySource.rootPath = discovery.rootPath;
       ws.discoverySource.rootPaths = discovery.rootPaths;
-      ws.logs.push(`Tree discovery found ${discovery.tracePaths.length} .trace.md file(s).`);
+      ws.logs.push(`Tree discovery found ${discovery.tracePaths.length} Tiinex markdown artifact file(s).`);
       if (discovery.truncated) {
         ws.logs.push('GitHub tree response was truncated. Results may be incomplete; use a manifest for this repo.');
         toast(`Tree response for ${repo} was truncated; discovery may be incomplete.`, 'warn');
@@ -13491,6 +14361,16 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
       const concurrency = Math.max(1, Number(app.settings.repoDiscoveryFetchConcurrency || 6));
       const progressEvery = Math.max(1, Number(app.settings.repoDiscoveryProgressEvery || 1));
+      const renderEvery = Math.max(1, Number(app.settings.repoDiscoveryProgressiveRenderEvery || 12));
+      const renderDelay = Math.max(16, Number(app.settings.repoDiscoveryBatchRenderDelayMs || 80));
+
+      async function renderPartialFetchProgress(reason) {
+        if (!ws.loading || !ws.discoveryProgress || ws.discoveryProgress.phase !== 'fetch') return;
+        computeWorkspaceIndex(ws, { skipIntegrity: true });
+        requestBufferedRender(reason, renderDelay);
+        updateDiscoveryProgressDom(ws);
+        await progressYield(ws);
+      }
 
       await runWithConcurrency(paths, concurrency, async (path) => {
         const rawUrl = githubRawUrl(repo, discovery.ref, path);
@@ -13509,24 +14389,45 @@ See _tiinex/export.manifest.json for source and output path metadata.
         } catch (error) {
           failed += 1;
           ws.discoveryProgress.failed = failed;
-          ws.logs.push(`Could not fetch discovered trace ${path}: ${error.message}`);
+          ws.logs.push(`Could not fetch discovered artifact ${path}: ${error.message}`);
         }
 
-        if (((count + failed) % progressEvery) === 0) {
+        const completed = count + failed;
+        ws.discoveryProgress.loaded = count;
+        ws.discoveryProgress.failed = failed;
+        ws.discoveryProgress.total = paths.length;
+        updateDiscoveryProgressDom(ws);
+
+        if (completed && (completed % renderEvery) === 0) {
+          await renderPartialFetchProgress('repo-discovery-progressive-fetch');
+        } else if ((completed % progressEvery) === 0) {
           await progressYield(ws);
         }
       });
 
-      ws.discoveryProgress.phase = 'index';
-      updateDiscoveryProgressDom(ws);
-      await progressYield(ws);
+      ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
+        phase: 'fetch',
+        loaded: count,
+        failed,
+        total: paths.length
+      });
+      await renderPartialFetchProgress('repo-discovery-fetch-complete');
 
-      computeWorkspaceIndex(ws);
+      ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
+        phase: 'index',
+        indexLoaded: 0,
+        indexTotal: ws.files?.size || count
+      });
+      await computeWorkspaceIndexWithDiscoveryProgress(ws);
+      indexed = true;
+
+      ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, { phase: 'policy' });
+      updateDiscoveryProgressDom(ws);
       await progressYield(ws);
       await discoverWorkspacePolicy(ws);
 
-      if (!count && !failed) toast(`No new trace files loaded from ${repo}.`, 'warn');
-      if (failed) toast(`${failed} trace file(s) could not be fetched from ${repo}.`, 'warn');
+      if (!count && !failed) toast(`No new Tiinex markdown artifacts loaded from ${repo}.`, 'warn');
+      if (failed) toast(`${failed} Tiinex markdown artifact file(s) could not be fetched from ${repo}.`, 'warn');
     } catch (error) {
       ws.logs.push(`Repo discovery failed for ${repo}: ${error.message}`);
       toast(`Repo discovery failed for ${repo}: ${error.message}`, 'warn');
@@ -13534,12 +14435,11 @@ See _tiinex/export.manifest.json for source and output path metadata.
       app.repoDiscoveryInFlight.delete(key);
       ws.loading = false;
       ws.discoveryProgress = null;
-      computeWorkspaceIndex(ws);
+      if (!indexed) computeWorkspaceIndex(ws);
       render();
     }
   }
 
-  discoverGitHubRepoIntoWorkspace = discoverGitHubRepoIntoWorkspaceProgress;
 
 
 
@@ -13557,7 +14457,6 @@ See _tiinex/export.manifest.json for source and output path metadata.
     const kind = String(ref?.kind || 'file').toLowerCase();
     if (kind === 'markdown') return 'text';
     if (kind === 'image') return 'image';
-    if (kind === 'trace') return 'trace';
     if (kind === 'text') return 'text';
     if (kind === 'url' || kind === 'link') return 'url';
     return kind || 'file';
@@ -13565,7 +14464,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
   function attachmentPreviewMaterialKindLabel(kind) {
     if (typeof materialKindLabel === 'function') return materialKindLabel(kind);
-    const labels = { all: 'All', image: 'Images', trace: 'Traces', text: 'Text', url: 'URLs', file: 'Files' };
+    const labels = { all: 'All', image: 'Images', text: 'Text', url: 'URLs', file: 'Files' };
     return labels[kind] || String(kind || 'file').replace(/[-_]+/g, ' ');
   }
 
@@ -13586,7 +14485,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
         counts.set(kind, (counts.get(kind) || 0) + 1);
       }
     }
-    const order = ['image', 'trace', 'text', 'url', 'file'];
+    const order = ['image', 'text', 'url', 'file'];
     return Array.from(counts.entries())
       .sort((a, b) => {
         const ai = order.indexOf(a[0]); const bi = order.indexOf(b[0]);
@@ -14244,48 +15143,6 @@ See _tiinex/export.manifest.json for source and output path metadata.
     return false;
   }
 
-  function chaseScrollForWorkspace(ws, durationMs = 2200) {
-    // Retired for F5 restore in CP92; kept only to avoid broad surgery around
-    // older wrapper layering. No render path should call this while routeScroll
-    // is the single scroll-restore owner.
-    if (!ws) return;
-    const target = Math.max(0, Math.round(ws.routeScrollTop || 0));
-    if (!target) return;
-    const started = performance.now();
-    let lastMax = -1;
-    let stable = 0;
-
-    const tick = () => {
-      const el = activeScrollableFeed(ws);
-      if (!el) {
-        if (performance.now() - started < durationMs) requestAnimationFrame(tick);
-        return;
-      }
-      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
-      const nextTop = Math.min(target, maxTop);
-      if (maxTop > 0) el.scrollTop = nextTop;
-
-      if (Math.abs(el.scrollTop - target) <= 2) return;
-      if (maxTop === lastMax) stable += 1;
-      else stable = 0;
-      lastMax = maxTop;
-
-      if (performance.now() - started < durationMs && stable < 16) {
-        requestAnimationFrame(tick);
-      }
-    };
-
-    requestAnimationFrame(tick);
-    setTimeout(tick, 80);
-    setTimeout(tick, 240);
-    setTimeout(tick, 650);
-    setTimeout(tick, 1400);
-  }
-
-  function chaseAllScroll() {
-    for (const ws of app.workspaces || []) chaseScrollForWorkspace(ws);
-  }
-
   registerComputeWorkspaceIndexWrapper(function computeWorkspaceIndexWithDurableLens(ws, next) {
     const result = next(ws);
     const state = app.pendingDurableLensState || decodedLensState() || cachedLensState();
@@ -14295,13 +15152,12 @@ See _tiinex/export.manifest.json for source and output path metadata.
     return result;
   });
   registerRenderWrapper(function renderWithDurableLens(next) {
+    // Durable lens owns route selection/history only; scroll position is restored
+    // by the stored browser scroll owner below.
     if (!app.isBootingFromUrl && !app.routing?.restoring) {
       applyCurrentOrCachedLens();
     }
-    const result = next();
-    // CP92: durable lens owns route selection/history only. It must not chase
-    // scroll after render, because F5 scroll restore is owned by routeScroll.
-    return result;
+    return next();
   });
   registerSetRouteStateWrapper(function setRouteStateWithDurableLens(kind = 'push', next) {
     next(kind);
@@ -14406,6 +15262,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
   function markUserInteraction() {
     if (app.isBootingFromUrl || app.routing?.restoring) return;
     app.userInteracted = true;
+    app.userInteractionSerial = Number(app.userInteractionSerial || 0) + 1;
     for (const ws of app.workspaces || []) {
       ws.userScrollVersion = (ws.userScrollVersion || 0) + 1;
       ws.scrollRestoreArmed = false;
@@ -14430,14 +15287,6 @@ See _tiinex/export.manifest.json for source and output path metadata.
     if (ok) app.durableLensApplied = true;
     return ok;
   };
-
-  chaseScrollForWorkspace = function chaseScrollForWorkspaceGuarded() {
-    // CP92: no-op. Durable lens may remember route state, but routeScroll owns
-    // all F5 scroll restore. Keeping this as a no-op prevents retired callers from
-    // racing routeScroll while avoiding a risky broad removal in app.js.
-    return;
-  };
-
 
   function onManualPostFeedScrollCancelChase(event) {
     const el = event.target;
@@ -14691,17 +15540,6 @@ See _tiinex/export.manifest.json for source and output path metadata.
       collapseExpandedNodesForModeChange(ws);
     }
     return next(event);
-  });
-
-  // Parent/origin edges are lineage context, not user-facing attachments.
-  registerNodeMaterialRefsWrapper(function nodeMaterialRefsWithoutParentOrigin(ws, node, next) {
-    return next(ws, node).filter((ref) => {
-      const kind = String(ref?.kind || '').toLowerCase();
-      const label = String(ref?.label || ref?.title || ref?.path || ref?.href || '').toLowerCase();
-      if (kind === 'trace' && /parent|origin/.test(label)) return false;
-      if (/parent schema|parent origin|parent trace/.test(label)) return false;
-      return true;
-    });
   });
 
 
@@ -15116,7 +15954,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
   }
 
   registerNodeMaterialRefsWrapper(function nodeMaterialRefsWithoutLineageEdges(ws, node, next) {
-    return next(ws, node).filter((ref) => !isParentLikeMaterialRef(ws, node, ref));
+    return next(ws, node).filter((ref) => !isParentLikeMaterialRef(ws, node, ref) && !isStructuralMaterialRef(ref));
   });
 
 
@@ -15309,19 +16147,6 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
 
 
-
-  function pruneAnchorScrollStorage() {
-    // routeScroll is the single F5 scroll-restore owner. The old anchor-scroll
-    // implementation was retired after it raced routeScroll during refresh. Keep
-    // only this cache prune so stale pre-CP91 entries cannot affect future runs.
-    try {
-      Object.keys(sessionStorage)
-        .filter((key) => key.startsWith(STORAGE_KEYS.anchorScrollPrefix))
-        .forEach((key) => sessionStorage.removeItem(key));
-    } catch (_) {}
-  }
-
-  pruneAnchorScrollStorage();
 
   function scrollRestoreCompletionKey(kind, ws, saved) {
     return hashFast([
@@ -15877,6 +16702,34 @@ window.addEventListener('popstate', () => {
     return /^#(?:state|view)=/i.test(location.hash || '');
   }
 
+  function startupHashRouteModalState() {
+    try {
+      const state = staticDiskMode() ? decodeViewRouteFromHash() : decodeRouteStateFromHash();
+      return state?.modal?.type ? state.modal : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function startupHasExplicitRouteModal() {
+    return Boolean(startupHashRouteModalState());
+  }
+
+  function reconcileStartupExplicitRouteModal() {
+    if (app.routing?.startupRouteModalReconciled) return false;
+    const routeModal = startupHashRouteModalState();
+    if (!routeModal?.type || dialogRouteSessionClosed(routeModal)) return false;
+    if (app.modal && app.modal.type === routeModal.type) {
+      if (app.modal.type === 'artifact-wizard') app.modal.wizardStep = normalizeWizardRouteStep(routeModal.wizardStep || app.modal.wizardStep || 'type');
+      app.routing.startupRouteModalReconciled = true;
+      return true;
+    }
+    applyRouteModalState(routeModal);
+    resolvePendingRouteModal();
+    if (app.modal) app.routing.startupRouteModalReconciled = true;
+    return Boolean(app.modal || app.pendingRouteModal);
+  }
+
   function restoreLocalStateSnapshotSilently(id) {
     const state = localStateStoredSnapshot(id);
     if (!id || !state || !Array.isArray(state.workspaces) || !state.workspaces.length) return false;
@@ -15920,7 +16773,7 @@ window.addEventListener('popstate', () => {
     // restores the remote/default workspace shape, while the local-state profile
     // contains only unsaved local deltas. Do not let the view hash suppress the
     // local-delta merge once workspaces are present.
-    if (startupHasExplicitSharedState() && !app.workspaces.length) return false;
+    if (startupHasExplicitSharedState() && (!app.workspaces.length || startupHasExplicitRouteModal())) return false;
     return restoreLocalStateSnapshotSilently(id);
   }
 
@@ -16051,20 +16904,6 @@ window.addEventListener('popstate', () => {
       id.selectedPath || ''
     ].join('\n');
     return `${STORAGE_KEYS.browserScrollStatePrefix}active.${hashFast(scope)}`;
-  }
-
-  function pruneRetiredScrollStorage() {
-    const retiredScrollPrefix = 'tiinex.routeScroll.';
-    try {
-      Object.keys(localStorage)
-        .filter((key) => key.startsWith(retiredScrollPrefix))
-        .forEach((key) => localStorage.removeItem(key));
-    } catch (_) {}
-    try {
-      Object.keys(sessionStorage)
-        .filter((key) => key.startsWith(STORAGE_KEYS.browserScrollStatePrefix) && key.length > 140)
-        .forEach((key) => sessionStorage.removeItem(key));
-    } catch (_) {}
   }
 
   function documentScrollMax() {
@@ -16202,6 +17041,115 @@ window.addEventListener('popstate', () => {
       target: scrollRestoreDebugTargetState(el)
     }), 100);
     return applied;
+  }
+
+
+  function routeHistoryScrollStateForWorkspace(ws) {
+    if (!ws) return null;
+    return {
+      top: Math.max(0, Math.round(Number(ws.routeScrollTop || 0))),
+      mode: ws.routeScrollMode || scrollModeFromElement(ws) || 'discovery',
+      selectedPath: ws.routeScrollSelectedPath || ''
+    };
+  }
+
+  function routeHistoryScrollTarget(ws, state = null) {
+    if (!ws) return null;
+    const mode = state?.mode || ws.routeScrollMode || scrollModeFromElement(ws) || 'discovery';
+    const preferredRole = mode === 'lineage' ? 'post-feed.lineage' : 'post-feed.discovery';
+    return scrollElementForRole(ws, preferredRole, mode)
+      || bestScrollElementForMode(ws, mode)
+      || activeScrollableFeed(ws)
+      || document.scrollingElement
+      || document.documentElement
+      || document.body;
+  }
+
+  function applyRouteHistoryScrollTop(target, top) {
+    const nextTop = Math.max(0, Math.round(Number(top || 0)));
+    if (!target) {
+      scrollFlightRecord('routeHistoryScroll:apply-skip', { reason: 'no-target', top: nextTop });
+      return false;
+    }
+    if (nextTop > 0) return applyScrollTopToTarget(target, nextTop);
+
+    const before = scrollRestoreDebugTargetState(target);
+    app.restoringStoredScroll = true;
+    try {
+      if (pageScrollTarget(target)) window.scrollTo({ top: 0, left: window.scrollX || 0, behavior: 'auto' });
+      else target.scrollTop = 0;
+    } finally {
+      requestAnimationFrame(() => { app.restoringStoredScroll = false; });
+    }
+    const applied = Math.abs(scrollElementTop(target)) <= 4;
+    scrollFlightRecord('routeHistoryScroll:apply-zero', {
+      applied,
+      before,
+      afterImmediate: scrollRestoreDebugTargetState(target)
+    });
+    return applied;
+  }
+
+  function applyRouteHistoryScrollOnce(ws) {
+    const state = routeHistoryScrollStateForWorkspace(ws);
+    if (!ws || !state) return true;
+    const target = routeHistoryScrollTarget(ws, state);
+    const applied = applyRouteHistoryScrollTop(target, state.top);
+    const holding = Math.abs(scrollElementTop(target) - state.top) <= 6;
+    scrollFlightRecord('routeHistoryScroll:tick', {
+      applied,
+      holding,
+      state,
+      target: scrollRestoreDebugTargetState(target),
+      workspace: scrollRestoreDebugWorkspaceState(ws)
+    });
+    return holding;
+  }
+
+  function scheduleRouteHistoryScrollRestore(reason = 'route-history') {
+    const workspaces = (app.workspaces || []).filter(Boolean);
+    if (!workspaces.length) return false;
+    const token = Number(app.routeHistoryScrollToken || 0) + 1;
+    app.routeHistoryScrollToken = token;
+    const baselineInteraction = Number(app.userInteractionSerial || 0);
+    const started = performance.now();
+    const forcedByUxBack = /ux-back/.test(String(reason || ''));
+    const durationMs = reason === 'startup' ? 6500 : 2800;
+    scrollFlightRecord('routeHistoryScroll:schedule', {
+      reason,
+      durationMs,
+      baselineInteraction,
+      workspaces: workspaces.map((ws) => ({
+        id: ws.id || '',
+        label: ws.label || '',
+        routeScrollTop: Number(ws.routeScrollTop || 0),
+        routeScrollMode: ws.routeScrollMode || '',
+        routeScrollSelectedPath: ws.routeScrollSelectedPath || ''
+      }))
+    });
+    const tick = () => {
+      if (app.routeHistoryScrollToken !== token) return;
+      if (!forcedByUxBack && Number(app.userInteractionSerial || 0) !== baselineInteraction && performance.now() - started > 80) {
+        scrollFlightRecord('routeHistoryScroll:cancel-user-interaction', { reason, baselineInteraction, currentInteraction: Number(app.userInteractionSerial || 0) });
+        return;
+      }
+      let pending = false;
+      for (const ws of workspaces) {
+        if (!applyRouteHistoryScrollOnce(ws)) pending = true;
+      }
+      if (pending && performance.now() - started < durationMs) requestAnimationFrame(tick);
+      else scrollFlightRecord('routeHistoryScroll:complete', { reason, pending, elapsed: Math.round(performance.now() - started) });
+    };
+    requestAnimationFrame(tick);
+    setTimeout(tick, 80);
+    setTimeout(tick, 220);
+    setTimeout(tick, 650);
+    setTimeout(tick, 1400);
+    if (durationMs > 3000) {
+      setTimeout(tick, 2800);
+      setTimeout(tick, 5200);
+    }
+    return true;
   }
 
   function uniqueScrollTargets(items) {
@@ -16818,10 +17766,10 @@ window.addEventListener('popstate', () => {
       const before = targets.map(scrollRestoreDebugTargetState);
       const preferredTargetInitialState = scrollRestoreDebugTargetState(preferredTarget);
       if (!preferredTarget || Number(preferredTargetInitialState?.max || 0) <= 0) {
-        // CP94: content-aware restore readiness. Discovery often renders the
-        // feed shell before the posts are mounted. Do not apply scroll to an
-        // empty feed or a interim page/workspace target; keep the pending
-        // restore alive until the saved target role is actually scrollable.
+        // Discovery often renders the feed shell before the posts are mounted.
+        // Do not apply scroll to an empty feed or an interim page/workspace
+        // target; keep the pending restore alive until the saved target role is
+        // actually scrollable.
         debugScrollRestore('apply:wait-content-ready', {
           saved: scrollRestoreDebugSummarySaved(saved),
           preferredBefore: preferredTargetInitialState,
@@ -16919,10 +17867,10 @@ window.addEventListener('popstate', () => {
         debugScrollRestore('chase:already-complete', { doneKey, saved: scrollRestoreDebugSummarySaved(saved), workspace: scrollRestoreDebugWorkspaceState(ws), preferred: scrollRestoreDebugTargetState(preferred) });
         return;
       }
-      // CP96: a restore can be correct for one frame and then be reset by a
-      // follow-up render while Discovery/Lineage loading is still settling. A
-      // completed marker is only valid while the saved target still holds the
-      // requested top; otherwise resume the chase and re-apply.
+      // A restore can be correct for one frame and then be reset by a follow-up
+      // render while Discovery/Lineage loading is still settling. A completed
+      // marker is only valid while the saved target still holds the requested
+      // top; otherwise resume the chase and re-apply.
       completed.delete(doneKey);
       debugScrollRestore('chase:complete-invalidated', { doneKey, saved: scrollRestoreDebugSummarySaved(saved), workspace: scrollRestoreDebugWorkspaceState(ws), preferred: scrollRestoreDebugTargetState(preferred) });
     }
@@ -17038,7 +17986,6 @@ window.addEventListener('popstate', () => {
     for (const ws of app.workspaces || []) chaseStoredScrollForWorkspace(ws);
   }
 
-  pruneRetiredScrollStorage();
   extendStoredScrollRestoreWindow();
 
   function onStoredScrollCapture(event) {
@@ -17129,6 +18076,7 @@ window.addEventListener('popstate', () => {
   }
 
   registerRenderWrapper(function renderWithStoredBrowserState(next) {
+    // The stored browser scroll is the single F5/session scroll-restore owner.
     maybeRestoreLocalStateAtStartup();
     const result = next();
     scheduleStoredScrollRestore();
@@ -17145,15 +18093,23 @@ window.addEventListener('popstate', () => {
     storedScrollObserver.observe(document.body, { childList: true, subtree: true });
   } catch (_) {}
 
-window.addEventListener('popstate', () => {
+window.addEventListener('popstate', (event) => {
+    noteRoutePopState(event.state || history.state || null);
+    const uxBackRestore = Boolean(app.routing?.pendingUxBackRestore);
+    app.routing.pendingUxBackRestore = false;
     if (scrollFlightRecorderEnabled()) {
       scrollFlightRecord('history:popstate', {
         historyState: scrollFlightRouteStateSummary(history.state),
         decodedRoute: scrollFlightDecodedRouteSummary(),
-        snapshot: scrollFlightSnapshot('popstate-before')
+        snapshot: scrollFlightSnapshot('popstate-before'),
+        uxBackRestore
       });
     }
     restoreRouteFromBrowserHistory();
+    if (uxBackRestore) {
+      setTimeout(() => scheduleRouteHistoryScrollRestore('ux-back-popstate'), 0);
+      setTimeout(() => scheduleRouteHistoryScrollRestore('ux-back-popstate-late'), 120);
+    }
     if (scrollFlightRecorderEnabled()) {
       scrollFlightRecord('history:popstate-after', { snapshot: scrollFlightSnapshot('popstate-after') });
     }
@@ -17199,7 +18155,10 @@ window.addEventListener('popstate', () => {
   loadViewerConfig()
     .then(() => bootFromUrl())
     .then(() => { if (typeof maybeOfferLocalStateRestore === 'function') maybeOfferLocalStateRestore(); })
-    .then(render)
+    .then(() => {
+      render();
+      if (startupHasExplicitSharedState()) scheduleRouteHistoryScrollRestore('startup');
+    })
     .catch((error) => {
       reportRuntimeError('Startup failed', error);
       toast(`Startup failed: ${error.message}`, 'error');
