@@ -6084,6 +6084,11 @@ button.tv-btn.primary:hover {
   gap: 0.85rem;
 }
 
+.integrity-method-authority.draft-finality {
+  border-color: rgba(250, 204, 21, 0.2);
+  background: rgba(250, 204, 21, 0.055);
+}
+
 .integrity-method-authority-main h3 {
   margin: 0.15rem 0 0.25rem;
   color: rgba(248, 246, 255, 0.96);
@@ -6127,6 +6132,122 @@ button.tv-btn.primary:hover {
   display: flex;
   flex-wrap: wrap;
   gap: 0.55rem;
+}
+
+.integrity-validation-entries {
+  border: 1px solid rgba(216, 180, 254, 0.16);
+  background: rgba(15, 23, 42, 0.42);
+  border-radius: 1rem;
+  padding: 0.95rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.integrity-validation-entries-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: rgba(226, 216, 255, 0.82);
+}
+
+.integrity-validation-entries-head p {
+  margin: 0;
+}
+
+.integrity-validation-entries-head span {
+  font-size: 0.84rem;
+  color: rgba(226, 216, 255, 0.72);
+  text-align: right;
+}
+
+.integrity-validation-entry-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.integrity-validation-entry {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 0.85rem;
+  background: rgba(255, 255, 255, 0.035);
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.integrity-validation-entry.active {
+  border-color: rgba(74, 222, 128, 0.42);
+  background: rgba(22, 163, 74, 0.08);
+}
+
+.integrity-validation-entry.preserved-not-evaluated {
+  border-color: rgba(216, 180, 254, 0.22);
+}
+
+.integrity-validation-entry.incomplete-entry {
+  border-color: rgba(251, 191, 36, 0.42);
+  background: rgba(251, 191, 36, 0.07);
+}
+
+.integrity-validation-entry header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.integrity-validation-entry header span {
+  color: rgba(216, 180, 254, 0.82);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.integrity-validation-entry header strong {
+  color: rgba(248, 246, 255, 0.94);
+  text-align: right;
+}
+
+.integrity-validation-entry dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.integrity-validation-entry dt {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(216, 180, 254, 0.72);
+  margin-bottom: 0.18rem;
+}
+
+.integrity-validation-entry dd {
+  margin: 0;
+  color: rgba(248, 246, 255, 0.9);
+  overflow-wrap: anywhere;
+}
+
+.integrity-validation-entry a {
+  color: rgba(233, 213, 255, 0.96);
+}
+
+@media (max-width: 720px) {
+  .integrity-validation-entries-head,
+  .integrity-validation-entry header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .integrity-validation-entries-head span,
+  .integrity-validation-entry header strong {
+    text-align: left;
+  }
+
+  .integrity-validation-entry dl {
+    grid-template-columns: 1fr;
+  }
 }
 
 .method-definition-lineage-post {
@@ -16083,4 +16204,663 @@ body.mobile-discovery-tree .mobile-global-actions-host {
   .integrity-raw {
     border-radius: 0.85rem !important;
   }
+}
+
+.export-result-panel {
+  width: min(94vw, 920px);
+}
+
+.export-result-hero {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.export-result-hero div,
+.export-result-kv,
+.export-result-row {
+  border: 1px solid rgba(216,180,254,0.12);
+  border-radius: 0.82rem;
+  padding: 0.65rem;
+  background: rgba(168,85,247,0.06);
+}
+
+.export-result-hero strong,
+.export-result-hero span,
+.export-result-kv span,
+.export-result-kv strong,
+.export-result-row span,
+.export-result-row strong {
+  display: block;
+  min-width: 0;
+}
+
+.export-result-hero strong,
+.export-result-kv strong,
+.export-result-row strong {
+  overflow-wrap: anywhere;
+}
+
+.export-result-hero span,
+.export-result-kv span,
+.export-result-row span {
+  color: var(--tv-muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.export-result-contract {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.export-result-rows {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.export-result-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.export-result-row span,
+.export-result-row strong {
+  display: inline;
+}
+
+.export-result-pre {
+  max-height: 14rem;
+  overflow: auto;
+  margin: 0;
+}
+
+@media (min-width: 761px) {
+  .export-summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .export-result-hero,
+  .export-result-rows {
+    grid-template-columns: 1fr;
+  }
+}
+
+.github-source-modal {
+  max-width: 720px !important;
+}
+
+.github-source-form {
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.github-source-field-grid,
+.github-source-surface-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.github-source-form .source-root-box {
+  min-height: 54px;
+}
+
+.github-source-form .source-url-box {
+  min-height: 68px;
+}
+
+.github-source-form .display-option-row {
+  padding: 0.6rem 0.7rem;
+  align-items: center;
+}
+
+.github-source-form .display-option-row small {
+  margin-top: 0.08rem;
+  line-height: 1.25;
+}
+
+.github-advanced-issues {
+  border: 1px solid rgba(216, 180, 254, 0.14);
+  border-radius: 0.9rem;
+  background: rgba(255,255,255,0.018);
+  padding: 0.65rem 0.75rem;
+}
+
+.github-advanced-issues summary {
+  cursor: pointer;
+  color: var(--tv-text);
+  font-weight: 760;
+}
+
+.github-advanced-issues summary em {
+  color: var(--tv-muted);
+  font-style: normal;
+  font-weight: 500;
+}
+
+.github-advanced-issues[open] summary {
+  margin-bottom: 0.55rem;
+}
+
+.github-source-form .source-safety-note {
+  font-size: 0.9rem;
+}
+
+@media (max-width: 760px) {
+  .github-source-field-grid,
+  .github-source-surface-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* CP152 schema-aware lineage modules */
+.lineage-module-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0.65rem;
+  padding: 0.55rem 0.8rem 0.7rem;
+}
+
+.lineage-module-card {
+  display: flex;
+  gap: 0.65rem;
+  align-items: flex-start;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(15, 23, 42, 0.44);
+  border-radius: 0.9rem;
+  padding: 0.7rem 0.75rem;
+  min-width: 0;
+}
+
+.lineage-module-card > i {
+  opacity: 0.9;
+  margin-top: 0.15rem;
+}
+
+.lineage-module-card strong,
+.lineage-module-card span,
+.lineage-module-card small {
+  display: block;
+  line-height: 1.2;
+}
+
+.lineage-module-card strong {
+  font-size: 0.82rem;
+}
+
+.lineage-module-card span {
+  font-size: 0.76rem;
+  color: var(--muted, #94a3b8);
+  margin-top: 0.16rem;
+}
+
+.lineage-module-card small {
+  font-size: 0.69rem;
+  color: var(--muted-2, #64748b);
+  margin-top: 0.16rem;
+}
+
+.lineage-module-card.needs-attention {
+  border-color: rgba(251, 113, 133, 0.45);
+  background: rgba(127, 29, 29, 0.16);
+}
+
+.lineage-module-card[role="button"] {
+  cursor: pointer;
+}
+
+.lineage-module-card[role="button"]:hover,
+.lineage-module-card[role="button"]:focus-visible {
+  border-color: rgba(168, 85, 247, 0.55);
+  background: rgba(88, 28, 135, 0.24);
+}
+
+@media (max-width: 760px) {
+  .lineage-module-strip {
+    display: flex;
+    gap: 0.45rem;
+    overflow-x: auto;
+    padding: 0.45rem 0.65rem 0.5rem;
+    scrollbar-width: none;
+  }
+
+  .lineage-module-strip::-webkit-scrollbar {
+    display: none;
+  }
+
+  .lineage-module-card {
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 0.5rem;
+    border-radius: 999px;
+    padding: 0.45rem 0.6rem;
+    max-width: min(82vw, 18rem);
+  }
+
+  .lineage-module-card > i {
+    margin-top: 0;
+  }
+
+  .lineage-module-card strong,
+  .lineage-module-card span {
+    display: inline;
+    font-size: 0.72rem;
+  }
+
+  .lineage-module-card strong::after {
+    content: ': ';
+    color: var(--muted-2, #64748b);
+  }
+
+  .lineage-module-card small {
+    display: none;
+  }
+}
+
+/* CP152a4 mobile status-module polish.
+   Module cards are context hints, not primary content. On narrow screens they
+   must behave like compact chips and never visually collide with the discovery
+   search rail. */
+@media (max-width: 640px) {
+  body.mobile-chrome .lineage-module-strip,
+  body.mobile-lens .lineage-module-strip,
+  .lineage-module-strip {
+    position: relative !important;
+    z-index: 0 !important;
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    align-items: center !important;
+    gap: 0.34rem !important;
+    min-height: 1.46rem !important;
+    max-height: 1.72rem !important;
+    padding: 0.18rem 0.62rem 0.14rem !important;
+    margin: 0 0 0.1rem !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    scrollbar-width: none !important;
+  }
+
+  body.mobile-chrome .lineage-module-strip::-webkit-scrollbar,
+  body.mobile-lens .lineage-module-strip::-webkit-scrollbar,
+  .lineage-module-strip::-webkit-scrollbar {
+    display: none !important;
+  }
+
+  body.mobile-chrome .lineage-module-card,
+  body.mobile-lens .lineage-module-card,
+  .lineage-module-card {
+    flex: 0 0 auto !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 0.32rem !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: min(78vw, 14.5rem) !important;
+    min-height: 1.34rem !important;
+    max-height: 1.38rem !important;
+    padding: 0.16rem 0.46rem !important;
+    border-radius: 999px !important;
+    line-height: 1 !important;
+    overflow: hidden !important;
+    box-sizing: border-box !important;
+  }
+
+  body.mobile-chrome .lineage-module-card > i,
+  body.mobile-lens .lineage-module-card > i,
+  .lineage-module-card > i {
+    flex: 0 0 auto !important;
+    margin: 0 !important;
+    font-size: 0.68rem !important;
+    line-height: 1 !important;
+  }
+
+  body.mobile-chrome .lineage-module-card > div,
+  body.mobile-lens .lineage-module-card > div,
+  .lineage-module-card > div {
+    min-width: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 0.18rem !important;
+    overflow: hidden !important;
+  }
+
+  body.mobile-chrome .lineage-module-card strong,
+  body.mobile-chrome .lineage-module-card span,
+  body.mobile-lens .lineage-module-card strong,
+  body.mobile-lens .lineage-module-card span,
+  .lineage-module-card strong,
+  .lineage-module-card span {
+    display: inline-block !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    font-size: 0.64rem !important;
+    line-height: 1 !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+  }
+
+  body.mobile-chrome .lineage-module-card strong::after,
+  body.mobile-lens .lineage-module-card strong::after,
+  .lineage-module-card strong::after {
+    content: '·' !important;
+    margin-left: 0.18rem !important;
+    color: rgba(148, 163, 184, 0.75) !important;
+  }
+
+  body.mobile-chrome .lineage-module-card[data-kind="github"] strong,
+  body.mobile-lens .lineage-module-card[data-kind="github"] strong,
+  .lineage-module-card[data-kind="github"] strong {
+    max-width: 2.35rem !important;
+  }
+
+  body.mobile-chrome .lineage-module-card[data-kind="github"] strong::before,
+  body.mobile-lens .lineage-module-card[data-kind="github"] strong::before,
+  .lineage-module-card[data-kind="github"] strong::before {
+    content: 'GitHub' !important;
+  }
+
+  body.mobile-chrome .lineage-module-card[data-kind="github"] strong,
+  body.mobile-lens .lineage-module-card[data-kind="github"] strong,
+  .lineage-module-card[data-kind="github"] strong {
+    font-size: 0 !important;
+  }
+
+  body.mobile-chrome .lineage-module-card[data-kind="github"] strong::before,
+  body.mobile-chrome .lineage-module-card[data-kind="github"] strong::after,
+  body.mobile-lens .lineage-module-card[data-kind="github"] strong::before,
+  body.mobile-lens .lineage-module-card[data-kind="github"] strong::after,
+  .lineage-module-card[data-kind="github"] strong::before,
+  .lineage-module-card[data-kind="github"] strong::after {
+    font-size: 0.64rem !important;
+  }
+
+  body.mobile-chrome .lineage-module-card small,
+  body.mobile-lens .lineage-module-card small,
+  .lineage-module-card small {
+    display: none !important;
+  }
+
+  body.mobile-chrome .feed-toolbar.discovery,
+  body.mobile-chrome .feed-toolbar.discovery.feed-toolbar-foundation,
+  body.mobile-chrome .feed-toolbar.discovery.feed-toolbar-shell,
+  body.mobile-chrome .feed-toolbar.discovery.feed-toolbar-layout,
+  body.mobile-lens .feed-toolbar.discovery,
+  body.mobile-lens .feed-toolbar.discovery.feed-toolbar-foundation,
+  body.mobile-lens .feed-toolbar.discovery.feed-toolbar-shell,
+  body.mobile-lens .feed-toolbar.discovery.feed-toolbar-layout,
+  .feed-toolbar.discovery,
+  .feed-toolbar.discovery.feed-toolbar-foundation,
+  .feed-toolbar.discovery.feed-toolbar-shell,
+  .feed-toolbar.discovery.feed-toolbar-layout {
+    position: relative !important;
+    z-index: 2 !important;
+    margin-top: 0 !important;
+  }
+
+  .workspace.mobile-chrome-compact .lineage-module-strip {
+    max-height: 0 !important;
+    min-height: 0 !important;
+    opacity: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    margin: 0 !important;
+    border-width: 0 !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
+  }
+}
+
+/* CP152a6: schema badges should communicate known schema families. White/ink is
+   reserved for unknown/plain schemas so known families do not look unresolved. */
+.badge-schema.unknown,
+.post-chips .badge-schema.unknown,
+.post-chips .schema-nav-badge.unknown,
+.lineage-post .badge-schema.unknown,
+.tree-file-row .tree-badges .badge-schema.unknown {
+  color: rgba(245, 242, 255, 0.92) !important;
+  background: rgba(255, 255, 255, 0.035) !important;
+  border-color: rgba(245, 242, 255, 0.26) !important;
+}
+
+.badge-schema.discovery,
+.post-chips .badge-schema.discovery,
+.post-chips .schema-nav-badge.discovery,
+.lineage-post .badge-schema.discovery,
+.tree-file-row .tree-badges .badge-schema.discovery {
+  color: rgba(219, 166, 255, 0.98) !important;
+  background: rgba(123, 48, 190, 0.26) !important;
+  border-color: rgba(206, 126, 255, 0.42) !important;
+}
+
+.badge-schema.resource,
+.post-chips .badge-schema.resource,
+.post-chips .schema-nav-badge.resource,
+.lineage-post .badge-schema.resource,
+.tree-file-row .tree-badges .badge-schema.resource {
+  color: rgba(255, 214, 138, 0.98) !important;
+  background: rgba(164, 103, 30, 0.22) !important;
+  border-color: rgba(255, 188, 82, 0.38) !important;
+}
+
+.badge-schema.instrument,
+.post-chips .badge-schema.instrument,
+.post-chips .schema-nav-badge.instrument,
+.lineage-post .badge-schema.instrument,
+.tree-file-row .tree-badges .badge-schema.instrument {
+  color: rgba(255, 223, 128, 0.98) !important;
+  background: rgba(139, 112, 24, 0.22) !important;
+  border-color: rgba(241, 201, 78, 0.42) !important;
+}
+
+.badge-schema.runtime,
+.post-chips .badge-schema.runtime,
+.post-chips .schema-nav-badge.runtime,
+.lineage-post .badge-schema.runtime,
+.tree-file-row .tree-badges .badge-schema.runtime {
+  color: rgba(121, 220, 255, 0.98) !important;
+  background: rgba(30, 107, 148, 0.22) !important;
+  border-color: rgba(105, 198, 255, 0.38) !important;
+}
+
+.badge-schema.relation,
+.post-chips .badge-schema.relation,
+.post-chips .schema-nav-badge.relation,
+.lineage-post .badge-schema.relation,
+.tree-file-row .tree-badges .badge-schema.relation,
+.badge-schema.schema-governance,
+.post-chips .badge-schema.schema-governance,
+.post-chips .schema-nav-badge.schema-governance,
+.lineage-post .badge-schema.schema-governance,
+.tree-file-row .tree-badges .badge-schema.schema-governance,
+.badge-schema.validation,
+.post-chips .badge-schema.validation,
+.post-chips .schema-nav-badge.validation,
+.lineage-post .badge-schema.validation,
+.tree-file-row .tree-badges .badge-schema.validation {
+  color: rgba(206, 195, 255, 0.98) !important;
+  background: rgba(79, 69, 137, 0.24) !important;
+  border-color: rgba(170, 151, 255, 0.34) !important;
+}
+
+.badge-schema.privacy,
+.post-chips .badge-schema.privacy,
+.post-chips .schema-nav-badge.privacy,
+.lineage-post .badge-schema.privacy,
+.tree-file-row .tree-badges .badge-schema.privacy,
+.badge-schema.payload,
+.post-chips .badge-schema.payload,
+.post-chips .schema-nav-badge.payload,
+.lineage-post .badge-schema.payload,
+.tree-file-row .tree-badges .badge-schema.payload {
+  color: rgba(142, 238, 219, 0.98) !important;
+  background: rgba(26, 128, 115, 0.2) !important;
+  border-color: rgba(89, 218, 197, 0.34) !important;
+}
+
+.badge-schema.attestation,
+.post-chips .badge-schema.attestation,
+.post-chips .schema-nav-badge.attestation,
+.lineage-post .badge-schema.attestation,
+.tree-file-row .tree-badges .badge-schema.attestation,
+.badge-schema.lineage-upgrade,
+.post-chips .badge-schema.lineage-upgrade,
+.post-chips .schema-nav-badge.lineage-upgrade,
+.lineage-post .badge-schema.lineage-upgrade,
+.tree-file-row .tree-badges .badge-schema.lineage-upgrade {
+  color: rgba(238, 178, 255, 0.98) !important;
+  background: rgba(112, 48, 138, 0.24) !important;
+  border-color: rgba(218, 126, 255, 0.36) !important;
+}
+
+/* CP152b: schema-aware read presenters. Pretty views should surface the
+   user-relevant interpretation first and leave exact artifact text below. */
+.schema-presenter {
+  margin: 0 0 14px;
+  padding: 14px;
+  border: 1px solid rgba(255,255,255,.11);
+  border-radius: 18px;
+  background: rgba(255,255,255,.035);
+}
+.schema-presenter.attention {
+  border-color: rgba(255,112,139,.34);
+  background: rgba(255,74,116,.07);
+}
+.schema-presenter-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+.schema-presenter-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 12px;
+  color: var(--tv-purple-2);
+  background: rgba(160,83,255,.12);
+}
+.schema-presenter-kicker,
+.schema-read-label {
+  margin: 0 0 4px;
+  color: var(--tv-purple-2);
+  font-size: .76rem;
+  font-weight: 800;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+.schema-presenter h3 {
+  margin: 0 0 4px;
+  letter-spacing: -.035em;
+}
+.schema-presenter p { margin: 0; color: var(--tv-muted); line-height: 1.5; }
+.schema-read-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+.schema-read-metric {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 13px;
+  background: rgba(0,0,0,.14);
+}
+.schema-read-metric span {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--tv-muted);
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+}
+.schema-read-metric strong,
+.schema-read-metric a {
+  display: block;
+  color: var(--tv-ink);
+  font-size: .92rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+.schema-read-metric a:hover { text-decoration: underline; }
+.schema-read-block {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255,255,255,.08);
+}
+.schema-action-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.schema-action-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(202,153,255,.26);
+  background: rgba(160,83,255,.10);
+  color: var(--tv-ink);
+  padding: 5px 8px;
+  font-size: .8rem;
+  font-weight: 700;
+}
+.artifact-body-read {
+  margin-top: 12px;
+}
+.artifact-body-read summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.artifact-body-read summary::-webkit-details-marker { display: none; }
+.artifact-body-read summary::before {
+  content: "▸";
+  color: var(--tv-purple-2);
+  font-size: .85rem;
+  transform: translateY(-1px);
+}
+.artifact-body-read[open] summary::before { content: "▾"; }
+.artifact-body-read summary .schema-read-label { margin: 0; }
+.artifact-body-read summary small {
+  color: var(--tv-muted);
+  font-size: .78rem;
+}
+.artifact-body-read .markdown-rendered {
+  margin-top: 14px;
+}
+.continuity-preview .schema-presenter {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: transparent;
+  border-color: transparent;
+}
+.continuity-preview .schema-presenter-head { margin-bottom: 8px; }
+.continuity-preview .schema-presenter-icon { width: 28px; height: 28px; flex-basis: 28px; border-radius: 10px; }
+.continuity-preview .schema-read-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.continuity-preview .schema-read-metric { padding: 7px 8px; }
+.continuity-preview .schema-read-block { margin-top: 8px; padding-top: 8px; }
+
+@media (max-width: 720px) {
+  .schema-presenter { padding: 12px; border-radius: 16px; }
+  .schema-presenter-head { gap: 10px; }
+  .schema-presenter-icon { width: 30px; height: 30px; flex-basis: 30px; }
+  .schema-read-grid { grid-template-columns: 1fr; }
+  .schema-read-metric { padding: 8px 9px; }
+  .schema-action-chip { font-size: .76rem; }
 }

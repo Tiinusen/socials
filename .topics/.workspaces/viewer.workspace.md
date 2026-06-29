@@ -42,6 +42,9 @@
 - Repository: Tiinex/docs
 - Ref: master
 - Root Path: .topics
+- Repo Files Discovery: on
+- Issue Discussion Discovery: on
+- Issue URL: https://github.com/Tiinex/docs/issues/4
 - Default View: feed
 - Default Filter: all
 
@@ -79,4 +82,4 @@ A useful validation note names the selected artifact, the source inspected, the 
 
 - [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)
   - Towards: [viewer.workspace.md](viewer.workspace.md)
-  - Value: yYTlX5mSB-hhxKkSmT5-7GIAzW2Phq0krm-XdhRY1oA
+  - Value: cq_1gsfGZ34oa4EQbEDrpO4Vaq9vYZAdn6Xwkl10blA

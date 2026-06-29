@@ -419,6 +419,29 @@ function validateWizardArchitecture() {
   if (stalePolicyTokens.length) {
     fail(`Schema create policy must keep schema-facing docs vocabulary separate from UI surface policy: ${stalePolicyTokens.join(', ')}`);
   }
+
+  const policyOrderMatch = js.match(/const\s+SCHEMA_CREATE_POLICY_ORDER\s*=\s*Object\.freeze\(\[([\s\S]*?)\]\);/);
+  const policyFamiliesMatch = js.match(/const\s+SCHEMA_CREATE_POLICY_FAMILIES\s*=\s*Object\.freeze\(\[([\s\S]*?)\]\);/);
+  const policyRegistryMatch = js.match(/const\s+SCHEMA_CREATE_POLICY_REGISTRY\s*=\s*freezeSchemaCreatePolicyRegistry\(\{([\s\S]*?)\},\s*SCHEMA_CREATE_POLICY_ORDER\);/);
+  if (!policyOrderMatch || !policyFamiliesMatch || !policyRegistryMatch) {
+    fail('Schema create policy registry, order, and families must be statically discoverable.');
+  } else {
+    const quoted = (text) => [...text.matchAll(/'([^']+)'/g)].map((match) => match[1]);
+    const orderIds = quoted(policyOrderMatch[1]);
+    const orderSet = new Set(orderIds);
+    const familySet = new Set(quoted(policyFamiliesMatch[1]));
+    const registryIds = [...policyRegistryMatch[1].matchAll(/^\s*'([^']+)'\s*:\s*schemaPolicyEntry/gm)].map((match) => match[1]);
+    const registryFamilyPairs = [...policyRegistryMatch[1].matchAll(/schemaPolicyEntry\('([^']+)'\s*,\s*'[^']+'\s*,\s*'([^']+)'/g)].map((match) => ({ id: match[1], family: match[2] }));
+    const missingFromOrder = registryIds.filter((id) => !orderSet.has(id));
+    const missingFromRegistry = orderIds.filter((id) => !registryIds.includes(id));
+    const unsupportedFamilies = registryFamilyPairs.filter((entry) => !familySet.has(entry.family));
+    if (missingFromOrder.length) fail(`Schema create policy entries missing from order: ${missingFromOrder.join(', ')}`);
+    if (missingFromRegistry.length) fail(`Schema create policy order entries missing from registry: ${missingFromRegistry.join(', ')}`);
+    if (unsupportedFamilies.length) fail(`Schema create policy entries use unsupported families: ${unsupportedFamilies.map((entry) => `${entry.id}:${entry.family}`).join(', ')}`);
+    if (!familySet.has('discovery-family') || !familySet.has('resource-family') || !familySet.has('instrument-family')) {
+      fail('Schema create policy families must include discovery-family, resource-family, and instrument-family.');
+    }
+  }
   if (!js.includes("'manuallyCreatable',") || !js.includes("'creatableAsContinuation',") || !js.includes("'creatableAsReference',") || !js.includes("'uiSurface',")) {
     fail('Schema create policy must expose schema-facing creatability fields separately from uiSurface.');
   }
@@ -714,6 +737,13 @@ function validateJavascriptSurface() {
     if (code.includes(token)) fail(`Forbidden historical runtime token found in code: ${token}`);
   }
 
+  if (js.includes('data-mode="issue"') || js.includes('Add issue thread')) {
+    fail('GitHub issue discovery must be owned by the GitHub source/community UX, not a separate Add-flow source.');
+  }
+  for (const token of ['Repo files discovery', 'Issue discussion discovery', 'openEditSourceModal', 'enabledSurfaces']) {
+    if (!js.includes(token)) fail(`Canonical GitHub source/community UX missing token: ${token}`);
+  }
+
   const blockedConsoleCalls = [...js.matchAll(/\bconsole\s*\.\s*([A-Za-z_$][\w$]*)/g)]
     .map((match) => match[1])
     .filter((method) => !['error', 'warn'].includes(method));
@@ -919,6 +949,38 @@ function validateIntegrityLifecycleUxContract() {
     'Validation method authority',
     'Method Definition Availability',
     'Byte integrity result',
+    'Claim Lifecycle',
+    'Finality',
+    'Export Readiness',
+    'exportFileWithIntegrityRefresh',
+    'exportIntegritySummaryLine',
+    'archiveZipCryptoBlob',
+    'assertZipCryptoArchiveBlob',
+    'data-field="exportPassword"',
+    'Downloaded password-protected zip',
+    'Windows-compatible ZIP password protects file contents',
+    'function buildExportPlan',
+    'function buildPackageResult',
+    'function showExportResult',
+    'function renderExportResultModal',
+    'copy-export-summary',
+    'ORIGIN_ADAPTER_CONTRACTS',
+    'ORIGIN_ADAPTER_CAPABILITY_KEYS',
+    'ORIGIN_ADAPTER_GUARANTEE_KEYS',
+    'originAdapterSummary',
+    'parseGitHubIssueSpec',
+    'loadGitHubIssueIntoWorkspace',
+    'issueContributionParseLevel',
+    'issueContributionIntent',
+    'githubIssueCommentMarkdown',
+    'GitHub issue social origin',
+    'feedback/proposal only',
+    'sha256-base64url-text-v1',
+    'client-side · no telemetry',
+    'Claim lifecycle',
+    'Draft / no integrity claim',
+    'valid draft/local state',
+    'not final byte-integrity verified',
     'Schema authority',
     'renderIntegrityLinkKv',
     'renderIntegrityMethodAuthority',
@@ -926,7 +988,18 @@ function validateIntegrityLifecycleUxContract() {
     'validationMethodDefinitionStatus',
     'findValidationMethodDefinitionNode',
     'copyIntegrityMethodDefinitionLink',
-    'openIntegrityMethodDefinitionFromDiagnostics'
+    'openIntegrityMethodDefinitionFromDiagnostics',
+    'function parseIntegrityEntries',
+    'function preferredIntegrityEntry',
+    'function integrityEntryCountLabel',
+    'function integrityEntryAuditDetails',
+    'function renderIntegrityValidationEntries',
+    'Validation Entries',
+    'Validation Entry Audit',
+    'active-byte-integrity-entry',
+    'Preserved, not evaluated',
+    'duplicate method entry',
+    'integrityEntrySummary'
   ];
   for (const token of requiredTokens) {
     if (!js.includes(token)) fail(`Integrity lifecycle/diagnostics contract missing app token: ${token}`);
@@ -943,7 +1016,37 @@ function validateIntegrityLifecycleUxContract() {
   if (/const canOpenDiagnostics = integrityHasClaim\(node\.integrity\)/.test(js)) {
     fail('Integrity badges must open diagnostics for no-claim/draft states, not only claimed footer states.');
   }
-  const requiredCss = ['integrity-meaning-grid', 'integrity-method-authority', 'integrity-authority-signals', 'integrity-summary.byte-integrity-verified', 'integrity-badge.draft', 'body.mobile-chrome .integrity-modal-card .modal-actions', 'position: static !important'];
+  if (!js.includes('const entries = parseIntegrityEntries(normalized);') || !js.includes('preferredIntegrityEntry(entries)')) {
+    fail('Integrity parser must preserve multiple method entries and select the supported byte-integrity entry without discarding the others.');
+  }
+  if (!js.includes('renderIntegrityValidationEntries(diagnostics)') || !js.includes('entry.active') || !js.includes('entry.duplicateMethod')) {
+    fail('Integrity diagnostics must render per-entry audit rows and mark active/duplicate validation entries.');
+  }
+  if (!js.includes('if ((integrity.entryCount || 0) > 1) return text;')) {
+    fail('Local save integrity refresh must not collapse multiple integrity method entries into a single generated footer.');
+  }
+  if (!js.includes('exportFileWithIntegrityRefresh(ws, file)') || !js.includes('integrityRefresh') || !js.includes('refreshed-self-target')) {
+    fail('Workspace export must run a non-mutating integrity refresh pass and report export integrity outcomes.');
+  }
+  if (/function\s+exportWorkspaceZip\s*\(/.test(js) || /exportWorkspaceZipEncrypted/.test(js) || /export-toggle-encryption/.test(js)) {
+    fail('Workspace export must have one canonical archive exporter; old zip/encryption export actions must not remain as parallel owners.');
+  }
+  if (!js.includes('const versionMadeBy = 0x0314') || !js.includes('const flag = 0x0801') || !js.includes('verificationByte') || !js.includes('Math.imul((keys.k1 + (keys.k0 & 0xff)) >>> 0, 134775813)') || !js.includes('Math.imul(temp, (temp ^ 1) >>> 0)')) {
+    fail('ZIP password export must set traditional encrypted ZIP headers, UTF-8 flag, and verification byte explicitly.');
+  }
+  if (!js.includes('await assertZipCryptoArchiveBlob(blob, payload.entries.length)')) {
+    fail('ZIP password export must verify encrypted local headers before download.');
+  }
+  if (!js.includes('modal.exportPassword') || !js.includes('data-field="exportPassword"')) {
+    fail('ZIP password export must store password input in modal state instead of relying only on transient DOM reads.');
+  }
+  for (const token of ['zipBufferHasEncryptedEntries', 'encryptedZipToImportEntries', 'zipCryptoDecryptBytes', 'promptForZipPassword']) {
+    if (!js.includes(token)) fail(`ZIP password import support missing: ${token}`);
+  }
+  if (/downloadBlob\(`\$\{base\}-password\.zip`/.test(js) || js.includes('_tiinex/export.manifest.json')) {
+    fail('Export should not suffix password zip names or add a root _tiinex metadata folder.');
+  }
+  const requiredCss = ['integrity-meaning-grid', 'integrity-method-authority', 'integrity-method-authority.draft-finality', 'integrity-authority-signals', 'integrity-validation-entries', 'integrity-validation-entry.active', 'integrity-validation-entry.preserved-not-evaluated', 'integrity-summary.byte-integrity-verified', 'integrity-badge.draft', 'body.mobile-chrome .integrity-modal-card .modal-actions', 'position: static !important', 'export-result-panel', 'export-result-hero', 'export-result-contract'];
   for (const token of requiredCss) {
     if (!css.includes(token)) fail(`Integrity diagnostics UX CSS missing: ${token}`);
   }

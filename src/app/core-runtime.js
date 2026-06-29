@@ -171,6 +171,13 @@
 
   function schemaKey(schemaId) {
     const text = String(schemaId || '').toLowerCase();
+    if (text.includes('discovery.')) return 'discovery';
+    if (text.includes('resource.')) return 'resource';
+    if (text.includes('instrument.')) return 'instrument';
+    if (text.includes('relation')) return 'relation';
+    if (text.includes('privacy') || text.includes('redaction')) return 'privacy';
+    if (text.includes('attestation')) return 'attestation';
+    if (text.includes('external.payload')) return 'payload';
     if (text.includes('topic')) return 'topic';
     if (text.includes('task')) return 'task';
     if (text.includes('decision')) return 'decision';
@@ -180,12 +187,21 @@
     if (text.includes('runtime')) return 'runtime';
     if (text.includes('signal')) return 'signal';
     if (text.includes('pointer')) return 'pointer';
+    if (text.includes('lineage.upgrade')) return 'lineage-upgrade';
+    if (text.includes('schema.family') || text.includes('definition')) return 'schema-governance';
+    if (text.includes('validation.method')) return 'validation';
     return schemaId ? 'unknown' : 'plain';
   }
 
   function schemaBadgeClass(schemaId) {
     const key = schemaKey(schemaId);
-    if (['topic', 'task', 'decision', 'evidence', 'feedback', 'reduction'].includes(key)) return key;
+    const known = [
+      'topic', 'task', 'decision', 'evidence', 'feedback', 'reduction',
+      'runtime', 'signal', 'pointer', 'discovery', 'resource', 'instrument',
+      'relation', 'privacy', 'attestation', 'payload', 'lineage-upgrade',
+      'schema-governance', 'validation'
+    ];
+    if (known.includes(key)) return key;
     return key === 'plain' ? 'plain' : 'unknown';
   }
 

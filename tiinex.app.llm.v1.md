@@ -52,7 +52,8 @@ The app can:
 - continue from an existing artifact
 - reference an existing artifact without making it a parent
 - edit local workspace markdown
-- export portable workspace bundles
+- save portable `.workspace.md` workspace configuration files
+- export portable workspace archives through a client-side package/delivery pipeline
 
 ## Implementation baseline
 
@@ -62,7 +63,7 @@ Ordinary app-level version suffixes, duplicate function declarations, package-lo
 
 Storage keys are centralized. Local workspace drafts autosave as local deltas without duplicating remote/default source trees. Startup reconnects saved local workspace state unless an explicit shared URL state is being opened. Storage write failures report through one `console.error` diagnostic path. Scroll and view-state behavior remain an active design surface and should be verified in the browser before claiming it is settled.
 
-The viewer brand resolves through workspace markdown (`Viewer Identity` → `Icon`) and falls back to the packaged asset in `assets/`. Do not add a second logo path, inline image payload, or data/blob URL path for brand assets.
+The viewer brand resolves through workspace markdown (`Viewer Identity` → `Icon`) and falls back to the packaged asset in `assets/`. Do not add a second logo path, inline image payload, or data/blob URL path for brand assets. Workspace configuration save and workspace archive export are separate product surfaces; archive export should flow through an ExportPlan, PackageResult, and Delivery target contract.
 
 Ordinary app identifiers, CSS classes, actions, and DOM data attributes should remain semantic. Use Git history for implementation history; do not put implementation chronology into runtime names.
 
@@ -196,3 +197,37 @@ Generated `Continuity Integrity` method entries should link `sha256-base64url-c1
 ## CP145b preview action handoff note
 
 Material preview controls are modal-only controls. They must not also select, anchor, or navigate the artifact card. Keep preview material outside primary card click targets, and keep preview/open/copy controls from bubbling into card-selection actions.
+
+## CP146 integrity entry foundation handoff note
+
+The app now treats `Continuity Integrity` as a list of method entries rather than a single-method-only footer. Current generated artifacts still write one linked SHA-256 byte-integrity entry, but parsing and diagnostics preserve additional entries and choose the supported complete byte-integrity entry for current verification. Local save should not rewrite a multi-entry footer down to one entry.
+
+
+## CP147 multi-validation diagnostics handoff note
+
+Diagnostics now treats the integrity footer as a list of validation method entries. The app shows each entry, marks the active supported byte-integrity entry, and reports unsupported, duplicate, or incomplete entries as preserved audit signals. Generated artifacts still produce a single linked SHA-256 entry until additional validation methods are deliberately introduced.
+
+
+## CP148 draft/final integrity handoff note
+
+Draft/no-claim is an explicit local authoring state. Do not treat missing or empty `Continuity Integrity` as malformed. A real method entry with missing or placeholder `Value` is malformed; a missing claim is not. Diagnostics should keep claim lifecycle and finality separate from byte-integrity result, method-definition availability, validation entries, and schema authority. Export and publish work should consume these distinctions rather than inventing a second no-claim interpretation.
+
+
+## CP149 export integrity handoff note
+
+Workspace export owns a non-mutating integrity refresh pass. Refresh only local self-target Tiinex markdown when safe, write refreshed bytes into the exported archive copy, and report every refresh/preservation outcome in the package result summary. Do not rewrite source files, parent-target claims, unsupported methods, malformed claims, or multi-entry footers during export. Export archive creation should stay on one canonical path; ZIP password mode is traditional client-compatible ZIP encryption, while Tiinex AES-GCM is stronger but app-specific.
+
+## CP150 package/export/delivery handoff note
+
+Workspace archive export now has an explicit `ExportPlan → PackageResult → Delivery target` contract. Current delivery is browser download only, but the structure is intended to let future copy/contribution/GitHub issue/Drive/local adapters attach as delivery targets without becoming separate archive owners. Export result UI is part of the product surface and should continue to emphasize client-side processing, no telemetry, and visible integrity refresh outcomes.
+
+
+## CP151b connector/origin adapter handoff note
+
+The app now has an explicit Connector/Origin Adapter mental model. Do not treat GitHub Issues as a separate user-facing source or export path; they are a social-origin discovery surface inside a GitHub source/community with capabilities and guarantees. Adapter contracts distinguish read/discover/write-like capabilities from origin guarantees such as mutability, weak versioning, hashability, author metadata, timestamps, and no telemetry. Portable `.workspace.md` entrypoints may declare GitHub repo-file and issue-discussion discovery surfaces, and GitHub source badges must remain visible because they are the edit entrypoint for those surfaces. GitHub issue discovery is read-only for this release pass: public issues are fetched client-side, issue bodies become root topic nodes, and comments become feedback/proposal nodes with parse level, mutation intent, origin metadata, and body hash. Comment nodes must not replace original lineage content unless the lineage owner explicitly accepts them into a draft/commit flow.
+
+## CP152b4 adapter request discipline handoff note
+
+Do not add direct one-off `fetch()` flows for new adapters. Route external URL/API reads through the adapter request coordinator so browser HTTP caching, single-flight de-duplication, rate-limit/backoff, cache header interpretation, and source status stay consistent across GitHub raw/API, jsDelivr, viewer config, schema references, integrity target fetches, and future adapters.
+
+Operational fetch/cache status is not provenance or evidence. Preserve material only through explicit artifacts. If an origin signals `no-store`, `private`, auth scope, or similar caution, Tiinex should warn and default to reference/finding semantics unless the user explicitly chooses to preserve the material.

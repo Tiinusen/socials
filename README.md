@@ -40,7 +40,10 @@ The viewer can:
 - edit local workspace markdown
 - share URL hash state for view/dialog context
 - optionally include bounded wizard draft fields in the client-side URL hash
-- export a portable workspace bundle
+- read external sources through a cache-aware, rate-limit-aware adapter request coordinator
+- check origin policy/license/NOTICE files through bounded manifest-based discovery rather than blind probes
+- save a portable `.workspace.md` view/lens configuration
+- export a portable workspace archive through a client-side package/delivery pipeline
 
 ## Package shape
 
@@ -264,6 +267,21 @@ The package has been cleaned after the recent scroll, action, create-intent, par
 Before starting larger feature work, keep using the browser checklist above for changed surfaces and run the static validation and metrics commands documented in this README.
 
 
+
+## Export architecture
+
+Workspace export is split into a package pipeline rather than a single button action:
+
+```txt
+ExportPlan
+→ PackageResult
+→ Delivery target
+```
+
+The plan owns selection, archive format, password mode, source scope, and client-side delivery intent. The package result owns exported entries, asset/file counts, non-mutating integrity refresh outcomes, and warnings. Delivery targets currently use browser download only; future contribution, copy, GitHub issue, Google Drive, or local connector delivery should attach as additional targets instead of becoming parallel archive owners.
+
+Top-level `.workspace.md` saving is separate from per-workspace archive export. The former preserves the viewer/lens configuration; the latter packages workspace content. Both remain client-side and must not introduce telemetry or hidden uploads.
+
 ## Loading progress contract
 
 Discovery content may render progressively while preserving the loading/progress notice until the owned loading lifecycle is complete. Partial renders are allowed during fetch, but they must not clear `ws.loading` or `ws.discoveryProgress`; the progress notice is only dismissed after discovered markdown fetches, progressive indexing, discovery-time integrity target verification, and policy checks complete. Background integrity verification must not be launched as a separate untracked fetch wave during Discovery progress. The displayed percentage is phase-weighted so long verification phases do not appear as a misleading 96-99% stall.
@@ -311,3 +329,44 @@ Integrity diagnostics now separate three signals: byte-integrity result, method-
 ### CP145b preview action ownership note
 
 Material preview actions are modal-only actions. Preview material is rendered outside the card's primary selection target, and preview/open/copy controls stop click propagation so opening an attachment preview does not also select or anchor the artifact in Lineage mode.
+
+### CP146 integrity entry foundation note
+
+The integrity parser preserves all first-level method entries under `Continuity Integrity` and selects the first supported complete byte-integrity entry for current verification. Diagnostics show the validation-entry count separately from the byte-integrity result and method-definition authority. Local save refresh does not collapse multiple method entries into one generated footer; generated artifacts still emit one linked `sha256-base64url-c14n-v1` entry until additional validation methods are deliberately introduced.
+
+### CP147 multi-validation diagnostics note
+
+Integrity diagnostics now render each parsed method entry as its own audit row. The currently evaluated byte-integrity entry is marked as active, while unsupported or duplicate entries are preserved and shown as not evaluated. Audit text reports evaluated entries, preserved unsupported entries, duplicate method entries, and incomplete entries with missing `Towards` or `Value`. Generated artifacts still emit one linked `sha256-base64url-c14n-v1` entry.
+
+
+### CP148 draft/final integrity note
+
+Draft/no-claim integrity is a valid local authoring state, not a checksum failure. Integrity diagnostics now expose claim lifecycle, finality, and export-readiness signals separately from byte-integrity result, method-definition availability, validation entries, and schema authority. A missing or empty `Continuity Integrity` footer remains no claim; malformed method entries remain repair-needed claims; verified byte-integrity claims remain final method-scoped verification.
+
+
+### CP149 export integrity refresh note
+
+Workspace export runs a non-mutating integrity refresh pass before archive creation. Local self-target Tiinex markdown artifacts are refreshed in the exported copy when safe; source files, parent-target claims, unsupported claims, malformed claims, and multi-entry footers are preserved without changing the loaded workspace. Export keeps the archive root aligned with the exported content tree rather than adding a metadata folder. Export now has one canonical archive path for zip, tar, tar.gz, Tiinex AES-GCM packages, and Windows-compatible ZIP password mode. Windows-compatible ZIP password mode protects file contents while leaving file names and folders visible, and Tiinex can re-import those password ZIPs by prompting for the password. AES-GCM remains the stronger Tiinex-specific package mode.
+
+
+### CP150 package/export/delivery note
+
+Workspace archive export now exposes a plan/result/delivery contract. Export previews file, asset, archive, password, and client-side delivery choices before packaging, then shows a package result summary after download with counts and integrity refresh outcomes. The archive still contains only the selected workspace tree by default. No telemetry, hidden upload, or root metadata folder is added. Top-level `.workspace.md` saving is worded separately from per-workspace archive export.
+
+### CP151b connector/origin adapter note
+
+Connector behavior is now modeled by explicit origin adapter contracts rather than by one-off source types. Adapter capabilities distinguish discover/read/create/append/edit/replace/delete/patch, and guarantees distinguish addressability, mutability, versioning, hashability, author metadata, timestamps, deletion risk, client-side behavior, and telemetry. Edit-capable origins must be treated as preconditioned mutation surfaces, not silent replacement paths.
+
+GitHub issue discussions are introduced as a social-origin adapter surface inside the GitHub source/community UX. A GitHub source can enable repo file discovery and issue discussion discovery independently; issue discussion discovery defaults on. Portable `.workspace.md` entrypoints can declare these surfaces so the default Tiinex docs workspace opens with both repo files and issue discussions enabled. GitHub source badges stay visible as the edit entrypoint even when there is only one source. Public issues are normalized as root topic nodes and comments become feedback nodes. Comment bodies are classified as structured, inferred, or raw; intent is classified as add, correct, comment, question, review, or unknown. These nodes are feedback/proposals only and do not replace the original lineage unless the lineage owner accepts them into their own draft/commit flow. Issue/comment body hashes preserve mutation signals for mutable GitHub content.
+
+## Adapter request discipline
+
+External-source adapters should use the shared request coordinator rather than calling `fetch()` directly. Browser HTTP caching remains the primary cache path. Tiinex adds only the coordination layer it needs: single-flight request de-duplication, rate-limit/backoff status, source refresh semantics, and visible discovery fallback/gap handling.
+
+Adapters should expose or preserve capability metadata when available: cacheability, conditional-request support, rate-limit header support, recommended concurrency, auto-retry policy, auth scope, and preservation caution. A cached response is operational convenience, not preserved evidence. When a source signals `no-store`, `private`, auth-scoped access, or similar caution, Tiinex should default toward reference/finding behavior and require an explicit user decision before preserving material as evidence or embedded payload.
+
+GitHub source refresh is read-only. `Refresh` is cache-aware. `Hard refresh` is manual, clears Tiinex in-memory source cache for that source, and still respects rate-limit/backoff; it must not become an automatic retry loop.
+
+### CP152b6 Policy Lookup Transport
+
+Policy/license/NOTICE discovery uses the shared adapter request discipline and avoids unauthenticated GitHub REST root-contents lookup during ordinary loads. The viewer checks a cache-friendly root manifest first, fetches only policy files that are actually present, and defers lookup rather than adding fallback probes when the manifest cannot be read.

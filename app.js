@@ -107,7 +107,8 @@
     localWorkspaceCurrent: 'tiinex.localWorkspace.current',
     browserScrollStatePrefix: 'tiinex.routeScroll.state.',
     lensSessionPrefix: 'tiinex.lens.',
-    appSettings: 'tiinex.app.settings'
+    appSettings: 'tiinex.app.settings',
+    adapterRateLimitPrefix: 'tiinex.adapter.rateLimit.'
   });
 
   const APP_SETTING_DEFAULTS = Object.freeze({
@@ -135,9 +136,269 @@
 
   app.settings = Object.assign({}, APP_SETTING_DEFAULTS, loadStoredAppSettings(), app.settings || {});
 
-  function persistAppSettings() {
-    try { storageWriteJson(localStorage, STORAGE_KEYS.appSettings, appSettingSnapshot()); } catch (_) {}
+
+  function adapterHeaderRecord(headers) {
+    const record = {};
+    try {
+      if (headers && typeof headers.forEach === 'function') {
+        headers.forEach((value, key) => { record[String(key || '').toLowerCase()] = String(value || ''); });
+      }
+    } catch (_) {}
+    return record;
   }
+
+  function adapterHeaders(record = {}) {
+    const normalized = {};
+    Object.keys(record || {}).forEach((key) => { normalized[String(key).toLowerCase()] = String(record[key] || ''); });
+    return {
+      record: normalized,
+      get(name) { return normalized[String(name || '').toLowerCase()] || null; },
+      has(name) { return Object.prototype.hasOwnProperty.call(normalized, String(name || '').toLowerCase()); }
+    };
+  }
+
+  function adapterCachePolicyFromHeaders(headers = {}) {
+    const h = adapterHeaders(headers);
+    const cacheControl = String(h.get('cache-control') || '').toLowerCase();
+    const expires = h.get('expires') || '';
+    const now = Date.now();
+    const maxAgeMatch = cacheControl.match(/(?:^|,|\s)max-age=(\d+)/i);
+    let maxAgeMs = maxAgeMatch ? Number(maxAgeMatch[1]) * 1000 : 0;
+    if (!maxAgeMs && expires) {
+      const t = Date.parse(expires);
+      if (Number.isFinite(t) && t > now) maxAgeMs = t - now;
+    }
+    return {
+      cacheControl,
+      noStore: /(?:^|,|\s)no-store(?:\s|,|$)/i.test(cacheControl),
+      noCache: /(?:^|,|\s)no-cache(?:\s|,|$)/i.test(cacheControl),
+      private: /(?:^|,|\s)private(?:\s|,|$)/i.test(cacheControl),
+      maxAgeMs: Math.max(0, Number(maxAgeMs) || 0),
+      etag: h.get('etag') || '',
+      lastModified: h.get('last-modified') || '',
+      expires,
+      vary: h.get('vary') || '',
+      retryAfter: h.get('retry-after') || ''
+    };
+  }
+
+  function adapterPreservationPolicyFromCachePolicy(policy = {}, authMode = 'none') {
+    const reasons = [];
+    if (policy.noStore) reasons.push('no-store');
+    if (policy.private) reasons.push('private');
+    if (authMode && authMode !== 'none') reasons.push('auth-scoped');
+    let preservationPolicy = 'freelyPreservable';
+    if (policy.noStore || (authMode && authMode !== 'none')) preservationPolicy = 'requiresExplicitChoice';
+    else if (policy.private || policy.noCache) preservationPolicy = 'caution';
+    return { preservationPolicy, preservationReasons: reasons };
+  }
+
+  function adapterIdForUrl(url = '') {
+    try {
+      const host = new URL(String(url || ''), location.href).hostname.toLowerCase();
+      if (host === 'api.github.com') return 'github-rest';
+      if (host === 'raw.githubusercontent.com') return 'github-raw';
+      if (host === 'data.jsdelivr.com') return 'jsdelivr';
+      return 'url-fetch';
+    } catch (_) {
+      return 'url-fetch';
+    }
+  }
+
+  function adapterRateLimitKeyFor(url = '', adapter = '') {
+    if (adapter === 'github-rest') return 'github-rest';
+    try {
+      const host = new URL(String(url || ''), location.href).hostname.toLowerCase();
+      return `${adapter || 'url-fetch'}:${host}`;
+    } catch (_) {
+      return adapter || 'url-fetch';
+    }
+  }
+
+  function adapterRateLimitStorageKey(key) {
+    return `${STORAGE_KEYS.adapterRateLimitPrefix}${key}`;
+  }
+
+  function readAdapterRateLimit(key) {
+    try { return storageReadJson(sessionStorage, adapterRateLimitStorageKey(key), null); } catch (_) { return null; }
+  }
+
+  function writeAdapterRateLimit(key, state) {
+    try { storageWriteJson(sessionStorage, adapterRateLimitStorageKey(key), state || {}); } catch (_) {}
+  }
+
+  function clearAdapterRateLimit(key) {
+    try { sessionStorage.removeItem(adapterRateLimitStorageKey(key)); } catch (_) {}
+  }
+
+  function adapterRetryAfterMs(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return 0;
+    if (/^\d+$/.test(raw)) return Number(raw) * 1000;
+    const t = Date.parse(raw);
+    return Number.isFinite(t) ? Math.max(0, t - Date.now()) : 0;
+  }
+
+  function adapterRateLimitUntilFromHeaders(headers = {}) {
+    const h = adapterHeaders(headers);
+    const retryMs = adapterRetryAfterMs(h.get('retry-after') || '');
+    if (retryMs) return Date.now() + retryMs;
+    const remaining = h.get('x-ratelimit-remaining');
+    const reset = h.get('x-ratelimit-reset');
+    if (remaining === '0' && reset && /^\d+$/.test(reset)) return (Number(reset) * 1000) + 1500;
+    return 0;
+  }
+
+  function adapterRateLimitMessage(label, until, reason = '') {
+    const when = until ? new Date(until).toLocaleTimeString() : '';
+    return `${label || 'Adapter'} is rate-limited${when ? ` until ${when}` : ''}${reason ? `: ${reason}` : ''}.`;
+  }
+
+  function makeAdapterError(message, meta = {}) {
+    const error = new Error(message);
+    Object.assign(error, meta || {});
+    return error;
+  }
+
+  function adapterRequestKey(url, options = {}) {
+    const method = String(options.method || 'GET').toUpperCase();
+    const adapter = options.adapter || adapterIdForUrl(url);
+    const headers = Object.assign({}, options.headers || {});
+    const headerSig = Object.keys(headers).sort().map((key) => `${key.toLowerCase()}:${String(headers[key] || '')}`).join('|');
+    return `${adapter}:${method}:${url}:${headerSig}`;
+  }
+
+  function ensureAdapterRuntime() {
+    app.adapterRequests = app.adapterRequests || { inFlight: new Map(), memory: new Map() };
+    return app.adapterRequests;
+  }
+
+  function clearAdapterRuntimeCache(match = '') {
+    const runtime = ensureAdapterRuntime();
+    if (!match) {
+      runtime.memory.clear();
+      return;
+    }
+    for (const key of Array.from(runtime.memory.keys())) {
+      if (key.includes(match)) runtime.memory.delete(key);
+    }
+  }
+
+  async function adapterRequest(url, options = {}) {
+    const adapter = options.adapter || adapterIdForUrl(url);
+    const label = options.label || (adapter === 'github-rest' ? 'GitHub API' : adapter === 'github-raw' ? 'GitHub raw' : 'External source');
+    const rateLimitKey = options.rateLimitKey || adapterRateLimitKeyFor(url, adapter);
+    const key = adapterRequestKey(url, Object.assign({}, options, { adapter }));
+    const runtime = ensureAdapterRuntime();
+    const now = Date.now();
+    const cached = runtime.memory.get(key);
+    if (!options.hardRefresh && cached && cached.expiresAt && cached.expiresAt > now) {
+      return Object.assign({}, cached.result, { fromRuntimeCache: true, cacheState: 'runtime-cache' });
+    }
+
+    const guard = readAdapterRateLimit(rateLimitKey);
+    if (guard?.until && Number(guard.until) > now) {
+      throw makeAdapterError(adapterRateLimitMessage(label, Number(guard.until), guard.reason || ''), {
+        adapter,
+        status: 429,
+        rateLimited: true,
+        rateLimitUntil: Number(guard.until),
+        rateLimitKey,
+        cacheState: 'rate-limited'
+      });
+    }
+
+    if (runtime.inFlight.has(key)) return runtime.inFlight.get(key);
+
+    const promise = (async () => {
+      const fetchHeaders = Object.assign({}, options.headers || {});
+      const cacheMode = options.hardRefresh ? 'reload' : (options.cacheMode || 'default');
+      const response = await fetch(url, {
+        method: options.method || 'GET',
+        mode: options.mode || 'cors',
+        credentials: options.credentials || 'omit',
+        cache: cacheMode,
+        headers: fetchHeaders
+      });
+      const headerRecord = adapterHeaderRecord(response.headers);
+      const headerApi = adapterHeaders(headerRecord);
+      const rateUntil = adapterRateLimitUntilFromHeaders(headerRecord);
+      if (rateUntil) {
+        writeAdapterRateLimit(rateLimitKey, {
+          adapter,
+          until: rateUntil,
+          reason: response.status ? `${response.status} ${response.statusText || ''}`.trim() : 'rate-limit headers',
+          updatedAt: new Date().toISOString()
+        });
+      } else if (response.ok) {
+        clearAdapterRateLimit(rateLimitKey);
+      }
+
+      const text = await response.text();
+      let data = null;
+      if (options.parse === 'json') {
+        try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
+      }
+      const policy = adapterCachePolicyFromHeaders(headerRecord);
+      const preservation = adapterPreservationPolicyFromCachePolicy(policy, options.authMode || 'none');
+      const meta = {
+        adapter,
+        url,
+        status: response.status,
+        statusText: response.statusText || '',
+        ok: response.ok,
+        headers: headerApi,
+        headerRecord,
+        cachePolicy: policy,
+        cacheState: options.hardRefresh ? 'refreshed' : 'cache-aware',
+        rateLimitKey,
+        rateLimitUntil: rateUntil || 0,
+        preservationPolicy: preservation.preservationPolicy,
+        preservationReasons: preservation.preservationReasons
+      };
+
+      if (!response.ok) {
+        const apiMessage = data?.message ? `: ${data.message}` : '';
+        const rateHint = rateUntil ? ` (retry after ${new Date(rateUntil).toLocaleTimeString()})` : '';
+        throw makeAdapterError(`${response.status} ${response.statusText || ''}${apiMessage}${rateHint}`.trim(), Object.assign(meta, {
+          errorBody: text,
+          rateLimited: Boolean(rateUntil || response.status === 429)
+        }));
+      }
+
+      const result = Object.assign({ text, data }, meta);
+      const shouldMemoryCache = !policy.noStore && !policy.noCache && policy.maxAgeMs > 0;
+      if (shouldMemoryCache) {
+        runtime.memory.set(key, { result, expiresAt: Date.now() + policy.maxAgeMs });
+      }
+      return result;
+    })();
+
+    runtime.inFlight.set(key, promise);
+    try {
+      return await promise;
+    } finally {
+      runtime.inFlight.delete(key);
+    }
+  }
+
+  function githubRestHeaders(extra = {}) {
+    return Object.assign({
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28'
+    }, extra || {});
+  }
+
+  async function adapterFetchText(url, options = {}) {
+    const result = await adapterRequest(url, Object.assign({ parse: 'text' }, options));
+    return result.text;
+  }
+
+  async function adapterFetchJson(url, options = {}) {
+    const result = await adapterRequest(url, Object.assign({ parse: 'json' }, options));
+    return result;
+  }
+
 
   function setAppSetting(key, value) {
     if (!(key in APP_SETTING_DEFAULTS)) return false;
@@ -229,6 +490,30 @@
     return `https://raw.githubusercontent.com/${repo}/${ref}/${fileName}`;
   }
 
+  function repoRootJsdelivrFlatUrl(repo, ref, options = {}) {
+    if (!repo) return '';
+    const resolvedRef = ref || 'master';
+    const bust = options.hardRefresh ? `?tiinexHardRefresh=${Date.now()}` : '';
+    return `https://data.jsdelivr.com/v1/package/gh/${repo}@${encodeURIComponent(resolvedRef)}/flat${bust}`;
+  }
+
+  async function fetchRepoRootFileMap(repo, ref, options = {}) {
+    const url = repoRootJsdelivrFlatUrl(repo, ref, options);
+    if (!url) return new Map();
+    const data = await fetchJson(url, {
+      adapter: 'jsdelivr',
+      label: 'jsDelivr root manifest',
+      hardRefresh: Boolean(options.hardRefresh)
+    });
+    const map = new Map();
+    for (const file of Array.isArray(data.files) ? data.files : []) {
+      const path = normalizeJsdelivrFlatPath(file.name || file.path || '');
+      if (!path || path.includes('/')) continue;
+      map.set(path.toLowerCase(), path);
+    }
+    return map;
+  }
+
 
   function sourceNeedsPolicyDecision(ws) {
     return Boolean(ws && ws.repo && ws.ref && ws.policy && ws.policy.status === 'missing');
@@ -271,16 +556,144 @@
     return /^(?:pending|placeholder|tbd|test|fill\s*(?:me|in)?|fill-in|fill_in|unavailable|unknown|n\/?a|-+)$/.test(normalized);
   }
 
+  function parseIntegrityEntries(text) {
+    const normalized = normalizeNewlines(text || '');
+    const heading = normalized.match(/^# Continuity Integrity\s*$/m);
+    if (!heading) return [];
+    const tail = normalized.slice(heading.index).split('\n').slice(1);
+    const entries = [];
+    let current = null;
+    const finish = () => {
+      if (!current) return;
+      const methodHref = validationMethodHrefFromLabel(current.methodLabel);
+      const method = validationMethodIdFromLabel(current.methodLabel);
+      const towards = String(current.fields.Towards || current.fields.towards || '').trim();
+      const value = String(current.fields.Value || current.fields.value || '').trim();
+      entries.push({
+        index: entries.length,
+        method,
+        methodLabel: current.methodLabel,
+        methodHref,
+        methodDefinitionUrl: validationMethodDefinitionUrl(method, methodHref),
+        towards,
+        value,
+        placeholderValue: placeholderIntegrityValue(value)
+      });
+      current = null;
+    };
+
+    for (const rawLine of tail) {
+      if (/^#\s+/.test(rawLine.trim())) break;
+      const methodMatch = rawLine.match(/^-\s+([^\n]+?)\s*$/);
+      if (methodMatch) {
+        finish();
+        current = { methodLabel: methodMatch[1].trim(), fields: {} };
+        continue;
+      }
+      if (!current) continue;
+      const fieldMatch = rawLine.match(/^\s+-\s+([^:]+):\s*(.*)$/);
+      if (fieldMatch) current.fields[fieldMatch[1].trim()] = fieldMatch[2].trim();
+    }
+    finish();
+    return entries;
+  }
+
+  function preferredIntegrityEntry(entries) {
+    const list = Array.isArray(entries) ? entries : [];
+    return list.find((entry) => entry.method === TIINEX_SHA256_C14N_METHOD_ID && entry.towards && entry.value && !entry.placeholderValue)
+      || list.find((entry) => entry.method || entry.towards || entry.value)
+      || null;
+  }
+
+  function integrityEntryCountLabel(integrity) {
+    const entries = Array.isArray(integrity?.entries) ? integrity.entries : [];
+    if (!entries.length) return 'No method entries';
+    const supported = entries.filter((entry) => entry.method === TIINEX_SHA256_C14N_METHOD_ID).length;
+    if (entries.length === 1) return supported ? '1 entry · byte-integrity method' : '1 entry · unsupported method';
+    return `${entries.length} entries · ${supported} byte-integrity ${supported === 1 ? 'entry' : 'entries'}`;
+  }
+
+  function integrityEntryAuditDetails(integrity) {
+    const entries = Array.isArray(integrity?.entries) ? integrity.entries : [];
+    const activeIndex = Number.isFinite(integrity?.activeEntryIndex) ? integrity.activeEntryIndex : -1;
+    const methodCounts = new Map();
+    for (const entry of entries) {
+      const key = entry?.method || entry?.methodLabel || 'unknown';
+      methodCounts.set(key, (methodCounts.get(key) || 0) + 1);
+    }
+
+    const details = entries.map((entry, index) => {
+      const method = entry?.method || entry?.methodLabel || 'unknown method';
+      const supported = method === TIINEX_SHA256_C14N_METHOD_ID;
+      const missing = [];
+      if (!entry?.method) missing.push('method');
+      if (!entry?.towards) missing.push('Towards');
+      if (!entry?.value) missing.push('Value');
+      if (entry?.placeholderValue) missing.push('real Value');
+      const complete = supported && !missing.length;
+      const duplicateMethod = methodCounts.get(method) > 1;
+      const active = index === activeIndex && complete;
+      const status = active
+        ? 'active-byte-integrity-entry'
+        : !supported
+          ? 'preserved-not-evaluated'
+          : missing.length
+            ? 'incomplete-entry'
+            : 'preserved-not-evaluated';
+      const label = active
+        ? 'Active byte-integrity entry'
+        : !supported
+          ? 'Preserved, not evaluated'
+          : missing.length
+            ? 'Incomplete byte-integrity entry'
+            : 'Preserved duplicate byte-integrity entry';
+      return {
+        index,
+        position: index + 1,
+        method,
+        methodLabel: entry?.methodLabel || method,
+        methodDefinitionUrl: entry?.methodDefinitionUrl || validationMethodDefinitionUrl(method, entry?.methodHref || ''),
+        towards: entry?.towards || '',
+        value: entry?.value || '',
+        valueStatus: entry?.placeholderValue ? 'placeholder-like value' : entry?.value ? 'value present' : 'missing value',
+        supported,
+        complete,
+        active,
+        duplicateMethod,
+        missing,
+        status,
+        label
+      };
+    });
+
+    const evaluated = details.filter((entry) => entry.active).length;
+    const unsupported = details.filter((entry) => entry.status === 'preserved-not-evaluated' && !entry.supported).length;
+    const duplicate = details.filter((entry) => entry.duplicateMethod).length;
+    const incomplete = details.filter((entry) => entry.missing.length).length;
+    return {
+      entries: details,
+      evaluated,
+      unsupported,
+      duplicate,
+      incomplete,
+      summary: `${evaluated} evaluated · ${unsupported} preserved unsupported · ${incomplete} incomplete · ${duplicate} duplicate ${duplicate === 1 ? 'entry' : 'entries'}`
+    };
+  }
+
   function parseIntegrity(text) {
     const normalized = normalizeNewlines(text);
     const heading = normalized.match(/^# Continuity Integrity\s*$/m);
     if (!heading) return null;
     const tail = normalized.slice(heading.index);
-    const methodLabel = (tail.match(/^-\s+([^\n]+)$/m) || [null, ''])[1].trim();
-    const methodHref = validationMethodHrefFromLabel(methodLabel);
-    const method = validationMethodIdFromLabel(methodLabel);
-    const towards = (tail.match(/^\s+-\s+Towards:\s+(.+)$/m) || [null, ''])[1].trim();
-    const value = (tail.match(/^\s+-\s+Value:\s+(.+)$/m) || [null, ''])[1].trim();
+    const entries = parseIntegrityEntries(normalized);
+    const active = preferredIntegrityEntry(entries);
+    const orphanTowards = (tail.match(/^\s+-\s+Towards:\s+(.+)$/m) || [null, ''])[1].trim();
+    const orphanValue = (tail.match(/^\s+-\s+Value:\s+(.+)$/m) || [null, ''])[1].trim();
+    const method = active?.method || '';
+    const methodLabel = active?.methodLabel || '';
+    const methodHref = active?.methodHref || '';
+    const towards = active?.towards || orphanTowards;
+    const value = active?.value || orphanValue;
     return {
       method,
       methodLabel,
@@ -288,9 +701,14 @@
       methodDefinitionUrl: validationMethodDefinitionUrl(method, methodHref),
       towards,
       value,
+      entries,
+      entryCount: entries.length,
+      activeEntryIndex: active ? active.index : -1,
+      supportedEntryCount: entries.filter((entry) => entry.method === TIINEX_SHA256_C14N_METHOD_ID).length,
+      unsupportedEntryCount: entries.filter((entry) => entry.method && entry.method !== TIINEX_SHA256_C14N_METHOD_ID).length,
       footerPresent: true,
-      noClaim: !method && !towards && !value,
-      placeholderValue: placeholderIntegrityValue(value)
+      noClaim: !entries.length && !method && !towards && !value,
+      placeholderValue: active ? active.placeholderValue : placeholderIntegrityValue(value)
     };
   }
 
@@ -1591,14 +2009,24 @@
 
   function routeSourcesSignature(state) {
     return (state.sources || []).map((source) => {
-      if (source.kind === 'github-tree') return `github-tree:${source.repo}@${source.ref || ''}:${(source.rootPaths || [source.rootPath || '.topics']).map(normalizeRepoPath).join('|')}`;
+      if (source.kind === 'github-tree' || source.kind === 'github') return gitHubSourceStateSignature(source);
       return `urls:${(source.urls || []).join('\n')}`;
     }).join('\n---workspace---\n');
   }
 
   function currentSourcesSignature() {
     return app.workspaces.map((ws) => {
-      if (ws.discoverySource?.kind === 'github-tree') return `github-tree:${ws.discoverySource.repo}@${ws.discoverySource.ref || ws.ref || ''}:${(ws.discoverySource.rootPaths || [ws.discoverySource.rootPath || '.topics']).map(normalizeRepoPath).join('|')}`;
+      const githubSource = Array.from(ws.sources?.values?.() || []).find((source) => source.kind === 'github' && source.repo);
+      if (githubSource) return gitHubSourceStateSignature(githubSource);
+      if (ws.discoverySource?.kind === 'github-tree') {
+        return gitHubSourceStateSignature({
+          repo: ws.discoverySource.repo,
+          ref: ws.discoverySource.ref || ws.ref || '',
+          rootPaths: ws.discoverySource.rootPaths || [ws.discoverySource.rootPath || '.topics'],
+          enabledSurfaces: ws.discoverySource.enabledSurfaces || { repoFiles: true, issues: false },
+          issueUrls: ws.discoverySource.issueUrls || []
+        });
+      }
       return `urls:${workspaceSourceUrls(ws).join('\n')}`;
     }).join('\n---workspace---\n');
   }
@@ -1614,12 +2042,8 @@
         app.workspaceOffset = 0;
         for (const source of state.sources) {
           const ws = createWorkspace(source.label || 'Shared lineage workspace', 'Loaded from URL route state.');
-          if (source.kind === 'github-tree') {
-            await discoverGitHubRepoIntoWorkspace(ws, {
-              repo: source.repo,
-              ref: source.ref || '',
-              rootPaths: source.rootPaths || [source.rootPath || '.topics']
-            });
+          if (source.kind === 'github-tree' || source.kind === 'github') {
+            await loadGitHubStateSourceIntoWorkspace(ws, source);
           } else {
             await loadUrlsIntoWorkspace(ws, source.urls || []);
           }
@@ -1751,7 +2175,144 @@
     return { nodes, cycleNode, parentUnavailable, endReached, nonLineageOrigin };
   }
 
+  function sectionValue(map, name) {
+    return map[String(name || '').toLowerCase()] || '';
+  }
+
+  function bulletValue(block, label) {
+    return stripMarkdownInline(singleFieldFromBullet(block, label) || '').trim();
+  }
+
+  function firstBulletValue(map, fields) {
+    for (const [sectionName, label] of fields) {
+      const value = bulletValue(sectionValue(map, sectionName), label);
+      if (value) return value;
+    }
+    return '';
+  }
+
+  function renderReadMetric(label, value, options = {}) {
+    if (!value) return '';
+    const href = options.href ? safeUrl(options.href) : '';
+    const valueHtml = href
+      ? `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(value)}</a>`
+      : escapeHtml(value);
+    return `<div class="schema-read-metric"><span>${escapeHtml(label)}</span><strong>${valueHtml}</strong></div>`;
+  }
+
+  function renderSchemaActionList(items) {
+    const html = items.filter(Boolean).map((item) => `<span class="schema-action-chip">${escapeHtml(item)}</span>`).join('');
+    return html ? `<div class="schema-action-list">${html}</div>` : '';
+  }
+
+  function renderDiscoveryFindingSummary(node, options = {}) {
+    const map = sectionMap(node.body || node.rawMarkdown);
+    const context = sectionValue(map, 'Discovery Context');
+    const finding = sectionValue(map, 'Finding');
+    const provenance = sectionValue(map, 'Provenance');
+    const triage = sectionValue(map, 'Triage');
+    const limits = sectionValue(map, 'Interpretation Limits');
+    const status = bulletValue(finding, 'Finding Status') || bulletValue(context, 'Discovery State') || 'unknown';
+    const type = bulletValue(finding, 'Finding Type') || bulletValue(context, 'Source') || 'finding';
+    const source = bulletValue(context, 'Source') || bulletValue(provenance, 'Kind') || '';
+    const repo = bulletValue(context, 'Repository') || bulletValue(context, 'Target') || bulletValue(provenance, 'Repository') || '';
+    const url = bulletValue(context, 'URL') || bulletValue(context, 'Issue URL') || bulletValue(context, 'Comment URL') || bulletValue(provenance, 'URL') || '';
+    const author = bulletValue(provenance, 'Author');
+    const updated = bulletValue(provenance, 'Updated At') || bulletValue(provenance, 'Created At');
+    const candidates = bulletValue(triage, 'Use As Candidates') || bulletValue(triage, 'Candidate Artifact Types');
+    const needsInterpretation = bulletValue(triage, 'Needs Interpretation') || bulletValue(triage, 'Promotion Required');
+    const canonicalStatus = bulletValue(triage, 'Canonical Status');
+    const accepted = bulletValue(triage, 'Accepted By Owner');
+    const reason = bulletValue(provenance, 'Unavailable Reason');
+    const statusClass = /unavailable|missing|stale|ambiguous/i.test(status) ? 'attention' : 'ok';
+    const metrics = [
+      renderReadMetric('Status', status),
+      renderReadMetric('Type', type),
+      renderReadMetric('Source', source),
+      renderReadMetric(repo.includes('#') ? 'Target' : 'Repository', repo),
+      renderReadMetric('Author', author),
+      renderReadMetric('Updated', updated),
+      renderReadMetric('Source URL', url ? 'Open source' : '', { href: url })
+    ].join('');
+    const triageChips = String(candidates || '').split(/,|;/).map((v) => v.trim()).filter(Boolean);
+    const limitText = reason || shortText(stripMarkdownInline(limits), 220);
+    const compact = options.compact;
+    return `
+      <section class="schema-presenter discovery-presenter ${statusClass} ${compact ? 'compact' : ''}">
+        <div class="schema-presenter-head">
+          <span class="schema-presenter-icon"><i class="fa-solid fa-magnifying-glass-location"></i></span>
+          <div>
+            <p class="schema-presenter-kicker">Discovery finding</p>
+            <h3>${escapeHtml(node.title || 'Discovery finding')}</h3>
+            <p>${escapeHtml(node.summary || '')}</p>
+          </div>
+        </div>
+        <div class="schema-read-grid">${metrics}</div>
+        ${triageChips.length ? `<div class="schema-read-block"><span class="schema-read-label">Can be used as</span>${renderSchemaActionList(triageChips)}</div>` : ''}
+        ${(needsInterpretation || accepted || canonicalStatus) ? `<div class="schema-read-block"><span class="schema-read-label">Interpretation</span><p>${escapeHtml([needsInterpretation ? `Needs interpretation: ${needsInterpretation}` : '', canonicalStatus ? `Canonical status: ${canonicalStatus}` : '', accepted ? `Accepted by owner: ${accepted}` : ''].filter(Boolean).join(' · '))}</p></div>` : ''}
+        ${limitText ? `<div class="schema-read-block"><span class="schema-read-label">Limit</span><p>${escapeHtml(limitText)}</p></div>` : ''}
+      </section>`;
+  }
+
+  function renderResourceSummary(node, options = {}) {
+    const map = sectionMap(node.body || node.rawMarkdown);
+    const schema = node.currentSchemaText || node.currentSchema || '';
+    const resourceIdentity = firstBulletValue(map, [['Resource Identity', 'Resource'], ['Need Statement', 'Need'], ['Budget Envelope', 'Budget'], ['Allocation Statement', 'Allocation'], ['Usage Statement', 'Usage'], ['Contribution Statement', 'Contribution'], ['Receipt Statement', 'Receipt']]);
+    const state = firstBulletValue(map, [['Resource State', 'Status'], ['Need Status', 'Need Status'], ['Budget Status', 'Budget Status'], ['Allocation Status', 'Allocation Status'], ['Usage Status', 'Usage Status'], ['Contribution Status', 'Contribution Status'], ['Receipt Status', 'Receipt Status']]);
+    const boundary = firstBulletValue(map, [['Resource Boundary', 'Boundary'], ['Budget Boundary', 'Boundary'], ['Use Boundary', 'Boundary'], ['Restrictions Or Conditions', 'Restrictions']]);
+    return `
+      <section class="schema-presenter resource-presenter ${options.compact ? 'compact' : ''}">
+        <div class="schema-presenter-head">
+          <span class="schema-presenter-icon"><i class="fa-solid fa-layer-group"></i></span>
+          <div>
+            <p class="schema-presenter-kicker">Resource context</p>
+            <h3>${escapeHtml(node.title || shortSchema(schema))}</h3>
+            <p>${escapeHtml(node.summary || '')}</p>
+          </div>
+        </div>
+        <div class="schema-read-grid">
+          ${renderReadMetric('Resource', resourceIdentity || shortSchema(schema))}
+          ${renderReadMetric('State', state || 'unknown')}
+          ${renderReadMetric('Boundary', boundary)}
+        </div>
+      </section>`;
+  }
+
+  function renderInstrumentSummary(node, options = {}) {
+    const map = sectionMap(node.body || node.rawMarkdown);
+    const schema = node.currentSchemaText || node.currentSchema || '';
+    const identity = firstBulletValue(map, [['Instrument Identity', 'Instrument'], ['Financial Instrument', 'Instrument'], ['Consent Statement', 'Statement']]);
+    const status = firstBulletValue(map, [['Status And Effect', 'Status'], ['Consent Scope', 'Status'], ['Financial Terms', 'Status']]);
+    const boundary = firstBulletValue(map, [['Boundaries', 'Boundary'], ['Terms Or Permissions', 'Permission'], ['Use Boundary', 'Boundary'], ['Revocation Or Expiry', 'Expiry']]);
+    return `
+      <section class="schema-presenter instrument-presenter ${options.compact ? 'compact' : ''}">
+        <div class="schema-presenter-head">
+          <span class="schema-presenter-icon"><i class="fa-solid fa-file-signature"></i></span>
+          <div>
+            <p class="schema-presenter-kicker">Instrument boundary</p>
+            <h3>${escapeHtml(node.title || shortSchema(schema))}</h3>
+            <p>${escapeHtml(node.summary || '')}</p>
+          </div>
+        </div>
+        <div class="schema-read-grid">
+          ${renderReadMetric('Instrument', identity || shortSchema(schema))}
+          ${renderReadMetric('Status', status || 'declared')}
+          ${renderReadMetric('Boundary', boundary)}
+        </div>
+      </section>`;
+  }
+
+  function renderSchemaReadPresenter(ws, node, options = {}) {
+    const schema = node.currentSchemaText || node.currentSchema || '';
+    if (schema === 'tiinex.discovery.finding.v1') return renderDiscoveryFindingSummary(node, options);
+    if (String(schema).startsWith('tiinex.resource.')) return renderResourceSummary(node, options);
+    if (String(schema).startsWith('tiinex.instrument.')) return renderInstrumentSummary(node, options);
+    return '';
+  }
+
   function renderContinuityPreview(node, ws = null) {
+    const presenter = renderSchemaReadPresenter(ws, node, { compact: true });
+    if (presenter) return presenter + (ws ? renderMaterialSection(ws, node, { compact: true }) : '');
     const key = schemaKey(node.currentSchemaText || node.currentSchema);
     const sections = extractBodySections(node.body || node.rawMarkdown);
     let html = '';
@@ -1761,7 +2322,7 @@
     else if (key === 'task') html = renderPreviewSections(sections, ['Objective', 'Done Criteria', 'Scope', 'Dependencies', 'Grounding', 'Non-Goals']);
     else if (key === 'reduction') html = renderPreviewSections(sections, ['Carry-Forward State', 'Loss And Uncertainty', 'Validation', 'Review Checklist']);
     else {
-      const picked = Object.keys(sections).slice(0, 5);
+      const picked = Object.keys(sections).filter((name) => !/^(continuity context|continuity integrity)$/i.test(name)).slice(0, 5);
       html = picked.length ? renderPreviewSections(sections, picked) : '<p class="preview-note">No schema-specific preview available. Open detail or markdown for the full artifact.</p>';
     }
     return html + (ws ? renderMaterialSection(ws, node, { compact: true }) : '');
@@ -1770,6 +2331,7 @@
 
   function renderDetailReadView(ws, node) {
     const schema = node.currentSchemaText || (node.hasModernEnvelope ? 'unknown schema' : 'plain markdown');
+    const presenter = renderSchemaReadPresenter(ws, node, { compact: false });
     return `
       <div class="detail-read-head">
         <div class="post-chips">
@@ -1780,10 +2342,16 @@
         </div>
         <p>${escapeHtml(node.summary || '')}</p>
       </div>
-      ${renderContinuityPreview(node)}
+      ${presenter || renderContinuityPreview(node)}
       ${renderMaterialSection(ws, node, { compact: false })}
       <hr class="soft-rule">
-      <div class="markdown-rendered">${renderSafeMarkdown(node.body || node.rawMarkdown)}</div>`;
+      <details class="artifact-body-read">
+        <summary>
+          <span class="schema-read-label">Artifact body</span>
+          <small>Exact body rendered from the artifact. Use Markdown for full source.</small>
+        </summary>
+        <div class="markdown-rendered">${renderSafeMarkdown(node.body || node.rawMarkdown)}</div>
+      </details>`;
   }
 
 
@@ -2008,6 +2576,18 @@
       return;
     }
     if (action === 'open-source-modal') { openSourceModal(wsId || ''); return; }
+    if (action === 'edit-source') {
+      event.preventDefault();
+      event.stopPropagation();
+      openEditSourceModal(event.currentTarget.dataset.ws, event.currentTarget.dataset.source);
+      return;
+    }
+    if (action === 'refresh-source' || action === 'hard-refresh-source') {
+      event.preventDefault();
+      event.stopPropagation();
+      await refreshEditedGitHubSource(action === 'hard-refresh-source');
+      return;
+    }
     if (action === 'load-demo') { await loadDemo(); setRouteState('push'); return; }
     if (action === 'create-workspace') { await createWorkspaceFromInputs(); setRouteState('push'); return; }
     if (action === 'select-node') { selectNode(wsId, nodeId); setRouteState('push'); return; }
@@ -2095,8 +2675,8 @@
   // Policy lookup is about the lineage origin, not arbitrary fallback documents.
   // Only these root files count. No README/VALIDATION_NOTES/artifact fallback.
 
-  function repoPolicyCandidates(repo, ref) {
-    const names = [
+  function repoPolicyCandidateNames() {
+    return [
       'LINEAGE_LICENSE.md',
       'LINEAGE_LICENSE',
       'LINEAGE_POLICY.md',
@@ -2106,7 +2686,16 @@
       'POLICY.md',
       'POLICY'
     ];
-    return names.map((name) => ({ kind: name, url: repoPolicyRawUrl(repo, ref, name) }));
+  }
+
+  function repoPolicyCandidates(repo, ref, rootFileMap = null) {
+    return repoPolicyCandidateNames()
+      .map((name) => {
+        const actual = rootFileMap instanceof Map ? rootFileMap.get(name.toLowerCase()) : name;
+        if (!actual) return null;
+        return { kind: actual, url: repoPolicyRawUrl(repo, ref, actual) };
+      })
+      .filter(Boolean);
   }
 
   function isLineagePolicyKind(kind) {
@@ -2122,19 +2711,26 @@
   // understand it, so LICENSE could render as "Policy unknown". Fix the badge
   // renderer and add a separate NOTICE signal when the origin repo has NOTICE.
 
-  function repoNoticeCandidates(repo, ref) {
-    return ['NOTICE', 'NOTICE.md'].map((name) => ({ kind: name, url: repoPolicyRawUrl(repo, ref, name) }));
+  function repoNoticeCandidates(repo, ref, rootFileMap = null) {
+    return ['NOTICE', 'NOTICE.md']
+      .map((name) => {
+        const actual = rootFileMap instanceof Map ? rootFileMap.get(name.toLowerCase()) : name;
+        if (!actual) return null;
+        return { kind: actual, url: repoPolicyRawUrl(repo, ref, actual) };
+      })
+      .filter(Boolean);
   }
 
-  async function discoverWorkspaceNotice(ws) {
+  async function discoverWorkspaceNotice(ws, rootFileMap = null) {
     if (!ws || !ws.repo || !ws.ref) {
       if (ws) ws.notice = { status: 'local', kind: '', text: '', url: '', note: '' };
       return;
     }
 
-    for (const attempt of repoNoticeCandidates(ws.repo, ws.ref)) {
+    const attempts = repoNoticeCandidates(ws.repo, ws.ref, rootFileMap);
+    for (const attempt of attempts) {
       try {
-        const text = await fetchText(attempt.url);
+        const text = await fetchText(attempt.url, attempt.kind);
         ws.notice = {
           status: 'found',
           kind: attempt.kind,
@@ -2143,10 +2739,18 @@
           note: `${attempt.kind} found at origin root for ${ws.repo}@${ws.ref}.`
         };
         return;
-      } catch (_) {}
+      } catch (error) {
+        ws.logs?.push?.(`Could not fetch origin notice ${attempt.kind}: ${error.message}`);
+      }
     }
 
-    ws.notice = { status: 'missing', kind: '', text: '', url: '', note: 'No NOTICE file found at origin root.' };
+    ws.notice = {
+      status: 'missing',
+      kind: '',
+      text: '',
+      url: '',
+      note: rootFileMap instanceof Map ? 'No NOTICE file found in the origin root manifest.' : 'No NOTICE file found at origin root.'
+    };
   }
 
   async function discoverWorkspacePolicy(ws) {
@@ -2164,10 +2768,28 @@
       return;
     }
 
+    let rootFileMap = null;
+    try {
+      rootFileMap = await fetchRepoRootFileMap(ws.repo, ws.ref);
+    } catch (error) {
+      const note = `Origin policy lookup deferred: cacheable root manifest could not be loaded without adding fallback probes (${error.message}).`;
+      ws.policy = {
+        status: 'lookup-deferred',
+        kind: '',
+        text: '',
+        url: `https://github.com/${ws.repo}/tree/${ws.ref}`,
+        note
+      };
+      ws.notice = { status: 'lookup-deferred', kind: '', text: '', url: '', note };
+      ws.logs?.push?.(note);
+      return;
+    }
+
     let foundPolicy = false;
-    for (const attempt of repoPolicyCandidates(ws.repo, ws.ref)) {
+    const attempts = repoPolicyCandidates(ws.repo, ws.ref, rootFileMap);
+    for (const attempt of attempts) {
       try {
-        const text = await fetchText(attempt.url);
+        const text = await fetchText(attempt.url, attempt.kind);
         ws.policy = {
           status: isLineagePolicyKind(attempt.kind) ? 'found' : 'origin-fallback',
           kind: attempt.kind,
@@ -2177,7 +2799,9 @@
         };
         foundPolicy = true;
         break;
-      } catch (_) {}
+      } catch (error) {
+        ws.logs?.push?.(`Could not fetch origin policy ${attempt.kind}: ${error.message}`);
+      }
     }
 
     if (!foundPolicy) {
@@ -2186,11 +2810,11 @@
         kind: '',
         text: '',
         url: `https://github.com/${ws.repo}/tree/${ws.ref}`,
-        note: `No origin lineage policy/license found. Checked LINEAGE_LICENSE(.md), LINEAGE_POLICY(.md), LICENSE(.md), and POLICY(.md) at the repository root only.`
+        note: `No origin lineage policy/license found in the root manifest. Checked known root names only: ${repoPolicyCandidateNames().join(', ')}.`
       };
     }
 
-    await discoverWorkspaceNotice(ws);
+    await discoverWorkspaceNotice(ws, rootFileMap);
   }
 
 
@@ -2205,7 +2829,11 @@
     app.modal.label = $('source-label')?.value ?? app.modal.label ?? '';
     app.modal.repo = $('source-repo')?.value ?? app.modal.repo ?? '';
     app.modal.ref = $('source-ref')?.value ?? app.modal.ref ?? '';
-    app.modal.rootPaths = $('source-root')?.value ?? app.modal.rootPaths ?? '.topics';
+    app.modal.root = $('source-root')?.value ?? app.modal.root ?? '.topics';
+    app.modal.rootPaths = app.modal.root;
+    app.modal.repoDiscovery = $('source-repo-discovery')?.checked ?? app.modal.repoDiscovery ?? true;
+    app.modal.issueDiscovery = $('source-issue-discovery')?.checked ?? app.modal.issueDiscovery ?? true;
+    app.modal.issueUrls = $('source-issue-urls')?.value ?? app.modal.issueUrls ?? '';
     app.modal.urls = $('source-urls')?.value ?? app.modal.urls ?? '';
   }
 
@@ -2762,13 +3390,105 @@
     return shouldIndexAsTrace(path, content) ? 'trace' : 'asset';
   }
 
+  function zipU16(bytes, offset) {
+    return (bytes[offset] | (bytes[offset + 1] << 8)) >>> 0;
+  }
+
+  function zipU32(bytes, offset) {
+    return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0;
+  }
+
+  function zipLocalSignature(bytes, offset) {
+    return zipU32(bytes, offset) >>> 0;
+  }
+
+  function zipBufferHasEncryptedEntries(buffer) {
+    const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer || []);
+    let offset = 0;
+    while (offset + 30 <= bytes.byteLength) {
+      const sig = zipLocalSignature(bytes, offset);
+      if (sig === 0x02014b50 || sig === 0x06054b50) break;
+      if (sig !== 0x04034b50) break;
+      const flag = zipU16(bytes, offset + 6);
+      const compressedSize = zipU32(bytes, offset + 18);
+      const nameLength = zipU16(bytes, offset + 26);
+      const extraLength = zipU16(bytes, offset + 28);
+      if (flag & 0x0001) return true;
+      offset += 30 + nameLength + extraLength + compressedSize;
+    }
+    return false;
+  }
+
+  function promptForZipPassword(file) {
+    const password = window.prompt(`Password for ${file?.name || 'password-protected zip'}`);
+    if (!password) throw new Error('Password required for password-protected zip.');
+    return password;
+  }
+
+  function zipCryptoImportEntriesFromBytes(bytes, password) {
+    const out = [];
+    const decoder = new TextDecoder();
+    let offset = 0;
+    while (offset + 30 <= bytes.byteLength) {
+      const sig = zipLocalSignature(bytes, offset);
+      if (sig === 0x02014b50 || sig === 0x06054b50) break;
+      if (sig !== 0x04034b50) throw new Error('Unsupported zip structure.');
+      const flag = zipU16(bytes, offset + 6);
+      const method = zipU16(bytes, offset + 8);
+      const crc = zipU32(bytes, offset + 14);
+      const compressedSize = zipU32(bytes, offset + 18);
+      const uncompressedSize = zipU32(bytes, offset + 22);
+      const nameLength = zipU16(bytes, offset + 26);
+      const extraLength = zipU16(bytes, offset + 28);
+      const nameStart = offset + 30;
+      const nameEnd = nameStart + nameLength;
+      const dataStart = nameEnd + extraLength;
+      const dataEnd = dataStart + compressedSize;
+      if (nameEnd > bytes.byteLength || dataEnd > bytes.byteLength) throw new Error('Truncated zip entry.');
+      const path = normalizeAssetPath(decoder.decode(bytes.slice(nameStart, nameEnd)));
+      if (flag & 0x0008) throw new Error('Encrypted zip imports with data descriptors are not supported.');
+      if (!(flag & 0x0001)) throw new Error('Mixed encrypted and unencrypted zip entries are not supported.');
+      if (method !== 0) throw new Error('Encrypted zip imports currently support stored entries only.');
+      if (compressedSize !== uncompressedSize + 12) throw new Error('Unsupported encrypted zip entry size.');
+      if (!path.endsWith('/')) {
+        const plain = zipCryptoDecryptBytes(bytes.slice(dataStart, dataEnd), password);
+        const verificationByte = (crc >>> 24) & 0xff;
+        if (plain.byteLength < 12 || plain[11] !== verificationByte) throw new Error('Incorrect zip password.');
+        const data = plain.slice(12);
+        if (data.byteLength !== uncompressedSize) throw new Error('Decrypted zip entry size mismatch.');
+        if (crc32Bytes(data) !== crc) throw new Error('Incorrect zip password or corrupted zip entry.');
+        const blob = new Blob([data]);
+        let content = null;
+        if (/\.(trace\.md|md|txt)$/i.test(path)) content = decoder.decode(data);
+        out.push({
+          path,
+          blob,
+          content,
+          type: blob.type || '',
+          size: data.byteLength || 0,
+          source: 'zip',
+          kind: importEntryKind(path, content)
+        });
+      }
+      offset = dataEnd;
+    }
+    return out;
+  }
+
+  async function encryptedZipToImportEntries(file, buffer) {
+    const password = promptForZipPassword(file);
+    return zipCryptoImportEntriesFromBytes(new Uint8Array(buffer), password);
+  }
+
   async function fileToImportEntries(file) {
     const entries = [];
     const relativePath = normalizeAssetPath(intakeRelativePath(file));
 
     if (/\.zip$/i.test(file.name || relativePath)) {
+      const zipBuffer = await file.arrayBuffer();
+      if (zipBufferHasEncryptedEntries(zipBuffer)) return encryptedZipToImportEntries(file, zipBuffer);
       if (!window.JSZip) throw new Error('JSZip CDN was not available.');
-      const zip = await window.JSZip.loadAsync(file);
+      const zip = await window.JSZip.loadAsync(zipBuffer);
       const zipEntries = Object.values(zip.files).filter((entry) => !entry.dir);
       for (const entry of zipEntries) {
         const path = normalizeAssetPath(entry.name);
@@ -2927,25 +3647,104 @@
     return registerWorkspaceSource(ws, { id: 'draft', kind: 'draft', label: 'Drafts', origin: 'Generated inside this workspace' });
   }
 
+  function normalizeGithubSurfaceConfig(enabledSurfaces = {}) {
+    return {
+      repoFiles: enabledSurfaces.repoFiles !== false,
+      issues: enabledSurfaces.issues !== false
+    };
+  }
+
+  function normalizedGitHubIssueUrls(issueUrls = [], repo = '') {
+    const out = [];
+    (Array.isArray(issueUrls) ? issueUrls : String(issueUrls || '').split(/[\n,]+/)).forEach((item) => {
+      const spec = typeof parseGitHubIssueSpec === 'function' ? parseGitHubIssueSpec(item) : null;
+      const url = spec && (!repo || spec.repo.toLowerCase() === String(repo || '').toLowerCase()) ? spec.issueUrl : String(item || '').trim();
+      if (url && !out.includes(url)) out.push(url);
+    });
+    return out;
+  }
+
+  function normalizeGitHubSourceState(source = {}, ws = null) {
+    const repo = String(source.repo || ws?.repo || '').trim();
+    const ref = String(source.ref || ws?.ref || '').trim();
+    const rootPaths = Array.isArray(source.rootPaths) && source.rootPaths.length
+      ? source.rootPaths.map((item) => normalizeRepoPath(item)).filter(Boolean)
+      : parseRootPaths(source.rootPath || source.root || '.topics');
+    const enabledSurfaces = normalizeGithubSurfaceConfig(source.enabledSurfaces || {
+      repoFiles: source.repoDiscovery,
+      issues: source.issueDiscovery
+    });
+    const issueUrls = normalizedGitHubIssueUrls(source.issueUrls || source.issueUrl || [], repo);
+    return {
+      id: source.id || githubSourceId(repo || source.origin || source.label || 'github'),
+      kind: 'github',
+      label: source.label || gitHubSourceLabel(repo, ref),
+      origin: source.origin || (repo ? `https://github.com/${repo}` : ''),
+      repo,
+      ref,
+      rootPaths: rootPaths.length ? rootPaths : ['.topics'],
+      enabledSurfaces,
+      issueUrls,
+      discoveryDirective: source.discoveryDirective || { kind: 'implicit-workspace-inline', source: 'workspace.md', status: 'bootstrap' },
+      adapter: source.adapter || originAdapterSummary('github-file'),
+      socialAdapter: source.socialAdapter || originAdapterSummary('github-issue')
+    };
+  }
+
+  function gitHubSourceStateSignature(source = {}) {
+    const normalized = normalizeGitHubSourceState(source);
+    const surfaces = normalizeGithubSurfaceConfig(normalized.enabledSurfaces);
+    return [
+      `github:${normalized.repo || ''}@${normalized.ref || ''}`,
+      `roots:${(normalized.rootPaths || ['.topics']).map(normalizeRepoPath).join('|')}`,
+      `surfaces:repoFiles=${surfaces.repoFiles ? 'on' : 'off'};issues=${surfaces.issues ? 'on' : 'off'}`,
+      `issues:${(normalized.issueUrls || []).join('|')}`
+    ].join('::');
+  }
+
+  function githubSourceId(repo) {
+    return makeSourceId('github', String(repo || '').toLowerCase());
+  }
+
+  function gitHubSourceLabel(repo, ref = '') {
+    return `GitHub ${repo || 'source'}${ref ? '@' + ref : ''}`;
+  }
+
+  function registerGitHubSource(ws, config = {}) {
+    const normalized = normalizeGitHubSourceState(config, ws);
+    return registerWorkspaceSource(ws, normalized);
+  }
+
   function sourceFromFileMeta(ws, file = {}) {
     if (file.isGenerated) return draftSource(ws);
-    if (file.sourceId) return registerWorkspaceSource(ws, {
-      id: file.sourceId,
-      kind: file.sourceKind || 'local',
-      label: file.sourceLabel || file.sourceId,
-      origin: file.sourceOrigin || file.rawUrl || file.browseUrl || '',
-      repo: file.repo || '',
-      ref: file.ref || ''
-    });
+    if (file.sourceId) {
+      const existing = sourceById(ws, file.sourceId) || {};
+      const source = {
+        id: file.sourceId,
+        kind: file.sourceKind || existing.kind || 'local',
+        label: file.sourceLabel || existing.label || file.sourceId,
+        origin: file.sourceOrigin || existing.origin || file.rawUrl || file.browseUrl || '',
+        repo: file.repo || existing.repo || '',
+        ref: file.ref || existing.ref || ''
+      };
+      if (Array.isArray(file.rootPaths)) source.rootPaths = file.rootPaths.slice();
+      else if (Array.isArray(existing.rootPaths)) source.rootPaths = existing.rootPaths.slice();
+      if (file.enabledSurfaces) source.enabledSurfaces = normalizeGithubSurfaceConfig(file.enabledSurfaces);
+      else if (existing.enabledSurfaces) source.enabledSurfaces = normalizeGithubSurfaceConfig(existing.enabledSurfaces);
+      if (Array.isArray(file.issueUrls)) source.issueUrls = file.issueUrls.slice();
+      else if (Array.isArray(existing.issueUrls)) source.issueUrls = existing.issueUrls.slice();
+      if (existing.adapter && !source.adapter) source.adapter = existing.adapter;
+      if (existing.socialAdapter && !source.socialAdapter) source.socialAdapter = existing.socialAdapter;
+      return registerWorkspaceSource(ws, source);
+    }
     if (file.repo) {
       const ref = file.ref || ws.ref || '';
-      return registerWorkspaceSource(ws, {
-        id: makeSourceId('github', `${file.repo}@${ref}`),
-        kind: 'github',
-        label: `${file.repo}${ref ? '@' + ref : ''}`,
-        origin: file.browseUrl || file.rawUrl || '',
+      return registerGitHubSource(ws, {
         repo: file.repo,
-        ref
+        ref,
+        origin: file.browseUrl || file.rawUrl || `https://github.com/${file.repo}`,
+        rootPaths: Array.isArray(file.rootPaths) ? file.rootPaths : undefined,
+        enabledSurfaces: file.enabledSurfaces
       });
     }
     if (file.rawUrl || file.browseUrl) {
@@ -2969,13 +3768,13 @@
   function sourceShortLabel(ws, sourceId) {
     const source = sourceById(ws, sourceId);
     if (!source) return '';
-    if (source.kind === 'github') return source.repo || source.label;
+    if (source.kind === 'github') return source.repo || String(source.label || '').replace(/^GitHub\s+/i, '') || source.label;
     return source.label || source.kind;
   }
 
   function sourceBadgeClass(source) {
     if (!source) return 'source-unknown';
-    if (source.kind === 'github') return 'source-github';
+    if (source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue') return 'source-github';
     if (source.kind === 'local') return 'source-local';
     if (source.kind === 'draft') return 'source-draft';
     return 'source-url';
@@ -2984,11 +3783,13 @@
   function renderSourceBadge(ws, nodeOrFile) {
     const source = sourceById(ws, nodeOrFile?.sourceId);
     if (!source) return '';
-    const icon = source.kind === 'github' ? 'fa-brands fa-github'
+    const icon = source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue' ? 'fa-brands fa-github'
       : source.kind === 'local' ? 'fa-solid fa-laptop-file'
       : source.kind === 'draft' ? 'fa-solid fa-pen-nib'
       : 'fa-solid fa-link';
-    return `<span class="badge-soft source-chip ${sourceBadgeClass(source)}" title="${escapeAttr(source.origin || source.label || source.id)}"><i class="${icon}"></i>${escapeHtml(shortText(sourceShortLabel(ws, source.id), 34))}</span>`;
+    const editable = source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue';
+    const action = editable ? ` data-action="edit-source" data-ws="${escapeAttr(ws.id)}" data-source="${escapeAttr(source.id)}" role="button" tabindex="0"` : '';
+    return `<span class="badge-soft source-chip ${sourceBadgeClass(source)}"${action} title="${escapeAttr(source.origin || source.label || source.id)}"><i class="${icon}"></i>${escapeHtml(shortText(sourceShortLabel(ws, source.id), 34))}</span>`;
   }
 
   function sourceCount(ws) {
@@ -3027,10 +3828,11 @@
       gitCommittedAt: file.gitCommittedAt || '',
       gitCommitSha: file.gitCommitSha || '',
       gitCommitSortCheckedAt: file.gitCommitSortCheckedAt || '',
-      gitCommitSortStatus: file.gitCommitSortStatus || ''
+      gitCommitSortStatus: file.gitCommitSortStatus || '',
+      sourceSurface: file.sourceSurface || file.originSurface || ''
     });
     if (file.isGenerated || file.preserveAsAsset) {
-      storeWorkspaceAsset(ws, path, content, { type: 'text/markdown;charset=utf-8', source: file.isGenerated ? 'generated' : 'trace', sourceId });
+      storeWorkspaceAsset(ws, path, content, { type: 'text/markdown;charset=utf-8', source: file.isGenerated ? 'generated' : 'trace', sourceId, sourceSurface: file.sourceSurface || file.originSurface || '' });
     }
     scheduleLocalStateSaveAfterWorkspaceMutation();
   }
@@ -3059,6 +3861,7 @@
       path: file.path,
       sourceId: file.sourceId || '',
       sourceLabel: file.sourceLabel || '',
+      sourceSurface: file.sourceSurface || '',
       storageKey: file.storageKey || sourceFileKey(file.sourceId, file.path, file.isGenerated),
       file,
       isGenerated: Boolean(file.isGenerated),
@@ -3141,6 +3944,7 @@
       type: meta.type || blob?.type || '',
       size: meta.size || blob?.size || (content ? content.length : 0),
       source: meta.source || 'local',
+      sourceSurface: meta.sourceSurface || '',
       preserved: true,
       updatedAt: meta.updatedAt || new Date().toISOString()
     };
@@ -3244,9 +4048,58 @@
       repo: '',
       ref: '',
       root: '.topics',
+      repoDiscovery: true,
+      issueDiscovery: true,
+      issueUrls: '',
       addMode: '',
       openSections: {}
     };
+    render();
+  }
+
+  function openEditSourceModal(wsId, sourceId) {
+    const ws = getWorkspace(wsId);
+    const source = sourceById(ws, sourceId);
+    if (!ws || !source) return;
+    const surfaces = normalizeGithubSurfaceConfig(source.enabledSurfaces || {});
+    app.modal = {
+      type: 'source',
+      appendWsId: ws.id,
+      editSourceId: source.id,
+      label: ws.label || '',
+      urls: '',
+      repo: source.repo || '',
+      ref: source.ref || '',
+      root: Array.isArray(source.rootPaths) && source.rootPaths.length ? source.rootPaths.join('\n') : (source.rootPath || '.topics'),
+      repoDiscovery: surfaces.repoFiles,
+      issueDiscovery: surfaces.issues,
+      issueUrls: Array.isArray(source.issueUrls) ? source.issueUrls.join('\n') : '',
+      addMode: 'git',
+      openSections: {}
+    };
+    render();
+  }
+
+
+  async function refreshEditedGitHubSource(hardRefresh = false) {
+    const modal = app.modal?.type === 'source' ? app.modal : null;
+    const ws = modal?.appendWsId ? getWorkspace(modal.appendWsId) : null;
+    const source = ws && modal?.editSourceId ? sourceById(ws, modal.editSourceId) : null;
+    if (!ws || !source || source.kind !== 'github') {
+      toast('No editable GitHub source is open.', 'warn');
+      return;
+    }
+    if (hardRefresh) {
+      clearAdapterRuntimeCache(source.repo || '');
+    }
+    const label = hardRefresh ? 'Hard refresh' : 'Refresh';
+    toast(`${label} started for ${source.repo || 'GitHub source'}.`, 'info');
+    await loadGitHubStateSourceIntoWorkspace(ws, source, {
+      refreshExisting: true,
+      hardRefresh: Boolean(hardRefresh),
+      userInitiated: true
+    });
+    if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
     render();
   }
 
@@ -3257,6 +4110,94 @@
         <span class="add-choice-copy"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(body)}</small></span>
         <i class="fa-solid fa-chevron-right"></i>
       </button>`;
+  }
+
+
+  const ORIGIN_ADAPTER_CAPABILITY_KEYS = Object.freeze([
+    'discover', 'read', 'create', 'append', 'edit', 'replace', 'delete', 'patch', 'resolvePermalink', 'hashContent', 'observeMetadata', 'observeReactions'
+  ]);
+  const ORIGIN_ADAPTER_GUARANTEE_KEYS = Object.freeze([
+    'addressable', 'mutable', 'versioned', 'contentHashable', 'authorKnown', 'timestamped', 'deletable', 'permalinkStable', 'requiresAuth', 'clientSide', 'telemetry'
+  ]);
+  const ORIGIN_MUTATION_INTENTS = Object.freeze(['add', 'correct', 'comment', 'question', 'review', 'unknown']);
+  const ORIGIN_DISCOVERY_STATUS_LABELS = Object.freeze(['discovery finding only', 'feedback/proposal only']);
+  const ORIGIN_PARSE_LEVELS = Object.freeze(['structured', 'inferred', 'raw']);
+  const ISSUE_BODY_HASH_METHOD_ID = 'sha256-base64url-text-v1';
+
+  function adapterCapabilitySet(values = {}) {
+    const out = {};
+    for (const key of ORIGIN_ADAPTER_CAPABILITY_KEYS) out[key] = Boolean(values[key]);
+    return Object.freeze(out);
+  }
+
+  function adapterGuaranteeSet(values = {}) {
+    const out = {};
+    for (const key of ORIGIN_ADAPTER_GUARANTEE_KEYS) out[key] = values[key] ?? false;
+    return Object.freeze(out);
+  }
+
+  const ORIGIN_ADAPTER_CONTRACTS = Object.freeze({
+    local: Object.freeze({
+      id: 'local',
+      label: 'Local browser workspace',
+      kind: 'local',
+      capabilities: adapterCapabilitySet({ discover: true, read: true, create: true, append: true, edit: true, replace: true, delete: true, hashContent: true, observeMetadata: true }),
+      guarantees: adapterGuaranteeSet({ addressable: 'browser-local', mutable: true, versioned: false, contentHashable: true, authorKnown: false, timestamped: true, deletable: true, permalinkStable: false, requiresAuth: false, clientSide: true, telemetry: 'none' }),
+      editPreconditions: Object.freeze(['hash-match', 'user-confirmed-overwrite'])
+    }),
+    'github-file': Object.freeze({
+      id: 'github-file',
+      label: 'GitHub file origin',
+      kind: 'github-file',
+      capabilities: adapterCapabilitySet({ discover: true, read: true, create: true, edit: true, replace: true, delete: true, resolvePermalink: true, hashContent: true, observeMetadata: true }),
+      guarantees: adapterGuaranteeSet({ addressable: true, mutable: 'branch-mutable', versioned: true, contentHashable: true, authorKnown: true, timestamped: true, deletable: true, permalinkStable: 'commit-pinned when ref is a commit', requiresAuth: 'write-only', clientSide: true, telemetry: 'none' }),
+      editPreconditions: Object.freeze(['ref-match', 'content-hash-match', 'user-confirmed-overwrite'])
+    }),
+    'github-issue': Object.freeze({
+      id: 'github-issue',
+      label: 'GitHub issue social origin',
+      kind: 'github-issue',
+      capabilities: adapterCapabilitySet({ discover: true, read: true, create: true, append: true, edit: true, replace: true, delete: true, resolvePermalink: true, hashContent: true, observeMetadata: true, observeReactions: true }),
+      guarantees: adapterGuaranteeSet({ addressable: true, mutable: true, versioned: 'weak/platform-dependent', contentHashable: true, authorKnown: true, timestamped: true, deletable: true, permalinkStable: true, requiresAuth: 'write-only', clientSide: true, telemetry: 'none' }),
+      editPreconditions: Object.freeze(['comment-id-match', 'updated-at-match', 'body-hash-match', 'user-confirmed-overwrite'])
+    }),
+    'zip-import': Object.freeze({
+      id: 'zip-import',
+      label: 'Imported archive snapshot',
+      kind: 'zip-import',
+      capabilities: adapterCapabilitySet({ read: true, hashContent: true, observeMetadata: true }),
+      guarantees: adapterGuaranteeSet({ addressable: 'package-local', mutable: false, versioned: false, contentHashable: true, authorKnown: false, timestamped: false, deletable: false, permalinkStable: false, requiresAuth: false, clientSide: true, telemetry: 'none' }),
+      editPreconditions: Object.freeze([])
+    })
+  });
+
+  function originAdapterContract(kind) {
+    const key = String(kind || '').trim();
+    if (ORIGIN_ADAPTER_CONTRACTS[key]) return ORIGIN_ADAPTER_CONTRACTS[key];
+    if (key === 'github' || key === 'github-tree') return ORIGIN_ADAPTER_CONTRACTS['github-file'];
+    if (key === 'local' || key === 'draft') return ORIGIN_ADAPTER_CONTRACTS.local;
+    if (key.includes('issue')) return ORIGIN_ADAPTER_CONTRACTS['github-issue'];
+    return Object.freeze({
+      id: key || 'unknown',
+      label: key || 'Unknown origin',
+      kind: key || 'unknown',
+      capabilities: adapterCapabilitySet({ read: true, hashContent: true }),
+      guarantees: adapterGuaranteeSet({ addressable: Boolean(key), mutable: 'unknown', versioned: 'unknown', contentHashable: true, clientSide: true, telemetry: 'none' }),
+      editPreconditions: Object.freeze(['user-confirmed-overwrite'])
+    });
+  }
+
+  function originAdapterSummary(kind) {
+    const contract = originAdapterContract(kind);
+    const caps = Object.entries(contract.capabilities || {}).filter(([, value]) => value).map(([key]) => key);
+    const guarantees = contract.guarantees || {};
+    return {
+      id: contract.id,
+      label: contract.label,
+      capabilities: caps,
+      guarantees,
+      editPreconditions: Array.from(contract.editPreconditions || [])
+    };
   }
 
 
@@ -3322,7 +4263,7 @@
                 <input class="visually-hidden-file" id="source-folder" type="file" multiple webkitdirectory directory>
               </label>
 
-              ${renderAddChoiceCard('<i class="fa-brands fa-github"></i>', 'Git source', 'Discover Tiinex markdown artifacts from public GitHub roots.', 'data-action="choose-add-mode" data-mode="git"')}
+              ${renderAddChoiceCard('<i class="fa-brands fa-github"></i>', 'GitHub source', 'Add a GitHub repo/community with repo files and issue discussions as selectable discovery surfaces.', 'data-action="choose-add-mode" data-mode="git"')}
               ${renderAddChoiceCard('<i class="fa-solid fa-link"></i>', 'Explicit URLs', 'Paste raw/blob trace URLs or manifests.', 'data-action="choose-add-mode" data-mode="urls"')}
               ${renderAddChoiceCard('<i class="fa-solid fa-hand-pointer"></i>', 'Drag and drop', 'Turn the dialog into a focused drop target for this workspace.', 'data-action="choose-add-mode" data-mode="drop"', 'desktop-only-choice')}
             </div>
@@ -3335,36 +4276,57 @@
     }
 
     if (mode === 'git') {
+      const repoDiscovery = modal.repoDiscovery !== false;
+      const issueDiscovery = modal.issueDiscovery !== false;
+      const editing = Boolean(modal.editSourceId);
       return `
         <div class="modal-backdrop-custom focus-modal" role="dialog" aria-modal="true">
-          <div class="modal-panel source-modal-panel add-flow-modal">
+          <div class="modal-panel source-modal-panel add-flow-modal github-source-modal">
             <div class="modal-header-lite source-modal-head">
               <div>
-                <p class="kicker">Git source</p>
+                <p class="kicker">${editing ? 'Edit GitHub source' : 'GitHub source'}</p>
                 <h2 class="modal-title-lite">${title}</h2>
-                <p class="text-secondary mb-0">Discover public GitHub repo roots and import matching <code>.trace.md</code>, <code>.schema.md</code>, <code>.validator.md</code>, and <code>.workspace.md</code> files.</p>
+                <p class="text-secondary mb-0">One client-side, read-only GitHub repo/community source.</p>
               </div>
               <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
             </div>
 
-            <div class="add-source-form">
-              <label>
-                <span>Repo URL or owner/name</span>
-                <input class="form-control" id="source-repo" value="${escapeAttr(modal.repo || '')}" placeholder="Tiinex/docs or https://github.com/Tiinex/docs/tree/master/.topics">
-              </label>
-              <label>
-                <span>Ref <em>optional</em></span>
-                <input class="form-control" id="source-ref" value="${escapeAttr(modal.ref || '')}" placeholder="default branch">
-              </label>
+            <div class="add-source-form github-source-form">
+              <div class="github-source-field-grid">
+                <label>
+                  <span>Repo URL or owner/name</span>
+                  <input class="form-control" id="source-repo" value="${escapeAttr(modal.repo || '')}" placeholder="Tiinex/docs">
+                </label>
+                <label>
+                  <span>Ref <em>optional</em></span>
+                  <input class="form-control" id="source-ref" value="${escapeAttr(modal.ref || '')}" placeholder="default branch">
+                </label>
+              </div>
               <label>
                 <span>Root paths</span>
                 <textarea class="form-control source-root-box" id="source-root" placeholder=".topics&#10;.github/agents/.topics">${escapeHtml(modal.root || '.topics')}</textarea>
               </label>
+              <div class="display-options-section-label">Discovery surfaces</div>
+              <div class="github-source-surface-grid">
+                <label class="display-option-row source-surface-row">
+                  <span><strong>Repo files discovery</strong><small>Tiinex markdown artifacts from the repo tree.</small></span>
+                  <input type="checkbox" id="source-repo-discovery" ${repoDiscovery ? 'checked' : ''}>
+                </label>
+                <label class="display-option-row source-surface-row">
+                  <span><strong>Issue discussion discovery</strong><small>Issues/comments as feedback/proposals under this source.</small></span>
+                  <input type="checkbox" id="source-issue-discovery" ${issueDiscovery ? 'checked' : ''}>
+                </label>
+              </div>
+              <details class="github-advanced-issues" ${modal.issueUrls ? 'open' : ''}>
+                <summary>Issue URLs <em>optional</em></summary>
+                <textarea class="form-control source-url-box" id="source-issue-urls" placeholder="Leave empty to sample open issues from this repo.&#10;https://github.com/Tiinex/docs/issues/123">${escapeHtml(modal.issueUrls || '')}</textarea>
+              </details>
+              <p class="source-safety-note">Read-only: no GitHub write, token, auth prompt, backend, or telemetry.</p>
             </div>
 
             <div class="modal-footer-actions">
-              <button class="tv-btn subtle" data-action="choose-add-mode" data-mode=""><i class="fa-solid fa-arrow-left"></i>Back</button>
-              <button class="tv-btn primary" data-action="create-workspace"><i class="fa-brands fa-github"></i>Add Git source</button>
+              ${editing ? '<button class="tv-btn subtle" data-action="refresh-source"><i class="fa-solid fa-rotate"></i>Refresh</button><button class="tv-btn subtle" data-action="hard-refresh-source"><i class="fa-solid fa-broom"></i>Hard refresh</button>' : '<button class="tv-btn subtle" data-action="choose-add-mode" data-mode=""><i class="fa-solid fa-arrow-left"></i>Back</button>'}
+              <button class="tv-btn primary" data-action="create-workspace"><i class="fa-brands fa-github"></i>${editing ? 'Save GitHub source' : 'Add GitHub source'}</button>
             </div>
           </div>
         </div>`;
@@ -3652,9 +4614,7 @@
 
   async function fetchViewerCss(url) {
     if (!url) return '';
-    const response = await fetch(url, { cache: 'no-store' });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
-    return await response.text();
+    return await adapterFetchText(url, { adapter: adapterIdForUrl(url), label: 'Viewer CSS' });
   }
 
   function applyViewerCustomCss(cssText) {
@@ -3765,21 +4725,22 @@
 
   function configSourceSignature(source) {
     if (!source) return '';
-    if (source.kind === 'github-tree') {
-      const roots = (source.rootPaths || [source.rootPath || '.topics']).map((p) => typeof normalizeRepoPath === 'function' ? normalizeRepoPath(p) : String(p || '')).join('|');
-      return `github-tree:${source.repo || ''}@${source.ref || ''}:${roots}`;
-    }
+    if (source.kind === 'github-tree' || source.kind === 'github') return gitHubSourceStateSignature(source);
     return `urls:${(source.urls || []).join('\n')}`;
   }
 
   function workspaceConfigSignature(ws) {
     if (!ws) return '';
+    const githubSource = Array.from(ws.sources?.values?.() || []).find((source) => source.kind === 'github' && source.repo);
+    if (githubSource) return configSourceSignature(githubSource);
     if (ws.discoverySource?.kind === 'github-tree') {
       return configSourceSignature({
         kind: 'github-tree',
         repo: ws.discoverySource.repo,
         ref: ws.discoverySource.ref || ws.ref || '',
-        rootPaths: ws.discoverySource.rootPaths || [ws.discoverySource.rootPath || '.topics']
+        rootPaths: ws.discoverySource.rootPaths || [ws.discoverySource.rootPath || '.topics'],
+        enabledSurfaces: ws.discoverySource.enabledSurfaces || { repoFiles: true, issues: false },
+        issueUrls: ws.discoverySource.issueUrls || []
       });
     }
     return configSourceSignature({ kind: 'urls', urls: workspaceSourceUrls(ws) });
@@ -3798,28 +4759,19 @@
     let opened = 0;
     let firstWs = null;
     for (const source of sources) {
-      if (!source || (source.kind !== 'github-tree' && !(source.urls || []).length)) continue;
+      if (!source || ((source.kind !== 'github-tree' && source.kind !== 'github') && !(source.urls || []).length)) continue;
 
       let ws = findWorkspaceForConfigSource(source);
       if (!ws) {
         ws = createWorkspace(source.label || 'Config workspace', 'Loaded from .workspace.md workspace state.');
         opened += 1;
-        if (source.kind === 'github-tree' && typeof discoverGitHubRepoIntoWorkspace === 'function') {
-          await discoverGitHubRepoIntoWorkspace(ws, {
-            repo: source.repo,
-            ref: source.ref || '',
-            rootPaths: source.rootPaths || [source.rootPath || '.topics']
-          });
+        if (source.kind === 'github-tree' || source.kind === 'github') {
+          await loadGitHubStateSourceIntoWorkspace(ws, source);
         } else {
           await loadUrlsIntoWorkspace(ws, source.urls || []);
         }
-      } else if (source.kind === 'github-tree' && typeof discoverGitHubRepoIntoWorkspace === 'function') {
-        await discoverGitHubRepoIntoWorkspace(ws, {
-          repo: source.repo,
-          ref: source.ref || '',
-          rootPaths: source.rootPaths || [source.rootPath || '.topics'],
-          refreshExisting: true
-        });
+      } else if (source.kind === 'github-tree' || source.kind === 'github') {
+        await loadGitHubStateSourceIntoWorkspace(ws, source, { refreshExisting: true });
       }
       if (!firstWs) firstWs = ws;
       if (typeof applyViewStateToWorkspace === 'function') applyViewStateToWorkspace(ws, source);
@@ -3884,15 +4836,588 @@
     return state;
   }
 
+  function parseGitHubIssueSpec(input) {
+    const raw = String(input || '').trim();
+    if (!raw) return null;
+    let url;
+    try { url = new URL(raw); } catch (_) { return null; }
+    if (url.hostname.toLowerCase() !== 'github.com') return null;
+    const parts = url.pathname.split('/').filter(Boolean);
+    const issueIndex = parts.indexOf('issues');
+    if (issueIndex !== 2 || parts.length < 4) return null;
+    const number = Number(parts[3]);
+    if (!Number.isInteger(number) || number <= 0) return null;
+    return {
+      owner: parts[0],
+      repoName: parts[1],
+      repo: `${parts[0]}/${parts[1]}`,
+      issueNumber: number,
+      issueUrl: `https://github.com/${parts[0]}/${parts[1]}/issues/${number}`,
+      apiIssueUrl: `https://api.github.com/repos/${parts[0]}/${parts[1]}/issues/${number}`,
+      apiCommentsUrl: `https://api.github.com/repos/${parts[0]}/${parts[1]}/issues/${number}/comments`
+    };
+  }
+
+  async function fetchGitHubJson(url, options = {}) {
+    const result = await adapterFetchJson(url, {
+      adapter: 'github-rest',
+      label: 'GitHub API',
+      rateLimitKey: 'github-rest',
+      headers: githubRestHeaders(),
+      hardRefresh: Boolean(options.hardRefresh),
+      authMode: options.authMode || 'none'
+    });
+    return { data: result.data, headers: result.headers, request: result };
+  }
+
+  function githubNextLink(headers) {
+    const link = headers?.get?.('link') || '';
+    const match = link.split(',').map((item) => item.trim()).find((item) => /rel="next"/.test(item));
+    const url = match?.match(/<([^>]+)>/)?.[1] || '';
+    return url || '';
+  }
+
+  async function fetchGitHubIssueThread(spec, options = {}) {
+    const issue = (await fetchGitHubJson(spec.apiIssueUrl, options)).data;
+    const comments = [];
+    const limit = Math.max(1, Number(options.commentLimit || 500));
+    let url = `${spec.apiCommentsUrl}?per_page=${Math.min(100, limit)}`;
+    let pages = 0;
+    while (url && pages < 5 && comments.length < limit) {
+      const page = await fetchGitHubJson(url, options);
+      if (Array.isArray(page.data)) comments.push(...page.data.slice(0, Math.max(0, limit - comments.length)));
+      url = comments.length >= limit ? '' : githubNextLink(page.headers);
+      pages += 1;
+    }
+    return { issue, comments, truncated: Boolean(url) };
+  }
+
+  async function fetchGitHubRepoIssueSpecs(repo, options = {}) {
+    const limit = Math.max(0, Number(options.limit || app.settings.githubIssueDiscoveryLimit || 10));
+    if (!repo || !limit) return [];
+    const perPage = Math.min(100, Math.max(limit + 5, 10));
+    const url = `https://api.github.com/repos/${repo}/issues?state=open&sort=updated&direction=desc&per_page=${perPage}`;
+    const result = await fetchGitHubJson(url, options);
+    const issues = Array.isArray(result.data) ? result.data : [];
+    return issues
+      .filter((issue) => issue?.html_url && !issue.pull_request)
+      .slice(0, limit)
+      .map((issue) => parseGitHubIssueSpec(issue.html_url))
+      .filter(Boolean);
+  }
+
+  function markdownFence(text, lang = '') {
+    const body = String(text || '');
+    let fence = '```';
+    while (body.includes(fence)) fence += '`';
+    return `${fence}${lang}
+${body}
+${fence}`;
+  }
+
+  function issueContributionParseLevel(body) {
+    const text = String(body || '');
+    if (/<!--\s*tiinex-(contribution|artifact|feedback)[\s-]v?\d*/i.test(text) || /^#\s+Continuity Context\s*$/m.test(text)) return 'structured';
+    if (/(Current Schema|Continuity Integrity|Target|Path|Proposal|Correction|Suggested|Feedback)/i.test(text) || /^#{1,3}\s+\S/m.test(text) || /```[\s\S]*```/.test(text)) return 'inferred';
+    return 'raw';
+  }
+
+  function issueContributionIntent(body) {
+    const text = String(body || '').toLowerCase();
+    if (/(fix|correct|correction|wrong|typo|bug|fel|korrig|rätta|ändra)/u.test(text)) return 'correct';
+    if (/(add|addition|new|append|lägg till|ny|nytt|utöka)/u.test(text)) return 'add';
+    if (/(review|approve|looks good|granska|godkänner)/u.test(text)) return 'review';
+    if (/[?？]/.test(text) || /(question|fråga|undrar)/u.test(text)) return 'question';
+    if (text.trim()) return 'comment';
+    return 'unknown';
+  }
+
+  async function githubIssueOriginRecord(kind, spec, item, body) {
+    const hash = await continuitySha256Base64Url(body || '');
+    return {
+      kind,
+      adapter: 'github-issue',
+      repo: spec.repo,
+      issueNumber: spec.issueNumber,
+      id: item?.id || spec.issueNumber,
+      url: item?.html_url || spec.issueUrl,
+      author: item?.user?.login || '',
+      createdAt: item?.created_at || '',
+      updatedAt: item?.updated_at || '',
+      bodyHash: hash ? `${ISSUE_BODY_HASH_METHOD_ID}:${hash}` : ''
+    };
+  }
+
+  function originMarkdownLines(origin) {
+    return [
+      `- Adapter: ${origin.adapter || 'unknown'}`,
+      `- Kind: ${origin.kind || ''}`,
+      `- Repository: ${origin.repo || ''}`,
+      `- Issue: #${origin.issueNumber || ''}`,
+      `- Id: ${origin.id || ''}`,
+      `- URL: ${origin.url || ''}`,
+      `- Author: ${origin.author || ''}`,
+      `- Created At: ${origin.createdAt || ''}`,
+      `- Updated At: ${origin.updatedAt || ''}`,
+      `- Body Hash: ${origin.bodyHash || ''}`
+    ].filter((line) => !/:\s*$/.test(line)).join('\n');
+  }
+
+  async function githubIssueRootMarkdown(spec, issue, rootPath) {
+    const title = issue?.title || `GitHub issue #${spec.issueNumber}`;
+    const body = issue?.body || '';
+    const origin = await githubIssueOriginRecord('issue', spec, issue, body);
+    const summary = `GitHub issue discovery finding for ${spec.repo}#${spec.issueNumber}: ${title}`;
+    const draft = `# Continuity Context
+
+- Envelope Schema: ${envelopeSchemaReference(rootPath)}
+${currentBlockForPath('tiinex.discovery.finding.v1', summary, rootPath, 'Normalizes a GitHub issue as a discovery finding candidate, not canonical project truth.')}---
+
+# ${title}
+
+## Discovery Context
+
+- Source: GitHub issue discussion
+- Repository: ${spec.repo}
+- Issue: #${spec.issueNumber}
+- URL: ${spec.issueUrl}
+- Adapter: github-issue
+
+## Finding
+
+- Finding Type: external-discussion
+- Finding Status: observed
+- Title: ${title}
+
+## Provenance
+
+${originMarkdownLines(origin)}
+
+## Triage
+
+- Use As Candidates: task, feedback, evidence, resource need, pointer, external payload
+- Canonical Status: discovery finding only
+- Needs Interpretation: yes
+
+## Evidence Material
+
+${body ? markdownFence(body, 'md') : '_No issue body was present._'}
+
+## Interpretation Limits
+
+- GitHub issues are mutable and may be edited, transferred, closed, deleted, or converted by authorized users.
+- This finding preserves an observed issue snapshot and body hash; it does not prove project acceptance, owner approval, or canonical Tiinex lineage continuity.
+- Use this finding explicitly as task, feedback, evidence, resource need, pointer, or other artifact semantics before treating it as one of those meanings.
+`;
+    return markdownWithSelfIntegrity(draft);
+  }
+
+  async function githubIssueUnavailableMarkdown(spec, error, rootPath) {
+    const reason = String(error?.message || error || 'unavailable').trim();
+    const title = `GitHub Issue #${spec.issueNumber}`;
+    const summary = `GitHub issue discovery target for ${spec.repo}#${spec.issueNumber} could not be loaded from the GitHub API.`;
+    const draft = `# Continuity Context
+
+- Envelope Schema: ${envelopeSchemaReference(rootPath)}
+${currentBlockForPath('tiinex.discovery.finding.v1', summary, rootPath, 'Preserves a configured GitHub issue target as a discovery finding when live issue material is unavailable.')}---
+
+# ${title}
+
+## Discovery Context
+
+- Source: GitHub issue discussion
+- Repository: ${spec.repo}
+- Issue: #${spec.issueNumber}
+- URL: ${spec.issueUrl}
+- Adapter: github-issue
+- Discovery State: unavailable
+
+## Finding
+
+- Finding Type: external-discussion-target
+- Finding Status: unavailable
+- Title: ${title}
+
+## Provenance
+
+- Adapter: github-issue
+- Kind: issue-target
+- Repository: ${spec.repo}
+- Issue: #${spec.issueNumber}
+- URL: ${spec.issueUrl}
+- Unavailable Reason: ${reason}
+
+## Triage
+
+- Use As Candidates: task, feedback, evidence, resource need, pointer, external payload
+- Canonical Status: discovery target only
+- Needs Interpretation: yes
+
+## Unavailable Material
+
+_Live GitHub issue material was not loaded. Open the source URL or retry discovery after GitHub API access is available._
+
+## Interpretation Limits
+
+- This artifact preserves that the workspace or discovery directive targets the GitHub issue URL.
+- It does not preserve the issue body, comments, title, author, timestamps, or current GitHub state.
+- Treat this as a lineage/discovery gap until live issue material can be loaded or an external payload is attached.
+`;
+    return markdownWithSelfIntegrity(draft);
+  }
+
+  function addGitHubIssueUnavailableFinding(ws, issueUrl, source, error) {
+    const spec = parseGitHubIssueSpec(issueUrl);
+    if (!ws || !spec) return false;
+    const titleSlug = `issue-${spec.issueNumber}-unavailable`;
+    const rootPath = normalizeAssetPath(`.topics/github-issues/${spec.owner}-${spec.repoName}-${spec.issueNumber}-${titleSlug}/issue-unavailable.trace.md`);
+    return githubIssueUnavailableMarkdown(spec, error, rootPath).then((markdown) => {
+      addFileToWorkspace(ws, {
+        path: rootPath,
+        content: markdown,
+        preserveAsAsset: true,
+        sourceId: source?.id || '',
+        sourceKind: source?.kind || 'github',
+        sourceLabel: source?.label || gitHubSourceLabel(spec.repo, source?.ref || ''),
+        sourceOrigin: spec.issueUrl,
+        rawUrl: spec.issueUrl,
+        browseUrl: spec.issueUrl,
+        repo: spec.repo,
+        ref: source?.ref || ws.ref || `issue-${spec.issueNumber}`,
+        sourceSurface: 'issues'
+      });
+      return true;
+    });
+  }
+
+  async function githubIssueCommentMarkdown(spec, comment, commentPath, rootNode) {
+    const body = comment?.body || '';
+    const origin = await githubIssueOriginRecord('issue-comment', spec, comment, body);
+    const parseLevel = issueContributionParseLevel(body);
+    const intent = issueContributionIntent(body);
+    const summary = `${intent} GitHub issue comment finding from ${origin.author || 'GitHub issue comment'} (${parseLevel})`;
+    const parentTrace = parentTraceReferenceForPath(rootNode, commentPath);
+    const parentSchema = parentSchemaReferenceForPath(rootNode, commentPath);
+    const draft = `# Continuity Context
+
+- Envelope Schema: ${envelopeSchemaReference(commentPath)}
+- Parent
+  - Parent Schema: ${parentSchema}
+  - Trace: ${parentTrace}
+  - Origin:
+    - github issue: ${spec.issueUrl}
+    - issue comment: ${origin.url || ''}
+    - body hash: ${origin.bodyHash || ''}
+${currentBlockForPath('tiinex.discovery.finding.v1', summary, commentPath, 'Preserves a GitHub issue comment as a discovery finding candidate, not canonical replacement content.')}---
+
+# GitHub Issue Comment ${origin.id || ''}
+
+## Discovery Context
+
+- Source: GitHub issue comment
+- Target: ${spec.repo}#${spec.issueNumber}
+- Issue URL: ${spec.issueUrl}
+- Comment URL: ${origin.url || ''}
+- Adapter: github-issue
+
+## Finding
+
+- Finding Type: external-comment
+- Finding Status: observed
+- Parse Level: ${parseLevel}
+- Intent: ${ORIGIN_MUTATION_INTENTS.includes(intent) ? intent : 'unknown'}
+
+## Provenance
+
+${originMarkdownLines(origin)}
+
+## Triage
+
+- Use As Candidates: feedback, task, evidence, resource need, pointer, external payload
+- Canonical Status: discovery finding only
+- Accepted By Owner: no
+- Needs Interpretation: yes
+
+## Evidence Material
+
+${body ? markdownFence(body, 'md') : '_No comment body was present._'}
+
+## Interpretation Limits
+
+- GitHub issue comments are mutable and deletable by authorized users.
+- Tiinex preserves the comment body hash so changed comments become visible as lineage signals.
+- This finding does not replace any original lineage artifact unless the lineage owner explicitly uses it as a new artifact in their own draft/commit flow.
+`;
+    return markdownWithParentTargetIntegrity(rootNode, commentPath, draft);
+  }
+
+  async function loadGitHubIssueIntoWorkspace(ws, issueUrl, options = {}) {
+    const spec = parseGitHubIssueSpec(issueUrl);
+    if (!spec) throw new Error('Paste a GitHub issue URL like https://github.com/owner/repo/issues/123.');
+    const { issue, comments, truncated } = await fetchGitHubIssueThread(spec, options);
+    const issueSlug = slugify(issue?.title || `issue-${spec.issueNumber}`) || `issue-${spec.issueNumber}`;
+    const base = normalizeAssetPath(`.topics/github-issues/${spec.owner}-${spec.repoName}-${spec.issueNumber}-${issueSlug}`);
+    const source = options.source || registerGitHubSource(ws, {
+      repo: spec.repo,
+      ref: options.ref || ws.ref || '',
+      enabledSurfaces: { repoFiles: false, issues: true },
+      issueUrls: [spec.issueUrl]
+    });
+    if (!source.issueUrls) source.issueUrls = [];
+    if (!source.issueUrls.includes(spec.issueUrl)) source.issueUrls.push(spec.issueUrl);
+
+    let rootPath = `${base}/issue-root.trace.md`;
+    let rootMarkdown = '';
+    let rootNode = null;
+    if (options.includeBody !== false) {
+      rootMarkdown = await githubIssueRootMarkdown(spec, issue, rootPath);
+      addFileToWorkspace(ws, {
+        path: rootPath,
+        content: rootMarkdown,
+        preserveAsAsset: true,
+        sourceId: source.id,
+        sourceKind: source.kind,
+        sourceLabel: source.label,
+        sourceOrigin: spec.issueUrl,
+        rawUrl: spec.issueUrl,
+        browseUrl: spec.issueUrl,
+        repo: spec.repo,
+        ref: source.ref || options.ref || `issue-${spec.issueNumber}`,
+        sourceSurface: 'issues'
+      });
+      rootNode = { path: rootPath, rawMarkdown: rootMarkdown, currentSchemaText: 'tiinex.discovery.finding.v1', currentSchema: 'tiinex.discovery.finding.v1' };
+    } else {
+      rootNode = { path: rootPath, rawMarkdown: '', currentSchemaText: 'tiinex.discovery.finding.v1', currentSchema: 'tiinex.discovery.finding.v1' };
+    }
+
+    let commentCount = 0;
+    for (const comment of comments) {
+      const n = String(commentCount + 1).padStart(3, '0');
+      const commentPath = `${base}/comment-${n}-${comment.id || n}.trace.md`;
+      const commentMarkdown = await githubIssueCommentMarkdown(spec, comment, commentPath, rootNode);
+      addFileToWorkspace(ws, {
+        path: commentPath,
+        content: commentMarkdown,
+        preserveAsAsset: true,
+        sourceId: source.id,
+        sourceKind: source.kind,
+        sourceLabel: source.label,
+        sourceOrigin: comment.html_url || spec.issueUrl,
+        rawUrl: comment.html_url || spec.issueUrl,
+        browseUrl: comment.html_url || spec.issueUrl,
+        repo: spec.repo,
+        ref: source.ref || options.ref || `issue-${spec.issueNumber}`,
+        sourceSurface: 'issues'
+      });
+      commentCount += 1;
+    }
+
+    computeWorkspaceIndex(ws);
+    if (!ws.discoverySource) ws.discoverySource = { kind: 'github-tree', repo: spec.repo, ref: source.ref || '', rootPath: '.topics', rootPaths: ['.topics'], sourceId: source.id, issueUrls: [spec.issueUrl] };
+    ws.logs.push(`Loaded GitHub issue discussion ${spec.repo}#${spec.issueNumber}: ${commentCount} comment node(s)${truncated ? ' (truncated after 500 comments)' : ''}.`);
+    if (options.toast !== false) toast(`Loaded GitHub issue discussion: ${commentCount} comment node${commentCount === 1 ? '' : 's'}.`, 'ok');
+  }
+
+  function parseSourceIssueUrls(value, repo = '') {
+    return String(value || '')
+      .split(/[\n,]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .filter((item, index, arr) => arr.indexOf(item) === index)
+      .map((item) => parseGitHubIssueSpec(item))
+      .filter((spec) => spec && (!repo || spec.repo.toLowerCase() === repo.toLowerCase()))
+      .map((spec) => spec.issueUrl);
+  }
+
+  function sourceSurfaceForEntry(entry) {
+    const explicit = String(entry?.sourceSurface || entry?.originSurface || '').trim();
+    if (explicit) return explicit;
+    const kind = String(entry?.sourceKind || entry?.source || '').toLowerCase();
+    const path = String(entry?.path || entry?.name || '').toLowerCase();
+    if (kind.includes('issue') || path.includes('/github-issues/')) return 'issues';
+    return 'repoFiles';
+  }
+
+  function removeWorkspaceSourceEntries(ws, sourceId, predicate = () => true) {
+    let removed = 0;
+    for (const [key, file] of Array.from(ws.files?.entries?.() || [])) {
+      if (file.sourceId !== sourceId || !predicate(file)) continue;
+      ws.files.delete(key);
+      removed += 1;
+    }
+    for (const [key, asset] of Array.from(ws.assets?.entries?.() || [])) {
+      if (asset.sourceId !== sourceId || !predicate(asset)) continue;
+      if (ws.assetUrls?.has(key)) {
+        try { URL.revokeObjectURL(ws.assetUrls.get(key)); } catch (_) {}
+        ws.assetUrls.delete(key);
+      }
+      ws.assets.delete(key);
+      removed += 1;
+    }
+    return removed;
+  }
+
+  function applyGitHubSourceSurfacePruning(ws, source, enabledSurfaces, resetAll = false) {
+    if (!ws || !source) return 0;
+    return removeWorkspaceSourceEntries(ws, source.id, (entry) => {
+      if (resetAll) return true;
+      const surface = sourceSurfaceForEntry(entry);
+      if (surface === 'issues') return !enabledSurfaces.issues;
+      return !enabledSurfaces.repoFiles;
+    });
+  }
+
+  function setGitHubIssueDiscoveryStatus(ws, source, status = {}) {
+    if (!ws || !source) return;
+    const entry = Object.assign({ state: 'unknown', message: '', sourceId: source.id || '', repo: source.repo || '', updatedAt: new Date().toISOString() }, status);
+    source.issueDiscoveryStatus = entry;
+    ws.githubIssueDiscoveryStatus = ws.githubIssueDiscoveryStatus || {};
+    if (source.id) ws.githubIssueDiscoveryStatus[source.id] = entry;
+  }
+
+  function githubIssueDiscoveryManualHint(source) {
+    const repo = source?.repo || 'owner/repo';
+    return `Add explicit Issue URLs under this source (for example https://github.com/${repo}/issues/4) or add authenticated GitHub access when that mode is explicitly available.`;
+  }
+
+  async function discoverGitHubIssuesIntoWorkspace(ws, source, issueUrls = [], options = {}) {
+    if (!ws || !source?.repo) return 0;
+    const canonicalSource = registerGitHubSource(ws, source);
+    let urls = Array.isArray(issueUrls) ? issueUrls.slice() : [];
+    setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: 'running', message: urls.length ? `Loading ${urls.length} configured issue URL(s).` : 'Sampling latest open issues from GitHub API.' });
+    if (typeof render === 'function' && options.renderStatus !== false) render();
+    if (!urls.length) {
+      try {
+        const specs = await fetchGitHubRepoIssueSpecs(source.repo, { limit: app.settings.githubIssueDiscoveryLimit || 10, hardRefresh: Boolean(options.hardRefresh) });
+        urls = specs.map((spec) => spec.issueUrl);
+      } catch (error) {
+        const message = `Issue discovery failed for ${source.repo}: ${error.message}. ${githubIssueDiscoveryManualHint(source)}`;
+        setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: error.rateLimited ? 'rate-limited' : 'failed', message, error: error.message, needsIssueUrls: true, rateLimitUntil: error.rateLimitUntil || 0, cacheState: error.cacheState || '' });
+        ws.logs.push(message);
+        toast(message, 'warn');
+        if (typeof render === 'function' && options.renderStatus !== false) render();
+        return 0;
+      }
+    }
+    if (!urls.length) {
+      const message = `Issue discovery found no open issues for ${source.repo}. Add Issue URLs to follow specific discussions.`;
+      setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: 'empty', message });
+      ws.logs.push(message);
+      if (typeof render === 'function' && options.renderStatus !== false) render();
+      return 0;
+    }
+    let loaded = 0;
+    const failures = [];
+    for (const issueUrl of urls) {
+      try {
+        await loadGitHubIssueIntoWorkspace(ws, issueUrl, { source: canonicalSource, ref: canonicalSource.ref || ws.ref || '', commentLimit: options.commentLimit || 50, toast: false, hardRefresh: Boolean(options.hardRefresh) });
+        loaded += 1;
+      } catch (error) {
+        const message = `Could not load issue discussion ${issueUrl}: ${error.message}`;
+        failures.push(message);
+        ws.logs.push(message);
+        try {
+          const addedFallback = await addGitHubIssueUnavailableFinding(ws, issueUrl, canonicalSource, error);
+          if (addedFallback) {
+            ws.logs.push(`Added unavailable GitHub issue discovery target for ${issueUrl}.`);
+          }
+        } catch (fallbackError) {
+          ws.logs.push(`Could not add unavailable issue target for ${issueUrl}: ${fallbackError.message}`);
+        }
+      }
+    }
+    ws.githubIssueDiscoveryRuns = ws.githubIssueDiscoveryRuns || {};
+    ws.githubIssueDiscoveryRuns[canonicalSource.id] = {
+      signature: gitHubSourceStateSignature(Object.assign({}, canonicalSource, { issueUrls: urls })),
+      loaded,
+      failed: failures.length,
+      completedAt: new Date().toISOString()
+    };
+    if (loaded) {
+      setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: failures.length ? 'partial' : 'loaded', message: `Loaded ${loaded} GitHub issue discussion${loaded === 1 ? '' : 's'}${failures.length ? `; ${failures.length} failed` : ''}.`, loaded, failed: failures.length });
+      toast(`Loaded ${loaded} GitHub issue discussion${loaded === 1 ? '' : 's'}.`, 'ok');
+    } else if (failures.length) {
+      const message = `${failures.length} GitHub issue target${failures.length === 1 ? '' : 's'} unavailable; fallback finding added when possible.`;
+      setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: failures.some((item) => /rate-limited|retry after/i.test(item)) ? 'rate-limited' : 'failed', message, error: failures[0], failed: failures.length, needsAuth: true });
+      toast(message, 'warn');
+    }
+    if (typeof render === 'function' && options.renderStatus !== false) render();
+    return loaded;
+  }
+
+  function workspaceHasGitHubIssueSurface(ws, sourceId) {
+    return Array.from(ws?.files?.values?.() || []).some((file) => file.sourceId === sourceId && sourceSurfaceForEntry(file) === 'issues');
+  }
+
+  async function runWorkspaceStartupGitHubIssueDiscovery(ws, options = {}) {
+    if (!ws || ws.loading) return 0;
+    ensureWorkspaceSources(ws);
+    const sources = Array.from(ws.sources?.values?.() || []).filter((source) => source?.kind === 'github' && source.repo);
+    let loaded = 0;
+    for (const source of sources) {
+      const canonical = registerGitHubSource(ws, source);
+      const surfaces = normalizeGithubSurfaceConfig(canonical.enabledSurfaces || {});
+      if (!surfaces.issues) continue;
+      if (!options.refreshExisting && workspaceHasGitHubIssueSurface(ws, canonical.id)) continue;
+      loaded += await discoverGitHubIssuesIntoWorkspace(ws, canonical, canonical.issueUrls || [], { commentLimit: options.commentLimit || 50 });
+    }
+    if (loaded && typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
+    if (loaded && typeof render === 'function') render();
+    return loaded;
+  }
+
+  function scheduleWorkspaceStartupGitHubIssueDiscovery(ws, reason = 'startup') {
+    if (!ws?.id) return false;
+    ws.pendingGitHubIssueDiscoveryReason = reason;
+    window.setTimeout(() => {
+      runWorkspaceStartupGitHubIssueDiscovery(ws, { reason }).catch((error) => {
+        ws.logs?.push?.(`Startup issue discovery failed: ${error.message}`);
+      });
+    }, 0);
+    return true;
+  }
+
+  async function loadGitHubStateSourceIntoWorkspace(ws, source, options = {}) {
+    const normalizedSource = normalizeGitHubSourceState(source || {}, ws);
+    if (!ws || !normalizedSource.repo) return null;
+    const rootPaths = normalizedSource.rootPaths && normalizedSource.rootPaths.length ? normalizedSource.rootPaths : ['.topics'];
+    const enabledSurfaces = normalizeGithubSurfaceConfig(normalizedSource.enabledSurfaces || {});
+    const githubSource = registerGitHubSource(ws, normalizedSource);
+    applyGitHubSourceSurfacePruning(ws, githubSource, enabledSurfaces, false);
+    if (enabledSurfaces.repoFiles && typeof discoverGitHubRepoIntoWorkspace === 'function') {
+      await discoverGitHubRepoIntoWorkspace(ws, {
+        repo: normalizedSource.repo,
+        ref: normalizedSource.ref || '',
+        rootPaths,
+        refreshExisting: Boolean(options.refreshExisting),
+        hardRefresh: Boolean(options.hardRefresh),
+        source: githubSource
+      });
+    } else {
+      ws.repo = normalizedSource.repo;
+      if (normalizedSource.ref) ws.ref = normalizedSource.ref;
+      ws.discoverySource = { kind: 'github-tree', repo: normalizedSource.repo, ref: normalizedSource.ref || '', rootPath: rootPaths[0] || '.topics', rootPaths, sourceId: githubSource.id, enabledSurfaces, issueUrls: githubSource.issueUrls || [], discoveryDirective: githubSource.discoveryDirective || null };
+      if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
+    }
+    if (enabledSurfaces.issues && typeof discoverGitHubIssuesIntoWorkspace === 'function') {
+      await discoverGitHubIssuesIntoWorkspace(ws, githubSource, githubSource.issueUrls || [], { refreshExisting: Boolean(options.refreshExisting), hardRefresh: Boolean(options.hardRefresh) });
+    }
+    return githubSource;
+  }
+
   async function createWorkspaceFromInputs() {
     const modal = app.modal?.type === 'source' ? app.modal : {};
     const appendWs = modal.appendWsId ? getWorkspace(modal.appendWsId) : null;
+    const editingSource = appendWs && modal.editSourceId ? sourceById(appendWs, modal.editSourceId) : null;
 
     const repoInput = $('source-repo')?.value?.trim() || '';
     const parsedRepo = repoInput && typeof parseGitHubRepoSpec === 'function' ? parseGitHubRepoSpec(repoInput) : null;
     const refInput = $('source-ref')?.value?.trim() || '';
     const rootPaths = typeof parseRootPaths === 'function' ? parseRootPaths($('source-root')?.value || '.topics') : ['.topics'];
+    const repoDiscovery = $('source-repo-discovery')?.checked ?? modal.repoDiscovery ?? true;
+    const issueDiscovery = $('source-issue-discovery')?.checked ?? modal.issueDiscovery ?? true;
     const urls = ($('source-urls')?.value || '').split(/\n+/).map((s) => s.trim()).filter(Boolean);
+    const issueUrlsInput = $('source-issue-urls')?.value || '';
     const files = [
       ...Array.from($('source-files')?.files || []),
       ...Array.from($('source-folder')?.files || []),
@@ -3910,8 +5435,14 @@
       return;
     }
 
-    if (appendWs && !parsedRepo && !urls.length && !files.length) {
+    if (appendWs && !parsedRepo && !urls.length && !files.length && !editingSource) {
       toast('Choose files, paste URLs, enter a repo, or drop material before adding.', 'warn');
+      return;
+    }
+
+    if ((modal.addMode === 'git' || editingSource) && !parsedRepo) {
+      toast('Enter a GitHub repo URL or owner/name before saving this source.', 'warn');
+      $('source-repo')?.focus?.();
       return;
     }
 
@@ -3920,6 +5451,37 @@
       : ($('source-label')?.value?.trim() || 'New workspace');
     const ws = appendWs || createWorkspace(label, 'Empty workspace. Add material with the Add button or drag/drop.');
 
+    const requestedRef = parsedRepo ? (refInput || parsedRepo.ref || '') : '';
+    const requestedRoots = parsedRepo ? (rootPaths.length ? rootPaths : (typeof parseRootPaths === 'function' ? parseRootPaths(parsedRepo.rootPath || '.topics') : ['.topics'])) : [];
+    const enabledSurfaces = normalizeGithubSurfaceConfig({ repoFiles: repoDiscovery, issues: issueDiscovery });
+    const issueUrls = parsedRepo ? parseSourceIssueUrls(issueUrlsInput, parsedRepo.repo) : [];
+    let githubSource = null;
+    let resetSourceContent = false;
+
+    if (parsedRepo) {
+      const old = editingSource || null;
+      const oldSourceSnapshot = old ? {
+        repo: old.repo || '',
+        ref: old.ref || '',
+        rootPaths: Array.isArray(old.rootPaths) ? old.rootPaths.slice() : []
+      } : null;
+      githubSource = registerGitHubSource(ws, {
+        id: old?.id || githubSourceId(parsedRepo.repo),
+        repo: parsedRepo.repo,
+        ref: requestedRef || old?.ref || '',
+        rootPaths: requestedRoots,
+        enabledSurfaces,
+        issueUrls,
+        origin: `https://github.com/${parsedRepo.repo}`
+      });
+      resetSourceContent = Boolean(oldSourceSnapshot && (
+        String(oldSourceSnapshot.repo || '').toLowerCase() !== parsedRepo.repo.toLowerCase()
+        || String(oldSourceSnapshot.ref || '') !== String(githubSource.ref || '')
+        || JSON.stringify(oldSourceSnapshot.rootPaths || []) !== JSON.stringify(requestedRoots || [])
+      ));
+      applyGitHubSourceSurfacePruning(ws, githubSource, enabledSurfaces, resetSourceContent);
+    }
+
     app.modal = null;
     app.activeWorkspaceId = ws.id;
     if (typeof focusWorkspaceWindow === 'function') focusWorkspaceWindow(ws.id);
@@ -3927,17 +5489,17 @@
 
     if (configFiles.length) await openWorkspaceFiles(configFiles, { applyWorkspaceState: true });
 
-    if (parsedRepo && typeof discoverGitHubRepoIntoWorkspace === 'function') {
-      const requestedRoots = rootPaths.length ? rootPaths : (typeof parseRootPaths === 'function' ? parseRootPaths(parsedRepo.rootPath || '.topics') : ['.topics']);
-      const requestedRef = refInput || parsedRepo.ref || '';
-      const sameDiscoverySource = ws.discoverySource?.kind === 'github-tree'
-        && repoDiscoveryKey(ws.discoverySource.repo, ws.discoverySource.ref || ws.ref || '', ws.discoverySource.rootPaths || ws.discoverySource.rootPath || '.topics') === repoDiscoveryKey(parsedRepo.repo, requestedRef, requestedRoots);
+    if (githubSource && enabledSurfaces.repoFiles && typeof discoverGitHubRepoIntoWorkspace === 'function') {
       await discoverGitHubRepoIntoWorkspace(ws, {
-        repo: parsedRepo.repo,
-        ref: requestedRef,
-        rootPaths: requestedRoots,
-        refreshExisting: Boolean(sameDiscoverySource)
+        repo: githubSource.repo,
+        ref: githubSource.ref || '',
+        rootPaths: githubSource.rootPaths || requestedRoots,
+        refreshExisting: true,
+        source: githubSource
       });
+    }
+    if (githubSource && enabledSurfaces.issues) {
+      await discoverGitHubIssuesIntoWorkspace(ws, githubSource, issueUrls);
     }
     if (urls.length) await loadUrlsIntoWorkspace(ws, urls);
     if (nonConfigFiles.length) await readUploadedFilesIntoWorkspace(ws, nonConfigFiles);
@@ -4184,6 +5746,7 @@
       ws.discoverySearch = saved.discoverySearch || ws.discoverySearch || '';
       ws.lineageSearch = saved.lineageSearch || ws.lineageSearch || '';
       computeWorkspaceIndex(ws);
+      scheduleWorkspaceStartupGitHubIssueDiscovery(ws, 'local-state-merge');
       if (saved.selectedPath) {
         const selected = ws.nodes.find((node) => node.path === saved.selectedPath);
         if (selected) ws.selectedNodeId = selected.id;
@@ -4257,6 +5820,7 @@
         storeWorkspaceAsset(ws, asset.path, asset.content, asset);
       });
       computeWorkspaceIndex(ws);
+      scheduleWorkspaceStartupGitHubIssueDiscovery(ws, 'local-state-restore');
       if (saved.selectedPath) {
         const selected = ws.nodes.find((node) => node.path === saved.selectedPath);
         if (selected) ws.selectedNodeId = selected.id;
@@ -4340,7 +5904,7 @@
     }
     ws.sources?.delete?.(sourceId);
     ws.sourceOrder = (ws.sourceOrder || []).filter((id) => id !== sourceId);
-    if (source.kind === 'github' && ws.discoverySource?.repo === source.repo) {
+    if ((source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue') && ws.discoverySource?.repo === source.repo) {
       ws.discoverySource = null;
       if (!Array.from(ws.sources?.values?.() || []).some((s) => s.kind === 'github')) {
         ws.repo = '';
@@ -4622,12 +6186,50 @@
   function byteIntegrityAuditLabel(status) {
     if (status === 'byte-integrity-verified') return 'byte-integrity match';
     if (status === 'mismatch') return 'byte-integrity mismatch';
-    if (status === 'draft-pending') return 'no integrity claim';
+    if (status === 'draft-pending') return 'draft/no-claim';
     if (status === 'malformed-claim') return 'malformed integrity claim';
     if (status === 'method-unsupported') return 'unsupported method';
     if (status === 'target-unavailable') return 'target unavailable';
     if (status === 'target-ambiguous') return 'target ambiguous';
     return status || 'open';
+  }
+
+  function integrityClaimLifecycleForStatus(status, integrity = null) {
+    const hasClaim = integrityHasClaim(integrity);
+    if (status === 'draft-pending' || !hasClaim) {
+      return {
+        status: 'draft-no-claim',
+        label: 'Draft / no integrity claim',
+        finality: 'not finalized',
+        audit: 'valid draft/local state',
+        message: 'No byte-integrity claim is being made yet. This is acceptable for local drafts, but it is not a final verified artifact state.'
+      };
+    }
+    if (status === 'malformed-claim') {
+      return {
+        status: 'claim-malformed',
+        label: 'Claim present but malformed',
+        finality: 'claim needs repair',
+        audit: 'malformed final claim',
+        message: 'A claim is present, but it is incomplete or placeholder-like and should be repaired before final/export use.'
+      };
+    }
+    if (status === 'byte-integrity-verified') {
+      return {
+        status: 'claim-verified',
+        label: 'Final integrity claim verified',
+        finality: 'verified claim',
+        audit: 'final byte-integrity claim',
+        message: 'A complete byte-integrity claim is present and this viewer verified it against the declared target.'
+      };
+    }
+    return {
+      status: 'claim-open',
+      label: 'Integrity claim present',
+      finality: 'claim not fully verified',
+      audit: 'open integrity claim',
+      message: 'A claim is present, but this viewer has not verified a final byte-integrity match for it.'
+    };
   }
 
   function continuityTimestamp() {
@@ -4936,6 +6538,11 @@
         source.ref = firstKv(map, ['Ref', 'Branch'], '');
         source.rootPaths = splitCsv(allKv(map, ['Root Path', 'Root Paths']));
         if (!source.rootPaths.length) source.rootPaths = ['.topics'];
+        source.enabledSurfaces = normalizeGithubSurfaceConfig({
+          repoFiles: isAffirmative(firstKv(map, ['Repo Files Discovery', 'Repo Discovery'], ''), true),
+          issues: isAffirmative(firstKv(map, ['Issue Discussion Discovery', 'Issue Discovery'], ''), true)
+        });
+        source.issueUrls = uniqueNonEmpty(splitCsv(allKv(map, ['Issue URL', 'Issue URLs'])));
         if (!source.repo) return;
       } else if (kindRaw === 'urls' || kindRaw === 'url' || kindRaw.includes('direct')) {
         source.kind = 'urls';
@@ -4956,6 +6563,11 @@
           source.ref = firstKv(map, ['Ref', 'Branch'], '');
           source.rootPaths = splitCsv(allKv(map, ['Root Path', 'Root Paths']));
           if (!source.rootPaths.length) source.rootPaths = ['.topics'];
+          source.enabledSurfaces = normalizeGithubSurfaceConfig({
+            repoFiles: isAffirmative(firstKv(map, ['Repo Files Discovery', 'Repo Discovery'], ''), true),
+            issues: isAffirmative(firstKv(map, ['Issue Discussion Discovery', 'Issue Discovery'], ''), true)
+          });
+          source.issueUrls = uniqueNonEmpty(splitCsv(allKv(map, ['Issue URL', 'Issue URLs'])));
         }
       }
 
@@ -5049,10 +6661,15 @@
       const source = item.source || {};
       const lines = [];
       if (item.shareable && source.kind === 'github-tree') {
+        const surfaces = normalizeGithubSurfaceConfig(source.enabledSurfaces || {});
         lines.push('- Source Kind: github-tree');
         if (source.repo) lines.push(`- Repository: ${source.repo}`);
         if (source.ref) lines.push(`- Ref: ${source.ref}`);
         (source.rootPaths || [source.rootPath || '.topics']).filter(Boolean).forEach((root) => lines.push(`- Root Path: ${root}`));
+        lines.push(`- Repo Files Discovery: ${surfaces.repoFiles ? 'on' : 'off'}`);
+        lines.push(`- Issue Discussion Discovery: ${surfaces.issues ? 'on' : 'off'}`);
+        if (source.discoveryDirective?.path) lines.push(`- Discovery Directive: ${source.discoveryDirective.path}`);
+        (source.issueUrls || []).filter(Boolean).forEach((url) => lines.push(`- Issue URL: ${url}`));
       } else if (item.shareable && (source.urls || []).length) {
         lines.push('- Source Kind: urls');
         (source.urls || []).forEach((url) => lines.push(`- URL: ${url}`));
@@ -5135,8 +6752,19 @@
       render();
       return;
     }
+    if (action === 'edit-source') {
+      event.preventDefault();
+      event.stopPropagation();
+      return openEditSourceModal(event.currentTarget.dataset.ws, event.currentTarget.dataset.source);
+    }
+    if (action === 'refresh-source' || action === 'hard-refresh-source') {
+      event.preventDefault();
+      event.stopPropagation();
+      return refreshEditedGitHubSource(action === 'hard-refresh-source');
+    }
     if (action === 'close-source') {
       event.preventDefault();
+      event.stopPropagation();
       return closeWorkspaceSource(event.currentTarget.dataset.ws, event.currentTarget.dataset.source);
     }
     if (action === 'create-workspace') {
@@ -5356,7 +6984,7 @@
           ${renderViewerBrand()}
           <div class="top-actions workspace-top-actions-layout workspace-top-actions-toolbar">
             <button class="tv-btn primary" data-action="open-source-modal" title="Create or add a workspace/source"><i class="fa-solid fa-plus"></i>Create</button>
-            <button class="tv-btn subtle" data-action="export-config" title="Download current view/lens as a portable .workspace.md file. Local-only material is noted but not embedded."><i class="fa-regular fa-floppy-disk"></i>Export</button>
+            <button class="tv-btn subtle" data-action="export-config" title="Save current view/lens as a portable .workspace.md file. Local-only material is noted but not embedded."><i class="fa-regular fa-floppy-disk"></i>Save workspace</button>
             <button class="tv-btn subtle" data-action="copy-share" title="Copies the current view only. Local uploads, preserved assets, and unsaved workspace contents are not included." aria-label="Copies the current view only. Local uploads, preserved assets, and unsaved workspace contents are not included."><i class="fa-solid fa-link"></i>Copy link</button>
           </div>
           ${renderHelpButton()}
@@ -5686,6 +7314,15 @@ ${bodySections}
     }
   }
 
+  function pageHasExplicitWorkspaceQuery() {
+    try {
+      const params = new URLSearchParams(location.search || '');
+      return ['viewerWorkspace', 'workspace', 'viewerConfig', 'config', 'identity'].some((key) => params.has(key) && String(params.get(key) || '').trim());
+    } catch (_) {
+      return false;
+    }
+  }
+
   function viewerWorkspaceUrlFromLocation() {
     const params = new URLSearchParams(location.search);
     const explicit = params.get('viewerWorkspace') || params.get('workspace') || params.get('viewerConfig') || params.get('config') || params.get('identity');
@@ -5721,7 +7358,7 @@ ${bodySections}
     return '';
   }
 
-  async function fetchText(url, label = 'resource') {
+  async function fetchText(url, label = 'resource', options = {}) {
     const resolved = (() => {
       try { return new URL(url, location.href).href; } catch (_) { return String(url || ''); }
     })();
@@ -5730,25 +7367,17 @@ ${bodySections}
       throw new Error(`${label} is local-only in file:// mode; drop the file or host the viewer over http://localhost.`);
     }
 
-    const response = await fetch(resolved, { cache: 'no-store' });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
-    return response.text();
+    return await adapterFetchText(resolved, {
+      adapter: adapterIdForUrl(resolved),
+      label,
+      hardRefresh: Boolean(options.hardRefresh)
+    });
   }
 
 
 
 
-  const EMBEDDED_DEFAULT_WORKSPACE_MD = "# Continuity Context\n\n- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.root.v1.schema.md)\n- Current\n  - Current Schema: [tiinex.workspace.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.workspace.v1.schema.md)\n  - Created At: 2026-06-16 00:00:00\n  - Why: Defines a portable multi-lineage workspace entrypoint.\n  - Summary: Opens the Tiinex docs workspace and declares the default viewer discovery lens.\n\n---\n\n# Tiinex Viewer\n\n## Viewer Identity\n\n- Icon: ../../assets/tiinex-logo-white-transparent.png\n- Home: https://github.com/Tiinex\n\n## Empty Stage\n\n- Subtitle: Every handoff starts somewhere\n- Subtitle: Start where the last thread ends\n- Subtitle: Leave enough for the next mind\n- Subtitle: A thread is waiting\n- Subtitle: Nothing starts from nothing\n\n## Workspace Discovery\n\n- [Tiinex docs workspaces](https://github.com/Tiinex/docs)\n  - Kind: github-tree\n  - Ref: master\n  - Root Path: .topics\n  - Match: *.workspace.md\n  - Label: Tiinex docs workspaces\n  - Open Behavior: chooser\n\n## Workspace Entrypoints\n\n### Tiinex docs\n\n- Source Kind: github-tree\n- Repository: Tiinex/docs\n- Ref: master\n- Root Path: .topics\n- Default View: feed\n- Default Filter: all\n\n## Help\n\n### What is this view?\n\nThis workspace opens Tiinex markdown artifacts so an external reviewer and their LLM helpers can inspect continuity, source material, integrity signals, and continuation paths.\n\n### What should I check first?\n\nStart with what is loaded.\n\nCheck the workspace source, then inspect the visible badges. Treat integrity mismatch, missing integrity, unknown schema, and local-only material as review signals, not automatic failure.\n\n### What should I trust?\n\nTrust only what the artifact and its sources actually show.\n\nUse `Source` to inspect where material came from, `Markdown` to read the artifact, `Open` to inspect the selected node, and `Continue` only when the next step is clear enough to preserve.\n\n### What should an LLM preserve?\n\nDo not collapse Parent and Origin.\n\nParent is the declared continuity edge. Origin is provenance for where the material came from. If either is missing or weak, say so rather than filling the gap.\n\n### What should I send back?\n\nA useful validation note names the selected artifact, the source inspected, the observed signal, and the smallest next correction or continuation.\n\n---\n\n# Continuity Integrity\n\n- [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)\n  - Towards: [viewer.workspace.md](viewer.workspace.md)\n  - Value: yYTlX5mSB-hhxKkSmT5-7GIAzW2Phq0krm-XdhRY1oA\n";
-
-  function pageHasExplicitWorkspaceQuery() {
-    const params = new URLSearchParams(location.search);
-    return Boolean(params.get('viewerWorkspace') || params.get('workspace') || params.get('viewerConfig') || params.get('config') || params.get('identity'));
-  }
-
-
-
-
-
+  const EMBEDDED_DEFAULT_WORKSPACE_MD = "# Continuity Context\n\n- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.root.v1.schema.md)\n- Current\n  - Current Schema: [tiinex.workspace.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.workspace.v1.schema.md)\n  - Created At: 2026-06-16 00:00:00\n  - Why: Defines a portable multi-lineage workspace entrypoint.\n  - Summary: Opens the Tiinex docs workspace and declares the default viewer discovery lens.\n\n---\n\n# Tiinex Viewer\n\n## Viewer Identity\n\n- Icon: ../../assets/tiinex-logo-white-transparent.png\n- Home: https://github.com/Tiinex\n\n## Empty Stage\n\n- Subtitle: Every handoff starts somewhere\n- Subtitle: Start where the last thread ends\n- Subtitle: Leave enough for the next mind\n- Subtitle: A thread is waiting\n- Subtitle: Nothing starts from nothing\n\n## Workspace Discovery\n\n- [Tiinex docs workspaces](https://github.com/Tiinex/docs)\n  - Kind: github-tree\n  - Ref: master\n  - Root Path: .topics\n  - Match: *.workspace.md\n  - Label: Tiinex docs workspaces\n  - Open Behavior: chooser\n\n## Workspace Entrypoints\n\n### Tiinex docs\n\n- Source Kind: github-tree\n- Repository: Tiinex/docs\n- Ref: master\n- Root Path: .topics\n- Repo Files Discovery: on\n- Issue Discussion Discovery: on\n- Issue URL: https://github.com/Tiinex/docs/issues/4\n- Default View: feed\n- Default Filter: all\n\n## Help\n\n### What is this view?\n\nThis workspace opens Tiinex markdown artifacts so an external reviewer and their LLM helpers can inspect continuity, source material, integrity signals, and continuation paths.\n\n### What should I check first?\n\nStart with what is loaded.\n\nCheck the workspace source, then inspect the visible badges. Treat integrity mismatch, missing integrity, unknown schema, and local-only material as review signals, not automatic failure.\n\n### What should I trust?\n\nTrust only what the artifact and its sources actually show.\n\nUse `Source` to inspect where material came from, `Markdown` to read the artifact, `Open` to inspect the selected node, and `Continue` only when the next step is clear enough to preserve.\n\n### What should an LLM preserve?\n\nDo not collapse Parent and Origin.\n\nParent is the declared continuity edge. Origin is provenance for where the material came from. If either is missing or weak, say so rather than filling the gap.\n\n### What should I send back?\n\nA useful validation note names the selected artifact, the source inspected, the observed signal, and the smallest next correction or continuation.\n\n---\n\n# Continuity Integrity\n\n- [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)\n  - Towards: [viewer.workspace.md](viewer.workspace.md)\n  - Value: cq_1gsfGZ34oa4EQbEDrpO4Vaq9vYZAdn6Xwkl10blA\n";
 
   function shouldUseEmbeddedDefaultWorkspace() {
     // Hash state describes current opened sources; it should not block loading
@@ -5912,9 +7541,7 @@ ${bodySections}
         if (location.protocol === 'file:' && isFileProtocolUrl(url)) {
           throw new Error('Cannot fetch a .workspace.md file from file://. Use embedded default, drag/drop, or host over http://localhost.');
         }
-        const response = await fetch(url, { cache: 'no-store' });
-        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
-        const markdown = await response.text();
+        const markdown = await fetchText(url, 'viewer workspace');
         const parsed = parseViewerConfigMarkdown(markdown, url);
         await applyParsedViewerConfig(parsed, url, { applyWorkspaceState: true });
         return;
@@ -7156,30 +8783,78 @@ ${bodySections}
     </div>`;
   }
 
+  function renderIntegrityValidationEntries(diagnostics) {
+    const entries = Array.isArray(diagnostics?.validationEntries) ? diagnostics.validationEntries : [];
+    if (!entries.length) {
+      return `<section class="integrity-validation-entries">
+        <div class="integrity-validation-entries-head">
+          <p class="kicker-inline">Validation entries</p>
+          <span>No entries</span>
+        </div>
+        <p class="empty-small">This artifact does not declare validation method entries yet.</p>
+      </section>`;
+    }
+    const rows = entries.map((entry) => {
+      const missing = entry.missing?.length ? `Missing: ${entry.missing.join(', ')}` : 'Complete entry shape';
+      const methodLink = entry.methodDefinitionUrl
+        ? `<a href="${escapeAttr(entry.methodDefinitionUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(entry.method)}</a>`
+        : escapeHtml(entry.method);
+      const classes = ['integrity-validation-entry', entry.status || 'open'];
+      if (entry.active) classes.push('active');
+      if (entry.duplicateMethod) classes.push('duplicate');
+      return `<article class="${classes.map(escapeAttr).join(' ')}">
+        <header>
+          <span>Entry ${entry.position}</span>
+          <strong>${escapeHtml(entry.label)}</strong>
+        </header>
+        <dl>
+          <div><dt>Method</dt><dd>${methodLink}</dd></div>
+          <div><dt>Towards</dt><dd>${escapeHtml(entry.towards || 'missing')}</dd></div>
+          <div><dt>Value</dt><dd>${escapeHtml(entry.valueStatus || 'open')}</dd></div>
+          <div><dt>Audit</dt><dd>${escapeHtml(entry.duplicateMethod ? `${missing} · duplicate method entry` : missing)}</dd></div>
+        </dl>
+      </article>`;
+    }).join('');
+    return `<section class="integrity-validation-entries">
+      <div class="integrity-validation-entries-head">
+        <p class="kicker-inline">Validation entries</p>
+        <span>${escapeHtml(diagnostics?.validationEntryAuditSummary || '')}</span>
+      </div>
+      <div class="integrity-validation-entry-list">${rows}</div>
+    </section>`;
+  }
+
   function renderIntegrityMethodAuthority(diagnostics) {
-    const method = diagnostics?.method || '—';
+    const isDraftNoClaim = diagnostics?.claimLifecycleStatus === 'draft-no-claim';
+    const method = isDraftNoClaim ? 'No validation method declared yet' : (diagnostics?.method || '—');
     const definitionUrl = diagnostics?.methodDefinitionUrl || '';
-    const definitionStatus = diagnostics?.methodDefinitionStatusLabel || 'Definition unavailable';
-    const definitionMessage = diagnostics?.methodDefinitionMessage || 'No method-definition authority is available in this viewer context.';
-    const openButton = diagnostics?.methodDefinitionNodeId
+    const definitionStatus = isDraftNoClaim ? 'Not required until a claim exists' : (diagnostics?.methodDefinitionStatusLabel || 'Definition unavailable');
+    const definitionMessage = isDraftNoClaim
+      ? (diagnostics?.claimLifecycleMessage || 'No byte-integrity claim is being made yet.')
+      : (diagnostics?.methodDefinitionMessage || 'No method-definition authority is available in this viewer context.');
+    const openButton = !isDraftNoClaim && diagnostics?.methodDefinitionNodeId
       ? `<button class="tv-btn subtle" data-action="open-integrity-method-definition" data-node="${escapeAttr(diagnostics.methodDefinitionNodeId)}"><i class="fa-solid fa-shield-halved"></i>Open in workspace</button>`
       : '';
-    const sourceLink = safeUrl(definitionUrl)
+    const sourceLink = !isDraftNoClaim && safeUrl(definitionUrl)
       ? `<a class="tv-btn subtle" href="${escapeAttr(safeUrl(definitionUrl))}" target="_blank" rel="noopener noreferrer"><i class="fa-brands fa-github"></i>Open source</a>`
       : '';
-    const copyButton = definitionUrl
+    const copyButton = !isDraftNoClaim && definitionUrl
       ? `<button class="tv-btn subtle" data-action="copy-integrity-method-definition"><i class="fa-regular fa-copy"></i>Copy method link</button>`
       : '';
 
-    return `<section class="integrity-method-authority" aria-label="Validation method authority">
+    return `<section class="integrity-method-authority ${isDraftNoClaim ? 'draft-finality' : ''}" aria-label="Validation method authority">
       <div class="integrity-method-authority-main">
         <p class="kicker-inline">Validation method authority</p>
         <h3>${escapeHtml(method)}</h3>
         <p>${escapeHtml(definitionMessage)}</p>
       </div>
       <dl class="integrity-authority-signals">
+        <div><dt>Claim lifecycle</dt><dd>${escapeHtml(diagnostics?.claimLifecycleLabel || 'Integrity claim present')}</dd></div>
+        <div><dt>Finality</dt><dd>${escapeHtml(diagnostics?.finalityStatus || 'open')}</dd></div>
         <div><dt>Byte integrity result</dt><dd>${escapeHtml(diagnostics?.byteIntegrityResult || 'open')}</dd></div>
         <div><dt>Method definition</dt><dd>${escapeHtml(definitionStatus)}</dd></div>
+        <div><dt>Validation entries</dt><dd>${escapeHtml(diagnostics?.integrityEntrySummary || 'No method entries')}</dd></div>
+        <div><dt>Entry audit</dt><dd>${escapeHtml(diagnostics?.validationEntryAuditSummary || '0 evaluated')}</dd></div>
         <div><dt>Schema authority</dt><dd>${escapeHtml(diagnostics?.schemaAuthority || 'not declared')}</dd></div>
       </dl>
       <div class="integrity-method-authority-actions">${openButton}${sourceLink}${copyButton}</div>
@@ -7198,14 +8873,29 @@ ${bodySections}
       `Status Label: ${diagnostics.statusLabel || ''}`,
       '',
       'Audit Signals:',
+      `- Claim Lifecycle: ${diagnostics.claimLifecycleLabel || ''}`,
+      `- Finality: ${diagnostics.finalityStatus || ''}`,
+      `- Export Readiness: ${diagnostics.exportReadiness || ''}`,
       `- Byte Integrity Result: ${diagnostics.byteIntegrityResult || ''}`,
       `- Method Definition Availability: ${diagnostics.methodDefinitionStatusLabel || ''}`,
+      `- Validation Entries: ${diagnostics.integrityEntrySummary || ''}`,
+      `- Validation Entry Audit: ${diagnostics.validationEntryAuditSummary || ''}`,
       `- Schema Authority: ${diagnostics.schemaAuthority || ''}`,
       '',
       `Method: ${diagnostics.method || ''}`,
       `Method Definition: ${diagnostics.methodDefinitionUrl || ''}`,
       `Method Definition Status: ${diagnostics.methodDefinitionStatus || ''}`,
       `Method Definition Workspace Node: ${diagnostics.methodDefinitionNodeId || ''}`,
+      `Integrity Entry Count: ${diagnostics.integrityEntryCount || 0}`,
+      `Active Integrity Entry: ${diagnostics.activeIntegrityEntryIndex >= 0 ? diagnostics.activeIntegrityEntryIndex + 1 : ''}`,
+      `Supported Integrity Entries: ${diagnostics.supportedIntegrityEntryCount || 0}`,
+      `Unsupported Integrity Entries: ${diagnostics.unsupportedIntegrityEntryCount || 0}`,
+      `Duplicate Method Entries: ${diagnostics.integrityEntryAudit?.duplicate || 0}`,
+      `Incomplete Integrity Entries: ${diagnostics.integrityEntryAudit?.incomplete || 0}`,
+      '',
+      'Validation Entry Details:',
+      ...((diagnostics.validationEntries || []).length ? diagnostics.validationEntries.map((entry) => `- Entry ${entry.position}: ${entry.label}; method=${entry.method}; towards=${entry.towards || 'missing'}; value=${entry.valueStatus}; ${entry.duplicateMethod ? 'duplicate method entry' : 'not duplicate'}`) : ['- none']),
+      '',
       `Towards: ${diagnostics.towards || ''}`,
       `Expected: ${diagnostics.expected || ''}`,
       '',
@@ -7243,7 +8933,7 @@ ${bodySections}
       return `The declared checksum matches the referenced target${diagnostics?.targetLabel ? `: ${diagnostics.targetLabel}` : ''}.`;
     }
     if (status === 'mismatch') return 'The declared checksum does not match the exact target available to this viewer.';
-    if (status === 'draft-pending') return 'This artifact does not declare an integrity method entry yet, so there is no checksum claim to verify.';
+    if (status === 'draft-pending') return 'This artifact is in a draft/no-claim state: no checksum claim is being made yet, and nothing has failed verification.';
     if (status === 'malformed-claim') return 'This artifact has an integrity method entry, but it is incomplete or contains a placeholder-like value.';
     if (status === 'target-unavailable') return 'The integrity target could not be read in this viewer context.';
     if (status === 'target-ambiguous') return 'A possible target exists, but this viewer cannot treat it as the exact declared target.';
@@ -7261,7 +8951,7 @@ ${bodySections}
           diagnostics?.authority ? `Target authority in this viewer: ${diagnostics.authority}.` : ''
         ]
       : status === 'draft-pending'
-        ? ['No integrity claim is being made yet.', 'The artifact should be treated as editable or not yet finalized.']
+        ? ['No integrity claim is being made yet.', 'This is a valid draft/local state.', 'It is not final byte-integrity verified and export/publish should surface it as no-claim.']
         : status === 'malformed-claim'
           ? ['A method entry exists, but it is not a valid claim this viewer can verify.']
           : ['This viewer has not proven a matching byte-integrity claim.'];
@@ -7306,13 +8996,19 @@ ${bodySections}
               <span>${escapeHtml(integrityHumanMessage(diagnostics))}</span>
             </div>
             ${renderIntegrityMethodAuthority(diagnostics)}
+            ${renderIntegrityValidationEntries(diagnostics)}
             ${renderIntegrityMeaning(diagnostics)}
             <details class="integrity-raw integrity-technical">
               <summary>Technical details</summary>
               <dl class="integrity-kv-grid">
+                ${renderIntegrityKv('Claim lifecycle', diagnostics.claimLifecycleLabel)}
+                ${renderIntegrityKv('Finality', diagnostics.finalityStatus)}
+                ${renderIntegrityKv('Export readiness', diagnostics.exportReadiness)}
                 ${renderIntegrityKv('Method', diagnostics.method, true)}
                 ${renderIntegrityLinkKv('Method definition', diagnostics.methodDefinitionUrl, diagnostics.methodDefinitionLabel || 'Open validator definition')}
                 ${renderIntegrityKv('Method definition status', diagnostics.methodDefinitionStatusLabel)}
+                ${renderIntegrityKv('Validation entries', diagnostics.integrityEntrySummary)}
+                ${renderIntegrityKv('Entry audit', diagnostics.validationEntryAuditSummary)}
                 ${renderIntegrityKv('Byte integrity result', diagnostics.byteIntegrityResult)}
                 ${renderIntegrityKv('Schema authority', diagnostics.schemaAuthority)}
                 ${renderIntegrityKv('Towards', diagnostics.towards, true)}
@@ -7346,6 +9042,8 @@ ${bodySections}
     const declaredDefinitionUrl = validationMethodDefinitionUrl(declaredMethod, node?.integrity?.methodHref || '');
     const declaredDefinitionStatus = validationMethodDefinitionStatus(declaredMethod, declaredDefinitionUrl);
     const declaredDefinitionNode = findValidationMethodDefinitionNode(ws, declaredMethod, declaredDefinitionUrl);
+    const entryAudit = integrityEntryAuditDetails(node?.integrity);
+    const initialLifecycle = integrityClaimLifecycleForStatus(initialStatus, node?.integrity);
     const base = {
       title: node?.title || '',
       path: node?.path || '',
@@ -7359,7 +9057,21 @@ ${bodySections}
       methodDefinitionMessage: declaredDefinitionStatus.message,
       methodDefinitionNodeId: declaredDefinitionNode?.id || '',
       methodDefinitionWorkspaceAvailable: Boolean(declaredDefinitionNode),
+      integrityEntryCount: node?.integrity?.entryCount || 0,
+      activeIntegrityEntryIndex: node?.integrity?.activeEntryIndex ?? -1,
+      supportedIntegrityEntryCount: node?.integrity?.supportedEntryCount || 0,
+      unsupportedIntegrityEntryCount: node?.integrity?.unsupportedEntryCount || 0,
+      integrityEntrySummary: integrityEntryCountLabel(node?.integrity),
+      integrityEntryAudit: entryAudit,
+      validationEntryAuditSummary: entryAudit.summary,
+      validationEntries: entryAudit.entries,
       byteIntegrityResult: byteIntegrityAuditLabel(initialStatus),
+      claimLifecycleStatus: initialLifecycle.status,
+      claimLifecycleLabel: initialLifecycle.label,
+      claimLifecycleAudit: initialLifecycle.audit,
+      claimLifecycleMessage: initialLifecycle.message,
+      finalityStatus: initialLifecycle.finality,
+      exportReadiness: initialLifecycle.finality,
       towards: target.raw || node?.integrity?.towards || '',
       expected: node?.integrity?.value || '',
       targetStatus: '',
@@ -7410,6 +9122,7 @@ ${bodySections}
     const resultDefinitionUrl = validationMethodDefinitionUrl(resultMethod, node.integrity?.methodHref || '');
     const resultDefinitionStatus = validationMethodDefinitionStatus(resultMethod, resultDefinitionUrl);
     const resultDefinitionNode = findValidationMethodDefinitionNode(ws, resultMethod, resultDefinitionUrl);
+    const resultLifecycle = integrityClaimLifecycleForStatus(status, node?.integrity);
 
     return Object.assign(base, {
       status,
@@ -7422,7 +9135,21 @@ ${bodySections}
       methodDefinitionMessage: resultDefinitionStatus.message,
       methodDefinitionNodeId: resultDefinitionNode?.id || '',
       methodDefinitionWorkspaceAvailable: Boolean(resultDefinitionNode),
+      integrityEntryCount: node?.integrity?.entryCount || 0,
+      activeIntegrityEntryIndex: node?.integrity?.activeEntryIndex ?? -1,
+      supportedIntegrityEntryCount: node?.integrity?.supportedEntryCount || 0,
+      unsupportedIntegrityEntryCount: node?.integrity?.unsupportedEntryCount || 0,
+      integrityEntrySummary: integrityEntryCountLabel(node?.integrity),
+      integrityEntryAudit: entryAudit,
+      validationEntryAuditSummary: entryAudit.summary,
+      validationEntries: entryAudit.entries,
       byteIntegrityResult: byteIntegrityAuditLabel(status),
+      claimLifecycleStatus: resultLifecycle.status,
+      claimLifecycleLabel: resultLifecycle.label,
+      claimLifecycleAudit: resultLifecycle.audit,
+      claimLifecycleMessage: resultLifecycle.message,
+      finalityStatus: resultLifecycle.finality,
+      exportReadiness: resultLifecycle.finality,
       schemaAuthority: schemaAuthorityLabelForNode(node),
       towards: target.raw || '',
       expected,
@@ -7869,8 +9596,8 @@ ${bodySections}
         <span class="tree-name">${escapeHtml(file)}</span>
       </span>
       <span class="tree-badges">
-        <span class="badge-soft badge-schema ${schemaBadgeClass(node.currentSchemaText || node.currentSchema)}">${escapeHtml(shortSchema(node.currentSchemaText || node.currentSchema || 'trace'))}</span>
         ${childBadge}
+        <span class="badge-soft badge-schema ${schemaBadgeClass(node.currentSchemaText || node.currentSchema)}">${escapeHtml(shortSchema(node.currentSchemaText || node.currentSchema || 'trace'))}</span>
         ${treeIntegrityBadge(node)}
       </span>
     </button>`;
@@ -7945,9 +9672,11 @@ ${bodySections}
         ? (policy.kind || 'Origin policy')
         : policy.status === 'missing'
           ? 'No origin policy/license'
-          : policy.status === 'local'
-            ? 'Local workspace'
-            : 'Policy unknown';
+          : policy.status === 'lookup-deferred'
+            ? 'Policy lookup deferred'
+            : policy.status === 'local'
+              ? 'Local workspace'
+              : 'Policy unknown';
 
     return {
       kind: 'policy',
@@ -7963,9 +9692,11 @@ ${bodySections}
           ? 'fa-solid fa-scale-balanced'
           : policy.status === 'missing'
             ? 'fa-solid fa-triangle-exclamation'
-            : policy.status === 'local'
-              ? 'fa-solid fa-laptop-file'
-              : 'fa-regular fa-circle-question'
+            : policy.status === 'lookup-deferred'
+              ? 'fa-solid fa-scale-balanced'
+              : policy.status === 'local'
+                ? 'fa-solid fa-laptop-file'
+                : 'fa-regular fa-circle-question'
     };
   }
 
@@ -8005,6 +9736,8 @@ ${bodySections}
       badge = policyBadgeButton(ws, 'warn', 'fa-solid fa-scale-balanced', p.kind || 'Origin policy', p.note || 'Origin license/policy found', 'policy');
     } else if (p.status === 'missing') {
       badge = policyBadgeButton(ws, 'danger', 'fa-solid fa-triangle-exclamation', 'No origin policy/license', p.note || 'No origin policy/license found', 'policy');
+    } else if (p.status === 'lookup-deferred') {
+      badge = policyBadgeButton(ws, 'pending', 'fa-solid fa-scale-balanced', 'Policy lookup deferred', p.note || 'Policy/license lookup deferred to avoid unnecessary requests', 'policy');
     } else if (p.status === 'local') {
       badge = policyBadgeButton(ws, 'local', 'fa-solid fa-laptop-file', 'Local workspace', p.note || 'Local workspace', 'policy');
     } else {
@@ -8433,10 +10166,15 @@ ${bodySections}
     return isTiinexMarkdownArtifactPath(path);
   }
 
-  async function fetchJson(url) {
-    const response = await fetch(url, { mode: 'cors', credentials: 'omit' });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    return await response.json();
+  async function fetchJson(url, options = {}) {
+    const adapter = options.adapter || adapterIdForUrl(url);
+    const result = await adapterFetchJson(url, Object.assign({
+      adapter,
+      label: adapter === 'github-rest' ? 'GitHub API' : 'JSON source',
+      headers: adapter === 'github-rest' ? githubRestHeaders(options.headers || {}) : (options.headers || {}),
+      rateLimitKey: adapter === 'github-rest' ? 'github-rest' : undefined
+    }, options));
+    return result.data;
   }
 
 
@@ -8611,6 +10349,103 @@ ${bodySections}
 
   // --- Workspace shell rendering ---
 
+
+  function schemaFamilyForId(schema = '') {
+    const id = String(schema || '').trim();
+    if (id.startsWith('tiinex.discovery.')) return 'discovery';
+    if (id.startsWith('tiinex.resource.')) return 'resource';
+    if (id.startsWith('tiinex.instrument.')) return 'instrument';
+    if (id.includes('budget')) return 'budget';
+    return '';
+  }
+
+  function lineageModuleSummary(ws) {
+    const counts = { discovery: 0, resource: 0, budget: 0, usage: 0, instrument: 0, financial: 0, consent: 0, github: 0, githubEnabled: 0, githubRunning: 0, githubFailed: 0, githubStatusMessage: '', githubStatusState: '', githubSourceId: '' };
+    for (const node of ws?.nodes || []) {
+      const schema = String(node.currentSchema || node.currentSchemaText || '');
+      if (schema.startsWith('tiinex.discovery.')) counts.discovery += 1;
+      if (schema.startsWith('tiinex.resource.')) counts.resource += 1;
+      if (schema === 'tiinex.resource.budget.v1') counts.budget += 1;
+      if (schema === 'tiinex.resource.allocation.usage.v1') counts.usage += 1;
+      if (schema.startsWith('tiinex.instrument.')) counts.instrument += 1;
+      if (schema === 'tiinex.instrument.financial.v1') counts.financial += 1;
+      if (schema === 'tiinex.instrument.consent.v1') counts.consent += 1;
+    }
+    for (const file of ws?.files?.values?.() || []) {
+      if (sourceSurfaceForEntry(file) === 'issues') counts.github += 1;
+    }
+    for (const source of ws?.sources?.values?.() || []) {
+      if (source?.kind !== 'github') continue;
+      const surfaces = normalizeGithubSurfaceConfig(source.enabledSurfaces || {});
+      if (!surfaces.issues) continue;
+      counts.githubEnabled += 1;
+      const status = source.issueDiscoveryStatus || ws.githubIssueDiscoveryStatus?.[source.id];
+      if (status?.state === 'running') counts.githubRunning += 1;
+      if (status?.state === 'failed' || status?.state === 'partial' || status?.state === 'rate-limited') {
+        counts.githubFailed += 1;
+        counts.githubStatusMessage = status.message || status.error || counts.githubStatusMessage;
+        counts.githubStatusState = status.state || counts.githubStatusState;
+        counts.githubSourceId = source.id || counts.githubSourceId;
+      } else if (status?.message && !counts.githubStatusMessage) {
+        counts.githubStatusMessage = status.message;
+        counts.githubStatusState = status.state || counts.githubStatusState;
+        counts.githubSourceId = source.id || counts.githubSourceId;
+      }
+    }
+    return counts;
+  }
+
+  function shortGitHubDiscoveryStatus(message = '') {
+    const text = String(message || '').trim();
+    if (!text) return '';
+    const status = text.match(/\b(401|403|404|429|5\d\d)\b/);
+    if (status) return `Blocked · ${status[1]}`;
+    if (/rate-limited|rate limit|retry after/i.test(text)) return 'Rate-limited';
+    if (/unavailable|failed|forbidden|auth/i.test(text)) return 'Needs attention';
+    if (/running/i.test(text)) return 'Running';
+    return shortText(text, 32);
+  }
+
+  function compactGitHubDiscoveryNote(message = '') {
+    const text = String(message || '').trim();
+    if (!text) return 'Tap source for details';
+    if (/rate-limited|rate limit|retry after/i.test(text)) return 'API backoff active; retry later';
+    if (/403|forbidden/i.test(text)) return 'GitHub API blocked; source link kept';
+    if (/401|auth/i.test(text)) return 'Authentication required later';
+    if (/unavailable|failed/i.test(text)) return 'Fallback target kept';
+    return 'Read-only source surface';
+  }
+
+  function renderLineageModuleCards(ws) {
+    const counts = lineageModuleSummary(ws);
+    const cards = [];
+    if (counts.github || counts.githubEnabled) {
+      const value = counts.github
+        ? `${counts.github} issue target${counts.github === 1 ? '' : 's'}`
+        : (counts.githubRunning ? 'Running' : 'Enabled');
+      const compactStatus = counts.githubFailed ? shortGitHubDiscoveryStatus(counts.githubStatusMessage) : '';
+      const note = counts.githubFailed
+        ? compactGitHubDiscoveryNote(counts.githubStatusMessage)
+        : (counts.github ? 'Read-only source surface' : 'Waiting for source data');
+      cards.push(['fa-brands fa-github', 'GitHub discovery', compactStatus || value, note, counts.githubFailed ? 'needs-attention' : '', counts.githubSourceId || '', 'github']);
+    }
+    if (counts.discovery) cards.push(['fa-solid fa-compass', 'Discovery', `${counts.discovery} discovery node${counts.discovery === 1 ? '' : 's'}`, 'Findings stay candidates until promoted', '', '', 'discovery']);
+    if (counts.resource) cards.push(['fa-solid fa-boxes-stacked', 'Resources', `${counts.resource} resource node${counts.resource === 1 ? '' : 's'}`, counts.budget || counts.usage ? `${counts.budget} budget · ${counts.usage} usage` : 'Needs, contributions, allocations', '', '', 'resource']);
+    if (counts.instrument) cards.push(['fa-solid fa-scroll', 'Instruments', `${counts.instrument} instrument node${counts.instrument === 1 ? '' : 's'}`, `${counts.financial} financial · ${counts.consent} consent`, '', '', 'instrument']);
+    if (!cards.length) return '';
+    return `<div class="lineage-module-strip" data-ws="${escapeAttr(ws.id)}">${cards.map(([icon, title, value, note, stateClass, sourceId, kind]) => {
+      const action = sourceId ? ` data-action="edit-source" data-ws="${escapeAttr(ws.id)}" data-source="${escapeAttr(sourceId)}" role="button" tabindex="0"` : '';
+      const mobileLabel = kind === 'github' ? 'GitHub' : title;
+      const label = `${title}: ${value}${note ? ` · ${note}` : ''}`;
+      return `
+      <article class="lineage-module-card ${escapeAttr(stateClass || '')}" data-kind="${escapeAttr(kind || 'module')}" data-mobile-label="${escapeAttr(mobileLabel)}" aria-label="${escapeAttr(label)}" title="${escapeAttr(label)}"${action}>
+        <i class="${escapeAttr(icon)}"></i>
+        <div><strong>${escapeHtml(title)}</strong><span>${escapeHtml(value)}</span><small>${escapeHtml(note)}</small></div>
+      </article>`;
+    }).join('')}
+    </div>`;
+  }
+
   function renderWorkspace(ws) {
     const active = app.activeWorkspaceId === ws.id;
     const compact = ws.layoutMode === 'compact';
@@ -8643,6 +10478,7 @@ ${bodySections}
           </div>
         </div>
         ${renderWorkspaceSourceStrip(ws)}
+        ${renderLineageModuleCards(ws)}
         ${ws.policy?.status === 'missing' ? `<div class="policy-note danger workspace-policy-foundation workspace-policy-shell"><strong>No policy/license found.</strong> Derived work will create a decision leaf first if you choose to continue.</div>` : ''}
         ${ws.policy?.status === 'found' ? `<div class="policy-note workspace-policy-foundation workspace-policy-shell"><strong>${escapeHtml(ws.policy.kind)}:</strong> ${escapeHtml(shortText((ws.policy.text || '').split('\n').find(Boolean) || ws.policy.note, 140))}</div>` : ''}
         ${!ws.nodes.length && !ws.loading ? '<div class="workspace-drop-hint">Drop lineage files, configs, folders, or zips into this workspace · or use the source button above.</div>' : ''}
@@ -8790,17 +10626,67 @@ ${bodySections}
     return canonicalWorkspacePath(String(name || '').replace(/^\/+/, ''));
   }
 
-  async function discoverGitHubTracePathsViaJsdelivr(repo, ref, rootPaths) {
+  const TIINEX_DOCS_SCHEMA_FRESHNESS_PATHS = Object.freeze([
+    '.topics/.schemas/tiinex.discovery.v1.schema.md',
+    '.topics/.schemas/tiinex.discovery.follow.v1.schema.md',
+    '.topics/.schemas/tiinex.discovery.finding.v1.schema.md',
+    '.topics/.schemas/tiinex.discovery.research.v1.schema.md',
+    '.topics/.schemas/tiinex.discovery.expedition.v1.schema.md',
+    '.topics/.schemas/tiinex.discovery.monitoring.v1.schema.md',
+    '.topics/.schemas/tiinex.discovery.surveillance.v1.schema.md',
+    '.topics/.schemas/tiinex.resource.v1.schema.md',
+    '.topics/.schemas/tiinex.resource.need.v1.schema.md',
+    '.topics/.schemas/tiinex.resource.contribution.v1.schema.md',
+    '.topics/.schemas/tiinex.resource.contribution.receipt.v1.schema.md',
+    '.topics/.schemas/tiinex.resource.allocation.v1.schema.md',
+    '.topics/.schemas/tiinex.resource.allocation.usage.v1.schema.md',
+    '.topics/.schemas/tiinex.resource.budget.v1.schema.md',
+    '.topics/.schemas/tiinex.instrument.v1.schema.md',
+    '.topics/.schemas/tiinex.instrument.financial.v1.schema.md',
+    '.topics/.schemas/tiinex.instrument.consent.v1.schema.md',
+    '.topics/.validators/sha256-base64url-c14n-v2.validator.md'
+  ]);
+
+  function rootPathIncludesPath(roots, path) {
+    const normalized = normalizeRepoPath(path);
+    return (roots || []).some((root) => {
+      const clean = normalizeRepoPath(root);
+      return !clean || normalized === clean || normalized.startsWith(`${clean}/`);
+    });
+  }
+
+  function supplementKnownTiinexDocsSchemaPaths(repo, ref, roots, paths) {
+    const list = Array.isArray(paths) ? paths.slice() : [];
+    if (String(repo || '').toLowerCase() !== 'tiinex/docs') return { paths: list, added: 0 };
+    const effectiveRoots = (roots && roots.length ? roots : ['.topics']).map(normalizeRepoPath).filter(Boolean);
+    const before = new Set(list.map(normalizeRepoPath));
+    let added = 0;
+    for (const candidate of TIINEX_DOCS_SCHEMA_FRESHNESS_PATHS) {
+      const normalized = normalizeRepoPath(candidate);
+      if (before.has(normalized)) continue;
+      if (!rootPathIncludesPath(effectiveRoots, normalized)) continue;
+      before.add(normalized);
+      list.push(normalized);
+      added += 1;
+    }
+    list.sort((a, b) => a.localeCompare(b));
+    return { paths: list, added };
+  }
+
+  async function discoverGitHubTracePathsViaJsdelivr(repo, ref, rootPaths, options = {}) {
     const resolvedRef = ref || 'master';
-    const url = `https://data.jsdelivr.com/v1/package/gh/${repo}@${encodeURIComponent(resolvedRef)}/flat`;
-    const data = await fetchJson(url);
+    const bust = options.hardRefresh ? `?tiinexHardRefresh=${Date.now()}` : '';
+    const url = `https://data.jsdelivr.com/v1/package/gh/${repo}@${encodeURIComponent(resolvedRef)}/flat${bust}`;
+    const data = await fetchJson(url, { adapter: 'jsdelivr', label: 'jsDelivr tree', hardRefresh: Boolean(options.hardRefresh) });
     const files = Array.isArray(data.files) ? data.files : [];
     const effectiveRoots = (rootPaths && rootPaths.length ? rootPaths : ['.topics']).map(normalizeRepoPath).filter(Boolean);
-    const allPaths = files
+    let allPaths = files
       .map((file) => normalizeJsdelivrFlatPath(file.name || file.path || ''))
       .filter((path) => pathLooksUsefulLineageArtifact(path))
       .filter((path) => effectiveRoots.some((root) => !root || path === root || path.startsWith(`${root}/`)))
       .sort((a, b) => a.localeCompare(b));
+    const supplement = supplementKnownTiinexDocsSchemaPaths(repo, resolvedRef, effectiveRoots, allPaths);
+    allPaths = supplement.paths;
     const traceOnly = allPaths.filter((path) => /\.trace\.md$/i.test(path));
 
     return {
@@ -8814,24 +10700,27 @@ ${bodySections}
       validatorPaths: allPaths.filter((path) => /\.validator\.md$/i.test(path)),
       workspacePaths: allPaths.filter((path) => /\.workspace\.md$/i.test(path)),
       numericLeafGuess: traceOnly.filter((path) => maybeLeafByNumericName(path, traceOnly)),
-      discoverySource: 'jsdelivr-flat'
+      discoverySource: 'jsdelivr-flat',
+      freshnessSupplemented: supplement.added
     };
   }
 
-  async function discoverGitHubTracePaths(repo, ref, rootPath = '.topics') {
+  async function discoverGitHubTracePaths(repo, ref, rootPath = '.topics', options = {}) {
     const resolvedRef = ref || 'master';
     const roots = Array.isArray(rootPath) ? rootPath.map(normalizeRepoPath).filter(Boolean) : parseRootPaths(rootPath);
     const effectiveRoots = roots.length ? roots : ['.topics'];
     const api = `https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(resolvedRef)}?recursive=1`;
 
     try {
-      const data = await fetchJson(api);
+      const data = await fetchJson(api, { adapter: 'github-rest', label: 'GitHub tree API', hardRefresh: Boolean(options.hardRefresh) });
       const tree = Array.isArray(data.tree) ? data.tree : [];
-      const allPaths = tree
+      let allPaths = tree
         .filter((item) => item && item.type === 'blob' && pathLooksUsefulLineageArtifact(item.path || ''))
         .map((item) => item.path)
         .filter((path) => effectiveRoots.some((root) => !root || path === root || path.startsWith(`${root}/`)))
         .sort((a, b) => a.localeCompare(b));
+      const supplement = supplementKnownTiinexDocsSchemaPaths(repo, resolvedRef, effectiveRoots, allPaths);
+      allPaths = supplement.paths;
       const traceOnly = allPaths.filter((path) => /\.trace\.md$/i.test(path));
 
       return {
@@ -8845,11 +10734,14 @@ ${bodySections}
         validatorPaths: allPaths.filter((path) => /\.validator\.md$/i.test(path)),
         workspacePaths: allPaths.filter((path) => /\.workspace\.md$/i.test(path)),
         numericLeafGuess: traceOnly.filter((path) => maybeLeafByNumericName(path, traceOnly)),
-        discoverySource: 'github-api'
+        discoverySource: 'github-api',
+        freshnessSupplemented: supplement.added
       };
     } catch (apiError) {
       try {
-        const fallback = await discoverGitHubTracePathsViaJsdelivr(repo, resolvedRef, effectiveRoots);
+        const fallback = options.hardRefresh
+          ? await discoverGitHubTracePathsViaJsdelivr(repo, resolvedRef, effectiveRoots, options)
+          : await discoverGitHubTracePathsViaJsdelivr(repo, resolvedRef, effectiveRoots);
         fallback.note = `GitHub tree API failed; static flat fallback used: ${apiError.message}`;
         return fallback;
       } catch (fallbackError) {
@@ -8890,7 +10782,7 @@ ${bodySections}
 
   async function fetchGitCommitSortDate(node) {
     const url = gitCommitApiUrl(node.repo, node.ref || 'master', node.path);
-    const commits = await fetchJson(url);
+    const commits = await fetchJson(url, { adapter: 'github-rest', label: 'GitHub commit API' });
     const latest = Array.isArray(commits) ? commits[0] : null;
     const committedAt = latest?.commit?.committer?.date || latest?.commit?.author?.date || '';
     const sha = latest?.sha || '';
@@ -9002,14 +10894,18 @@ ${bodySections}
       .filter((source) => {
         const count = sourceDisplayCount(ws, source);
         if (source.kind === 'draft') return Boolean(ws.generated?.length || count);
+        if (source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue') return true;
         return count > 0;
       });
     if (!sources.length) return '';
     return `<div class="workspace-source-strip" aria-label="Workspace sources">
       ${sources.map((source) => {
-        const icon = source.kind === 'github' ? 'fa-brands fa-github' : (source.kind === 'draft' ? 'fa-solid fa-pen-nib' : (source.kind === 'local' ? 'fa-solid fa-folder-open' : 'fa-solid fa-link'));
+        const icon = source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue' ? 'fa-brands fa-github'
+          : (source.kind === 'draft' ? 'fa-solid fa-pen-nib' : (source.kind === 'local' ? 'fa-solid fa-folder-open' : 'fa-solid fa-link'));
         const count = sourceDisplayCount(ws, source);
-        return `<span class="workspace-source-pill ${sourceBadgeClass(source)}" title="${escapeAttr(source.origin || source.label || source.id)}">
+        const editable = source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue';
+        const action = editable ? ` data-action="edit-source" data-ws="${escapeAttr(ws.id)}" data-source="${escapeAttr(source.id)}" role="button" tabindex="0"` : '';
+        return `<span class="workspace-source-pill ${sourceBadgeClass(source)}"${action} title="${escapeAttr(source.origin || source.label || source.id)}">
           <i class="${icon}"></i>
           <span>${escapeHtml(shortText(sourceShortLabel(ws, source.id), 34))}</span>
           <small>${count}</small>
@@ -10471,6 +12367,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
       return markdownDeclaresContinuityParent(text) ? markdownWithIntegrityFooter(text, integrityFooter()) : markdownWithSelfIntegrity(text);
     }
 
+    if ((integrity.entryCount || 0) > 1) return text;
     if (integrity.placeholderValue || !integrity.method || !integrity.towards || !integrity.value) return text;
     if (integrity.method !== TIINEX_SHA256_C14N_METHOD_ID) return text;
     if (!integrityTowardsIsSelf(integrity.towards)) return text;
@@ -10934,6 +12831,9 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
   const SCHEMA_CREATE_POLICY_FAMILIES = Object.freeze([
     'continuity-envelope',
     'core-artifact',
+    'discovery-family',
+    'resource-family',
+    'instrument-family',
     'relation-validation-governance',
     'runtime-family',
     'reduction-disclosure-privacy',
@@ -10993,6 +12893,23 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     'tiinex.signal.v1',
     'tiinex.lineage.upgrade.deferral.v1',
     'tiinex.workspace.v1',
+    'tiinex.discovery.v1',
+    'tiinex.discovery.follow.v1',
+    'tiinex.discovery.finding.v1',
+    'tiinex.discovery.research.v1',
+    'tiinex.discovery.expedition.v1',
+    'tiinex.discovery.monitoring.v1',
+    'tiinex.discovery.surveillance.v1',
+    'tiinex.resource.v1',
+    'tiinex.resource.need.v1',
+    'tiinex.resource.contribution.v1',
+    'tiinex.resource.contribution.receipt.v1',
+    'tiinex.resource.allocation.v1',
+    'tiinex.resource.allocation.usage.v1',
+    'tiinex.resource.budget.v1',
+    'tiinex.instrument.v1',
+    'tiinex.instrument.financial.v1',
+    'tiinex.instrument.consent.v1',
     'tiinex.relation.v1',
     'tiinex.validation.method.v1',
     'tiinex.schema.family.v1',
@@ -11078,13 +12995,30 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     'tiinex.schema.family.v1': schemaPolicyEntry('tiinex.schema.family.v1', 'Schema Family', 'relation-validation-governance', 'tiinex.root.v1', 'Schema family, governance, and creatability description.', 'advanced', 'advanced', 'advanced', 'advanced-candidate', 'Schema-family artifacts govern schemas and create policy, so ordinary creation should require explicit intent.'),
     'tiinex.definition.v1': schemaPolicyEntry('tiinex.definition.v1', 'Definition', 'relation-validation-governance', 'tiinex.root.v1', 'Shared definition root for schema notes.', 'advanced', 'advanced', 'advanced', 'advanced-candidate', 'Definitions are governance/support surfaces rather than ordinary lineage leaves.'),
     'tiinex.capability.v1': schemaPolicyEntry('tiinex.capability.v1', 'Capability', 'relation-validation-governance', 'tiinex.root.v1', 'Capability manifest for viewers, validators, and runtimes.', 'advanced', 'advanced', 'advanced', 'advanced-candidate', 'Capabilities describe tool behavior and should be created only when capability scope is explicit.'),
+    'tiinex.discovery.v1': schemaPolicyEntry('tiinex.discovery.v1', 'Discovery', 'discovery-family', 'tiinex.root.v1', 'Bounded intentional discovery context.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Discovery is suitable when the main value is how something is being searched, explored, or found.'),
+    'tiinex.discovery.follow.v1': schemaPolicyEntry('tiinex.discovery.follow.v1', 'Discovery Follow', 'discovery-family', 'tiinex.discovery.v1', 'Bounded ongoing attention.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Follow is useful when a source or target remains relevant but should not become monitoring by accident.'),
+    'tiinex.discovery.finding.v1': schemaPolicyEntry('tiinex.discovery.finding.v1', 'Discovery Finding', 'discovery-family', 'tiinex.discovery.v1', 'One observed finding, absence, ambiguity, anomaly, or lead.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Finding captures what was found before it is promoted to evidence, feedback, task, resource need, or pointer.'),
+    'tiinex.discovery.research.v1': schemaPolicyEntry('tiinex.discovery.research.v1', 'Discovery Research', 'discovery-family', 'tiinex.discovery.v1', 'Question-driven inquiry.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Research is suitable when source field, method, synthesis, and unresolved gaps matter.'),
+    'tiinex.discovery.expedition.v1': schemaPolicyEntry('tiinex.discovery.expedition.v1', 'Discovery Expedition', 'discovery-family', 'tiinex.discovery.v1', 'Exploratory route through a partly unknown field.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Expedition preserves route, terrain, encounters, hazards, and map updates.'),
+    'tiinex.discovery.monitoring.v1': schemaPolicyEntry('tiinex.discovery.monitoring.v1', 'Discovery Monitoring', 'discovery-family', 'tiinex.discovery.v1', 'Bounded recurring observation over time.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Monitoring is suitable when cadence, triggers, observations, and stop conditions matter.'),
+    'tiinex.discovery.surveillance.v1': schemaPolicyEntry('tiinex.discovery.surveillance.v1', 'Discovery Surveillance', 'discovery-family', 'tiinex.discovery.monitoring.v1', 'High-impact monitoring with safeguards.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Surveillance needs explicit safeguards and should not crowd ordinary authoring.'),
+    'tiinex.resource.v1': schemaPolicyEntry('tiinex.resource.v1', 'Resource', 'resource-family', 'tiinex.root.v1', 'Broad enablement resource context.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Resource is suitable when needed, available, contributed, allocated, or bounded resources matter.'),
+    'tiinex.resource.need.v1': schemaPolicyEntry('tiinex.resource.need.v1', 'Resource Need', 'resource-family', 'tiinex.resource.v1', 'Needed resource or blocker.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Resource need is suitable when a missing enabler blocks or constrains work.'),
+    'tiinex.resource.contribution.v1': schemaPolicyEntry('tiinex.resource.contribution.v1', 'Resource Contribution', 'resource-family', 'tiinex.resource.v1', 'Offered, pledged, provided, returned, or retracted resource.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Contribution is suitable when a resource is offered or provided but receipt is not the main claim.'),
+    'tiinex.resource.contribution.receipt.v1': schemaPolicyEntry('tiinex.resource.contribution.receipt.v1', 'Resource Contribution Receipt', 'resource-family', 'tiinex.resource.contribution.v1', 'Received-resource contribution record.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Receipt is suitable when arrival or confirmed availability is the main value.'),
+    'tiinex.resource.allocation.v1': schemaPolicyEntry('tiinex.resource.allocation.v1', 'Resource Allocation', 'resource-family', 'tiinex.resource.v1', 'Resource reserved or assigned to a purpose.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Allocation is suitable when resource use has been assigned or reserved.'),
+    'tiinex.resource.allocation.usage.v1': schemaPolicyEntry('tiinex.resource.allocation.usage.v1', 'Resource Allocation Usage', 'resource-family', 'tiinex.resource.allocation.v1', 'Actual, estimated, observed, or billed usage.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Usage is suitable when consumed tokens, cost, compute, time, materials, or access are being recorded.'),
+    'tiinex.resource.budget.v1': schemaPolicyEntry('tiinex.resource.budget.v1', 'Resource Budget', 'resource-family', 'tiinex.resource.v1', 'Resource cap, quota, reserve, runway, or limit.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Budget is suitable for money, token, API, compute, time, or other resource envelopes.'),
+    'tiinex.instrument.v1': schemaPolicyEntry('tiinex.instrument.v1', 'Instrument', 'instrument-family', 'tiinex.root.v1', 'Terms, permission, authority, obligation, access, restriction, or transfer boundary.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Instrument is suitable when the governing form is the main value.'),
+    'tiinex.instrument.financial.v1': schemaPolicyEntry('tiinex.instrument.financial.v1', 'Financial Instrument', 'instrument-family', 'tiinex.instrument.v1', 'Financial value-transfer form.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Financial instrument is suitable when donation, grant, loan, SAFE, invoice, subscription, or similar form matters.'),
+    'tiinex.instrument.consent.v1': schemaPolicyEntry('tiinex.instrument.consent.v1', 'Consent Instrument', 'instrument-family', 'tiinex.instrument.v1', 'Consent, refusal, revocation, permission, or use-boundary instrument.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Consent instrument is suitable when permission or refusal boundary is the main value.'),
     'tiinex.runtime.v1': schemaPolicyEntry('tiinex.runtime.v1', 'Runtime', 'runtime-family', 'tiinex.root.v1', 'Broad runtime context, output, and interpretation boundary.', 'advanced', 'yes', 'yes', 'advanced-candidate', 'Runtime artifacts should be created when runtime evidence or execution context is the main value.'),
     'tiinex.ai.runtime.v1': schemaPolicyEntry('tiinex.ai.runtime.v1', 'AI Runtime', 'runtime-family', 'tiinex.runtime.v1', 'AI-runtime specialization for model, prompt, tools, output, and interpretation.', 'advanced', 'yes', 'yes', 'advanced-candidate', 'AI runtime should stay separate from evidence and decisions unless the runtime context is central.'),
     'tiinex.machine.runtime.v1': schemaPolicyEntry('tiinex.machine.runtime.v1', 'Machine Runtime', 'runtime-family', 'tiinex.runtime.v1', 'Machine-shaped runtime context, environment, output, and reproducibility boundary.', 'advanced', 'yes', 'yes', 'advanced-candidate', 'Machine runtime belongs to execution context, not ordinary discussion or evidence by default.'),
     'tiinex.reduction.v1': schemaPolicyEntry('tiinex.reduction.v1', 'Reduction', 'reduction-disclosure-privacy', 'tiinex.root.v1', 'Observable carry-forward state with loss and uncertainty.', 'yes', 'yes', 'advanced', 'ordinary-wizard', 'Reduction is ordinary when the user is intentionally preserving a compacted carry-forward state.'),
     'tiinex.redaction.v1': schemaPolicyEntry('tiinex.redaction.v1', 'Redaction', 'reduction-disclosure-privacy', 'tiinex.reduction.v1', 'Observable removal, masking, transformation, and residual-risk record.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Redaction is a support surface for disclosure-limiting transformation and should not appear without policy context.'),
     'tiinex.privacy.boundary.v1': schemaPolicyEntry('tiinex.privacy.boundary.v1', 'Privacy Boundary', 'reduction-disclosure-privacy', 'tiinex.root.v1', 'Sensitivity, sharing, serialization, and disclosure boundary.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Privacy boundaries guide interpretation and tooling caution without replacing consent or redaction.'),
-    'tiinex.consent.v1': schemaPolicyEntry('tiinex.consent.v1', 'Consent', 'reduction-disclosure-privacy', 'tiinex.attestation.v1', 'Consent, refusal, withdrawal, permission, and use-boundary statement.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Consent requires explicit authority and use-boundary context before it should be offered as a normal choice.'),
+    'tiinex.consent.v1': schemaPolicyEntry('tiinex.consent.v1', 'Consent (PoC prior placement)', 'reduction-disclosure-privacy', 'tiinex.attestation.v1', 'Previous PoC consent placement; use tiinex.instrument.consent.v1 for new artifacts.', 'no', 'no', 'no', 'not-suitable', 'Consent is now modeled as an instrument child. Keep this id only for reading older artifacts.'),
     'tiinex.attestation.v1': schemaPolicyEntry('tiinex.attestation.v1', 'Attestation', 'reduction-disclosure-privacy', 'tiinex.root.v1', 'Scoped human, role, organizational, legal, witness, lab, or review statement.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Attestation is useful but should stay distinct from validation, evidence, and consent.'),
     'tiinex.external.payload.v1': schemaPolicyEntry('tiinex.external.payload.v1', 'External Payload', 'reduction-disclosure-privacy', 'tiinex.root.v1', 'Readable reference to large, private, binary, generated, or machine-shaped payloads.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'External payload references should support other artifacts rather than replace evidence or runtime interpretation.'),
     'tiinex.traversal.runtime.v1': schemaPolicyEntry('tiinex.traversal.runtime.v1', 'Traversal Runtime', 'traversal-runtime', 'tiinex.runtime.v1', 'Compute-agnostic candidate-space traversal runtime.', 'advanced', 'yes', 'yes', 'advanced-candidate', 'Traversal runtime should be created only when search space, verifier, executor, outcome, and failure boundaries are explicit.'),
@@ -11182,9 +13116,61 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     'tiinex.decision.v1',
     'tiinex.pointer.v1',
     'tiinex.lineage.upgrade.deferral.v1',
+    'tiinex.discovery.v1',
+    'tiinex.discovery.follow.v1',
+    'tiinex.discovery.finding.v1',
+    'tiinex.discovery.research.v1',
+    'tiinex.discovery.expedition.v1',
+    'tiinex.discovery.monitoring.v1',
+    'tiinex.resource.v1',
+    'tiinex.resource.need.v1',
+    'tiinex.resource.contribution.v1',
+    'tiinex.resource.contribution.receipt.v1',
+    'tiinex.resource.allocation.v1',
+    'tiinex.resource.allocation.usage.v1',
+    'tiinex.resource.budget.v1',
+    'tiinex.instrument.v1',
+    'tiinex.instrument.financial.v1',
+    'tiinex.instrument.consent.v1',
     'tiinex.workspace.v1',
     'raw'
   ]);
+
+
+  function camelKey(value) {
+    return String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+(.)/g, (_, ch) => String(ch || '').toUpperCase())
+      .replace(/[^a-z0-9]/g, '') || 'field';
+  }
+
+  function simpleWizardSchemaDefinition(id, label, icon, summary, sectionNames, options = {}) {
+    const defaults = {};
+    const fields = sectionNames.map((name, index) => {
+      const key = camelKey(name);
+      defaults[key] = '';
+      return { key, label: name, type: index === 0 ? 'textarea' : 'textarea', placeholder: options.placeholders?.[name] || `Describe ${name.toLowerCase()}.`, required: index === 0 };
+    });
+    return {
+      id,
+      label,
+      icon,
+      suffix: '.trace.md',
+      kind: 'trace',
+      humanArtifact: true,
+      summary,
+      bodyLabel: `${label} body`,
+      body: sectionNames.map((name) => `## ${name}\n\n- `).join('\n\n'),
+      fields,
+      defaults: () => Object.assign({}, defaults),
+      bodyFromForm: (f) => sectionNames.map((name) => {
+        const key = camelKey(name);
+        return `## ${name}\n\n${paragraph(f[key], `Describe ${name.toLowerCase()}.`)}`;
+      }).join('\n\n'),
+      formStateFromSections: (sections) => Object.fromEntries(sectionNames.map((name) => [camelKey(name), plainBlock(sections[name.toLowerCase()] || '')]))
+    };
+  }
 
   const WIZARD_SCHEMA_REGISTRY = freezeWizardSchemaRegistry({
     'tiinex.topic.v1': {
@@ -11521,6 +13507,22 @@ ${listBlock(f.consequences)}`,
         consequences: plainBlock(sections.consequences || '')
       })
     },
+    'tiinex.discovery.v1': simpleWizardSchemaDefinition('tiinex.discovery.v1', 'Discovery', 'fa-compass', 'Bounded discovery context with intent, field, method, boundary, outcome, and limits.', ['Discovery Intent', 'Discovery Field', 'Discovery Method', 'Discovery Boundaries', 'Discovery Outcome', 'Interpretation Limits']),
+    'tiinex.discovery.follow.v1': simpleWizardSchemaDefinition('tiinex.discovery.follow.v1', 'Discovery Follow', 'fa-eye', 'Bounded ongoing attention to a target without upgrading it to monitoring.', ['Follow Target', 'Follow Basis', 'Interest Boundary', 'Update Expectation', 'Stop Or Review Condition', 'Interpretation Limits']),
+    'tiinex.discovery.finding.v1': simpleWizardSchemaDefinition('tiinex.discovery.finding.v1', 'Discovery Finding', 'fa-magnifying-glass-location', 'One discovered item, absence, anomaly, ambiguity, contradiction, or lead.', ['Discovery Context', 'Finding', 'Provenance', 'Triage', 'Interpretation Limits']),
+    'tiinex.discovery.research.v1': simpleWizardSchemaDefinition('tiinex.discovery.research.v1', 'Discovery Research', 'fa-flask', 'Question-driven inquiry with source field, method, findings, synthesis, and limits.', ['Research Question', 'Source Field', 'Method', 'Findings', 'Synthesis', 'Interpretation Limits']),
+    'tiinex.discovery.expedition.v1': simpleWizardSchemaDefinition('tiinex.discovery.expedition.v1', 'Discovery Expedition', 'fa-route', 'Exploratory route through a partly unknown field.', ['Expedition Purpose', 'Terrain', 'Route', 'Encounters', 'Map Update', 'Interpretation Limits']),
+    'tiinex.discovery.monitoring.v1': simpleWizardSchemaDefinition('tiinex.discovery.monitoring.v1', 'Discovery Monitoring', 'fa-tower-broadcast', 'Bounded recurring or continued observation over time.', ['Monitoring Purpose', 'Monitoring Field', 'Cadence Or Trigger', 'Observation Boundary', 'Review Or Stop Condition', 'Interpretation Limits']),
+    'tiinex.resource.v1': simpleWizardSchemaDefinition('tiinex.resource.v1', 'Resource', 'fa-boxes-stacked', 'Broad resource-enablement context.', ['Resource Identity', 'Resource Role', 'Resource Boundary', 'Resource State', 'Interpretation Limits']),
+    'tiinex.resource.need.v1': simpleWizardSchemaDefinition('tiinex.resource.need.v1', 'Resource Need', 'fa-hand-holding-heart', 'Needed resource or blocker.', ['Need Statement', 'Required Resource', 'Required For', 'Constraint Impact', 'Fulfillment Boundary', 'Interpretation Limits']),
+    'tiinex.resource.contribution.v1': simpleWizardSchemaDefinition('tiinex.resource.contribution.v1', 'Resource Contribution', 'fa-handshake-angle', 'Offered, pledged, provided, withdrawn, rejected, or returned resource contribution.', ['Contribution Statement', 'Contributor', 'Contributed Resource', 'Target Need Or Purpose', 'Contribution Terms', 'Receipt Or Evidence Boundary', 'Interpretation Limits']),
+    'tiinex.resource.contribution.receipt.v1': simpleWizardSchemaDefinition('tiinex.resource.contribution.receipt.v1', 'Contribution Receipt', 'fa-receipt', 'Received-resource contribution record.', ['Receipt Statement', 'Received Resource', 'Source And Recipient', 'Receipt Basis', 'Restrictions Or Conditions', 'Receipt Status', 'Interpretation Limits']),
+    'tiinex.resource.allocation.v1': simpleWizardSchemaDefinition('tiinex.resource.allocation.v1', 'Resource Allocation', 'fa-share-nodes', 'Resource reserved or assigned to a purpose.', ['Allocation Statement', 'Allocated Resource', 'Allocated To', 'Use Boundary', 'Allocation Status', 'Interpretation Limits']),
+    'tiinex.resource.allocation.usage.v1': simpleWizardSchemaDefinition('tiinex.resource.allocation.usage.v1', 'Allocation Usage', 'fa-gauge-high', 'Actual, estimated, observed, or billed resource usage.', ['Usage Statement', 'Used Resource', 'Usage Target', 'Measured Or Estimated Use', 'Budget Or Allocation Relation', 'Interpretation Limits']),
+    'tiinex.resource.budget.v1': simpleWizardSchemaDefinition('tiinex.resource.budget.v1', 'Resource Budget', 'fa-chart-pie', 'Resource cap, quota, reserve, runway, or limit.', ['Budget Statement', 'Budget Target', 'Resource Kind', 'Amount Or Cap', 'Period Or Window', 'Threshold Behavior', 'Interpretation Limits']),
+    'tiinex.instrument.v1': simpleWizardSchemaDefinition('tiinex.instrument.v1', 'Instrument', 'fa-scroll', 'Terms, permission, authority, obligation, access, restriction, or value-transfer boundary.', ['Instrument Identity', 'Parties Or Authorities', 'Terms Or Permissions', 'Status And Effect', 'Boundaries', 'Interpretation Limits']),
+    'tiinex.instrument.financial.v1': simpleWizardSchemaDefinition('tiinex.instrument.financial.v1', 'Financial Instrument', 'fa-file-invoice-dollar', 'Financial value-transfer form and boundary.', ['Financial Instrument Identity', 'Parties', 'Instrument Type', 'Amount Or Value Boundary', 'Terms Summary', 'Status', 'Legal And Accounting Boundary', 'Interpretation Limits']),
+    'tiinex.instrument.consent.v1': simpleWizardSchemaDefinition('tiinex.instrument.consent.v1', 'Consent Instrument', 'fa-user-check', 'Consent, refusal, withdrawal, permission, restriction, or use-boundary instrument.', ['Consent Statement', 'Consenting Party', 'Consent Scope', 'Use Boundary', 'Revocation Or Expiry', 'Interpretation Limits']),
     'tiinex.workspace.v1': {
       id: 'tiinex.workspace.v1',
       label: 'Workspace',
@@ -12027,7 +14029,7 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
     if (!modal || modal.type !== 'source') return html;
 
     // The artifact creator is a peer add-choice on the first Add screen only.
-    // It should not appear in Git source / URLs / drop substeps where it looks
+    // It should not appear in GitHub source / URLs / drop substeps where it looks
     // like a completion or secondary submit action.
     html = stripHeaderArtifactLauncher(html);
 
@@ -13132,7 +15134,8 @@ ${integrityFooterForPath(parent, path)}`,
       wsId,
       mode: 'all',
       includeAssets: true,
-      sourceIds: []
+      sourceIds: [],
+      exportPassword: ''
     };
   }
 
@@ -13173,9 +15176,8 @@ ${integrityFooterForPath(parent, path)}`,
   function renderExportModal(modal) {
     const ws = getWorkspace(modal.wsId);
     if (!ws) return '';
+    const plan = buildExportPlan(ws, modal);
     const sources = exportSourceEntries(ws);
-    const files = exportIncludedFiles(ws, modal);
-    const assets = exportIncludedAssets(ws, modal);
     const selected = new Set(modal.sourceIds || []);
     const sourceRows = sources.map((source) => {
       const count = Array.from(ws.files?.values?.() || []).filter((file) => fileSourceId(file) === source.id).length;
@@ -13192,9 +15194,9 @@ ${integrityFooterForPath(parent, path)}`,
       <div class="modal-panel export-panel">
         <div class="modal-header-lite export-head">
           <div>
-            <p class="kicker">Export</p>
-            <h2 class="modal-title-lite" id="export-title"><i class="fa-solid fa-file-zipper"></i>Export workspace</h2>
-            <p class="text-secondary mb-0">Write portable files out of Tiinex without mutating the loaded sources.</p>
+            <p class="kicker">Export archive</p>
+            <h2 class="modal-title-lite" id="export-title"><i class="fa-solid fa-file-zipper"></i>Export workspace archive</h2>
+            <p class="text-secondary mb-0">Create a client-side package from this workspace without mutating loaded sources or sending telemetry.</p>
           </div>
           <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
         </div>
@@ -13218,13 +15220,14 @@ ${integrityFooterForPath(parent, path)}`,
           </section>
 
           <section class="export-summary">
-            <div><strong>${files.length}</strong><span>markdown/file entries</span></div>
-            <div><strong>${assets.length}</strong><span>asset entries</span></div>
-            <div><strong>${escapeHtml(modal.mode || 'all')}</strong><span>mode</span></div>
+            <div><strong>${plan.counts.files}</strong><span>markdown/file entries</span></div>
+            <div><strong>${plan.counts.assets}</strong><span>asset entries</span></div>
+            <div><strong>${escapeHtml(exportArchiveLabel(plan.archive.format))}</strong><span>${escapeHtml(exportPasswordLabel(plan.archive.passwordMode))}</span></div>
+            <div><strong>${escapeHtml(exportDeliveryLabel(plan.delivery.target))}</strong><span>client-side delivery</span></div>
           </section>
         </div>
         <div class="modal-footer-actions export-actions">
-          <button class="tv-btn primary" data-action="export-run" data-ws="${escapeAttr(ws.id)}" ${files.length || assets.length ? '' : 'disabled'}><i class="fa-solid fa-download"></i>Export</button>
+          <button class="tv-btn primary" data-action="export-run" data-ws="${escapeAttr(ws.id)}" ${plan.counts.entries ? '' : 'disabled'}><i class="fa-solid fa-download"></i>Export archive</button>
           <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
         </div>
       </div>
@@ -13256,99 +15259,8 @@ ${integrityFooterForPath(parent, path)}`,
   }
 
 
-  // --- Workspace export ---
+  // --- Workspace export action state ---
 
-  async function exportWorkspaceZip(ws, modal, hooks = {}) {
-    const emitDownloadBlob = typeof hooks.downloadBlob === 'function' ? hooks.downloadBlob : downloadBlob;
-    const emitToast = typeof hooks.toast === 'function' ? hooks.toast : toast;
-    const files = exportIncludedFiles(ws, modal);
-    const assets = exportIncludedAssets(ws, modal);
-    if (!files.length && !assets.length) return emitToast('Nothing selected for export.', 'warn');
-
-    if (!window.JSZip) {
-      for (const file of files) {
-        downloadText(normalizeAssetPath(file.path || file.name || 'artifact.md'), file.content || file.text || '', 'text/markdown;charset=utf-8');
-      }
-      emitToast('JSZip unavailable. Downloaded markdown files individually.', 'warn');
-      return;
-    }
-
-    const pathCounts = new Map();
-    for (const item of [...files, ...assets]) {
-      const path = normalizeAssetPath(item.path || item.name || '');
-      pathCounts.set(path, (pathCounts.get(path) || 0) + 1);
-    }
-    const collisions = new Set(Array.from(pathCounts.entries()).filter(([, count]) => count > 1).map(([path]) => path));
-
-    const zip = new window.JSZip();
-    const manifest = {
-      schema: 'tiinex.export.v1',
-      createdAt: new Date().toISOString(),
-      workspace: {
-        label: ws.label || '',
-        sourceNote: ws.sourceNote || ''
-      },
-      export: {
-        mode: modal.mode || 'all',
-        includeAssets: Boolean(modal.includeAssets),
-        selectedSources: modal.sourceIds || []
-      },
-      sources: exportSourceEntries(ws).map(sourceSerializable),
-      files: [],
-      assets: []
-    };
-
-    for (const file of files) {
-      const outPath = exportFileOutputPath(file, collisions);
-      const content = file.content || file.text || '';
-      zip.file(outPath, content);
-      manifest.files.push({
-        path: file.path || '',
-        outputPath: outPath,
-        sourceId: file.sourceId || '',
-        sourceLabel: file.sourceLabel || '',
-        rawUrl: file.rawUrl || '',
-        browseUrl: file.browseUrl || '',
-        repo: file.repo || '',
-        ref: file.ref || '',
-        isGenerated: Boolean(file.isGenerated)
-      });
-    }
-
-    for (const asset of assets) {
-      const outPath = exportAssetOutputPath(asset, collisions);
-      const blob = await exportBlobForEntry(asset);
-      zip.file(outPath, blob);
-      manifest.assets.push({
-        path: asset.path || '',
-        outputPath: outPath,
-        type: asset.type || '',
-        size: asset.size || blob.size || 0,
-        source: asset.source || ''
-      });
-    }
-
-    zip.file('_tiinex/export.manifest.json', JSON.stringify(manifest, null, 2));
-    zip.file('_tiinex/README.md', `# Tiinex Export
-
-- Workspace: ${ws.label || 'workspace'}
-- Mode: ${modal.mode || 'all'}
-- Files: ${files.length}
-- Assets: ${assets.length}
-- Created At: ${manifest.createdAt}
-
-This export preserves selected workspace files without mutating the loaded source workspaces.
-
-See _tiinex/export.manifest.json for source and output path metadata.
-`);
-
-    const blob = await zip.generateAsync({ type: 'blob' });
-    const zipName = `${slugify(ws.label) || 'tiinex-workspace'}-${modal.mode || 'all'}-export.zip`;
-    emitDownloadBlob(zipName, blob);
-    app.modal = null;
-    render();
-    emitToast(`Downloaded ${zipName}.`, 'ok');
-  }
   registerActionHandler(async function exportDialogAction(event, next) {
     const action = event.currentTarget?.dataset?.action || '';
 
@@ -13385,14 +15297,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
       return;
     }
 
-    if (action === 'export-run') {
-      event.preventDefault();
-      event.stopPropagation();
-      const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
-      if (!ws || !app.modal || app.modal.type !== 'export-workspace') return toast('No workspace selected.', 'warn');
-      await exportWorkspaceZip(ws, app.modal);
-      return;
-    }
+    if (action === 'export-run') return next(event);
 
     return next(event);
   });
@@ -13510,76 +15415,9 @@ See _tiinex/export.manifest.json for source and output path metadata.
   }
 
   function encryptedExportPasswordInput() {
-    return document.querySelector('[data-export-password]')?.value || '';
+    const modalPassword = typeof app.modal?.exportPassword === 'string' ? app.modal.exportPassword : '';
+    return modalPassword || document.querySelector('[data-export-password]')?.value || '';
   }
-
-  registerRenderExportModalWrapper(function renderExportModalWithEncryption(modal, next) {
-    let html = next(modal);
-    const checked = modal.exportEncrypted ? 'checked' : '';
-    const passwordBlock = modal.exportEncrypted ? `<label class="field-label export-password-field">Password<input class="form-control tv-input" type="password" autocomplete="new-password" data-export-password placeholder="Password for this encrypted Tiinex package"></label>
-      <p class="export-encryption-note">This creates a Tiinex-encrypted zip package. Drag it back into Tiinex to be prompted for the password.</p>` : '';
-    const section = `<section class="export-section compact export-encryption">
-      <label class="export-toggle-row">
-        <input type="checkbox" data-action="export-toggle-encryption" ${checked}>
-        <span><strong>Password</strong><small>Encrypt this export as a Tiinex package.</small></span>
-      </label>
-      ${passwordBlock}
-    </section>`;
-
-    if (html.includes('export-encryption')) return html;
-    return html.replace('<section class="export-summary">', `${section}\n          <section class="export-summary">`);
-  });
-
-  async function exportWorkspaceZipEncrypted(ws, modal) {
-    const password = encryptedExportPasswordInput();
-    if (!password) {
-      toast('Enter an export password first.', 'warn');
-      document.querySelector('[data-export-password]')?.focus();
-      return;
-    }
-
-    let intercepted = false;
-
-    await exportWorkspaceZip(ws, modal, {
-      downloadBlob(name, blob) {
-        intercepted = true;
-        (async () => {
-          const encrypted = await encryptTiinexZipBlob(blob, password, name);
-          const encryptedName = String(name || 'tiinex-export.zip').replace(/\.zip$/i, '.tiinex.enc.zip');
-          downloadBlob(encryptedName, encrypted);
-          toast(`Downloaded encrypted ${encryptedName}.`, 'ok');
-        })().catch((error) => toast(`Could not encrypt export: ${error.message}`, 'warn'));
-      },
-      toast(message, type) {
-        if (/^Downloaded\b/i.test(String(message || ''))) return;
-        return toast(message, type);
-      }
-    });
-
-    if (!intercepted) toast('No export blob was produced.', 'warn');
-  }
-  registerActionHandler(async function encryptedExportAction(event, next) {
-    const action = event.currentTarget?.dataset?.action || '';
-
-    if (action === 'export-toggle-encryption') {
-      event.stopPropagation();
-      if (!app.modal || app.modal.type !== 'export-workspace') return;
-      app.modal.exportEncrypted = Boolean(event.currentTarget.checked);
-      render();
-      return;
-    }
-
-    if (action === 'export-run' && app.modal?.type === 'export-workspace' && app.modal.exportEncrypted) {
-      event.preventDefault();
-      event.stopPropagation();
-      const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
-      if (!ws) return toast('No workspace selected.', 'warn');
-      await exportWorkspaceZipEncrypted(ws, app.modal);
-      return;
-    }
-
-    return next(event);
-  });
 
   const fileToImportEntriesBeforeEncryption = fileToImportEntries;
   fileToImportEntries = async function fileToImportEntriesWithEncryptedTiinex(file) {
@@ -13600,7 +15438,129 @@ See _tiinex/export.manifest.json for source and output path metadata.
   }
 
   function exportPasswordMode(modal) {
-    return modal?.passwordMode || (modal?.exportEncrypted ? 'tiinex' : 'none');
+    return modal?.passwordMode || 'none';
+  }
+
+  function exportArchiveLabel(format) {
+    if (format === 'tar') return 'tar';
+    if (format === 'tgz') return 'tar.gz';
+    return 'zip';
+  }
+
+  function exportPasswordLabel(mode) {
+    if (mode === 'zip') return 'Windows-compatible password';
+    if (mode === 'tiinex') return 'Tiinex AES-GCM';
+    return 'no password';
+  }
+
+  function exportDeliveryLabel(target) {
+    if (target === 'copy') return 'Copy';
+    if (target === 'github-issue') return 'GitHub issue';
+    return 'Download';
+  }
+
+  function exportSelectionLabel(mode) {
+    if (mode === 'local') return 'Local edits and created artifacts';
+    if (mode === 'sources') return 'Selected sources';
+    return 'All loaded files';
+  }
+
+  function buildExportPlan(ws, modal) {
+    const files = exportIncludedFiles(ws, modal);
+    const assets = exportIncludedAssets(ws, modal);
+    const mode = modal?.mode || 'all';
+    const archiveFormat = exportArchiveFormat(modal);
+    const passwordMode = exportPasswordMode(modal);
+    return {
+      schema: 'tiinex.export.plan.v1',
+      workspace: { id: ws?.id || '', label: ws?.label || '', sourceNote: ws?.sourceNote || '' },
+      selection: {
+        mode,
+        label: exportSelectionLabel(mode),
+        includeAssets: Boolean(modal?.includeAssets),
+        selectedSources: Array.from(modal?.sourceIds || [])
+      },
+      archive: { format: archiveFormat, label: exportArchiveLabel(archiveFormat), passwordMode, passwordLabel: exportPasswordLabel(passwordMode) },
+      delivery: { target: 'download', label: exportDeliveryLabel('download'), clientSide: true, telemetry: 'none' },
+      connectorContract: {
+        target: 'download',
+        clientSide: true,
+        telemetry: 'none',
+        originAdapters: exportSourceEntries(ws).map((source) => originAdapterSummary(source.kind || 'local'))
+      },
+      sources: exportSourceEntries(ws).map(safeSourceSerializable),
+      files,
+      assets,
+      counts: { files: files.length, assets: assets.length, entries: files.length + assets.length }
+    };
+  }
+
+  function buildPackageResult(plan) {
+    const integrityRefresh = exportIntegritySummaryInit();
+    return {
+      schema: 'tiinex.package.result.v1',
+      createdAt: new Date().toISOString(),
+      workspace: Object.assign({}, plan.workspace || {}),
+      plan: {
+        schema: plan.schema,
+        selection: Object.assign({}, plan.selection || {}),
+        archive: Object.assign({}, plan.archive || {}),
+        delivery: Object.assign({}, plan.delivery || {}),
+        connectorContract: Object.assign({}, plan.connectorContract || {}),
+        counts: Object.assign({}, plan.counts || {})
+      },
+      counts: Object.assign({}, plan.counts || {}),
+      sources: Array.isArray(plan.sources) ? plan.sources.slice() : [],
+      integrityRefresh,
+      files: [],
+      assets: [],
+      warnings: []
+    };
+  }
+
+  function exportResultWithDelivery(packageResult, delivery) {
+    return Object.assign({}, packageResult, {
+      delivery: Object.assign({}, packageResult?.plan?.delivery || {}, delivery || {}),
+      completedAt: new Date().toISOString()
+    });
+  }
+
+  function exportResultIntegrityRows(result) {
+    const s = result?.integrityRefresh || exportIntegritySummaryInit();
+    return [
+      ['Self-target refreshed', s.refreshedSelfTargets || 0],
+      ['Self-target already current', s.currentSelfTargets || 0],
+      ['No-claim preserved', s.noClaimPreserved || 0],
+      ['Parent-target preserved', s.parentTargetsPreserved || 0],
+      ['Source files preserved', s.sourceFilesPreserved || 0],
+      ['Malformed claims preserved', s.malformedClaims || 0],
+      ['Unsupported claims preserved', s.unsupportedClaims || 0],
+      ['Multi-entry preserved', s.multiEntryPreserved || 0]
+    ];
+  }
+
+  function exportResultSummaryText(result) {
+    const plan = result?.plan || {};
+    const counts = result?.counts || {};
+    const delivery = result?.delivery || {};
+    const lines = [
+      'Tiinex export summary',
+      `Workspace: ${result?.workspace?.label || result?.workspace?.id || 'workspace'}`,
+      `Selection: ${plan.selection?.label || plan.selection?.mode || 'all'}`,
+      `Archive: ${plan.archive?.label || 'zip'} · ${plan.archive?.passwordLabel || 'no password'}`,
+      `Delivery target: ${delivery.label || exportDeliveryLabel(delivery.target)} · client-side · no telemetry`,
+      `Origin adapters: ${(plan.connectorContract?.originAdapters || []).map((a) => a.label || a.id).filter(Boolean).join(', ') || 'local/download'}`,
+      `Output: ${delivery.filename || ''}`.trim(),
+      `Entries: ${counts.entries || 0} total · ${counts.files || 0} files · ${counts.assets || 0} assets`,
+      `Integrity: ${exportIntegritySummaryLine(result?.integrityRefresh)}`
+    ];
+    return lines.filter(Boolean).join('\n');
+  }
+
+  function showExportResult(packageResult, delivery) {
+    const result = exportResultWithDelivery(packageResult, delivery);
+    app.lastExportResult = result;
+    app.modal = { type: 'export-result', result };
   }
 
   function exportBaseSlug(ws, modal) {
@@ -13615,13 +15575,153 @@ See _tiinex/export.manifest.json for source and output path metadata.
       label: source?.label || '',
       repo: source?.repo || '',
       ref: source?.ref || '',
-      origin: source?.origin || source?.url || ''
+      origin: source?.origin || source?.url || '',
+      issueNumber: source?.issueNumber || '',
+      adapter: source?.adapter || null
+    };
+  }
+
+  function exportFileIsLocalIntegrityTarget(file) {
+    const sourceId = fileSourceId(file);
+    return sourceId === 'local' || file?.sourceKind === 'local' || file?.isGenerated === true;
+  }
+
+  function exportIntegrityProfile(markdown) {
+    const text = normalizeNewlines(markdown || '');
+    if (!markdownLooksAuthorableTiinexArtifact(text)) {
+      return { state: 'not-tiinex-markdown', claimLifecycle: 'not applicable', finality: 'not applicable', refreshable: false };
+    }
+    const integrity = parseIntegrity(text);
+    if (!integrityHasClaim(integrity)) {
+      const hasParent = markdownDeclaresContinuityParent(text);
+      return {
+        state: 'no-claim',
+        claimLifecycle: 'draft/no-claim',
+        finality: 'not finalized',
+        refreshable: !hasParent,
+        entryCount: integrity?.entryCount || 0,
+        note: hasParent ? 'parent-target draft preserved' : 'self-target draft can be finalized'
+      };
+    }
+    if ((integrity.entryCount || 0) > 1) {
+      return {
+        state: 'multi-entry',
+        claimLifecycle: 'claimed',
+        finality: 'preserve multi-entry footer',
+        refreshable: false,
+        entryCount: integrity.entryCount || 0,
+        note: 'multiple integrity entries preserved'
+      };
+    }
+    if (integrity.placeholderValue || !integrity.method || !integrity.towards || !integrity.value) {
+      return {
+        state: 'malformed-claim',
+        claimLifecycle: 'repair-needed claim',
+        finality: 'not finalized',
+        refreshable: false,
+        entryCount: integrity.entryCount || 0,
+        note: 'malformed claim preserved for review'
+      };
+    }
+    if (integrity.method !== TIINEX_SHA256_C14N_METHOD_ID) {
+      return {
+        state: 'unsupported-claim',
+        claimLifecycle: 'unsupported claim',
+        finality: 'not evaluated',
+        refreshable: false,
+        entryCount: integrity.entryCount || 0,
+        method: integrity.method,
+        note: 'unsupported method preserved'
+      };
+    }
+    if (!integrityTowardsIsSelf(integrity.towards)) {
+      return {
+        state: 'parent-target-claim',
+        claimLifecycle: 'claimed',
+        finality: 'preserved target claim',
+        refreshable: false,
+        entryCount: integrity.entryCount || 0,
+        note: 'non-self target preserved unless explicitly regenerated'
+      };
+    }
+    return {
+      state: 'self-byte-integrity-claim',
+      claimLifecycle: 'claimed',
+      finality: 'refreshable self claim',
+      refreshable: true,
+      entryCount: integrity.entryCount || 0,
+      note: 'self-target claim can be refreshed'
+    };
+  }
+
+  function exportIntegritySummaryInit() {
+    return {
+      refreshedSelfTargets: 0,
+      currentSelfTargets: 0,
+      noClaimPreserved: 0,
+      malformedClaims: 0,
+      unsupportedClaims: 0,
+      multiEntryPreserved: 0,
+      parentTargetsPreserved: 0,
+      sourceFilesPreserved: 0,
+      skipped: 0
+    };
+  }
+
+  function exportIntegritySummaryBump(summary, key) {
+    if (!summary || !key) return;
+    summary[key] = (summary[key] || 0) + 1;
+  }
+
+  function exportIntegritySummaryLine(summary) {
+    const s = summary || exportIntegritySummaryInit();
+    return `refreshed self targets: ${s.refreshedSelfTargets || 0}; current self targets: ${s.currentSelfTargets || 0}; no-claim preserved: ${s.noClaimPreserved || 0}; malformed: ${s.malformedClaims || 0}; unsupported: ${s.unsupportedClaims || 0}; multi-entry preserved: ${s.multiEntryPreserved || 0}; parent-target preserved: ${s.parentTargetsPreserved || 0}; source files preserved: ${s.sourceFilesPreserved || 0}`;
+  }
+
+  function exportIntegritySummaryKeyForProfile(profile, localRefreshable) {
+    if (!localRefreshable) return 'sourceFilesPreserved';
+    if (profile.state === 'no-claim') return 'noClaimPreserved';
+    if (profile.state === 'malformed-claim') return 'malformedClaims';
+    if (profile.state === 'unsupported-claim') return 'unsupportedClaims';
+    if (profile.state === 'multi-entry') return 'multiEntryPreserved';
+    if (profile.state === 'parent-target-claim') return 'parentTargetsPreserved';
+    return 'skipped';
+  }
+
+  async function exportFileWithIntegrityRefresh(ws, file) {
+    const original = normalizeNewlines(file?.content || file?.text || '');
+    const profile = exportIntegrityProfile(original);
+    const localTarget = exportFileIsLocalIntegrityTarget(file);
+    if (!localTarget || !profile.refreshable) {
+      return {
+        content: original,
+        changed: false,
+        integrity: {
+          refreshAction: localTarget ? 'preserved' : 'preserved-source',
+          before: profile.state,
+          after: profile.state,
+          note: profile.note || ''
+        }
+      };
+    }
+    const refreshed = await markdownWithSelfIntegrity(original);
+    const after = exportIntegrityProfile(refreshed);
+    return {
+      content: refreshed,
+      changed: refreshed !== original,
+      integrity: {
+        refreshAction: refreshed !== original ? 'refreshed-self-target' : 'self-target-current',
+        before: profile.state,
+        after: after.state,
+        note: refreshed !== original ? 'self-target checksum refreshed for export' : 'self-target checksum already current'
+      }
     };
   }
 
   async function exportPayload(ws, modal) {
-    const files = exportIncludedFiles(ws, modal);
-    const assets = exportIncludedAssets(ws, modal);
+    const plan = buildExportPlan(ws, modal);
+    const files = plan.files;
+    const assets = plan.assets;
     if (!files.length && !assets.length) throw new Error('Nothing selected for export.');
 
     const pathCounts = new Map();
@@ -13632,29 +15732,25 @@ See _tiinex/export.manifest.json for source and output path metadata.
     const collisions = new Set(Array.from(pathCounts.entries()).filter(([, count]) => count > 1).map(([path]) => path));
 
     const entries = [];
-    const manifest = {
-      schema: 'tiinex.export.v1',
-      createdAt: new Date().toISOString(),
-      workspace: { label: ws.label || '', sourceNote: ws.sourceNote || '' },
-      export: {
-        mode: modal.mode || 'all',
-        archiveFormat: exportArchiveFormat(modal),
-        passwordMode: exportPasswordMode(modal),
-        includeAssets: Boolean(modal.includeAssets),
-        selectedSources: modal.sourceIds || []
-      },
-      sources: exportSourceEntries(ws).map(safeSourceSerializable),
-      files: [],
-      assets: []
-    };
+    const packageResult = buildPackageResult(plan);
+    const integrityRefresh = packageResult.integrityRefresh;
 
     for (const file of files) {
       const outPath = exportFileOutputPath(file, collisions);
-      const content = normalizeNewlines(file.content || file.text || '');
+      const exported = await exportFileWithIntegrityRefresh(ws, file);
+      const content = exported.content;
+      const localTarget = exportFileIsLocalIntegrityTarget(file);
+      const summaryKey = exported.integrity.refreshAction === 'refreshed-self-target'
+        ? 'refreshedSelfTargets'
+        : exported.integrity.refreshAction === 'self-target-current'
+          ? 'currentSelfTargets'
+          : exportIntegritySummaryKeyForProfile(exportIntegrityProfile(content), localTarget);
+      exportIntegritySummaryBump(integrityRefresh, summaryKey);
       entries.push({ path: outPath, bytes: new TextEncoder().encode(content), type: 'text/markdown;charset=utf-8' });
-      manifest.files.push({
+      packageResult.files.push({
         path: file.path || '', outputPath: outPath, sourceId: file.sourceId || '', sourceLabel: file.sourceLabel || '',
-        rawUrl: file.rawUrl || '', browseUrl: file.browseUrl || '', repo: file.repo || '', ref: file.ref || '', isGenerated: Boolean(file.isGenerated)
+        rawUrl: file.rawUrl || '', browseUrl: file.browseUrl || '', repo: file.repo || '', ref: file.ref || '', isGenerated: Boolean(file.isGenerated),
+        integrity: exported.integrity
       });
     }
 
@@ -13663,17 +15759,13 @@ See _tiinex/export.manifest.json for source and output path metadata.
       const blob = await exportBlobForEntry(asset);
       const bytes = new Uint8Array(await blob.arrayBuffer());
       entries.push({ path: outPath, bytes, type: asset.type || blob.type || 'application/octet-stream' });
-      manifest.assets.push({
+      packageResult.assets.push({
         path: asset.path || '', outputPath: outPath, type: asset.type || blob.type || '',
         size: asset.size || blob.size || bytes.byteLength || 0, source: asset.source || ''
       });
     }
 
-    const readme = `# Tiinex Export\n\n- Workspace: ${ws.label || 'workspace'}\n- Mode: ${modal.mode || 'all'}\n- Archive: ${exportArchiveFormat(modal)}\n- Password Mode: ${exportPasswordMode(modal)}\n- Files: ${files.length}\n- Assets: ${assets.length}\n- Created At: ${manifest.createdAt}\n\nThis export preserves selected workspace files without mutating the loaded source workspaces.\n\nContent remains rooted where the user expects it, such as .topics/. The _tiinex/ folder contains export metadata only.\n`;
-
-    entries.push({ path: '_tiinex/export.manifest.json', bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 2)), type: 'application/json' });
-    entries.push({ path: '_tiinex/README.md', bytes: new TextEncoder().encode(readme), type: 'text/markdown;charset=utf-8' });
-    return { entries, manifest, files, assets };
+    return { entries, packageResult, plan, files, assets };
   }
 
   async function archiveZipBlob(entries) {
@@ -13799,13 +15891,13 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
   function zipCryptoUpdateKeys(keys, byte) {
     keys.k0 = crc32Update(keys.k0, byte);
-    keys.k1 = (((keys.k1 + (keys.k0 & 0xff)) * 134775813 + 1) >>> 0);
+    keys.k1 = (Math.imul((keys.k1 + (keys.k0 & 0xff)) >>> 0, 134775813) + 1) >>> 0;
     keys.k2 = crc32Update(keys.k2, (keys.k1 >>> 24) & 0xff);
   }
 
   function zipCryptoDecryptByte(keys) {
     const temp = (keys.k2 | 2) >>> 0;
-    return (((temp * (temp ^ 1)) >>> 8) & 0xff) >>> 0;
+    return ((Math.imul(temp, (temp ^ 1) >>> 0) >>> 8) & 0xff) >>> 0;
   }
 
   function zipCryptoEncryptBytes(bytes, password) {
@@ -13819,6 +15911,40 @@ See _tiinex/export.manifest.json for source and output path metadata.
     return out;
   }
 
+  function zipCryptoDecryptBytes(bytes, password) {
+    const keys = zipCryptoKeys(password);
+    const out = new Uint8Array(bytes.byteLength);
+    for (let i = 0; i < bytes.byteLength; i++) {
+      const plain = bytes[i] ^ zipCryptoDecryptByte(keys);
+      out[i] = plain;
+      zipCryptoUpdateKeys(keys, plain);
+    }
+    return out;
+  }
+
+  async function assertZipCryptoArchiveBlob(blob, expectedEntries) {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let offset = 0;
+    let entries = 0;
+    while (offset + 30 <= bytes.byteLength) {
+      const sig = bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24);
+      if ((sig >>> 0) === 0x02014b50 || (sig >>> 0) === 0x06054b50) break;
+      if ((sig >>> 0) !== 0x04034b50) throw new Error('ZIP password archive verification failed: bad local header.');
+      const flag = bytes[offset + 6] | (bytes[offset + 7] << 8);
+      const method = bytes[offset + 8] | (bytes[offset + 9] << 8);
+      const compressedSize = bytes[offset + 18] | (bytes[offset + 19] << 8) | (bytes[offset + 20] << 16) | (bytes[offset + 21] << 24);
+      const uncompressedSize = bytes[offset + 22] | (bytes[offset + 23] << 8) | (bytes[offset + 24] << 16) | (bytes[offset + 25] << 24);
+      const nameLength = bytes[offset + 26] | (bytes[offset + 27] << 8);
+      const extraLength = bytes[offset + 28] | (bytes[offset + 29] << 8);
+      if (!(flag & 0x0001)) throw new Error('ZIP password archive verification failed: encrypted flag missing.');
+      if (method !== 0) throw new Error('ZIP password archive verification failed: unsupported compression method.');
+      if ((compressedSize >>> 0) !== ((uncompressedSize >>> 0) + 12)) throw new Error('ZIP password archive verification failed: encrypted payload size mismatch.');
+      offset += 30 + nameLength + extraLength + (compressedSize >>> 0);
+      entries += 1;
+    }
+    if (entries !== expectedEntries) throw new Error('ZIP password archive verification failed: entry count mismatch.');
+  }
+
   function archiveZipCryptoBlob(entries, password) {
     if (!password) throw new Error('Password is required.');
     const fileParts = [];
@@ -13826,13 +15952,15 @@ See _tiinex/export.manifest.json for source and output path metadata.
     let offset = 0;
     const { time, day } = dosDateTime();
     const flag = 0x0801;
+    const versionMadeBy = 0x0314;
 
     for (const entry of entries) {
       const nameBytes = new TextEncoder().encode(normalizeAssetPath(entry.path || 'file'));
       const data = entry.bytes instanceof Uint8Array ? entry.bytes : new Uint8Array(entry.bytes || []);
       const crc = crc32Bytes(data);
       const header = crypto.getRandomValues(new Uint8Array(12));
-      header[11] = (crc >>> 24) & 0xff;
+      const verificationByte = (crc >>> 24) & 0xff;
+      header[11] = verificationByte;
       const allPlain = new Uint8Array(header.byteLength + data.byteLength);
       allPlain.set(header, 0);
       allPlain.set(data, header.byteLength);
@@ -13848,7 +15976,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
       fileParts.push(localBytes);
 
       const central = [];
-      pushU32(central, 0x02014b50); pushU16(central, 20); pushU16(central, 20); pushU16(central, flag); pushU16(central, 0);
+      pushU32(central, 0x02014b50); pushU16(central, versionMadeBy); pushU16(central, 20); pushU16(central, flag); pushU16(central, 0);
       pushU16(central, time); pushU16(central, day); pushU32(central, crc); pushU32(central, compSize); pushU32(central, uncompSize);
       pushU16(central, nameBytes.byteLength); pushU16(central, 0); pushU16(central, 0); pushU16(central, 0); pushU16(central, 0);
       pushU32(central, 0); pushU32(central, offset);
@@ -13877,7 +16005,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
   registerRenderExportModalWrapper(function renderExportModalWithArchiveChoices(modal, next) {
     if (!modal.archiveFormat) modal.archiveFormat = 'zip';
-    if (!modal.passwordMode) modal.passwordMode = modal.exportEncrypted ? 'tiinex' : 'none';
+    if (!modal.passwordMode) modal.passwordMode = 'none';
     let html = next(modal);
     html = html.replace(/<section class="export-section compact export-encryption">[\s\S]*?<\/section>\s*/g, '');
     html = html.replace('<section class="export-summary">', `${renderExportChoices(modal)}\n          <section class="export-summary">`);
@@ -13898,18 +16026,26 @@ See _tiinex/export.manifest.json for source and output path metadata.
     const ext = archiveExtension(format);
     if (passwordMode === 'zip') {
       if (format !== 'zip') return toast('Windows zip password mode requires archive format zip.', 'warn');
+      const filename = `${base}.zip`;
       const blob = archiveZipCryptoBlob(payload.entries, password);
-      downloadBlob(`${base}.zip`, blob);
-      app.modal = null; render(); toast(`Downloaded password zip ${base}.zip.`, 'ok'); return;
+      await assertZipCryptoArchiveBlob(blob, payload.entries.length);
+      downloadBlob(filename, blob);
+      showExportResult(payload.packageResult, { target: 'download', label: exportDeliveryLabel('download'), status: 'downloaded', filename, archiveFormat: format, passwordMode });
+      render(); toast(`Downloaded password-protected zip ${filename}.`, 'ok'); return;
     }
     const blob = await archiveBlob(payload.entries, format);
     if (passwordMode === 'tiinex') {
-      const encrypted = await encryptTiinexZipBlob(blob, password, `${base}.${ext}`);
-      downloadBlob(`${base}.${ext}.tiinex.enc.zip`, encrypted);
-      app.modal = null; render(); toast(`Downloaded encrypted ${base}.${ext}.tiinex.enc.zip.`, 'ok'); return;
+      const innerName = `${base}.${ext}`;
+      const filename = `${innerName}.tiinex.enc.zip`;
+      const encrypted = await encryptTiinexZipBlob(blob, password, innerName);
+      downloadBlob(filename, encrypted);
+      showExportResult(payload.packageResult, { target: 'download', label: exportDeliveryLabel('download'), status: 'downloaded', filename, archiveFormat: format, passwordMode });
+      render(); toast(`Downloaded encrypted ${filename}.`, 'ok'); return;
     }
-    downloadBlob(`${base}.${ext}`, blob);
-    app.modal = null; render(); toast(`Downloaded ${base}.${ext}.`, 'ok');
+    const filename = `${base}.${ext}`;
+    downloadBlob(filename, blob);
+    showExportResult(payload.packageResult, { target: 'download', label: exportDeliveryLabel('download'), status: 'downloaded', filename, archiveFormat: format, passwordMode });
+    render(); toast(`Downloaded ${filename}.`, 'ok');
   }
   registerActionHandler(async function archiveChoiceAction(event, next) {
     const action = event.currentTarget?.dataset?.action || '';
@@ -13926,7 +16062,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
       const mode = event.currentTarget.dataset.mode || 'none';
       if (mode === 'zip' && exportArchiveFormat(app.modal) !== 'zip') return toast('Zip password mode requires archive format zip.', 'warn');
       app.modal.passwordMode = mode;
-      app.modal.exportEncrypted = mode === 'tiinex';
+      if (mode === 'none') app.modal.exportPassword = '';
       render(); return;
     }
     if (action === 'export-run' && app.modal?.type === 'export-workspace') {
@@ -13935,6 +16071,83 @@ See _tiinex/export.manifest.json for source and output path metadata.
       if (!ws) return toast('No workspace selected.', 'warn');
       try { await exportWorkspaceArchive(ws, app.modal); }
       catch (error) { toast(`Could not export: ${error.message}`, 'warn'); }
+      return;
+    }
+    return next(event);
+  });
+
+
+
+
+  function renderExportResultModal(modal) {
+    const result = modal?.result || app.lastExportResult;
+    if (!result) return '';
+    const counts = result.counts || {};
+    const plan = result.plan || {};
+    const delivery = result.delivery || {};
+    const rows = exportResultIntegrityRows(result).map(([label, value]) => `<div class="export-result-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`).join('');
+    const summary = exportResultSummaryText(result);
+    return `<div class="modal-backdrop-custom focus-modal export-backdrop" role="dialog" aria-modal="true" aria-labelledby="export-result-title">
+      <div class="modal-panel export-panel export-result-panel">
+        <div class="modal-header-lite export-head">
+          <div>
+            <p class="kicker">Package result</p>
+            <h2 class="modal-title-lite export-title" id="export-result-title"><span class="export-title-icon"><i class="fa-solid fa-circle-check"></i></span><span>Export package created</span></h2>
+            <p class="text-secondary mb-0">Client-side delivery completed. No telemetry or hidden upload was used.</p>
+          </div>
+          <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="export-body">
+          <section class="export-result-hero">
+            <div><strong>${escapeHtml(delivery.filename || 'export package')}</strong><span>downloaded file</span></div>
+            <div><strong>${counts.entries || 0}</strong><span>total entries</span></div>
+            <div><strong>${counts.files || 0}</strong><span>files</span></div>
+            <div><strong>${counts.assets || 0}</strong><span>assets</span></div>
+          </section>
+          <section class="export-section export-result-contract">
+            <h3>Package contract</h3>
+            <div class="export-result-kv"><span>Selection</span><strong>${escapeHtml(plan.selection?.label || plan.selection?.mode || 'all')}</strong></div>
+            <div class="export-result-kv"><span>Archive</span><strong>${escapeHtml(plan.archive?.label || 'zip')} · ${escapeHtml(plan.archive?.passwordLabel || 'no password')}</strong></div>
+            <div class="export-result-kv"><span>Delivery target</span><strong>${escapeHtml(delivery.label || exportDeliveryLabel(delivery.target))} · client-side · no telemetry</strong></div>
+            <div class="export-result-kv"><span>Loaded sources</span><strong>${(result.sources || []).length}</strong></div>
+            <div class="export-result-kv"><span>Origin adapters</span><strong>${escapeHtml((plan.connectorContract?.originAdapters || []).map((a) => a.label || a.id).filter(Boolean).join(', ') || 'Local/download')}</strong></div>
+          </section>
+          <section class="export-section export-result-integrity">
+            <h3>Integrity refresh summary</h3>
+            <div class="export-result-rows">${rows}</div>
+          </section>
+          <section class="export-section export-result-copy">
+            <h3>Copyable summary</h3>
+            <pre class="source-block export-result-pre"><code>${escapeHtml(summary)}</code></pre>
+          </section>
+        </div>
+        <div class="modal-footer-actions export-actions">
+          <button class="tv-btn primary" data-action="copy-export-summary"><i class="fa-regular fa-copy"></i>Copy summary</button>
+          <button class="tv-btn subtle" data-action="close-modal">Close</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  registerRenderModalWrapper(function renderModalWithExportResult(modal, next) {
+    if (modal?.type === 'export-result') return renderExportResultModal(modal);
+    return next(modal);
+  });
+
+  registerActionHandler(async function exportResultAction(event, next) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'copy-export-summary') {
+      event.preventDefault();
+      event.stopPropagation();
+      const result = app.modal?.result || app.lastExportResult;
+      if (!result) return toast('No export summary available.', 'warn');
+      const text = exportResultSummaryText(result);
+      try {
+        await navigator.clipboard.writeText(text);
+        toast('Export summary copied.', 'ok');
+      } catch (_) {
+        toast('Could not copy export summary.', 'warn');
+      }
       return;
     }
     return next(event);
@@ -13959,11 +16172,11 @@ See _tiinex/export.manifest.json for source and output path metadata.
       <div class="export-choice-row">
         ${renderPasswordButton(modal, 'none', 'None', 'No encryption.')}
         ${renderPasswordButton(modal, 'tiinex', 'AES-GCM', 'PBKDF2 + AES-GCM package.')}
-        ${renderPasswordButton(modal, 'zip', 'ZipCrypto', 'Older ZIP client compatibility.')}
+        ${renderPasswordButton(modal, 'zip', 'Windows-compatible ZIP password', 'File names stay visible; file contents require password.')}
       </div>
-      ${needsPassword ? `<label class="field-label export-password-field">Password<input class="form-control tv-input" type="password" autocomplete="new-password" data-export-password placeholder="Password for this export"></label>` : ''}
+      ${needsPassword ? `<label class="field-label export-password-field">Password<input class="form-control tv-input" type="password" autocomplete="new-password" data-field="exportPassword" data-export-password value="${escapeAttr(modal.exportPassword || '')}" placeholder="Password for this export"></label>` : ''}
       <p class="export-encryption-note">${mode === 'zip'
-        ? 'ZipCrypto works with older ZIP clients, but is weaker. Use AES-GCM for stronger app-level encryption.'
+        ? 'Windows-compatible ZIP password protects file contents for common ZIP clients. File names and folders remain visible; opening or extracting files requires the password.'
         : mode === 'tiinex'
           ? 'AES-GCM mode uses PBKDF2-SHA256 + AES-GCM-256 inside a Tiinex encrypted package container.'
           : 'Choose an archive format and optional password mode.'}</p>
@@ -13974,7 +16187,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
     const html = next(modal);
     return html
       .replace('class="modal-header-lite export-head"', 'class="modal-header-lite export-head"')
-      .replace('<h2 class="modal-title-lite" id="export-title"><i class="fa-solid fa-file-zipper"></i>Export workspace</h2>', '<h2 class="modal-title-lite export-title" id="export-title"><span class="export-title-icon"><i class="fa-solid fa-file-zipper"></i></span><span>Export workspace</span></h2>');
+      .replace('<h2 class="modal-title-lite" id="export-title"><i class="fa-solid fa-file-zipper"></i>Export workspace archive</h2>', '<h2 class="modal-title-lite export-title" id="export-title"><span class="export-title-icon"><i class="fa-solid fa-file-zipper"></i></span><span>Export workspace archive</span></h2>');
   });
 
 
@@ -14189,6 +16402,25 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
     return next(event);
   });
+
+  registerRouteStateWrapper(function routeStateWithGitHubSources(next) {
+    const state = next();
+    (state.sources || []).forEach((item, index) => {
+      const ws = app.workspaces[index];
+      const githubSource = Array.from(ws?.sources?.values?.() || []).find((source) => source.kind === 'github' && source.repo);
+      if (!githubSource) return;
+      const normalized = normalizeGitHubSourceState(githubSource, ws);
+      item.kind = 'github-tree';
+      item.repo = normalized.repo;
+      item.ref = normalized.ref || ws.ref || '';
+      item.rootPaths = normalized.rootPaths || ['.topics'];
+      item.enabledSurfaces = normalizeGithubSurfaceConfig(normalized.enabledSurfaces || {});
+      item.issueUrls = normalized.issueUrls || [];
+      item.discoveryDirective = normalized.discoveryDirective || { kind: 'implicit-workspace-inline', source: 'workspace.md', status: 'bootstrap' };
+    });
+    return state;
+  });
+
   registerRouteStateWrapper(function routeStateWithDisplayAssets(next) {
     const state = next();
     if (state && Array.isArray(state.sources)) {
@@ -14229,7 +16461,9 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
   app.settings = Object.assign({
     repoDiscoveryFetchConcurrency: 6,
-    repoCommitDateSortFetchLimit: 80,
+    // Commit-date enrichment can cost one GitHub REST request per artifact.
+    // Keep it opt-in so ordinary browsing stays a good external-source citizen.
+    repoCommitDateSortFetchLimit: 0,
     repoDiscoveryBatchRenderEvery: 0,
     discoveryFeedInitialCount: 48,
     discoveryFeedGrowCount: 48,
@@ -14626,7 +16860,8 @@ See _tiinex/export.manifest.json for source and output path metadata.
     ws.loading = true;
     ws.repo = repo;
     if (ref) ws.ref = ref;
-    ws.discoverySource = { kind: 'github-tree', repo, ref: ref || '', rootPath: rootPaths[0] || '.topics', rootPaths };
+    const githubSource = options.source || registerGitHubSource(ws, { repo, ref, rootPaths, enabledSurfaces: { repoFiles: true, issues: true } });
+    ws.discoverySource = { kind: 'github-tree', repo, ref: ref || '', rootPath: rootPaths[0] || '.topics', rootPaths, sourceId: githubSource.id, enabledSurfaces: normalizeGithubSurfaceConfig(githubSource.enabledSurfaces || {}), issueUrls: githubSource.issueUrls || [], discoveryDirective: githubSource.discoveryDirective || null };
     ws.sourceNote = `GitHub repo discovery: ${repo}${ref ? '@' + ref : ''} / ${rootPathsLabel(rootPaths)}`;
     ws.discoveryProgress = { phase: 'tree', loaded: 0, total: 0, failed: 0 };
     ws.logs.push(`Discovering ${repo}${ref ? '@' + ref : ''} under ${rootPaths.join(', ')} via GitHub tree API.`);
@@ -14638,13 +16873,19 @@ See _tiinex/export.manifest.json for source and output path metadata.
     let indexed = false;
 
     try {
-      const discovery = await discoverGitHubTracePaths(repo, ref, rootPaths);
+      const discovery = await discoverGitHubTracePaths(repo, ref, rootPaths, { hardRefresh: Boolean(options.hardRefresh) });
       ws.repo = repo;
       ws.ref = discovery.ref;
       ws.discoverySource.ref = discovery.ref;
       ws.discoverySource.rootPath = discovery.rootPath;
       ws.discoverySource.rootPaths = discovery.rootPaths;
+      githubSource.ref = githubSource.ref || discovery.ref;
+      githubSource.rootPaths = discovery.rootPaths;
       ws.logs.push(`Tree discovery found ${discovery.tracePaths.length} Tiinex markdown artifact file(s).`);
+      if (discovery.freshnessSupplemented) {
+        ws.logs.push(`Added ${discovery.freshnessSupplemented} known Tiinex schema freshness candidate(s) to avoid stale branch/CDN listings.`);
+      }
+      if (discovery.note) ws.logs.push(discovery.note);
       if (discovery.truncated) {
         ws.logs.push('GitHub tree response was truncated. Results may be incomplete; use a manifest for this repo.');
         toast(`Tree response for ${repo} was truncated; discovery may be incomplete.`, 'warn');
@@ -14652,7 +16893,7 @@ See _tiinex/export.manifest.json for source and output path metadata.
 
       const paths = discovery.tracePaths.filter((path) => {
         const rawUrl = githubRawUrl(repo, discovery.ref, path);
-        return !Array.from(ws.files.values()).some((file) => file.rawUrl === rawUrl || file.path === path);
+        return options.refreshExisting || !Array.from(ws.files.values()).some((file) => file.rawUrl === rawUrl || file.path === path);
       });
 
       ws.discoveryProgress = { phase: 'fetch', loaded: 0, total: paths.length, failed: 0 };
@@ -14675,14 +16916,21 @@ See _tiinex/export.manifest.json for source and output path metadata.
       await runWithConcurrency(paths, concurrency, async (path) => {
         const rawUrl = githubRawUrl(repo, discovery.ref, path);
         try {
-          const content = await fetchText(rawUrl);
+          const content = await fetchText(rawUrl, 'GitHub raw artifact', { hardRefresh: Boolean(options.hardRefresh) });
           addFileToWorkspace(ws, {
             path,
             content,
             rawUrl,
             browseUrl: githubBrowseUrl(repo, discovery.ref, path),
             repo,
-            ref: discovery.ref
+            ref: discovery.ref,
+            sourceId: githubSource.id,
+            sourceKind: githubSource.kind,
+            sourceLabel: githubSource.label,
+            sourceOrigin: githubSource.origin,
+            rootPaths: githubSource.rootPaths,
+            enabledSurfaces: githubSource.enabledSurfaces,
+            sourceSurface: 'repoFiles'
           });
           count += 1;
           ws.discoveryProgress.loaded = count;
@@ -16256,8 +18504,34 @@ See _tiinex/export.manifest.json for source and output path metadata.
     return false;
   }
 
+  function canonicalExternalTarget(value) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    try {
+      const url = new URL(text);
+      url.hash = '';
+      url.search = '';
+      return url.toString().replace(/\/$/, '').toLowerCase();
+    } catch (_) {
+      return stripUrlDecorations(text).replace(/\/$/, '').toLowerCase();
+    }
+  }
+
+  function isSourceIdentityMaterialRef(node, ref) {
+    if (!node || !ref) return false;
+    const sourceTargets = [node.rawUrl, node.browseUrl, node.file?.rawUrl, node.file?.browseUrl]
+      .map(canonicalExternalTarget)
+      .filter(Boolean);
+    if (!sourceTargets.length) return false;
+    const refTargets = [ref.href, ref.rawUrl, ref.browseUrl, ref.sourceUrl]
+      .map(canonicalExternalTarget)
+      .filter(Boolean);
+    if (!refTargets.length) return false;
+    return refTargets.some((target) => sourceTargets.includes(target));
+  }
+
   registerNodeMaterialRefsWrapper(function nodeMaterialRefsWithoutLineageEdges(ws, node, next) {
-    return next(ws, node).filter((ref) => !isParentLikeMaterialRef(ws, node, ref) && !isStructuralMaterialRef(ref));
+    return next(ws, node).filter((ref) => !isParentLikeMaterialRef(ws, node, ref) && !isStructuralMaterialRef(ref) && !isSourceIdentityMaterialRef(node, ref));
   });
 
 
@@ -16575,6 +18849,10 @@ window.addEventListener('popstate', () => {
     return /source-chip|source-badge|source-github|source-local|source-url|source-draft/.test(cls) || /tiinex\/docs|github|local state|local\b/.test(text);
   }
 
+  function chipIsEditableSource(chip) {
+    return chipIsSource(chip) && String(chip?.dataset?.action || '') === 'edit-source';
+  }
+
   function chipPriority(chip, sourceCount) {
     const text = chipText(chip);
     const cls = String(chip?.className || '').toLowerCase();
@@ -16582,6 +18860,7 @@ window.addEventListener('popstate', () => {
     if (/mismatch|missing|error|fail|danger/.test(joined)) return 0;
     if (/verified|out of date|integrity|ok/.test(joined)) return 1;
     if (/refs?|image|material|attachment|asset|pdf|zip/.test(joined)) return 2;
+    if (chipIsEditableSource(chip)) return 3;
     if (/selected leaf|parent|child|ancestor|descendant/.test(text)) return 4;
     if (chipIsSource(chip)) return sourceCount <= 1 ? 10 : 6;
     if (chipIsSchema(chip)) return 7;
@@ -18569,6 +20848,10 @@ window.addEventListener('popstate', (event) => {
       || /tiinex\/docs|github|local state|local\b/u.test(text);
   }
 
+  function mobileChipIsEditableSource(chip) {
+    return mobileChipIsSource(chip) && String(chip?.dataset?.action || '') === 'edit-source';
+  }
+
   function mobileChipPriority(chip, sourceCount) {
     const text = mobileChipText(chip);
     const cls = mobileChipClass(chip);
@@ -18576,10 +20859,11 @@ window.addEventListener('popstate', (event) => {
     if (chip?.classList?.contains('mobile-card-more-chip')) return -1;
     if (/mismatch|missing|error|fail|danger/u.test(joined)) return 0;
     if (/verified|open|out of date|integrity|ok/u.test(joined)) return 1;
-    if (mobileChipIsSchema(chip)) return 2;
-    if (mobileChipIsDate(chip)) return 3;
-    if (/refs?|image|material|attachment|asset|pdf|zip/u.test(joined)) return 4;
-    if (mobileChipIsSource(chip)) return sourceCount <= 1 ? 10 : 5;
+    if (mobileChipIsEditableSource(chip)) return 2;
+    if (mobileChipIsSchema(chip)) return 3;
+    if (mobileChipIsDate(chip)) return 4;
+    if (/refs?|image|material|attachment|asset|pdf|zip/u.test(joined)) return 5;
+    if (mobileChipIsSource(chip)) return sourceCount <= 1 ? 10 : 6;
     if (/selected leaf|parent|child|ancestor|descendant/u.test(text)) return 6;
     return 7;
   }
