@@ -75,11 +75,17 @@
     return chips;
   }
 
+  function renderPreviewText(value, limit = 320) {
+    const text = String(value || '').trim();
+    const clipped = text.length <= limit ? text : `${text.slice(0, limit).replace(/[\s,;:]+$/g, '').trimEnd()}…`;
+    return escapeHtml(stripMarkdownInline(clipped)).replace(/\n/g, '<br>');
+  }
+
   function renderPreviewSections(sections, names) {
     const html = names
       .filter((name) => sections[name] && sections[name].trim())
       .slice(0, 4)
-      .map((name) => `<section class="preview-section"><h4>${escapeHtml(name)}</h4><p>${escapeHtml(shortText(stripMarkdownInline(sections[name]), 260))}</p></section>`)
+      .map((name) => `<section class="preview-section"><h4>${escapeHtml(name)}</h4><p>${renderPreviewText(sections[name], 320)}</p></section>`)
       .join('');
     return html || '<p class="preview-note">No prioritized continuity sections found for this schema.</p>';
   }

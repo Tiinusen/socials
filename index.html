@@ -54,15 +54,32 @@
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="./src/app/core-runtime.js"></script>
   <script src="./src/app/services-runtime.js"></script>
+  <script src="./src/app/git-native-runtime.js"></script>
   <script src="./src/app/state-runtime.js"></script>
   <script src="./src/app/ui-runtime.js"></script>
   <script src="./src/app/viewstate-runtime.js"></script>
   <script>
     // App-level viewer options. Host pages may override this before loading app.js.
     // Set createWorkspace to false to hide/disable Create workspace controls.
-    window.TIINEX_VIEWER_OPTIONS = window.TIINEX_VIEWER_OPTIONS || {
-      createWorkspace: true
-    };
+    // Missing defaults are filled instead of relying on `window.TIINEX_VIEWER_OPTIONS || ...`,
+    // because host/runtime scripts may create an empty options object before this block.
+    (function () {
+      const defaultGitNative = {
+        enabled: true,
+        repo: 'Tiinex/docs',
+        ref: 'master',
+        rootPaths: ['.topics'],
+        loadFromUnpkg: true,
+        allowDefaultVendorUrls: true,
+        corsProxy: 'https://cors.isomorphic-git.org',
+        depth: 1,
+        historicalDepth: 64,
+        historicalMaxDepth: 256
+      };
+      const existing = window.TIINEX_VIEWER_OPTIONS || {};
+      window.TIINEX_VIEWER_OPTIONS = Object.assign({ createWorkspace: true }, existing);
+      window.TIINEX_VIEWER_OPTIONS.gitNative = Object.assign({}, defaultGitNative, existing.gitNative || existing.gitNativeRuntime || {});
+    })();
   </script>
 
   <script src="./app.js"></script>

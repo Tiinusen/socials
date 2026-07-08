@@ -33,10 +33,13 @@
 
   function localStateFileIsPersistent(file) {
     if (!file) return false;
-    if (file.isGenerated) return true;
     const sourceId = String(file.sourceId || '').toLowerCase();
     const sourceKind = String(file.sourceKind || '').toLowerCase();
-    return persistentFileKinds.includes(sourceId) || persistentFileKinds.includes(sourceKind);
+    if (persistentFileKinds.includes(sourceId) || persistentFileKinds.includes(sourceKind)) return true;
+    // Generated remote/source artifacts are adapter cache, not local deltas.
+    // Persisting them into localStorage can exhaust quota and drop drafts.
+    if (file.isGenerated && !sourceId && !sourceKind && !file.rawUrl && !file.browseUrl && !file.repo && !file.sourceOrigin) return true;
+    return false;
   }
 
   function localStateAssetIsPersistent(asset, savedFilePaths = new Set()) {
@@ -83,6 +86,17 @@
       browseUrl: '',
       repo: '',
       ref: '',
+      sourceOrigin: file.sourceOrigin || '',
+      shadowSourceNodeId: file.shadowSourceNodeId || '',
+      shadowSourceStorageKey: file.shadowSourceStorageKey || '',
+      shadowSourceTitle: file.shadowSourceTitle || '',
+      shadowSourceSchema: file.shadowSourceSchema || '',
+      shadowSourceKey: file.shadowSourceKey || '',
+      shadowSourceId: file.shadowSourceId || '',
+      shadowSourcePath: file.shadowSourcePath || '',
+      shadowSourceOrigin: file.shadowSourceOrigin || '',
+      localDraftOf: file.localDraftOf || '',
+      localEditDraft: Boolean(file.localEditDraft),
       isGenerated: Boolean(file.isGenerated),
       generatedAt: file.generatedAt || ''
     };
@@ -100,6 +114,17 @@
       type: asset.type || asset.mime || 'application/octet-stream',
       size: asset.size || asset.content.length,
       source: asset.source || 'local',
+      sourceOrigin: asset.sourceOrigin || '',
+      shadowSourceNodeId: asset.shadowSourceNodeId || '',
+      shadowSourceStorageKey: asset.shadowSourceStorageKey || '',
+      shadowSourceTitle: asset.shadowSourceTitle || '',
+      shadowSourceSchema: asset.shadowSourceSchema || '',
+      shadowSourceKey: asset.shadowSourceKey || '',
+      shadowSourceId: asset.shadowSourceId || '',
+      shadowSourcePath: asset.shadowSourcePath || '',
+      shadowSourceOrigin: asset.shadowSourceOrigin || '',
+      localDraftOf: asset.localDraftOf || '',
+      localEditDraft: Boolean(asset.localEditDraft),
       preserved: Boolean(asset.preserved),
       updatedAt: asset.updatedAt || ''
     };

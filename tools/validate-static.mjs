@@ -9,6 +9,7 @@ import { canonicalWorkspacePath, dirname, fileNameFromPath, joinPath, normalizeA
 import { extractBodySections, parseMarkdownLink, plainBlock, sectionMap, singleFieldFromBullet, stripBodyTitle, stripMarkdownInline, stripTrailingBodySeparator } from '../src/core/markdown.mjs';
 import { schemaBadgeClass, schemaIdFromText, schemaKey } from '../src/core/schema.mjs';
 import { readJson, removeKeysWithPrefix, textByteLength, writeJson } from '../src/services/storage.mjs';
+import { createGitNativeSourceAdapter, defaultArtifactPathMatch, gitRemoteUrlFromSource, parseGitFilePermalink } from '../src/services/git-native-source-adapter.mjs';
 import { localStateAssetIsPersistent, localStateDataKey, localStateFileIsPersistent, localStateJsonSize, localStateSlug, makeLocalStateId, serializeAssetForLocalState, serializeFileForLocalState, workspaceHasLocalStateContent } from '../src/state/local-workspace.mjs';
 import { escapeAttr, escapeHtml, safeUrl } from '../src/ui/html.mjs';
 import { attachmentFileExtension, attachmentMetaChips, humanSize, shortMime } from '../src/ui/evidence-attachments.mjs';
@@ -176,6 +177,9 @@ function validateRequiredFiles() {
     'src/app/ui-runtime.js',
     'src/app/viewstate-runtime.js',
     'src/services/storage.mjs',
+    'src/services/git-source-adapter.mjs',
+    'src/services/git-native-source-adapter.mjs',
+    'src/services/repo-fetch-diagnostics.mjs',
     'src/state/local-workspace.mjs',
     'src/ui/html.mjs',
     'src/ui/evidence-attachments.mjs',
@@ -461,18 +465,37 @@ function validateWizardArchitecture() {
     fail('schemaReferenceForPath must not fall back to relative schema paths before checking pinned schema permalinks.');
   }
 
-  const validatorDiscoveryTokens = [
+  const artifactRegistryTokens = [
+    'const TIINEX_MARKDOWN_ARTIFACT_REGISTRY',
+    "suffix: '.trace.md'",
+    "suffix: '.schema.md'",
+    "suffix: '.workspace.md'",
+    "suffix: '.validator.md'",
+    "suffix: '.adapter.md'",
+    "suffix: '.origin.md'",
+    "suffix: '.tool.md'",
+    "suffix: '.interface.md'",
     'function isValidatorPath',
-    '/\\.(trace|schema|workspace|validator)\\.md$/i',
-    'showValidator',
+    'function tiinexArtifactDefinitionForPath(value)',
+    'function pathsByTiinexArtifactKind(paths)',
+    'artifactPathsByKind',
     'validatorPaths',
-    'Show .validator.md'
+    'adapterPaths',
+    'originPaths',
+    'toolPaths',
+    'interfacePaths',
+    'data-artifact-display-filter',
+    'renderArtifactDisplayFilterSelect',
+    'Artifact category'
   ];
-  for (const token of validatorDiscoveryTokens) {
-    if (!js.includes(token)) fail(`Validator definition discovery/display contract missing app token: ${token}`);
+  for (const token of artifactRegistryTokens) {
+    if (!js.includes(token)) fail(`Registry-driven artifact discovery/display contract missing app token: ${token}`);
   }
-  if (!js.includes('function isTiinexMarkdownArtifactPath(value)') || !js.includes("return /\\.(trace|schema|workspace|validator)\\.md(?:$|[?#])/i.test(String(value || ''));") ) {
-    fail('Tiinex markdown artifact suffix ownership must be centralized and include .validator.md.');
+  if (!js.includes('function isTiinexMarkdownArtifactPath(value)') || !js.includes('return Boolean(tiinexArtifactDefinitionForPath(value));')) {
+    fail('Tiinex markdown artifact suffix ownership must be centralized in TIINEX_MARKDOWN_ARTIFACT_REGISTRY.');
+  }
+  if (js.includes('Show .schema.md') || js.includes('Show .validator.md') || js.includes('Show .workspace.md')) {
+    fail('Display Options must not render one hard-coded checkbox per artifact suffix.');
   }
   if (!js.includes('function pathLooksUsefulLineageArtifact(path) {\n    return isTiinexMarkdownArtifactPath(path);')
     || !js.includes('function isLineageArtifactPath(value) {\n    return isTiinexMarkdownArtifactPath(value);')
@@ -511,8 +534,8 @@ function validateWizardArchitecture() {
   if (!js.includes('function isStructuralMaterialRef') || !js.includes('if (isStructuralMaterialRef(ref)) continue;')) {
     fail('Referenced Material must exclude structural Tiinex links before openable attachment filtering.');
   }
-  if (!js.includes("['schema', 'validator', 'trace'].includes(kind)") || !js.includes("/\\.(schema|validator|trace|workspace)\\.md(?:$|[?#])/i.test(target)")) {
-    fail('Referenced Material must not list schema, validator, trace, or workspace artifacts as generic attachments.');
+  if (!js.includes('tiinexArtifactDefinitionForKind(kind)') || !js.includes('isTiinexMarkdownArtifactPath(target)')) {
+    fail('Referenced Material must not list registry-owned Tiinex markdown artifacts as generic attachments.');
   }
   if (!js.includes('/^sha256-base64url-c14n-v\\d+$/.test(label)') || !js.includes('commit-pinned permalink|validator artifact|validation method artifact|method definition')) {
     fail('Referenced Material must exclude linked validation-method examples and validator placeholders, not only real .validator.md URLs.');
@@ -715,6 +738,80 @@ function validateArchitectureProductReadiness() {
   note('architecture product-readiness signal is documented');
 }
 
+async function validateGitSourceAdapterResearchContract() {
+  const gitSource = read('src/services/git-source-adapter.mjs');
+  const gitNative = read('src/services/git-native-source-adapter.mjs');
+  const browserGitNative = read('src/app/git-native-runtime.js');
+  const repoDiag = read('src/services/repo-fetch-diagnostics.mjs');
+  const appJs = read('app.js');
+  for (const token of [
+    'GIT_SOURCE_ADAPTER_CONTRACT',
+    'local-object-store-first',
+    'time-portal-aware',
+    'permalink-as-recovery-anchor-not-primary-read-path',
+    'repoFiles',
+    'issueSnapshots',
+    'resolveParentFromLocalObjects'
+  ]) {
+    if (!gitSource.includes(token)) fail(`Git source adapter research contract missing ${token}`);
+  }
+  for (const token of [
+    'GIT_NATIVE_ADAPTER_CAPABILITY',
+    'createGitNativeSourceAdapter',
+    'local-git-object-store-first',
+    'readBlobAt',
+    'resolveParentFromLocalObjects',
+    'hiddenProxy: false'
+  ]) {
+    if (!gitNative.includes(token)) fail(`Git native source adapter missing ${token}`);
+  }
+  for (const token of ['emptyRepoFetchDiagnostics', 'summarizeRepoFetchEvents', 'repoFetchDiscoveryVerdict']) {
+    if (!repoDiag.includes(token)) fail(`Repo fetch diagnostics module missing ${token}`);
+  }
+  for (const token of ['TiinexGitNativeRuntime', 'cloneLab', 'ensureRuntime', 'explicitVendorLoad', 'bufferModuleUrl', 'Missing Buffer dependency', 'GitHub browser git clone needs an explicit CORS proxy']) {
+    if (!browserGitNative.includes(token)) fail(`Browser Git-native runtime bridge missing ${token}`);
+  }
+  for (const token of [
+    'githubRepoFetchTrace',
+    'githubRepoFetchSummary',
+    'githubRepoFetchTraceJson',
+    'gitNativeRuntimeStatus',
+    'gitNativeCloneLab',
+    'skipGitNativeRawBridge',
+    'git-native-raw-bridge',
+    'session.start',
+    'raw.request',
+    'raw.success',
+    'raw.failed'
+  ]) {
+    if (!appJs.includes(token)) fail(`GitHub repo fetch observability missing app token: ${token}`);
+  }
+  const remote = gitRemoteUrlFromSource({ repo: 'Tiinex/docs' });
+  if (remote !== 'https://github.com/Tiinex/docs.git') fail(`Git native remote URL normalization failed: ${remote}`);
+  const parsed = parseGitFilePermalink('https://github.com/Tiinex/docs/blob/1234567890abcdef/.topics/demo/001.trace.md');
+  if (!parsed || parsed.repo !== 'Tiinex/docs' || parsed.path !== '.topics/demo/001.trace.md' || parsed.commit !== '1234567890abcdef') {
+    fail('Git native permalink parser did not preserve repo/ref/path/commit');
+  }
+  if (!defaultArtifactPathMatch('.topics/demo/001.trace.md')) fail('Git native artifact matcher must accept .topics markdown artifacts');
+
+  const fakeGit = {
+    async resolveRef() { return 'abc123def456'; },
+    async listFiles() { return ['README.md', '.topics/demo/001.trace.md', '.topics/demo/note.txt', '.topics/demo/schema.schema.md']; },
+    async readBlob({ filepath }) { return { blob: new TextEncoder().encode(`content:${filepath}`) }; }
+  };
+  const adapter = createGitNativeSourceAdapter({ git: fakeGit, fs: {}, dir: '/repo' });
+  const snapshot = await adapter.acquireSnapshot({ repo: 'Tiinex/docs', ref: 'master', rootPaths: ['.topics'] });
+  const candidates = await adapter.listArtifactCandidates(snapshot);
+  if (snapshot.commit !== 'abc123def456' || candidates.length !== 2 || !candidates.includes('.topics/demo/001.trace.md')) {
+    fail('Git native adapter fake-runtime contract failed candidate listing');
+  }
+  const text = await adapter.readFile('.topics/demo/001.trace.md', snapshot);
+  if (text !== 'content:.topics/demo/001.trace.md') fail('Git native adapter fake-runtime readFile contract failed');
+  const caps = adapter.reportCapabilities();
+  if (!caps.runtimeAvailable || !caps.canResolveRef || !caps.canReadBlobAt || caps.usesHiddenProxy) fail('Git native adapter capability report is incorrect');
+  note('git source adapter research spine, git-native runtime spine, and repo fetch diagnostics are present');
+}
+
 function validateJavascriptSyntax() {
   const result = spawnSync(process.execPath, ['--check', file('app.js')], {
     encoding: 'utf8'
@@ -740,8 +837,14 @@ function validateJavascriptSurface() {
   if (js.includes('data-mode="issue"') || js.includes('Add issue thread')) {
     fail('GitHub issue discovery must be owned by the GitHub source/community UX, not a separate Add-flow source.');
   }
-  for (const token of ['Repo files discovery', 'Issue discussion discovery', 'openEditSourceModal', 'enabledSurfaces']) {
-    if (!js.includes(token)) fail(`Canonical GitHub source/community UX missing token: ${token}`);
+  const githubSourceUxTokens = [
+    ['Repo files discovery'],
+    ['Issue snapshot discovery', 'Issue/discussion discovery'],
+    ['openEditSourceModal'],
+    ['enabledSurfaces']
+  ];
+  for (const variants of githubSourceUxTokens) {
+    if (!variants.some((token) => js.includes(token))) fail(`Canonical GitHub source/community UX missing token: ${variants[0]}`);
   }
 
   const blockedConsoleCalls = [...js.matchAll(/\bconsole\s*\.\s*([A-Za-z_$][\w$]*)/g)]
@@ -1096,6 +1199,9 @@ function validateArchitectureBoundaries() {
     'src/core/markdown.mjs',
     'src/core/schema.mjs',
     'src/services/storage.mjs',
+    'src/services/git-source-adapter.mjs',
+    'src/services/git-native-source-adapter.mjs',
+    'src/services/repo-fetch-diagnostics.mjs',
     'src/state/local-workspace.mjs',
     'src/ui/html.mjs',
     'src/ui/evidence-attachments.mjs',
@@ -1215,6 +1321,13 @@ function validateArchitectureBoundaries() {
   if (shouldPreserveStoredScrollOnZeroWrite({ preserveNonZero: true, nextTop: 5, existingTop: 42 })) fail('src/viewstate/lens.mjs shouldPreserveStoredScrollOnZeroWrite nonzero contract failed');
 
   const appJs = read('app.js');
+  if (!appJs.includes('function removeNodeCandidateMatches(ws, node, key, file, removal)')) fail('local draft discard must route file deletion through one candidate policy owner.');
+  if (!appJs.includes(`if (removal?.localShadowDraft) {
+      return localFileMatchesNodeForDeletion(file, node);
+    }`)) fail('local shadow draft discard must not delete non-local source files by same path.');
+  if (!appJs.includes("localShadowDraftRemoval ? '' : node.path")) fail('local shadow draft discard must not include the raw source path in delete keys.');
+  if (!appJs.includes('function localShadowDiscardVisibleOriginal(ws, original)')) fail('local shadow draft discard must prefer typed source artifacts over resolved discovery finding wrappers when re-anchoring.');
+  if (!appJs.includes('This removes only the local draft from this workspace. The original source artifact is preserved and should take its place again.')) fail('local draft discard confirmation must state source-preserving semantics.');
   if (!appJs.includes("function writeStoredScrollSnapshot(reason = 'snapshot')")) fail('app.js must snapshot stored scroll before page lifecycle exits');
   if (!appJs.includes("writeStoredScrollSnapshot('pagehide')")) fail('app.js must flush stored scroll on pagehide');
   if (!appJs.includes("writeStoredScrollSnapshot('beforeunload')")) fail('app.js must flush stored scroll on beforeunload');
@@ -1355,6 +1468,7 @@ function validateRootPackageShape() {
     '.gitignore',
     '.topics',
     'assets',
+    'open',
     'app.js',
     'index.html',
     'llms.txt',
@@ -1428,7 +1542,7 @@ function validateRootPackageShape() {
 }
 
 
-function main() {
+async function main() {
   validateRequiredFiles();
   validateRootPackageShape();
   validateRootMarkdown();
@@ -1442,6 +1556,7 @@ function main() {
   validateSourceModuleSyntax();
   validateArchitectureBoundaries();
   validateArchitectureProductReadiness();
+  await validateGitSourceAdapterResearchContract();
   validatePublicBuildContracts();
   validateJavascriptSyntax();
   validateJavascriptSurface();
@@ -1471,4 +1586,7 @@ function main() {
   console.log('\nStatic validation passed. Browser golden-flow validation is still required for UI behavior.');
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

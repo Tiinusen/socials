@@ -7,6 +7,7 @@ const root = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 const scriptOrder = Object.freeze([
   'src/app/core-runtime.js',
   'src/app/services-runtime.js',
+  'src/app/git-native-runtime.js',
   'src/app/state-runtime.js',
   'src/app/ui-runtime.js',
   'src/app/viewstate-runtime.js',
@@ -58,7 +59,7 @@ function bundleSource() {
     parts.push('\n');
   }
   parts.push(`\n;/* ---- viewer options ---- */\n`);
-  parts.push(`window.TIINEX_VIEWER_OPTIONS = window.TIINEX_VIEWER_OPTIONS || {\n  createWorkspace: true\n};\n`);
+  parts.push(`(function () {\n  const defaultGitNative = {\n    enabled: true,\n    repo: 'Tiinex/docs',\n    ref: 'master',\n    rootPaths: ['.topics'],\n    loadFromUnpkg: true,\n    allowDefaultVendorUrls: true,\n    corsProxy: 'https://cors.isomorphic-git.org',\n    depth: 1,\n    historicalDepth: 64,\n    historicalMaxDepth: 256\n  };\n  const existing = window.TIINEX_VIEWER_OPTIONS || {};\n  window.TIINEX_VIEWER_OPTIONS = Object.assign({ createWorkspace: true }, existing);\n  window.TIINEX_VIEWER_OPTIONS.gitNative = Object.assign({}, defaultGitNative, existing.gitNative || existing.gitNativeRuntime || {});\n})();\n`);
   parts.push(`\n;/* ---- app.js ---- */\n`);
   parts.push(read('app.js'));
   parts.push('\n');

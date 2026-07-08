@@ -71,6 +71,15 @@
     throw new Error('Tiinex UI runtime did not load.');
   }
 
+  function cleanWhitespace(value = '') {
+    return String(value || '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/[\t\f\v]+/g, ' ')
+      .replace(/\s*\n\s*/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
 
   /*
    * Code map for human maintainers
@@ -97,7 +106,8 @@
     modal: null,
     toasts: [],
     isBootingFromUrl: false,
-    closedDialogRouteSessions: new Set()
+    closedDialogRouteSessions: new Set(),
+    openOriginalShadows: {}
   };
 
   const STORAGE_KEYS = Object.freeze({
@@ -108,7 +118,650 @@
     browserScrollStatePrefix: 'tiinex.routeScroll.state.',
     lensSessionPrefix: 'tiinex.lens.',
     appSettings: 'tiinex.app.settings',
-    adapterRateLimitPrefix: 'tiinex.adapter.rateLimit.'
+    adapterRateLimitPrefix: 'tiinex.adapter.rateLimit.',
+    githubCommitCache: 'tiinex.github.commitCache.v1',
+    githubIssueThreadCache: 'tiinex.github.issueThreadCache.v1',
+    githubIssueImportTrace: 'tiinex.github.issueImportTrace.v1',
+    githubRepoFetchTrace: 'tiinex.github.repoFetchTrace.v1',
+    gitNativeDiscoveryConfig: 'tiinex.gitNative.discoveryConfig.v1'
+  });
+
+
+  const GIT_NATIVE_DISCOVERY_CONFIG_KEYS = Object.freeze([
+    'enabled',
+    'repo',
+    'remote',
+    'ref',
+    'rootPaths',
+    'depth',
+    'cloneDepth',
+    'historicalDepth',
+    'historicalMaxDepth',
+    'historicalDepthSteps',
+    'timePortalDepth',
+    'timePortalMaxDepth',
+    'historyRef',
+    'singleBranch',
+    'noCheckout',
+    'noTags',
+    'corsProxy',
+    'allowDirectGithubClone',
+    'loadFromUnpkg',
+    'allowDefaultVendorUrls',
+    'useDefaultVendorUrls',
+    'loadVendor',
+    'loadRuntime',
+    'bufferModuleUrl',
+    'bufferScriptUrl',
+    'lightningFsScriptUrl',
+    'gitScriptUrl',
+    'gitHttpModuleUrl',
+    'gitHttpUmdScriptUrl',
+    'fsName',
+    'dir',
+    'batchSize',
+    'allowRawFallback',
+    'rawFallbackPolicy'
+  ]);
+
+  function sanitizeGitNativeDiscoveryConfig(input = {}) {
+    const out = {};
+    const source = input && typeof input === 'object' ? input : {};
+    for (const key of GIT_NATIVE_DISCOVERY_CONFIG_KEYS) {
+      const value = source[key];
+      if (value === undefined || value === null || typeof value === 'function' || typeof value === 'object' && !Array.isArray(value)) continue;
+      if (Array.isArray(value)) out[key] = value.map((item) => String(item || '').trim()).filter(Boolean);
+      else if (typeof value === 'boolean') out[key] = value;
+      else if (typeof value === 'number') out[key] = Number.isFinite(value) ? value : undefined;
+      else out[key] = String(value).trim();
+      if (out[key] === undefined || out[key] === '') delete out[key];
+    }
+    if (out.enabled !== false) out.enabled = Boolean(out.enabled || out.loadFromUnpkg || out.loadRuntime || out.loadVendor || out.corsProxy || out.gitScriptUrl || out.lightningFsScriptUrl || out.gitHttpModuleUrl || out.allowDirectGithubClone);
+    return out;
+  }
+
+  function readGitNativeDiscoveryConfig() {
+    try {
+      return sanitizeGitNativeDiscoveryConfig(storageReadJson(localStorage, STORAGE_KEYS.gitNativeDiscoveryConfig, {}));
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function writeGitNativeDiscoveryConfig(config = {}) {
+    const clean = sanitizeGitNativeDiscoveryConfig(config);
+    try { storageWriteJson(localStorage, STORAGE_KEYS.gitNativeDiscoveryConfig, clean); } catch (_) {}
+    return clean;
+  }
+
+  function clearGitNativeDiscoveryConfig() {
+    try { localStorage.removeItem(STORAGE_KEYS.gitNativeDiscoveryConfig); } catch (_) {}
+    if (window.TIINEX_VIEWER_OPTIONS?.gitNative) window.TIINEX_VIEWER_OPTIONS.gitNative.enabled = false;
+  }
+
+  function effectiveGitNativeDiscoveryConfig(overrides = {}) {
+    window.TIINEX_VIEWER_OPTIONS = window.TIINEX_VIEWER_OPTIONS || {};
+    const persisted = readGitNativeDiscoveryConfig();
+    const inMemory = sanitizeGitNativeDiscoveryConfig(window.TIINEX_VIEWER_OPTIONS.gitNative || window.TIINEX_VIEWER_OPTIONS.gitNativeRuntime || {});
+    const explicit = sanitizeGitNativeDiscoveryConfig(overrides || {});
+    const merged = Object.assign({}, persisted, inMemory, explicit);
+    if (persisted.enabled || inMemory.enabled || explicit.enabled || explicit.loadFromUnpkg || explicit.corsProxy) merged.enabled = explicit.enabled !== false;
+    window.TIINEX_VIEWER_OPTIONS.gitNative = Object.assign({}, window.TIINEX_VIEWER_OPTIONS.gitNative || {}, merged);
+    return merged;
+  }
+
+  function hydratePersistedGitNativeDiscoveryConfig() {
+    const effective = effectiveGitNativeDiscoveryConfig({});
+    if (effective.enabled) {
+      githubRepoFetchTrace('git-native.config.hydrated', {
+        enabled: true,
+        corsProxyConfigured: Boolean(effective.corsProxy),
+        loadFromUnpkg: Boolean(effective.loadFromUnpkg),
+        allowDefaultVendorUrls: Boolean(effective.allowDefaultVendorUrls || effective.useDefaultVendorUrls),
+        repo: effective.repo || '',
+        ref: effective.ref || ''
+      });
+    }
+    return effective;
+  }
+
+  function defaultGitNativeRepoForStartup(config = {}) {
+    return String(config.repo || config.remote || 'Tiinex/docs').trim() || 'Tiinex/docs';
+  }
+
+  async function ensurePersistedGitNativeDiscoveryRuntime(reason = 'startup') {
+    const config = effectiveGitNativeDiscoveryConfig({});
+    if (!config.enabled) return Object.freeze({ ok: false, skipped: true, reason: 'git-native-not-enabled' });
+    if (!window.TiinexGitNativeRuntime?.ensureRuntime || !window.TiinexGitNativeRuntime?.status) {
+      githubRepoFetchTrace('git-native.bootstrap.skip', { reason, skippedReason: 'runtime-bridge-not-loaded' });
+      return Object.freeze({ ok: false, skipped: true, reason: 'runtime-bridge-not-loaded' });
+    }
+    const repo = defaultGitNativeRepoForStartup(config);
+    const opts = Object.assign({ repo, ref: config.ref || 'master', rootPaths: config.rootPaths || '.topics' }, config);
+    githubRepoFetchTrace('git-native.bootstrap.start', {
+      reason,
+      repo: opts.repo,
+      ref: opts.ref || '',
+      corsProxyConfigured: Boolean(opts.corsProxy),
+      loadFromUnpkg: Boolean(opts.loadFromUnpkg),
+      allowDefaultVendorUrls: Boolean(opts.allowDefaultVendorUrls || opts.useDefaultVendorUrls)
+    });
+    try {
+      const runtime = await window.TiinexGitNativeRuntime.ensureRuntime(opts);
+      const status = await window.TiinexGitNativeRuntime.status(opts);
+      githubRepoFetchTrace('git-native.bootstrap.ready', {
+        reason,
+        repo: runtime?.repo || opts.repo,
+        dir: runtime?.dir || status?.cachedDir || '',
+        runtimeAvailable: Boolean(status?.runtimeAvailable),
+        cachedRuntime: Boolean(status?.cachedRuntime || runtime),
+        corsProxyConfigured: Boolean(status?.corsProxyConfigured || opts.corsProxy)
+      });
+      return Object.freeze({ ok: true, runtimeReady: true, repo: runtime?.repo || opts.repo, dir: runtime?.dir || '' });
+    } catch (error) {
+      githubRepoFetchTrace('git-native.bootstrap.failed', {
+        reason,
+        repo: opts.repo,
+        ref: opts.ref || '',
+        error: error?.message || String(error),
+        missing: Array.isArray(error?.missing) ? error.missing.slice() : undefined,
+        needsExplicitCorsProxy: Boolean(error?.needsExplicitCorsProxy)
+      });
+      return Object.freeze({ ok: false, runtimeReady: false, error: error?.message || String(error), missing: error?.missing });
+    }
+  }
+
+
+
+  const GITHUB_ISSUE_IMPORT_TRACE_LIMIT = 260;
+  const GITHUB_REPO_FETCH_TRACE_LIMIT = 1600;
+
+  function repoFetchTraceSanitize(value, depth = 0) {
+    if (depth > 4) return '[depth-limit]';
+    if (value instanceof Error) {
+      return {
+        name: value.name || 'Error',
+        message: value.message || String(value),
+        status: value.status || '',
+        rateLimited: Boolean(value.rateLimited),
+        rateLimitUntil: value.rateLimitUntil || 0,
+        rateLimitKey: value.rateLimitKey || '',
+        cacheState: value.cacheState || ''
+      };
+    }
+    if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
+    if (typeof value === 'string') return value.length > 1200 ? `${value.slice(0, 1200)}…[${value.length} chars]` : value;
+    if (Array.isArray(value)) return value.slice(0, 60).map((item) => repoFetchTraceSanitize(item, depth + 1));
+    if (typeof value === 'object') {
+      const out = {};
+      for (const key of Object.keys(value).slice(0, 80)) out[key] = repoFetchTraceSanitize(value[key], depth + 1);
+      return out;
+    }
+    return String(value);
+  }
+
+  function githubRepoFetchTraceEnsure() {
+    app.githubRepoFetchTrace = Array.isArray(app.githubRepoFetchTrace) ? app.githubRepoFetchTrace : [];
+    return app.githubRepoFetchTrace;
+  }
+
+  function githubRepoFetchTrace(event, detail = {}) {
+    const trace = githubRepoFetchTraceEnsure();
+    const entry = {
+      at: new Date().toISOString(),
+      event: String(event || 'event'),
+      detail: repoFetchTraceSanitize(detail || {})
+    };
+    trace.push(entry);
+    while (trace.length > GITHUB_REPO_FETCH_TRACE_LIMIT) trace.shift();
+    try { storageWriteJson(localStorage, STORAGE_KEYS.githubRepoFetchTrace, trace); } catch (_) {}
+    return entry;
+  }
+
+  function clearGithubRepoFetchTrace() {
+    app.githubRepoFetchTrace = [];
+    try { localStorage.removeItem(STORAGE_KEYS.githubRepoFetchTrace); } catch (_) {}
+  }
+
+  function githubRepoFetchTraceJson() {
+    return JSON.stringify(githubRepoFetchTraceEnsure(), null, 2);
+  }
+
+  function githubRepoFetchCurrentSessionEvents(events = githubRepoFetchTraceEnsure()) {
+    const source = Array.isArray(events) ? events : [];
+    let startIndex = -1;
+    for (let i = source.length - 1; i >= 0; i -= 1) {
+      const event = source[i]?.event || '';
+      if (event === 'session.start' || event === 'git-native.snapshot.start') {
+        startIndex = i;
+        break;
+      }
+    }
+    return startIndex >= 0 ? source.slice(startIndex) : source;
+  }
+
+  function githubRepoFetchSummary(events = null) {
+    events = Array.isArray(events) ? events : githubRepoFetchCurrentSessionEvents();
+    const summary = {
+      sessions: 0,
+      treeRequests: 0,
+      rawRequests: 0,
+      rawSuccess: 0,
+      rawFailed: 0,
+      rawRateLimited: 0,
+      cacheHits: 0,
+      rawBytes: 0,
+      candidateFiles: 0,
+      uniqueRawUrls: 0,
+      duplicateFullRawUrlRequests: 0,
+      basenameCollisions: 0,
+      topDuplicateRawUrls: [],
+      topBasenameCollisions: [],
+      gitNative: {
+        sessions: 0,
+        snapshotStarts: 0,
+        snapshotComplete: 0,
+        snapshotFailed: 0,
+        readSuccess: 0,
+        readFailed: 0,
+        readBytes: 0,
+        rawBridgeStarts: 0,
+        rawBridgeSuccess: 0,
+        rawBridgeFailed: 0,
+        rawBridgeBytes: 0,
+        candidateFiles: 0,
+        pathsToRead: 0,
+        commits: [],
+        lastCommit: '',
+        lastSourceState: ''
+      },
+      repoMaterial: {
+        readStarts: 0,
+        gitNativeSuccess: 0,
+        gitNativeMiss: 0,
+        rawFallbackExplicit: 0,
+        rawFallbackBlocked: 0,
+        rawPassThroughUnexpected: 0,
+        fetchGatePassThrough: 0,
+        integrityDeferred: 0,
+        localRefSubstitute: 0,
+        historicalHydrateStarts: 0,
+        historicalHydrateSuccess: 0,
+        historicalHydrateFailed: 0,
+        byReason: {}
+      },
+      verdict: 'not-observed'
+    };
+    const rawUrlCounts = new Map();
+    const basenamePaths = new Map();
+    const gitNativeCommits = new Set();
+    for (const item of Array.isArray(events) ? events : []) {
+      const event = item?.event || '';
+      const detail = item?.detail || {};
+      const isRawEvent = event.startsWith('raw.') || event === 'raw.request' || event === 'raw.success' || event === 'raw.failed' || event === 'raw.error-handled';
+      const isGitNativeEvent = event.startsWith('git-native.');
+      const reason = String(detail.reason || detail.policy || detail.fallbackPolicy || '');
+      const rememberReason = () => {
+        if (!reason) return;
+        summary.repoMaterial.byReason[reason] = (summary.repoMaterial.byReason[reason] || 0) + 1;
+      };
+
+      if (event === 'repo-material.read.start') { summary.repoMaterial.readStarts += 1; rememberReason(); }
+      if (event === 'repo-material.git-native.success') { summary.repoMaterial.gitNativeSuccess += 1; rememberReason(); }
+      if (event === 'repo-material.git-native.miss') { summary.repoMaterial.gitNativeMiss += 1; rememberReason(); }
+      if (event === 'repo-material.raw-fallback.explicit') { summary.repoMaterial.rawFallbackExplicit += 1; rememberReason(); }
+      if (event === 'repo-material.raw-fallback.blocked') { summary.repoMaterial.rawFallbackBlocked += 1; rememberReason(); }
+      if (event === 'repo-material.integrity.deferred') { summary.repoMaterial.integrityDeferred += 1; rememberReason(); }
+      if (event === 'repo-material.git-native.local-ref-substitute' || event === 'git-native.raw-bridge.local-substitute.success') { summary.repoMaterial.localRefSubstitute += 1; rememberReason(); }
+      if (event === 'git-native.historical-hydrate.start') { summary.repoMaterial.historicalHydrateStarts += 1; rememberReason(); }
+      if (event === 'git-native.historical-hydrate.success') { summary.repoMaterial.historicalHydrateSuccess += 1; rememberReason(); }
+      if (event === 'git-native.historical-hydrate.failed') { summary.repoMaterial.historicalHydrateFailed += 1; rememberReason(); }
+      if (event === 'git-native.raw-fetch-gate.pass-through') { summary.repoMaterial.fetchGatePassThrough += 1; rememberReason(); }
+      if (event === 'git-native.raw-fetch-gate.blocked') { summary.repoMaterial.rawFallbackBlocked += 1; rememberReason(); }
+      if (event === 'git-native.raw-fetch-gate.pass-through' && detail?.unexpected) summary.repoMaterial.rawPassThroughUnexpected += 1;
+
+      if (event === 'session.start') summary.sessions += 1;
+      if (event === 'git-native.snapshot.start') {
+        summary.gitNative.sessions += 1;
+        summary.gitNative.snapshotStarts += 1;
+      }
+      if (event === 'git-native.snapshot.complete') {
+        summary.gitNative.snapshotComplete += 1;
+        summary.gitNative.candidateFiles = Math.max(summary.gitNative.candidateFiles, Number(detail.candidateFiles || 0));
+        summary.gitNative.pathsToRead = Math.max(summary.gitNative.pathsToRead, Number(detail.pathsToRead || 0));
+        summary.gitNative.lastSourceState = 'git-native-local-object-store';
+      }
+      if (event === 'git-native.snapshot.failed') summary.gitNative.snapshotFailed += 1;
+      if (event === 'git-native.read.success') {
+        summary.gitNative.readSuccess += 1;
+        summary.gitNative.readBytes += Math.max(0, Number(detail.bytes || detail.length || 0));
+      }
+      if (event === 'git-native.read.failed') summary.gitNative.readFailed += 1;
+      if (event === 'git-native.raw-bridge.start') summary.gitNative.rawBridgeStarts += 1;
+      if (event === 'git-native.raw-bridge.success' || event === 'git-native.raw-fetch-gate.success' || event === 'git-native.raw-fetch-gate.adapter-success') {
+        summary.gitNative.rawBridgeSuccess += 1;
+        summary.gitNative.rawBridgeBytes += Math.max(0, Number(detail.bytes || detail.length || 0));
+      }
+      if (event === 'git-native.raw-bridge.failed' || event === 'git-native.raw-fetch-gate.failed') summary.gitNative.rawBridgeFailed += 1;
+      if (isGitNativeEvent && detail.commit) {
+        const commit = String(detail.commit || '');
+        if (commit) {
+          gitNativeCommits.add(commit);
+          summary.gitNative.lastCommit = commit;
+        }
+      }
+
+      if (event === 'tree.discovery.start' || event === 'tree.discovery.complete') summary.treeRequests += event === 'tree.discovery.start' ? 1 : 0;
+      if (event === 'raw.request') {
+        summary.rawRequests += 1;
+        const rawUrl = String(detail.rawUrl || detail.url || '');
+        if (rawUrl) rawUrlCounts.set(rawUrl, (rawUrlCounts.get(rawUrl) || 0) + 1);
+        const path = String(detail.path || '');
+        const base = path.split('/').filter(Boolean).pop() || '';
+        if (base) {
+          const set = basenamePaths.get(base) || new Set();
+          set.add(path || rawUrl);
+          basenamePaths.set(base, set);
+        }
+      }
+      if (event === 'raw.success') summary.rawSuccess += 1;
+      if (event === 'raw.failed') summary.rawFailed += 1;
+      if ((isRawEvent || !isGitNativeEvent) && (detail.rateLimited || Number(detail.status) === 429)) summary.rawRateLimited += 1;
+      if (/cache/i.test(String(detail.cacheState || ''))) summary.cacheHits += 1;
+      if (isRawEvent) summary.rawBytes += Math.max(0, Number(detail.bytes || detail.length || 0));
+      summary.candidateFiles = Math.max(summary.candidateFiles, Number(detail.candidateFiles || detail.total || 0));
+    }
+    summary.gitNative.commits = Array.from(gitNativeCommits).slice(-5);
+    summary.uniqueRawUrls = rawUrlCounts.size;
+    summary.duplicateFullRawUrlRequests = Array.from(rawUrlCounts.values()).reduce((sum, count) => sum + Math.max(0, count - 1), 0);
+    summary.basenameCollisions = Array.from(basenamePaths.values()).filter((set) => set.size > 1).length;
+    summary.topDuplicateRawUrls = Array.from(rawUrlCounts.entries())
+      .filter((entry) => entry[1] > 1)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([url, count]) => ({ count, url }));
+    summary.topBasenameCollisions = Array.from(basenamePaths.entries())
+      .filter((entry) => entry[1].size > 1)
+      .sort((a, b) => b[1].size - a[1].size)
+      .slice(0, 8)
+      .map(([basename, paths]) => ({ basename, uniquePaths: paths.size, samplePaths: Array.from(paths).slice(0, 6) }));
+    const gitNativeReads = summary.gitNative.readSuccess + summary.gitNative.rawBridgeSuccess + summary.repoMaterial.gitNativeSuccess;
+    const observedRawNetworkSuccess = Math.max(0, summary.rawSuccess - summary.gitNative.rawBridgeSuccess);
+    summary.verdict = summary.rawRateLimited ? 'rate-limited'
+      : summary.repoMaterial.rawPassThroughUnexpected ? 'git-native-unexpected-raw-pass-through'
+      : summary.repoMaterial.rawFallbackBlocked ? 'git-native-raw-fallback-blocked'
+      : gitNativeReads && summary.repoMaterial.rawFallbackExplicit ? 'git-native-with-explicit-raw-fallback'
+      : gitNativeReads && observedRawNetworkSuccess ? 'git-native-with-unclassified-raw-success'
+      : gitNativeReads && !summary.rawRequests ? 'git-native-active'
+      : gitNativeReads && summary.rawRequests ? 'git-native-with-raw-fallback'
+      : summary.gitNative.snapshotFailed && summary.rawRequests ? 'git-native-failed-raw-fallback-active'
+      : summary.rawRequests > 120 ? 'request-heavy'
+      : summary.rawRequests ? 'raw-file-fallback-active'
+      : summary.gitNative.snapshotStarts ? 'git-native-observed-no-reads'
+      : 'not-observed';
+    return summary;
+  }
+
+  function githubRepoFetchLastSessionSummary() {
+    return githubRepoFetchSummary(githubRepoFetchCurrentSessionEvents());
+  }
+
+  function githubRepoMaterialProblemTargets(events = githubRepoFetchCurrentSessionEvents(), limit = 80) {
+    const wanted = new Set([
+      'repo-material.raw-fallback.blocked',
+      'repo-material.git-native.miss',
+      'git-native.historical-hydrate.failed',
+      'git-native.raw-fetch-gate.blocked'
+    ]);
+    const seen = new Set();
+    const out = [];
+    for (const item of Array.isArray(events) ? events : []) {
+      if (!wanted.has(item?.event || '')) continue;
+      const detail = item?.detail || {};
+      const repo = String(detail.repo || '').trim();
+      const ref = String(detail.ref || detail.requestedRef || '').trim();
+      const path = String(detail.path || detail.requestedPath || '').trim();
+      const key = `${item.event}|${repo}|${ref}|${path}|${detail.reason || detail.error || ''}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        event: item.event,
+        repo,
+        ref,
+        path,
+        label: detail.label || '',
+        reason: detail.reason || detail.policy || '',
+        error: detail.error || '',
+        rawUrl: detail.rawUrl || ''
+      });
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
+  function githubRepoDiscoverySessionId(repo, ref, rootPaths) {
+    return `${repo || 'repo'}@${ref || 'default'}:${(Array.isArray(rootPaths) ? rootPaths : [rootPaths]).join(',')}:${Date.now().toString(36)}`;
+  }
+
+  function githubIssueImportTraceSanitize(value, depth = 0) {
+    if (depth > 4) return '[depth-limit]';
+    if (value instanceof Error) {
+      return {
+        name: value.name || 'Error',
+        message: value.message || String(value),
+        status: value.status || '',
+        rateLimited: Boolean(value.rateLimited),
+        rateLimitUntil: value.rateLimitUntil || 0,
+        rateLimitKey: value.rateLimitKey || '',
+        cacheState: value.cacheState || '',
+        stack: String(value.stack || '').split('\n').slice(0, 8).join('\n'),
+        fallbackErrors: Array.isArray(value.fallbackErrors)
+          ? value.fallbackErrors.slice(0, 8).map((entry) => ({ label: entry?.label || '', error: githubIssueImportTraceSanitize(entry?.error, depth + 1) }))
+          : undefined
+      };
+    }
+    if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
+    if (typeof value === 'string') return value.length > 1200 ? `${value.slice(0, 1200)}…[${value.length} chars]` : value;
+    if (Array.isArray(value)) return value.slice(0, 40).map((item) => githubIssueImportTraceSanitize(item, depth + 1));
+    if (typeof value === 'object') {
+      const out = {};
+      for (const key of Object.keys(value).slice(0, 60)) out[key] = githubIssueImportTraceSanitize(value[key], depth + 1);
+      return out;
+    }
+    return String(value);
+  }
+
+  function githubIssueImportTraceEnsure() {
+    app.githubIssueImportTrace = Array.isArray(app.githubIssueImportTrace) ? app.githubIssueImportTrace : [];
+    return app.githubIssueImportTrace;
+  }
+
+  function githubIssueImportTrace(event, detail = {}) {
+    const trace = githubIssueImportTraceEnsure();
+    const entry = {
+      at: new Date().toISOString(),
+      event: String(event || 'event'),
+      detail: githubIssueImportTraceSanitize(detail || {})
+    };
+    trace.push(entry);
+    while (trace.length > GITHUB_ISSUE_IMPORT_TRACE_LIMIT) trace.shift();
+    try { storageWriteJson(localStorage, STORAGE_KEYS.githubIssueImportTrace, trace); } catch (_) {}
+    return entry;
+  }
+
+  function clearGithubIssueImportTrace() {
+    app.githubIssueImportTrace = [];
+    try { localStorage.removeItem(STORAGE_KEYS.githubIssueImportTrace); } catch (_) {}
+  }
+
+  function githubIssueThreadTraceSummary(thread = {}) {
+    const comments = Array.isArray(thread.comments) ? thread.comments : [];
+    return {
+      adapterMode: thread.adapterMode || '',
+      warning: thread.warning || '',
+      issue: {
+        exists: Boolean(thread.issue),
+        number: thread.issue?.number || '',
+        title: thread.issue?.title || '',
+        html_url: thread.issue?.html_url || '',
+        bodyLength: String(thread.issue?.body || '').length,
+        bodyHasSourceMarkdown: /Source Markdown/i.test(thread.issue?.body || ''),
+        bodyHasCurrentSchema: /Current Schema/i.test(thread.issue?.body || '')
+      },
+      comments: {
+        isArray: Array.isArray(thread.comments),
+        count: comments.length,
+        first: comments[0] ? {
+          id: comments[0].id || '',
+          html_url: comments[0].html_url || '',
+          author: comments[0].user?.login || comments[0].author || '',
+          bodyLength: String(comments[0].body || '').length,
+          bodyHasSourceMarkdown: /Source Markdown/i.test(comments[0].body || ''),
+          bodyHasCurrentSchema: /Current Schema/i.test(comments[0].body || ''),
+          bodyPreview: String(comments[0].body || '').slice(0, 320)
+        } : null
+      }
+    };
+  }
+
+  function githubIssueImportTraceJson() {
+    return JSON.stringify(githubIssueImportTraceEnsure(), null, 2);
+  }
+
+  function crossWorkspaceRelationPickerReport() {
+    const picker = app.parentPicker || null;
+    const rows = [];
+    for (const ws of app.workspaces || []) {
+      rows.push({
+        workspace: workspaceDisplayLabel(ws),
+        wsId: ws.id,
+        pickableNow: Boolean(picker),
+        visibleNodes: Array.isArray(ws.nodes) ? ws.nodes.length : 0
+      });
+    }
+    const referencedWs = picker ? workspaceById(picker.referencedWsId || picker.wsId || picker.originWsId || '') : null;
+    const basisWs = picker ? workspaceById(picker.useAsBasisWsId || picker.referencedWsId || picker.wsId || picker.originWsId || '') : null;
+    return {
+      active: Boolean(picker),
+      mode: picker?.mode || '',
+      originWorkspace: picker?.originWsId || picker?.wsId || '',
+      referencedWorkspace: referencedWs ? workspaceDisplayLabel(referencedWs) : '',
+      basisWorkspace: basisWs ? workspaceDisplayLabel(basisWs) : '',
+      rows
+    };
+  }
+
+  window.TiinexDiagnostics = Object.assign(window.TiinexDiagnostics || {}, {
+    githubIssueImportTrace: () => githubIssueImportTraceEnsure().slice(),
+    githubIssueImportTraceJson,
+    clearGithubIssueImportTrace,
+    lastGithubIssueImportTrace: () => githubIssueImportTraceEnsure().slice(-40),
+    githubIssueNestedContinuityReport: () => githubIssueNestedContinuityReport(),
+    githubIssueParentBindingAudit: () => githubIssueParentBindingAudit(),
+    markdownRendererSmokeTest: () => markdownRendererSmokeTest(),
+    translationStabilityReport: () => translationStabilityReport(),
+    activeLanguageSurfaceReport: () => activeLanguageSurfaceReport(),
+    githubRepoFetchTrace: () => githubRepoFetchTraceEnsure().slice(),
+    githubRepoFetchTraceJson,
+    clearGithubRepoFetchTrace,
+    githubRepoFetchSummary: () => githubRepoFetchSummary(),
+    githubRepoFetchLastSessionSummary,
+    githubRepoMaterialProblemTargets: (limit = 80) => githubRepoMaterialProblemTargets(githubRepoFetchCurrentSessionEvents(), limit),
+    publicViewerShareUrlFor: (url, adapter = '') => publicViewerShareUrlForTarget(url, adapter),
+    parseHashShareTarget: (hash = location.hash) => parseHashShareTarget(hash),
+    configuredPublicViewerBaseUrl: () => configuredPublicViewerBaseUrl(),
+    shareEligibilityForActive: () => shareEligibilityForActive(),
+    shareEligibilityForWorkspace: (wsId = '') => shareEligibilityForWorkspaceId(wsId),
+    shareEligibilityForArtifact: (wsId = '', nodeId = '') => shareEligibilityForArtifactId(wsId, nodeId),
+    shareEligibilityReport: () => shareEligibilityReport(),
+    interactionCardPreviewForActive: (intent = 'share', reason = '') => interactionCardMarkdown(shareEligibilityForActive(), { intent, reason }),
+    interactionCardRenderedPreviewForActive: (reason = '') => interactionCardPreviewHtml(shareEligibilityForActive(), { reason }),
+    shareReadinessReport: () => shareReadinessReport(),
+    shareCompactnessReport: () => shareCompactnessReport(),
+    shareActionHandoffReport: () => shareActionHandoffReport(),
+    sharePolishReadinessReport: () => sharePolishReadinessReport(),
+    evidenceRelationAttachmentReport: () => evidenceRelationAttachmentReport(),
+    evidenceCameraCaptureReport: () => evidenceCameraCaptureReport(),
+    shareSignalPreviewForActive: (reason = '', intent = 'share') => shareSignalRecord(shareEligibilityForActive(), { intent, reason }),
+    shareCounterObservationReport: () => shareCounterObservationReport(),
+    crossWorkspaceRelationPickerReport: () => crossWorkspaceRelationPickerReport(),
+    presentationCoverageReport: (limit = 240) => presentationCoverageReport(limit),
+    presentationCoverageForActive: () => schemaPresentationCoverageForNode(app.workspaces?.[app.activeIndex || 0]?.selectedNode || app.workspaces?.[app.activeIndex || 0]?.nodes?.[0] || {}),
+    presentationTruncationReport: (limit = 240) => presentationTruncationReport(limit),
+    gitSourceAdapterContract: () => ({
+      id: 'tiinex.git-source-adapter.v1',
+      canonicalPath: 'git-native-local-object-store-first',
+      fallbackPath: 'permalink/raw-web lookup only when local source state cannot answer',
+      surfaces: ['repoFiles', 'issueSnapshots'],
+      principles: ['local capabilities first', 'Time Portal aware', 'permalink as recovery anchor']
+    }),
+    gitNativeAdapterCapability: () => ({
+      id: 'tiinex.git-native-source-adapter.v1',
+      runtimeShape: 'isomorphic-git-compatible injected runtime',
+      hiddenProxy: false,
+      hiddenNetwork: false,
+      primaryReadPath: 'local Git object store',
+      requiredRuntime: ['git', 'fs', 'dir', 'Buffer'],
+      optionalRuntime: ['http', 'cache', 'TREE', 'listFiles', 'readText', 'onProgress', 'onEvent'],
+      timePortal: ['resolve ref', 'read file at commit', 'resolve parent from local objects before permalink lookup']
+    }),
+    gitNativeRuntimeStatus: (options = {}) => window.TiinexGitNativeRuntime?.status ? window.TiinexGitNativeRuntime.status(effectiveGitNativeDiscoveryConfig(options)) : { runtimeAvailable: false, reason: 'TiinexGitNativeRuntime module not loaded' },
+    gitNativeDiscoveryConfig: () => Object.freeze(effectiveGitNativeDiscoveryConfig({})),
+    disableGitNativeDiscovery: () => {
+      clearGitNativeDiscoveryConfig();
+      return Object.freeze({ ok: true, enabled: false, guidance: 'Git-native discovery disabled; repo discovery will use fallback paths.' });
+    },
+    enableGitNativeDiscovery: async (options = {}) => {
+      window.TIINEX_VIEWER_OPTIONS = window.TIINEX_VIEWER_OPTIONS || {};
+      const configured = effectiveGitNativeDiscoveryConfig(Object.assign({
+        repo: options.repo || window.TIINEX_VIEWER_OPTIONS.gitNative?.repo || readGitNativeDiscoveryConfig().repo || 'Tiinex/docs',
+        ref: options.ref || window.TIINEX_VIEWER_OPTIONS.gitNative?.ref || readGitNativeDiscoveryConfig().ref || 'master',
+        rootPaths: options.rootPaths || window.TIINEX_VIEWER_OPTIONS.gitNative?.rootPaths || readGitNativeDiscoveryConfig().rootPaths || ['.topics']
+      }, options || {}, { enabled: options.enabled !== false }));
+      const persisted = options.persist === false ? configured : writeGitNativeDiscoveryConfig(configured);
+      window.TIINEX_VIEWER_OPTIONS.gitNative = Object.assign({}, window.TIINEX_VIEWER_OPTIONS.gitNative || {}, persisted);
+      if (options.clearTrace !== false) clearGithubRepoFetchTrace();
+      if (!window.TiinexGitNativeRuntime?.ensureRuntime || !window.TiinexGitNativeRuntime?.status) throw new Error('TiinexGitNativeRuntime module not loaded.');
+      let runtime = null;
+      let runtimeError = null;
+      try {
+        runtime = await window.TiinexGitNativeRuntime.ensureRuntime(Object.assign({ repo: persisted.repo || 'Tiinex/docs' }, persisted));
+      } catch (error) {
+        runtimeError = error;
+      }
+      const status = await window.TiinexGitNativeRuntime.status(persisted);
+      const result = Object.freeze(Object.assign({}, status, {
+        enabled: persisted.enabled !== false,
+        persisted: options.persist !== false,
+        traceCleared: options.clearTrace !== false,
+        runtimeAvailable: Boolean(status.runtimeAvailable && !runtimeError),
+        runtimeReady: Boolean(runtime && !runtimeError),
+        cachedRuntime: Boolean(status.cachedRuntime || runtime),
+        cachedRepo: runtime?.repo || status.cachedRepo || '',
+        cachedDir: runtime?.dir || status.cachedDir || '',
+        error: runtimeError ? (runtimeError.message || String(runtimeError)) : '',
+        missing: Array.isArray(runtimeError?.missing) ? runtimeError.missing.slice() : undefined,
+        needsExplicitCorsProxy: Boolean(runtimeError?.needsExplicitCorsProxy),
+        next: runtimeError ? 'Fix error/missing settings, then run enableGitNativeDiscovery again.' : 'Run Refresh/Discovery; repo files should use git-native-local-object-store.',
+        guidance: runtimeError
+          ? 'Git-native discovery was configured, but the explicit runtime could not be initialized. Inspect missing/error before refreshing.'
+          : 'Git-native discovery is persisted and the explicit runtime is ready; refresh repo discovery to use the local Git object store path.'
+      }));
+      githubRepoFetchTrace(runtimeError ? 'git-native.config.enable.failed' : 'git-native.config.enable.ready', {
+        runtimeReady: result.runtimeReady,
+        runtimeAvailable: result.runtimeAvailable,
+        persisted: result.persisted,
+        cachedRepo: result.cachedRepo,
+        cachedDir: result.cachedDir,
+        corsProxyConfigured: Boolean(result.corsProxyConfigured),
+        error: result.error || ''
+      });
+      return result;
+    },
+    gitNativeCloneLab: (options = {}) => {
+      if (!window.TiinexGitNativeRuntime?.cloneLab) throw new Error('TiinexGitNativeRuntime module not loaded.');
+      return window.TiinexGitNativeRuntime.cloneLab(options);
+    }
   });
 
   const APP_SETTING_DEFAULTS = Object.freeze({
@@ -193,10 +846,17 @@
     return { preservationPolicy, preservationReasons: reasons };
   }
 
+  function adapterResourceUrl(value = '') {
+    if (typeof Request !== 'undefined' && value instanceof Request) return String(value.url || '');
+    if (value && typeof value === 'object' && typeof value.url === 'string') return String(value.url || '');
+    return String(value || '');
+  }
+
   function adapterIdForUrl(url = '') {
     try {
-      const host = new URL(String(url || ''), location.href).hostname.toLowerCase();
+      const host = new URL(adapterResourceUrl(url), location.href).hostname.toLowerCase();
       if (host === 'api.github.com') return 'github-rest';
+      if (host === 'github.com') return 'github-web';
       if (host === 'raw.githubusercontent.com') return 'github-raw';
       if (host === 'data.jsdelivr.com') return 'jsdelivr';
       return 'url-fetch';
@@ -208,7 +868,7 @@
   function adapterRateLimitKeyFor(url = '', adapter = '') {
     if (adapter === 'github-rest') return 'github-rest';
     try {
-      const host = new URL(String(url || ''), location.href).hostname.toLowerCase();
+      const host = new URL(adapterResourceUrl(url), location.href).hostname.toLowerCase();
       return `${adapter || 'url-fetch'}:${host}`;
     } catch (_) {
       return adapter || 'url-fetch';
@@ -220,15 +880,25 @@
   }
 
   function readAdapterRateLimit(key) {
-    try { return storageReadJson(sessionStorage, adapterRateLimitStorageKey(key), null); } catch (_) { return null; }
+    const storageKey = adapterRateLimitStorageKey(key);
+    try {
+      const local = storageReadJson(localStorage, storageKey, null);
+      if (local) return local;
+    } catch (_) {}
+    try { return storageReadJson(sessionStorage, storageKey, null); } catch (_) { return null; }
   }
 
   function writeAdapterRateLimit(key, state) {
-    try { storageWriteJson(sessionStorage, adapterRateLimitStorageKey(key), state || {}); } catch (_) {}
+    const storageKey = adapterRateLimitStorageKey(key);
+    const clean = state || {};
+    try { storageWriteJson(localStorage, storageKey, clean); } catch (_) {}
+    try { storageWriteJson(sessionStorage, storageKey, clean); } catch (_) {}
   }
 
   function clearAdapterRateLimit(key) {
-    try { sessionStorage.removeItem(adapterRateLimitStorageKey(key)); } catch (_) {}
+    const storageKey = adapterRateLimitStorageKey(key);
+    try { localStorage.removeItem(storageKey); } catch (_) {}
+    try { sessionStorage.removeItem(storageKey); } catch (_) {}
   }
 
   function adapterRetryAfterMs(value) {
@@ -285,19 +955,55 @@
   }
 
   async function adapterRequest(url, options = {}) {
-    const adapter = options.adapter || adapterIdForUrl(url);
+    const requestUrl = adapterResourceUrl(url);
+    const adapter = options.adapter || adapterIdForUrl(requestUrl);
     const label = options.label || (adapter === 'github-rest' ? 'GitHub API' : adapter === 'github-raw' ? 'GitHub raw' : 'External source');
-    const rateLimitKey = options.rateLimitKey || adapterRateLimitKeyFor(url, adapter);
-    const key = adapterRequestKey(url, Object.assign({}, options, { adapter }));
+
+    // Canonical repo-material read boundary: some secondary paths call
+    // adapterFetchText()/adapterRequest() directly instead of fetchText(). When
+    // Git-native discovery is active for the same GitHub repo, those raw GitHub
+    // URLs must still be satisfied from the local Git object store before any
+    // network fetch is attempted. This closes the remaining raw bridge gap for
+    // preview/source/integrity style reads without weakening explicit fallback
+    // behavior.
+    const rawGithubPartsForBridge = !options.skipGitNativeRawBridge ? rawGithubSourceParts(requestUrl) : null;
+    if (rawGithubPartsForBridge && !options.skipGitNativeRawBridge) {
+      const bridged = await readRepoMaterialText(Object.assign({}, options, { url: rawGithubPartsForBridge.rawUrl || requestUrl, label, purpose: label }));
+      if (bridged?.ok) {
+        return {
+          text: bridged.text,
+          data: null,
+          adapter,
+          label,
+          url: bridged.parts?.rawUrl || requestUrl,
+          status: 200,
+          ok: true,
+          cacheState: 'git-native-raw-bridge',
+          sourceState: 'git-native-local-object-store',
+          sourceResolutionKind: bridged.sourceResolutionKind || 'git-native-local-object-store',
+          sourceAccessMode: 'git-object-store',
+          commit: bridged.commit || '',
+          bytes: String(bridged.text || '').length
+        };
+      }
+    }
+
+    const rateLimitKey = options.rateLimitKey || adapterRateLimitKeyFor(requestUrl, adapter);
+    const traceGitHubIssueRequest = /github\.com|api\.github\.com|r\.jina\.ai|issues\/\d+|issuecomment/i.test(String(url || '')) || String(adapter || '').includes('github');
+    if (traceGitHubIssueRequest) githubIssueImportTrace('adapter.request.start', { adapter, label, url: requestUrl, rateLimitKey, hardRefresh: Boolean(options.hardRefresh), ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard) });
+    const key = adapterRequestKey(requestUrl, Object.assign({}, options, { adapter }));
     const runtime = ensureAdapterRuntime();
     const now = Date.now();
     const cached = runtime.memory.get(key);
     if (!options.hardRefresh && cached && cached.expiresAt && cached.expiresAt > now) {
+      if (traceGitHubIssueRequest) githubIssueImportTrace('adapter.request.runtime-cache-hit', { adapter, label, url: requestUrl, rateLimitKey, expiresAt: cached.expiresAt });
+      if (adapter === 'github-raw') githubRepoFetchTrace('raw.cache-hit', { label, url: requestUrl, rateLimitKey, cacheState: 'runtime-cache', expiresAt: cached.expiresAt });
       return Object.assign({}, cached.result, { fromRuntimeCache: true, cacheState: 'runtime-cache' });
     }
 
     const guard = readAdapterRateLimit(rateLimitKey);
-    if (guard?.until && Number(guard.until) > now) {
+    if (!options.ignoreRateLimitGuard && guard?.until && Number(guard.until) > now) {
+      if (traceGitHubIssueRequest) githubIssueImportTrace('adapter.request.rate-limit-guard', { adapter, label, url: requestUrl, rateLimitKey, until: Number(guard.until), reason: guard.reason || '' });
       throw makeAdapterError(adapterRateLimitMessage(label, Number(guard.until), guard.reason || ''), {
         adapter,
         status: 429,
@@ -313,13 +1019,39 @@
     const promise = (async () => {
       const fetchHeaders = Object.assign({}, options.headers || {});
       const cacheMode = options.hardRefresh ? 'reload' : (options.cacheMode || 'default');
-      const response = await fetch(url, {
+      const rawNetworkParts = rawGithubSourceParts(requestUrl);
+      if (rawNetworkParts && shouldBlockImplicitRawRepoMaterial(rawNetworkParts, options)) {
+        const disabledReason = gitNativeRawReadDisabledReason(rawNetworkParts, options) || 'git-native-active';
+        githubRepoFetchTrace('git-native.raw-network.blocked', { label, adapter, url, rawUrl: rawNetworkParts.rawUrl, repo: rawNetworkParts.repo, ref: rawNetworkParts.ref, path: rawNetworkParts.path, reason: disabledReason });
+        githubRepoFetchTrace('repo-material.raw-fallback.blocked', { label, adapter, rawUrl: rawNetworkParts.rawUrl, repo: rawNetworkParts.repo, ref: rawNetworkParts.ref, path: rawNetworkParts.path, reason: 'adapter-network-boundary' });
+        throw makeAdapterError(`Blocked raw GitHub repo fetch while Git-native discovery is active for ${rawNetworkParts.repo}: ${rawNetworkParts.path}`, {
+          adapter,
+          url: requestUrl,
+          status: 0,
+          ok: false,
+          gitNativeRawNetworkBlocked: true,
+          cacheState: 'git-native-required',
+          repo: rawNetworkParts.repo,
+          ref: rawNetworkParts.ref,
+          path: rawNetworkParts.path
+        });
+      }
+      if (rawNetworkParts && options.allowRawFallback) {
+        githubRepoFetchTrace('repo-material.raw-fallback.explicit', { label, adapter, rawUrl: rawNetworkParts.rawUrl, repo: rawNetworkParts.repo, ref: rawNetworkParts.ref, path: rawNetworkParts.path, reason: options.fallbackPolicy || 'adapter-allowRawFallback' });
+      }
+      const response = await fetch(requestUrl, {
         method: options.method || 'GET',
         mode: options.mode || 'cors',
         credentials: options.credentials || 'omit',
         cache: cacheMode,
-        headers: fetchHeaders
+        headers: fetchHeaders,
+        allowRawFallback: Boolean(options.allowRawFallback),
+        skipGitNativeRawBridge: Boolean(options.skipGitNativeRawBridge)
       });
+      const syntheticGitNativeResponse = Boolean(response?.tiinexGitNativeSynthetic);
+      if (traceGitHubIssueRequest) githubIssueImportTrace('adapter.fetch.response', { adapter, label, url: requestUrl, status: response.status, statusText: response.statusText || '', ok: response.ok, type: response.type, syntheticGitNativeResponse });
+      if (adapter === 'github-raw' && !syntheticGitNativeResponse) githubRepoFetchTrace('raw.response', { label, url: requestUrl, status: response.status, statusText: response.statusText || '', ok: response.ok, type: response.type, cacheMode });
+      if (adapter === 'github-raw' && syntheticGitNativeResponse) githubRepoFetchTrace('git-native.raw-fetch-gate.response', { label, url: requestUrl, status: response.status, ok: response.ok, cacheMode });
       const headerRecord = adapterHeaderRecord(response.headers);
       const headerApi = adapterHeaders(headerRecord);
       const rateUntil = adapterRateLimitUntilFromHeaders(headerRecord);
@@ -335,6 +1067,18 @@
       }
 
       const text = await response.text();
+      if (traceGitHubIssueRequest) githubIssueImportTrace('adapter.fetch.text', {
+        adapter,
+        label,
+        url: requestUrl,
+        status: response.status,
+        ok: response.ok,
+        length: text.length,
+        hasSourceMarkdown: /Source Markdown/i.test(text),
+        hasCurrentSchema: /Current Schema/i.test(text),
+        hasKnownGithubIssue: /issues\/9|Welcome to the Next Dimension|The American Experiment|issuecomment/i.test(text),
+        preview: text.slice(0, 500)
+      });
       let data = null;
       if (options.parse === 'json') {
         try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
@@ -343,7 +1087,7 @@
       const preservation = adapterPreservationPolicyFromCachePolicy(policy, options.authMode || 'none');
       const meta = {
         adapter,
-        url,
+        url: requestUrl,
         status: response.status,
         statusText: response.statusText || '',
         ok: response.ok,
@@ -360,11 +1104,16 @@
       if (!response.ok) {
         const apiMessage = data?.message ? `: ${data.message}` : '';
         const rateHint = rateUntil ? ` (retry after ${new Date(rateUntil).toLocaleTimeString()})` : '';
+        if (traceGitHubIssueRequest) githubIssueImportTrace('adapter.request.http-error', { adapter, label, url: requestUrl, status: response.status, statusText: response.statusText || '', apiMessage, rateUntil, bodyPreview: text.slice(0, 500) });
+        if (adapter === 'github-raw') githubRepoFetchTrace('raw.failed', { label, url: requestUrl, status: response.status, statusText: response.statusText || '', rateUntil, rateLimited: Boolean(rateUntil || response.status === 429), bytes: text.length, cacheState: meta.cacheState || '' });
         throw makeAdapterError(`${response.status} ${response.statusText || ''}${apiMessage}${rateHint}`.trim(), Object.assign(meta, {
           errorBody: text,
           rateLimited: Boolean(rateUntil || response.status === 429)
         }));
       }
+
+      if (adapter === 'github-raw' && !syntheticGitNativeResponse) githubRepoFetchTrace('raw.success', { label, url: requestUrl, status: response.status, bytes: text.length, cacheState: meta.cacheState || '', cachePolicy: policy });
+      if (adapter === 'github-raw' && syntheticGitNativeResponse) githubRepoFetchTrace('git-native.raw-fetch-gate.adapter-success', { label, url: requestUrl, status: response.status, bytes: text.length, cacheState: 'git-native-fetch-gate' });
 
       const result = Object.assign({ text, data }, meta);
       const shouldMemoryCache = !policy.noStore && !policy.noCache && policy.maxAgeMs > 0;
@@ -376,7 +1125,12 @@
 
     runtime.inFlight.set(key, promise);
     try {
-      return await promise;
+      const result = await promise;
+      if (traceGitHubIssueRequest) githubIssueImportTrace('adapter.request.ok', { adapter, label, url: requestUrl, status: result.status, length: String(result.text || '').length, cacheState: result.cacheState || '' });
+      return result;
+    } catch (error) {
+      if (traceGitHubIssueRequest) githubIssueImportTrace('adapter.request.error', { adapter, label, url: requestUrl, error });
+      throw error;
     } finally {
       runtime.inFlight.delete(key);
     }
@@ -781,7 +1535,7 @@
 
   // --- Source loading ---
 
-  async function loadUrlsIntoWorkspace(ws, urls) {
+  async function loadUrlsIntoWorkspace(ws, urls, options = {}) {
     const queue = Array.from(urls || []).filter(Boolean);
     ws.loading = true;
     ws.discoveryProgress = { phase: 'fetch', loaded: 0, total: queue.length, failed: 0 };
@@ -796,6 +1550,32 @@
     try {
       for (let index = 0; index < queue.length; index += 1) {
         const raw = queue[index];
+
+        try {
+          const issueSpec = typeof parseGitHubIssueSpec === 'function' ? parseGitHubIssueSpec(raw) : null;
+          if (issueSpec) {
+            await loadGitHubIssueIntoWorkspace(ws, issueSpec.issueUrl, {
+              persistConfiguredTarget: true,
+              hardRefresh: true,
+              refreshExisting: true,
+              toast: false
+            });
+            count += 1;
+            loaded += 1;
+            ws.discoveryProgress.loaded = loaded;
+            ws.discoveryProgress.total = queue.length;
+            if (typeof progressYield === 'function') await progressYield(ws);
+            continue;
+          }
+        } catch (error) {
+          failed += 1;
+          ws.discoveryProgress.failed = failed;
+          ws.logs.push(`Could not import GitHub issue URL ${raw}: ${error.message}`);
+          ws.discoveryProgress.total = queue.length;
+          if (typeof progressYield === 'function') await progressYield(ws);
+          continue;
+        }
+
         const item = convertSourceUrl(raw);
         if (!item) {
           loaded += 1;
@@ -841,7 +1621,7 @@
         indexed = true;
       }
 
-      ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, { phase: 'policy' });
+      ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, { phase: 'policy', sourceProgress: options.sourceProgress || ws.discoveryProgress?.sourceProgress || '' });
       if (typeof progressYield === 'function') await progressYield(ws);
       await discoverWorkspacePolicy(ws);
     } finally {
@@ -861,64 +1641,303 @@
     return ws?.nodeById.get(ws.selectedNodeId) || null;
   }
 
-  function shortSchema(schema) {
-    return String(schema || '').replace(/^tiinex\./, '').replace(/\.v\d+$/, '').replace(/\.schema\.md$/, '') || 'unknown';
+  function lockLineageView(ws, node, reason = 'lineage') {
+    if (!ws || !node?.id) return false;
+    app.lineageViewLock = {
+      wsId: ws.id,
+      selectedId: node.id,
+      selectedPath: node.path || '',
+      reason,
+      until: Date.now() + 9000
+    };
+    return true;
   }
 
-  function renderSafeMarkdown(markdown) {
-    const lines = normalizeNewlines(markdown).split('\n');
-    let html = '';
-    let inList = false;
-    let inFence = false;
-    let fence = [];
-    const closeList = () => { if (inList) { html += '</ul>'; inList = false; } };
-    for (const raw of lines) {
-      const line = raw.replace(/\t/g, '    ');
-      const trimmed = line.trim();
-      if (/^```/.test(trimmed)) {
-        if (inFence) {
-          html += `<pre><code>${escapeHtml(fence.join('\n'))}</code></pre>`;
-          fence = [];
-          inFence = false;
-        } else {
-          closeList();
-          inFence = true;
-        }
-        continue;
-      }
-      if (inFence) { fence.push(raw); continue; }
-      if (!trimmed) { closeList(); continue; }
-      const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
-      if (heading) {
-        closeList();
-        const level = heading[1].length;
-        html += `<h${level}>${renderInline(heading[2])}</h${level}>`;
-        continue;
-      }
-      const bullet = trimmed.match(/^[-*]\s+(.+)$/);
-      if (bullet) {
-        if (!inList) { html += '<ul>'; inList = true; }
-        html += `<li>${renderInline(bullet[1])}</li>`;
-        continue;
-      }
-      const quote = trimmed.match(/^>\s*(.+)$/);
-      if (quote) {
-        closeList();
-        html += `<blockquote>${renderInline(quote[1])}</blockquote>`;
-        continue;
-      }
-      closeList();
-      html += `<p>${renderInline(trimmed)}</p>`;
+  function lineageViewLockActive() {
+    const lock = app.lineageViewLock || null;
+    if (!lock || Date.now() > Number(lock.until || 0)) return false;
+    const ws = getWorkspace(lock.wsId || '');
+    if (!ws) return false;
+    const selected = selectedNode(ws);
+    if (selected && (!lock.selectedId || selected.id === lock.selectedId || selected.path === lock.selectedPath)) return true;
+    const resolved = lock.selectedId ? ws.nodeById?.get?.(lock.selectedId) : null;
+    const byPath = !resolved && lock.selectedPath ? Array.from(ws.nodeById?.values?.() || []).find((node) => node.path === lock.selectedPath) : null;
+    const target = resolved || byPath;
+    if (target) {
+      ws.selectedNodeId = target.id;
+      return true;
     }
-    closeList();
-    if (inFence) html += `<pre><code>${escapeHtml(fence.join('\n'))}</code></pre>`;
-    return html || '<p>No readable markdown body.</p>';
+    return false;
+  }
+
+
+  function clearLineageViewLock(reason = 'clear-lineage-lock') {
+    if (app.lineageViewLock) routeOwnerRecord('lineageLock:clear', { reason, lock: app.lineageViewLock });
+    app.lineageViewLock = null;
+  }
+
+  function clearLineageViewLockForWorkspace(ws, reason = 'clear-lineage-lock') {
+    if (!ws || !app.lineageViewLock) return false;
+    const lock = app.lineageViewLock;
+    if (lock.wsId && lock.wsId !== ws.id) return false;
+    routeOwnerRecord('lineageLock:clear-workspace', { reason, workspaceId: ws.id, lock });
+    app.lineageViewLock = null;
+    return true;
+  }
+
+  function suppressCachedLens(reason = 'manual-discovery', durationMs = 3500) {
+    app.routing = app.routing || {};
+    app.routing.suppressCachedLensUntil = Math.max(Number(app.routing.suppressCachedLensUntil || 0), Date.now() + durationMs);
+    app.routing.suppressCachedLensReason = reason;
+    app.pendingDurableLensState = null;
+  }
+
+  function cachedLensSuppressed() {
+    return Date.now() < Number(app.routing?.suppressCachedLensUntil || 0);
+  }
+
+  function routeOwnerTraceEnabled() {
+    try {
+      return sessionStorage.getItem('tiinex.debug.routeOwner') === '1'
+        || sessionStorage.getItem('tiinex.debug.routeOwnerConsole') === '1';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function routeOwnerConsoleEnabled() {
+    try { return sessionStorage.getItem('tiinex.debug.routeOwnerConsole') === '1'; } catch (_) { return false; }
+  }
+
+  function routeOwnerWorkspaceSummary(ws) {
+    const selected = selectedNode(ws);
+    return {
+      id: ws?.id || '',
+      label: ws ? workspaceDisplayLabel(ws) : '',
+      selectedNodeId: ws?.selectedNodeId || '',
+      selectedPath: selected?.path || ws?.pendingSelectedRoute?.selectedPath || '',
+      pendingSelectedPath: ws?.pendingSelectedRoute?.selectedPath || '',
+      mode: selected || ws?.pendingSelectedRoute ? 'lineage' : 'discovery',
+      routeScrollMode: ws?.routeScrollMode || '',
+      routeScrollSelectedPath: ws?.routeScrollSelectedPath || ''
+    };
+  }
+
+  function routeOwnerStateSummary(state) {
+    if (!state || typeof state !== 'object') return null;
+    const sources = Array.isArray(state.workspaces) ? state.workspaces : (Array.isArray(state.sources) ? state.sources : []);
+    return {
+      kind: state.kind || (Array.isArray(state.sources) ? 'state' : ''),
+      activeIndex: Number(state.activeIndex || 0),
+      workspaceOffset: Number(state.workspaceOffset || 0),
+      modal: state.modal?.type || '',
+      sources: sources.map((source) => ({
+        label: source.label || '',
+        mode: source.mode || (source.selectedNodeId || source.selectedPath || source.selectedTitle ? 'lineage' : 'discovery'),
+        selectedNodeId: source.selectedNodeId || '',
+        selectedPath: source.selectedPath || '',
+        selectedTitle: source.selectedTitle || '',
+        scrollMode: source.scrollMode || '',
+        scrollSelectedPath: source.scrollSelectedPath || ''
+      }))
+    };
+  }
+
+  function routeOwnerDecodedState() {
+    try { return staticDiskMode() ? decodeViewRouteFromHash() : decodeRouteStateFromHash(); } catch (_) { return null; }
+  }
+
+  function routeOwnerRecord(label, details = {}) {
+    if (!routeOwnerTraceEnabled()) return;
+    try {
+      const entry = {
+        t: Math.round(performance.now()),
+        label,
+        href: `${location.pathname}${location.search}${location.hash}`,
+        hash: location.hash || '',
+        restoring: Boolean(app.routing?.restoring),
+        booting: Boolean(app.isBootingFromUrl),
+        suppressCachedLens: cachedLensSuppressed(),
+        suppressReason: app.routing?.suppressCachedLensReason || '',
+        lineageLock: app.lineageViewLock ? {
+          wsId: app.lineageViewLock.wsId || '',
+          selectedId: app.lineageViewLock.selectedId || '',
+          selectedPath: app.lineageViewLock.selectedPath || '',
+          reason: app.lineageViewLock.reason || ''
+        } : null,
+        decodedRoute: routeOwnerStateSummary(routeOwnerDecodedState()),
+        pendingLens: routeOwnerStateSummary(app.pendingDurableLensState),
+        details,
+        workspaces: (app.workspaces || []).map(routeOwnerWorkspaceSummary)
+      };
+      if (!app.routeOwnerLog) app.routeOwnerLog = [];
+      app.routeOwnerLog.push(entry);
+      if (app.routeOwnerLog.length > 900) app.routeOwnerLog.shift();
+      window.__tiinexRouteOwner = app.routeOwnerLog;
+      if (routeOwnerConsoleEnabled()) console.warn('[tiinex:routeOwner]', label, entry);
+    } catch (_) {}
+  }
+
+  function restoreRememberedDiscoveryScrollState(ws, reason = 'ux-back-discovery') {
+    if (!ws) return false;
+    const top = Math.max(0, Math.round(Number(ws.discoveryRouteScrollTop || 0)));
+    if (!top) return false;
+    const before = {
+      routeScrollTop: Number(ws.routeScrollTop || 0),
+      routeScrollMode: ws.routeScrollMode || '',
+      routeScrollSelectedPath: ws.routeScrollSelectedPath || ''
+    };
+    ws.routeScrollTop = top;
+    ws.routeScrollMode = 'discovery';
+    ws.routeScrollSelectedPath = '';
+    scrollFlightRecord?.('route:restore-remembered-discovery-scroll', { reason, before, top, workspace: scrollRestoreDebugWorkspaceState?.(ws) });
+    return true;
+  }
+
+  function clearWorkspaceLineageSelection(ws, reason = 'clear-selection') {
+    if (!ws) return false;
+    const before = routeOwnerWorkspaceSummary(ws);
+    const hadSelection = Boolean(ws.selectedNodeId || ws.pendingSelectedRoute);
+    ws.selectedNodeId = null;
+    ws.pendingSelectedRoute = null;
+    ws.lineageSearch = '';
+    ws.routeScrollMode = 'discovery';
+    ws.routeScrollSelectedPath = '';
+    ws.lineageAudit = null;
+    clearLineageViewLock(reason);
+    suppressCachedLens(reason);
+    routeOwnerRecord('selection:clear', { reason, hadSelection, before, after: routeOwnerWorkspaceSummary(ws) });
+    return hadSelection;
+  }
+
+  function clearLineageSelectionToDiscovery(ws, reason = 'clear-selection', routeKind = 'push') {
+    if (!ws) return false;
+    routeOwnerRecord('route:clear-to-discovery:start', { reason, routeKind, workspace: routeOwnerWorkspaceSummary(ws) });
+    app.activeWorkspaceId = ws.id;
+    if (/ux-back|clear-selection/.test(String(reason || ''))) restoreRememberedDiscoveryScrollState(ws, reason);
+    clearWorkspaceLineageSelection(ws, reason);
+    focusWorkspaceWindow(ws.id);
+    if (typeof setRouteState === 'function') setRouteState(routeKind);
+    else if (typeof updateUrlState === 'function') updateUrlState({ replace: routeKind === 'replace' });
+    render();
+    if (/ux-back/.test(String(reason || ''))) {
+      scheduleDiscoveryScrollRestore(ws, ws.discoveryRouteScrollTop || ws.routeScrollTop || 0, reason);
+    }
+    if (typeof scheduleRouteHistoryScrollRestore === 'function') scheduleRouteHistoryScrollRestore(`${reason}-discovery`);
+    routeOwnerRecord('route:clear-to-discovery:end', { reason, routeKind });
+    return true;
+  }
+
+  function discoveryScrollFeedForWorkspace(ws) {
+    if (!ws) return null;
+    const id = CSS.escape(ws.id || '');
+    return document.querySelector(`.post-feed.discovery[data-ws="${id}"]`)
+      || scrollElementForRole?.(ws, 'post-feed.discovery', 'discovery')
+      || null;
+  }
+
+  function rememberDiscoveryScrollForRoute(ws, reason = 'before-lineage-select') {
+    if (!ws) return false;
+    const feed = discoveryScrollFeedForWorkspace(ws);
+    if (!feed) {
+      routeOwnerRecord('scroll:remember-discovery-skip', { reason, workspace: routeOwnerWorkspaceSummary(ws) });
+      return false;
+    }
+    const before = {
+      routeScrollTop: Number(ws.routeScrollTop || 0),
+      routeScrollMode: ws.routeScrollMode || '',
+      routeScrollSelectedPath: ws.routeScrollSelectedPath || ''
+    };
+    const top = Math.max(0, Math.round(scrollElementTop?.(feed) ?? feed.scrollTop ?? 0));
+    ws.routeScrollTop = top;
+    ws.routeScrollMode = 'discovery';
+    ws.routeScrollSelectedPath = '';
+    ws.discoveryRouteScrollTop = top;
+    ws.discoveryRouteScrollAt = Date.now();
+    scrollFlightRecord?.('route:remember-discovery-scroll', {
+      reason,
+      before,
+      after: {
+        routeScrollTop: Number(ws.routeScrollTop || 0),
+        routeScrollMode: ws.routeScrollMode || '',
+        routeScrollSelectedPath: ws.routeScrollSelectedPath || ''
+      },
+      target: scrollRestoreDebugTargetState?.(feed),
+      workspace: scrollRestoreDebugWorkspaceState?.(ws)
+    });
+    routeOwnerRecord('scroll:remember-discovery', { reason, before, after: routeOwnerWorkspaceSummary(ws) });
+    return true;
+  }
+
+
+  function ensureDiscoveryWindowForScrollTop(ws, top = 0, reason = 'scroll-restore') {
+    if (!ws || (ws.discoveryView || 'feed') !== 'feed') return false;
+    if (!top || typeof discoveryVisibleCount !== 'function') return false;
+    let total = 0;
+    try { total = (filteredDiscoveryNodes(ws) || []).length; } catch (_) { total = Array.isArray(ws.nodes) ? ws.nodes.length : 0; }
+    if (!total) return false;
+    const current = discoveryVisibleCount(ws);
+    if (current >= total) return false;
+    const grow = Math.max(8, Number(app.settings.discoveryFeedGrowCount || 48));
+    const nextVisible = Math.min(total, current + grow);
+    if (nextVisible <= current) return false;
+    ws.discoveryVisibleCount = nextVisible;
+    if (typeof discoveryWindowSignature === 'function') ws.discoveryWindowSig = discoveryWindowSignature(ws);
+    scrollFlightRecord?.('route:discovery-window-grow-for-scroll', { reason, top, beforeVisibleCount: current, afterVisibleCount: nextVisible, total, workspace: scrollRestoreDebugWorkspaceState?.(ws) });
+    return true;
+  }
+
+  function scheduleDiscoveryScrollRestore(ws, top = 0, reason = 'discovery-scroll-restore') {
+    if (!ws) return false;
+    const targetTop = Math.max(0, Math.round(Number(top || ws.discoveryRouteScrollTop || ws.routeScrollTop || 0)));
+    if (!targetTop) return false;
+    const token = Number(app.discoveryScrollRestoreToken || 0) + 1;
+    app.discoveryScrollRestoreToken = token;
+    const started = performance.now();
+    const durationMs = Math.max(600, Number(app.settings.discoveryUxBackScrollRestoreMs || 2200));
+
+    const apply = () => {
+      if (app.discoveryScrollRestoreToken !== token) return;
+      const feed = discoveryScrollFeedForWorkspace(ws);
+      if (!feed) {
+        if (performance.now() - started < durationMs) requestAnimationFrame(apply);
+        return;
+      }
+      const maxTop = Math.max(0, Math.round((feed.scrollHeight || 0) - (feed.clientHeight || 0)));
+      if (maxTop < Math.min(targetTop, Math.max(targetTop - 8, 0)) && ensureDiscoveryWindowForScrollTop(ws, targetTop, reason)) {
+        render();
+        requestAnimationFrame(apply);
+        return;
+      }
+      const nextTop = Math.min(targetTop, Math.max(0, maxTop));
+      const before = scrollRestoreDebugTargetState?.(feed);
+      feed.scrollTop = nextTop;
+      ws.routeScrollTop = targetTop;
+      ws.routeScrollMode = 'discovery';
+      ws.routeScrollSelectedPath = '';
+      const done = Math.abs((feed.scrollTop || 0) - nextTop) <= 4;
+      scrollFlightRecord?.('route:discovery-scroll-restore-apply', { reason, targetTop, appliedTop: nextTop, done, before, after: scrollRestoreDebugTargetState?.(feed), workspace: scrollRestoreDebugWorkspaceState?.(ws) });
+      if (!done && performance.now() - started < durationMs) requestAnimationFrame(apply);
+    };
+
+    requestAnimationFrame(apply);
+    setTimeout(apply, 80);
+    setTimeout(apply, 220);
+    setTimeout(apply, 650);
+    return true;
+  }
+
+  function shortSchema(schema) {
+    return String(schema || '').replace(/^tiinex\./, '').replace(/\.v\d+$/, '').replace(/\.schema\.md$/, '') || 'unknown';
   }
 
   function renderInline(text) {
     const escaped = escapeHtml(text);
     return escaped
       .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+      .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => {
         const safe = safeUrl(href);
         const text = escapeHtml(label);
@@ -927,6 +1946,218 @@
       });
   }
 
+  function guessArtifactLanguage(text = '') {
+    const raw = String(text || '').trim();
+    if (!raw) return 'und';
+    const sample = raw.slice(0, 5000).toLowerCase();
+    if (/[åäö]/i.test(sample) || /\b(och|att|det|den|som|inte|för|från|till|är|har|ska|kan|också|kanske|eller)\b/i.test(sample)) return 'sv';
+    if (/\b(the|and|that|with|from|this|should|could|would|because|artifact|lineage|source)\b/i.test(sample)) return 'en';
+    return 'und';
+  }
+
+  function nodeLanguageTag(node = null) {
+    const explicit = String(node?.language || node?.lang || node?.file?.language || node?.file?.lang || '').trim();
+    if (explicit) return explicit.slice(0, 24);
+    return guessArtifactLanguage([node?.title, node?.summary, node?.why, node?.body, node?.rawMarkdown].filter(Boolean).join('\n\n'));
+  }
+
+  function languageAttr(lang = '') {
+    const clean = String(lang || '').trim();
+    if (!clean || clean === 'und') return ' lang="und"';
+    return ` lang="${escapeAttr(clean)}"`;
+  }
+
+  function artifactProseAttrs(node = null, extra = '') {
+    const lang = nodeLanguageTag(node);
+    const bits = ['translate="yes"', 'data-tiinex-language-surface="artifact"', languageAttr(lang).trim(), extra].filter(Boolean);
+    return bits.join(' ');
+  }
+
+  function markdownListItem(raw = '') {
+    const line = String(raw || '').replace(/\t/g, '    ');
+    const match = line.match(/^(\s*)([-*+] |\d+[.)]\s+)([\s\S]*)$/);
+    if (!match) return null;
+    const indent = Math.max(0, Math.floor((match[1] || '').replace(/\t/g, '    ').length / 2));
+    const marker = match[2] || '';
+    return {
+      depth: Math.min(indent, 8),
+      type: /^\d/.test(marker) ? 'ol' : 'ul',
+      text: match[3] || ''
+    };
+  }
+
+  function renderMarkdownListBlock(items) {
+    if (!items?.length) return '';
+    let html = '';
+    let currentDepth = -1;
+    let liOpen = false;
+    const listTypes = [];
+    const openList = (type) => { html += `<${type} class="md-list">`; };
+    const closeList = (type) => { html += `</${type || 'ul'}>`; };
+    for (const item of items) {
+      const depth = Math.max(0, Number(item.depth || 0));
+      const type = item.type === 'ol' ? 'ol' : 'ul';
+      while (currentDepth > depth) {
+        if (liOpen) { html += '</li>'; liOpen = false; }
+        closeList(listTypes[currentDepth] || 'ul');
+        listTypes.pop();
+        currentDepth -= 1;
+        liOpen = true;
+      }
+      if (currentDepth === depth && listTypes[currentDepth] && listTypes[currentDepth] !== type) {
+        if (liOpen) { html += '</li>'; liOpen = false; }
+        closeList(listTypes[currentDepth] || 'ul');
+        listTypes[currentDepth] = type;
+        openList(type);
+      }
+      while (currentDepth < depth) {
+        currentDepth += 1;
+        listTypes[currentDepth] = currentDepth === depth ? type : 'ul';
+        openList(listTypes[currentDepth]);
+        liOpen = false;
+      }
+      if (currentDepth < 0) {
+        currentDepth = 0;
+        listTypes[0] = type;
+        openList(type);
+      }
+      if (liOpen) html += '</li>';
+      html += `<li>${renderInline(String(item.text || '').trim())}`;
+      liOpen = true;
+    }
+    if (liOpen) html += '</li>';
+    while (currentDepth >= 0) {
+      closeList(listTypes[currentDepth] || 'ul');
+      currentDepth -= 1;
+    }
+    return html;
+  }
+
+  function renderSafeMarkdown(markdown) {
+    const lines = normalizeNewlines(markdown || '').split('\n');
+    let html = '';
+    let inFence = false;
+    let fence = [];
+    let paragraph = [];
+    let listItems = [];
+    let blockquote = [];
+    const closeParagraph = () => {
+      if (!paragraph.length) return;
+      html += `<p>${paragraph.map((line) => renderInline(line.trim())).join('<br>')}</p>`;
+      paragraph = [];
+    };
+    const closeList = () => {
+      if (!listItems.length) return;
+      html += renderMarkdownListBlock(listItems);
+      listItems = [];
+    };
+    const closeBlockquote = () => {
+      if (!blockquote.length) return;
+      html += `<blockquote>${renderSafeMarkdown(blockquote.join('\n'))}</blockquote>`;
+      blockquote = [];
+    };
+    const closeLooseBlocks = () => { closeParagraph(); closeList(); closeBlockquote(); };
+
+    for (const raw of lines) {
+      const line = String(raw || '').replace(/\t/g, '    ');
+      const trimmed = line.trim();
+      if (/^```/.test(trimmed)) {
+        if (inFence) {
+          html += `<pre><code>${escapeHtml(fence.join('\n'))}</code></pre>`;
+          fence = [];
+          inFence = false;
+        } else {
+          closeLooseBlocks();
+          inFence = true;
+        }
+        continue;
+      }
+      if (inFence) { fence.push(raw); continue; }
+      if (!trimmed) { closeLooseBlocks(); continue; }
+
+      if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+        closeLooseBlocks();
+        html += '<hr class="md-rule">';
+        continue;
+      }
+
+      const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+      if (heading) {
+        closeLooseBlocks();
+        const level = Math.min(4, heading[1].length);
+        html += `<h${level} class="md-heading md-heading-${level}">${renderInline(heading[2])}</h${level}>`;
+        continue;
+      }
+
+      const listItem = markdownListItem(line);
+      if (listItem) {
+        closeParagraph();
+        closeBlockquote();
+        listItems.push(listItem);
+        continue;
+      }
+
+      const quote = line.match(/^\s*>\s?(.*)$/);
+      if (quote) {
+        closeParagraph();
+        closeList();
+        blockquote.push(quote[1] || '');
+        continue;
+      }
+
+      closeList();
+      closeBlockquote();
+      paragraph.push(trimmed);
+    }
+    closeLooseBlocks();
+    if (inFence) html += `<pre><code>${escapeHtml(fence.join('\n'))}</code></pre>`;
+    return html || '<p>No readable markdown body.</p>';
+  }
+
+  function markdownExcerpt(markdown, limit = 520) {
+    const text = normalizeNewlines(markdown || '').trim();
+    const max = Number(limit || 0) || 0;
+    if (!max || text.length <= max) return text;
+    let cut = text.slice(0, max);
+    const lastBreak = cut.lastIndexOf('\n');
+    const lastSentence = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '));
+    const boundary = lastBreak > max * 0.55 ? lastBreak : (lastSentence > max * 0.55 ? lastSentence + 1 : max);
+    cut = text.slice(0, boundary).replace(/[\s,;:]+$/g, '').trimEnd();
+    return `${cut}\n…`;
+  }
+
+  function renderMarkdownReadBlock(label, value, options = {}) {
+    const clean = stripMarkdownFence(value || '').trim();
+    if (!clean) return '';
+    const fullByDefault = !options.compact && options.excerpt !== true;
+    const forceFull = Boolean(options.full || options.noTruncate || fullByDefault);
+    const limit = Number(options.limit || (options.compact ? 280 : 680));
+    const renderedText = forceFull ? clean : markdownExcerpt(clean, limit);
+    const truncated = renderedText !== clean;
+    const lang = guessArtifactLanguage(clean);
+    return `<div class="schema-primary-block markdown-read-block ${forceFull ? 'full-markdown-read' : 'excerpt-markdown-read'} ${truncated ? 'markdown-read-truncated' : ''} ${options.className || ''}" data-tiinex-read-truncated="${truncated ? 'true' : 'false'}"><span class="schema-read-label">${escapeHtml(label)}</span><div class="markdown-rendered compact-markdown" translate="yes" data-tiinex-language-surface="artifact-${forceFull ? 'full' : 'excerpt'}" lang="${escapeAttr(lang)}">${renderSafeMarkdown(renderedText)}</div>${truncated ? '<p class="read-truncation-note">Preview excerpt. Open detail for the full section.</p>' : ''}</div>`;
+  }
+
+  function renderPreviewSectionsRich(sections, names, options = {}) {
+    const full = Boolean(options.full || options.noTruncate || options.readMode);
+    const selected = names
+      .filter((name) => sections[name] && sections[name].trim());
+    const limited = full ? selected : selected.slice(0, Number(options.maxSections || 4));
+    const html = full
+      ? limited
+        .map((name) => renderReadMarkdownSection(name, sections[name], Object.assign({}, options, {
+          full: true,
+          noTruncate: true,
+          compact: false,
+          className: 'fallback-read-section'
+        })))
+        .filter(Boolean)
+        .join('')
+      : limited
+        .map((name) => `<section class="preview-section markdown-preview-section"><h4>${escapeHtml(name)}</h4><div class="markdown-rendered preview-markdown" translate="yes" data-tiinex-language-surface="artifact-preview">${renderSafeMarkdown(markdownExcerpt(sections[name], options.limit || 320))}</div></section>`)
+        .join('');
+    return html || '<p class="preview-note">No prioritized continuity sections found for this schema.</p>';
+  }
 
   // Intent helpers for create/continue/reference flow resolution.
   function workspaceById(wsId) {
@@ -1043,6 +2274,9 @@
       return;
     }
     app.modal[field] = value;
+    if (app.modal?.type === 'export-workspace' && (field === 'githubPublishedUrl' || field === 'githubTargetUrl')) {
+      handleGithubExportUrlFieldInput(field, String(value || ''), event);
+    }
   }
 
   function downloadText(filename, text, type) {
@@ -1077,8 +2311,27 @@
 
 
 
-  function relationLabel(node, index, lineageMode) {
-    if (node.isGenerated) return 'draft';
+  function nodeHasSourceBackedMaterial(node) {
+    if (!node) return false;
+    const sourceId = String(node.sourceId || node.file?.sourceId || '').trim();
+    const sourceKind = String(node.sourceKind || node.file?.sourceKind || '').trim();
+    if (sourceId && !['local', 'draft'].includes(sourceId)) return true;
+    if (sourceKind && !['local', 'draft'].includes(sourceKind)) return true;
+    return Boolean(node.repo || node.file?.repo || node.browseUrl || node.rawUrl || node.recoveredFromUrl || node.file?.browseUrl || node.file?.rawUrl || node.file?.recoveredFromUrl);
+  }
+
+  function nodeShowsAuthoringDraftState(ws, node) {
+    if (!node) return false;
+    const sourceId = String(node.sourceId || node.file?.sourceId || '').trim();
+    const sourceKind = String(node.sourceKind || node.file?.sourceKind || '').trim();
+    if (typeof nodeIsLocalShadowDraft === 'function' && nodeIsLocalShadowDraft(ws, node)) return true;
+    if (sourceId === 'draft' || sourceKind === 'draft') return true;
+    if (node.isGenerated && !nodeHasSourceBackedMaterial(node)) return true;
+    return false;
+  }
+
+  function relationLabel(ws, node, index, lineageMode) {
+    if (nodeShowsAuthoringDraftState(ws, node)) return 'draft';
     if (lineageMode && index === 0) return 'selected leaf';
     if (lineageMode) return node.parentNode ? 'parent context' : 'root context';
     if (!node.parentHref) return 'root';
@@ -1171,11 +2424,29 @@
 
   function selectNode(wsId, nodeId) {
     const ws = getWorkspace(wsId);
-    if (!ws || !ws.nodeById.get(nodeId)) return;
+    const node = ws?.nodeById?.get?.(nodeId);
+    if (!ws || !node) return;
+
+    const wasDiscovery = !selectedNode(ws) && !ws.pendingSelectedRoute;
     app.activeWorkspaceId = ws.id;
-    ws.selectedNodeId = nodeId;
     focusWorkspaceWindow(ws.id);
-    updateUrlState();
+
+    // A Lineage open is a route transition out of Discovery. Preserve the
+    // current Discovery route entry before mutating selection; otherwise the
+    // push route can capture the not-yet-rendered Lineage view at scrollTop 0
+    // and browser/app Back returns to the top of Discovery.
+    if (wasDiscovery) {
+      rememberDiscoveryScrollForRoute(ws, 'select-node-before-lineage');
+      if (typeof setRouteState === 'function') setRouteState('replace');
+    }
+
+    ws.selectedNodeId = node.id;
+    ws.pendingSelectedRoute = null;
+    suppressCachedLens('select-node-lineage-route', 1200);
+    lockLineageView(ws, node, 'select-node');
+
+    if (typeof setRouteState === 'function') setRouteState('push');
+    else updateUrlState();
     render();
   }
 
@@ -1274,27 +2545,203 @@
 
   function nodeSearchCorpus(node) {
     return normalizeSearchText([
+      node.displayTitle,
       node.title,
       node.summary,
       node.why,
       node.path,
       node.currentSchemaText || node.currentSchema,
+      node.sourceLabel,
+      node.repo,
+      node.createdAt,
       node.body
     ].filter(Boolean).join(' '));
+  }
+
+  function tokenizeSearchQuery(query) {
+    const text = String(query || '').trim();
+    const tokens = [];
+    const regex = /(-?)([a-z][a-z0-9_-]*:)?(?:("[^"]*")|([^\s]+))/gi;
+    let match;
+    while ((match = regex.exec(text))) {
+      const negative = match[1] === '-';
+      const field = match[2] ? match[2].slice(0, -1).toLowerCase() : '';
+      const rawValue = match[3] || match[4] || '';
+      const value = rawValue.replace(/^"|"$/g, '').trim();
+      if (!value) continue;
+      tokens.push({ negative, field, value });
+    }
+    return tokens.length ? tokens : (text ? [{ negative: false, field: '', value: text }] : []);
+  }
+
+  function nodeSearchFieldCorpus(node, field) {
+    const schemaText = node?.currentSchemaText || node?.currentSchema || '';
+    const schema = schemaKey(schemaText);
+    const exactSchema = typeof canonicalSchemaFilterKey === 'function' ? canonicalSchemaFilterKey(schemaText) : '';
+    const status = effectiveIntegrityStatus(node);
+    const kind = artifactDisplayKind(node);
+    const source = [node?.sourceLabel, node?.sourceName, node?.sourceId, node?.repo].filter(Boolean).join(' ');
+    const fields = {
+      title: [artifactDisplayTitle(node), node?.title, node?.displayTitle, node?.bodyTitle, node?.topHeading],
+      summary: [node?.summary, node?.why],
+      body: [node?.body],
+      text: [nodeSearchCorpus(node)],
+      markdown: [node?.body],
+      path: [node?.path, node?.rawUrl, node?.browseUrl],
+      file: [node?.path],
+      schema: [schemaText, exactSchema, exactSchema ? shortSchema(exactSchema) : '', schema, shortSchema(schemaText)],
+      kind: [kind],
+      type: [kind, exactSchema, schema],
+      artifact: [kind],
+      source: [source],
+      repo: [node?.repo],
+      status: [status, node?.integrityStatus, node?.status],
+      integrity: [status, node?.integrityStatus],
+      date: [node?.createdAt],
+      created: [node?.createdAt],
+      parent: [node?.parentHref, node?.parentResolvedPath, node?.parentSchema, node?.parentSchemaText],
+      origin: [node?.origin, node?.originUrl, node?.parentOriginBrowse],
+      transition: [node?.transitionKind, node?.transitionLabel, node?.transitionRole],
+      label: [node?.label, node?.title, artifactDisplayTitle(node)]
+    };
+    return normalizeSearchText((fields[field] || [nodeSearchCorpus(node)]).filter(Boolean).join(' '));
+  }
+
+  function nodeHasSearchFeature(node, value) {
+    const key = normalizeSearchText(value);
+    if (!key) return true;
+    const schemaText = node?.currentSchemaText || node?.currentSchema || '';
+    const schema = schemaKey(schemaText);
+    const exactSchema = typeof canonicalSchemaFilterKey === 'function' ? canonicalSchemaFilterKey(schemaText) : '';
+    const features = {
+      parent: Boolean(node?.parentHref || node?.parentResolvedPath || node?.parentSchema || node?.parentSchemaText),
+      origin: Boolean(node?.origin || node?.originUrl || node?.parentOriginBrowse),
+      body: Boolean(node?.body),
+      markdown: Boolean(node?.body),
+      schema: Boolean((exactSchema && exactSchema !== 'unknown') || (schema && schema !== 'unknown')),
+      source: Boolean(node?.sourceId || node?.repo || node?.sourceLabel),
+      transition: Boolean(node?.transitionKind || /##\s+Transition Boundary/i.test(String(node?.body || ''))),
+      mismatch: effectiveIntegrityStatus(node) === 'mismatch',
+      draft: typeof nodeShowsAuthoringDraftState === 'function' ? nodeShowsAuthoringDraftState(null, node) : Boolean(node?.isGenerated),
+      generated: typeof nodeShowsAuthoringDraftState === 'function' ? nodeShowsAuthoringDraftState(null, node) : Boolean(node?.isGenerated),
+      issue: /github\s+issue|issues\/\d+/i.test([node?.title, node?.summary, node?.path, node?.body].filter(Boolean).join(' ')),
+      comment: /github\s+issue\s+comment|comment/i.test([node?.title, node?.summary, node?.path, node?.body].filter(Boolean).join(' ')),
+      condition: schema === 'condition' || /\bcondition\b/i.test([node?.title, node?.summary, node?.body].filter(Boolean).join(' '))
+    };
+    if (Object.prototype.hasOwnProperty.call(features, key)) return features[key];
+    return nodeSearchCorpus(node).includes(key);
+  }
+
+  function nodeSearchTokenMatches(node, token) {
+    const field = String(token?.field || '').toLowerCase();
+    const value = token?.value || '';
+    let matched;
+    if (field === 'has') {
+      matched = nodeHasSearchFeature(node, value);
+    } else if (field === 'is') {
+      const key = normalizeSearchText(value);
+      matched = (key === 'draft' || key === 'generated') ? (typeof nodeShowsAuthoringDraftState === 'function' ? nodeShowsAuthoringDraftState(null, node) : Boolean(node?.isGenerated))
+        : key === 'schema' ? artifactDisplayKind(node) === 'schema'
+        : key === 'mismatch' ? effectiveIntegrityStatus(node) === 'mismatch'
+        : nodeSearchCorpus(node).includes(key);
+    } else if (field) {
+      matched = nodeSearchFieldCorpus(node, field).includes(normalizeSearchText(value));
+    } else {
+      matched = nodeSearchCorpus(node).includes(normalizeSearchText(value));
+    }
+    return token?.negative ? !matched : matched;
   }
 
   function nodeMatchesSearch(node, query) {
     const q = normalizeSearchText(query);
     if (!q) return true;
-    return nodeSearchCorpus(node).includes(q);
+    const tokens = tokenizeSearchQuery(query);
+    return tokens.every((token) => nodeSearchTokenMatches(node, token));
+  }
+
+  function searchQueryUsesAdvancedSyntax(query) {
+    return tokenizeSearchQuery(query).some((token) => token.field || token.negative);
+  }
+
+  function searchScopeHelpText(mode = 'discovery') {
+    const scope = mode === 'lineage' ? 'loaded lineage' : 'visible discovery set';
+    return `Searches ${scope}: title, summary, schema, path, source, date, and markdown body. Advanced filters: schema:condition, schema:discovery.finding, kind:schema, title:"OLLE Object", path:.schemas, source:Tiinex/docs, status:mismatch, has:parent, is:draft, -kind:schema.`;
+  }
+
+  function isSchemaDefinitionArtifact(input = {}) {
+    const path = String(input.path || input.file?.path || '');
+    if (/\.schema\.md(?:$|[?#])/i.test(path)) return true;
+    const current = String(input.currentSchemaText || input.currentSchema || input.schema || '');
+    return /\.schema\.md/i.test(current);
+  }
+
+  function schemaTitleWord(word) {
+    const raw = String(word || '').trim();
+    const upper = {
+      ai: 'AI', api: 'API', cli: 'CLI', css: 'CSS', dom: 'DOM', git: 'Git', html: 'HTML', id: 'ID', js: 'JS', json: 'JSON', llm: 'LLM', md: 'MD', ui: 'UI', url: 'URL', ux: 'UX'
+    }[raw.toLowerCase()];
+    if (upper) return upper;
+    return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : '';
+  }
+
+  function schemaDisplayTitleFromId(schema = '') {
+    const raw = stripMarkdownInline(String(schema || '')).trim();
+    const noLink = raw.replace(/^tiinex\./i, '').replace(/\.v\d+(?:\.\d+)?(?:\b|$).*/i, '');
+    const parts = noLink.split(/[._-]+/).map((part) => part.trim()).filter(Boolean);
+    return parts.map(schemaTitleWord).join(' ').trim();
+  }
+
+  function normalizeSchemaBodyDisplayTitle(rawTitle = '', schema = '') {
+    const raw = stripMarkdownInline(String(rawTitle || '')).replace(/\s+/g, ' ').trim();
+    if (!raw) return schemaDisplayTitleFromId(schema) || raw;
+    let out = raw
+      .replace(/^tiinex\s+/i, '')
+      .replace(/\s+v\d+(?:\.\d+)?\s+schema\s*$/i, '')
+      .replace(/\s+schema\s*$/i, '')
+      .replace(/\s+v\d+(?:\.\d+)?\s*$/i, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return out || schemaDisplayTitleFromId(schema) || raw;
+  }
+
+  function schemaBodyTitleStyleDiagnostic(input = {}) {
+    if (!isSchemaDefinitionArtifact(input)) return null;
+    const raw = stripMarkdownInline(String(input.bodyTitle || input.title || input.topHeading || '')).replace(/\s+/g, ' ').trim();
+    if (!raw) return null;
+    const displayTitle = normalizeSchemaBodyDisplayTitle(raw, input.currentSchemaText || input.currentSchema || input.schema || '');
+    const redundant = [];
+    if (/^tiinex\s+/i.test(raw)) redundant.push('Tiinex prefix');
+    if (/\s+v\d+(?:\.\d+)?(?:\s|$)/i.test(raw)) redundant.push('version');
+    if (/\bschema\s*$/i.test(raw)) redundant.push('Schema suffix');
+    if (!redundant.length || raw === displayTitle) return null;
+    return {
+      code: 'schema-body-title-style-v1',
+      severity: 'style-warning',
+      label: 'title style',
+      rawTitle: raw,
+      displayTitle,
+      message: `Schema H1 repeats ${redundant.join(', ')} already carried by filename or Continuity Context. Display title candidate: ${displayTitle}.`
+    };
+  }
+
+  function artifactDisplayTitle(node = {}) {
+    return String(node.displayTitle || node.title || node.bodyTitle || node.topHeading || 'Untitled artifact').trim();
+  }
+
+  function authoringStyleBadgeHtml(node) {
+    const warnings = Array.isArray(node?.authoringStyleWarnings) ? node.authoringStyleWarnings : [];
+    if (!warnings.length) return '';
+    const title = warnings.map((warning) => warning.message || warning.code || 'Authoring style warning').join('\\n');
+    return `<span class="badge-soft integrity-badge warn authoring-style-badge" title="${escapeAttr(title)}"><i class="fa-solid fa-pen-ruler"></i>${escapeHtml(warnings.length === 1 ? 'style' : `style ${warnings.length}`)}</span>`;
   }
 
   function renderSearchInput(ws, mode) {
     const value = mode === 'lineage' ? (ws.lineageSearch || '') : (ws.discoverySearch || '');
-    const placeholder = mode === 'lineage' ? 'Search lineage…' : 'Search discovery…';
-    return `<label class="search-box ${value ? 'active' : ''}">
+    const placeholder = mode === 'lineage' ? 'Search lineage title/body/schema…' : 'Search title/body/schema…';
+    const help = searchScopeHelpText(mode);
+    return `<label class="search-box ${value ? 'active' : ''}" title="${escapeAttr(help)}">
       <i class="fa-solid fa-magnifying-glass"></i>
-      <input type="search" value="${escapeAttr(value)}" placeholder="${escapeAttr(placeholder)}" data-search="${escapeAttr(mode)}" data-ws="${escapeAttr(ws.id)}" autocomplete="off" spellcheck="false">
+      <input type="search" value="${escapeAttr(value)}" placeholder="${escapeAttr(placeholder)}" data-search="${escapeAttr(mode)}" data-ws="${escapeAttr(ws.id)}" autocomplete="off" spellcheck="false" aria-label="${escapeAttr(help)}">
       ${value ? `<button class="search-clear" data-action="clear-search" data-mode="${escapeAttr(mode)}" data-ws="${escapeAttr(ws.id)}" title="Clear search"><i class="fa-solid fa-xmark"></i></button>` : ''}
     </label>`;
   }
@@ -1304,15 +2751,26 @@
   function renderLineageSearchLegend(ws, traversal, nodes, query) {
     if (!normalizeSearchText(query)) return '';
     const matches = nodes.filter((node) => nodeMatchesSearch(node, query)).length;
-    return `<div class="lineage-search-legend">
+    const advanced = searchQueryUsesAdvancedSyntax(query);
+    return `<div class="lineage-search-legend" title="${escapeAttr(searchScopeHelpText('lineage'))}">
       <i class="fa-solid fa-filter"></i>
       <span>${matches} match${matches === 1 ? '' : 'es'} across ${nodes.length} loaded lineage node${nodes.length === 1 ? '' : 's'}.</span>
-      <span class="muted-mini">Non-matching nodes collapse to continuity marks.</span>
+      <span class="muted-mini">${advanced ? 'Advanced query active.' : 'Search covers title, summary, schema, path, source, and markdown body.'} Non-matching nodes collapse to continuity marks.</span>
+    </div>`;
+  }
+
+  function renderDiscoverySearchLegend(ws, nodes, query) {
+    if (!normalizeSearchText(query)) return '';
+    const advanced = searchQueryUsesAdvancedSyntax(query);
+    return `<div class="lineage-search-legend discovery-search-legend" title="${escapeAttr(searchScopeHelpText('discovery'))}">
+      <i class="fa-solid fa-filter"></i>
+      <span>${nodes.length} visible discovery match${nodes.length === 1 ? '' : 'es'}.</span>
+      <span class="muted-mini">${advanced ? 'Advanced query active.' : 'Search covers title, summary, schema, path, source, date, and markdown body.'} Try <code>schema:condition</code>, <code>schema:discovery.finding</code>, <code>kind:schema</code>, <code>has:parent</code>, or <code>-kind:schema</code>.</span>
     </div>`;
   }
 
   function renderLineageSkimLine(node, index) {
-    return `<div class="lineage-skim-line" title="${escapeAttr(node.title)}">
+    return `<div class="lineage-skim-line" title="${escapeAttr(artifactDisplayTitle(node))}">
       <span class="skim-index">${index + 1}</span>
       <span class="skim-rule"></span>
     </div>`;
@@ -1608,7 +3066,7 @@
     if (!ws || !candidate) return false;
     ws.parentFetches = ws.parentFetches || {};
     try {
-      const content = await fetchText(candidate.rawUrl);
+      const content = await fetchText(candidate.rawUrl, 'parent candidate', { fallbackPolicy: 'defer-when-missing' });
       addFileToWorkspace(ws, {
         path: candidate.path,
         content,
@@ -1722,10 +3180,15 @@
 
   function artifactTraversalKey(node) {
     if (!node) return '';
+    // Prefer the loaded workspace identity over origin URLs. GitHub issue and
+    // comment imports legitimately create multiple Tiinex artifacts from the
+    // same issue/comment URL; using browseUrl/rawUrl first makes siblings look
+    // like cycles even when their local recovered paths are distinct.
+    if (node.storageKey) return `storage:${node.storageKey}`;
+    if (node.path) return `path:${node.sourceId || ''}:${node.path}`;
+    if (node.repo && node.ref && node.path) return `repo:${node.repo}@${node.ref}:${node.path}`;
     if (node.browseUrl) return `browse:${node.browseUrl}`;
     if (node.rawUrl) return `raw:${node.rawUrl}`;
-    if (node.repo && node.ref && node.path) return `repo:${node.repo}@${node.ref}:${node.path}`;
-    if (node.path) return `path:${node.path}`;
     if (node.rawMarkdown) return `content:${hashFast(node.rawMarkdown)}`;
     return `id:${node.id}`;
   }
@@ -1744,6 +3207,7 @@
   }, app.routing || {});
 
   function workspaceSourceUrls(ws) {
+    if (!ws || !ws.files) return [];
     return Array.from(ws.files.values())
       .filter((f) => f.rawUrl && !f.isGenerated)
       .map((f) => f.rawUrl);
@@ -1767,25 +3231,6 @@
     return Object.assign({}, state || {}, { __tiinexRouteIndex: nextIndex });
   }
 
-  function routeHistoryBackAvailable() {
-    const index = Number(history.state?.__tiinexRouteIndex ?? app.routing?.currentEntryIndex ?? 0);
-    return Number.isFinite(index) && index > 0 && typeof history.back === 'function';
-  }
-
-  function runRouteHistoryBackOrFallback(fallback) {
-    if (routeHistoryBackAvailable()) {
-      try {
-        app.routing.pendingUxBackRestore = true;
-        history.back();
-        return true;
-      } catch (_) {
-        app.routing.pendingUxBackRestore = false;
-      }
-    }
-    if (typeof fallback === 'function') fallback();
-    return false;
-  }
-
   function noteRoutePopState(historyState) {
     const nextIndex = Number(historyState?.__tiinexRouteIndex || app.routing?.currentEntryIndex || 0);
     const current = Number(app.routing?.currentEntryIndex || 0);
@@ -1796,6 +3241,229 @@
 
   function routeUrl(state) {
     return `${location.pathname}${location.search}#state=${encodeRouteState(state)}`;
+  }
+
+  function hashPayload() {
+    const raw = String(location.hash || '');
+    return raw.startsWith('#') ? raw.slice(1) : raw;
+  }
+
+  function maybeDecodeHashComponent(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    try { return decodeURIComponent(raw); } catch (_) { return raw; }
+  }
+
+  function safePublicViewerBaseUrl(value = '') {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    let url;
+    try { url = new URL(raw, location.href); } catch (_) { return ''; }
+    if (!/^https?:$/i.test(url.protocol)) return '';
+    const host = url.hostname.toLowerCase();
+    if (!host || host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '[::1]' || host.endsWith('.local')) return '';
+    url.hash = '';
+    return url.href;
+  }
+
+  function configuredPublicViewerBaseUrl() {
+    const cfg = app.viewerIdentity || {};
+    const hostOptions = window.TIINEX_VIEWER_OPTIONS || {};
+    const candidates = [
+      cfg.publicBaseUrl,
+      cfg.viewerBaseUrl,
+      cfg.shareBaseUrl,
+      hostOptions.publicViewerBaseUrl,
+      hostOptions.viewerBaseUrl,
+      hostOptions.shareBaseUrl
+    ];
+    for (const candidate of candidates) {
+      const safe = safePublicViewerBaseUrl(candidate);
+      if (safe) return safe;
+    }
+    if (location.protocol === 'http:' || location.protocol === 'https:') return safePublicViewerBaseUrl(`${location.origin}${location.pathname}${location.search}`);
+    return '';
+  }
+
+  function defaultAdapterForShareTarget(url = '') {
+    const raw = String(url || '').trim();
+    try {
+      const parsed = new URL(raw);
+      const host = parsed.hostname.toLowerCase();
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      if (/\.workspace\.md(?:$|[?#])/i.test(parsed.pathname)) return 'workspace';
+      if (host === 'github.com' && parts.length >= 4 && parts[2] === 'issues') return 'github.issue';
+      if (host === 'github.com' && parts.length >= 4 && parts[2] === 'discussions') return 'github.discussion';
+      if (host === 'github.com' && parts.length >= 5 && parts[2] === 'blob') return 'github.file';
+      if (host === 'raw.githubusercontent.com' && parts.length >= 4) return 'github.file';
+      if (/\.(?:trace|schema|validator)\.md(?:$|[?#])/i.test(parsed.pathname) || /\.(?:md|markdown|txt)(?:$|[?#])/i.test(parsed.pathname)) return 'web.markdown';
+    } catch (_) {}
+    return 'web.url';
+  }
+
+  function normalizeShareAdapter(value = '') {
+    const key = String(value || '').trim().toLowerCase().replace(/:/g, '.');
+    if (!key) return '';
+    if (['github.issue', 'github-issue', 'issue'].includes(key)) return 'github.issue';
+    if (['github.discussion', 'github-discussion', 'discussion'].includes(key)) return 'github.discussion';
+    if (['github.file', 'github.raw', 'github.raw-file', 'github.blob'].includes(key)) return 'github.file';
+    if (['workspace', 'tiinex.workspace', 'web.workspace', 'workspace.md'].includes(key)) return 'workspace';
+    if (['web.markdown', 'web.md', 'markdown', 'web.file'].includes(key)) return 'web.markdown';
+    if (['web.url', 'url', 'web'].includes(key)) return 'web.url';
+    return key;
+  }
+
+  function shareHashTarget(url = '', adapter = '') {
+    const cleanUrl = String(url || '').trim();
+    if (!/^https?:\/\//i.test(cleanUrl)) return '';
+    const cleanAdapter = normalizeShareAdapter(adapter) || defaultAdapterForShareTarget(cleanUrl);
+    if (!cleanAdapter || cleanAdapter === 'web.url') return `#${cleanUrl}`;
+    return `#${cleanAdapter}|${cleanUrl}`;
+  }
+
+  function publicViewerShareUrlForTarget(url = '', adapter = '') {
+    const base = configuredPublicViewerBaseUrl();
+    const hash = shareHashTarget(url, adapter);
+    if (!base || !hash) return '';
+    return `${base}${hash}`;
+  }
+
+  function parseHashShareTarget(hashValue = location.hash) {
+    const raw = String(hashValue || '').replace(/^#/, '').trim();
+    if (!raw) return null;
+    const candidates = [raw, maybeDecodeHashComponent(raw)].filter((value, index, all) => value && all.indexOf(value) === index);
+    for (const candidate of candidates) {
+      if (/^state=/i.test(candidate) || /^view=/i.test(candidate)) continue;
+      let adapter = '';
+      let target = candidate;
+      const splitter = candidate.indexOf('|');
+      if (splitter > 0) {
+        adapter = normalizeShareAdapter(candidate.slice(0, splitter));
+        target = candidate.slice(splitter + 1);
+      }
+      target = maybeDecodeHashComponent(target);
+      if (!/^https?:\/\//i.test(target)) continue;
+      return { adapter: adapter || defaultAdapterForShareTarget(target), url: target };
+    }
+    return null;
+  }
+
+  function publicHashTargetNodeCandidates(ws, target = {}, spec = null) {
+    const nodes = Array.from(ws?.nodeById?.values?.() || []);
+    const targetUrl = String(target?.url || spec?.targetUrl || spec?.issueUrl || spec?.discussionUrl || '').replace(/#.*$/, '');
+    const commentAnchor = String(spec?.commentAnchor || '').trim();
+    const commentId = commentAnchor.match(/(?:issuecomment|discussioncomment)-(\\d+)/i)?.[1] || '';
+    const includesTargetUrl = (node) => {
+      const values = [node?.rawUrl, node?.browseUrl, node?.sourceOrigin, node?.recoveredFromUrl, node?.file?.rawUrl, node?.file?.browseUrl, node?.file?.sourceOrigin, node?.file?.recoveredFromUrl].filter(Boolean).join(' ');
+      return targetUrl && values.includes(targetUrl);
+    };
+    const includesComment = (node) => {
+      if (!commentId) return false;
+      const values = [node?.rawUrl, node?.browseUrl, node?.sourceOrigin, node?.recoveredFromUrl, node?.file?.rawUrl, node?.file?.browseUrl, node?.file?.sourceOrigin, node?.file?.recoveredFromUrl, node?.path].filter(Boolean).join(' ');
+      return values.includes(`issuecomment-${commentId}`) || values.includes(`discussioncomment-${commentId}`) || values.includes(`/comments/${commentId}`) || values.includes(`-${commentId}-`);
+    };
+    const recoveryKind = (node) => String(node?.recoveryKind || node?.file?.recoveryKind || '').toLowerCase();
+    const schemaKeyForNode = (node) => schemaKey(node?.currentSchemaText || node?.currentSchema || node?.file?.currentSchema || '');
+    const score = (node) => {
+      if (!node) return 0;
+      const path = String(node.path || '').toLowerCase();
+      const kind = recoveryKind(node);
+      const schema = schemaKeyForNode(node);
+      let out = 0;
+      if (includesTargetUrl(node)) out += 20;
+      if (commentId && includesComment(node)) out += 300;
+      if (kind.includes('github-comment-embedded')) out += commentId ? 180 : 70;
+      if (kind.includes('github-issue-embedded')) out += commentId ? 60 : 220;
+      if (node.resolvedEnvelope || node.file?.resolvedEnvelope) out += 70;
+      if (schema && schema !== 'discovery.finding') out += 80;
+      if (/issue-root-recovered-/i.test(path)) out += 150;
+      if (/comment-\\d+-.*-recovered-/i.test(path)) out += commentId ? 160 : 50;
+      if (/issue-root\\.trace\\.md$/i.test(path)) out += 40;
+      if (schema === 'discovery.finding') out -= 20;
+      return out;
+    };
+    return nodes
+      .map((node) => ({ node, score: score(node) }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || String(a.node.path || '').localeCompare(String(b.node.path || '')));
+  }
+
+  function selectPublicHashTargetNode(ws, target = {}, spec = null, reason = 'public-hash-target') {
+    if (!ws) return null;
+    const best = publicHashTargetNodeCandidates(ws, target, spec)[0]?.node || null;
+    if (!best?.id) return null;
+    ws.selectedNodeId = best.id;
+    ws.pendingSelectedRoute = null;
+    app.activeWorkspaceId = ws.id;
+    if (typeof focusWorkspaceWindow === 'function') focusWorkspaceWindow(ws.id);
+    if (typeof lockLineageView === 'function') lockLineageView(ws, best, reason);
+    if (app.routing) {
+      app.routing.suppressCachedLensUntil = Math.max(Number(app.routing.suppressCachedLensUntil || 0), Date.now() + 9000);
+      app.routing.suppressCachedLensReason = reason;
+    }
+    return best;
+  }
+
+  async function loadHashShareTarget(target, options = {}) {
+    if (!target?.url) return false;
+    const normalizedHashTarget = { adapter: normalizeShareAdapter(target.adapter) || defaultAdapterForShareTarget(target.url), url: target.url, startedAt: new Date().toISOString(), reason: options.reason || 'hash-share-target' };
+    app.activePublicShareTarget = normalizedHashTarget;
+    app.viewerIdentity.publicShareTarget = normalizedHashTarget;
+    if (options.replaceWorkspaces) {
+      app.workspaces = [];
+      app.workspaceOffset = 0;
+      app.activeWorkspaceId = null;
+      if (typeof clearLineageViewLock === 'function') clearLineageViewLock('public-hash-target-replace');
+    }
+    const adapter = normalizedHashTarget.adapter;
+    if (adapter === 'workspace') {
+      const configUrl = normalizeViewerConfigUrl(target.url);
+      const markdown = await adapterFetchText(configUrl, { adapter: adapterIdForUrl(configUrl), label: 'Shared Tiinex workspace' });
+      const parsed = parseViewerConfigMarkdown(markdown, configUrl);
+      parsed.configUrl = configUrl;
+      await applyParsedViewerConfig(parsed, configUrl, { applyWorkspaceState: true, preserveShareHash: true });
+      app.viewerIdentity.publicShareTarget = { adapter, url: target.url, configUrl };
+      if (!app.activeWorkspaceId && app.workspaces[0]) app.activeWorkspaceId = app.workspaces[0].id;
+      render();
+      return true;
+    }
+    const spec = typeof parseGitHubSocialTargetSpec === 'function' ? parseGitHubSocialTargetSpec(target.url) : null;
+    const label = spec?.targetLabel || (adapter === 'github.file' ? 'Shared GitHub artifact' : 'Shared Tiinex target');
+    const ws = createWorkspace(label, `Loaded from public hash target: ${target.url}`);
+    ws.publicShareTarget = { adapter, url: target.url };
+    app.activeWorkspaceId = ws.id;
+    if (spec?.kind === 'issue') {
+      await loadUrlsIntoWorkspace(ws, [target.url]);
+      computeWorkspaceIndex(ws);
+      selectPublicHashTargetNode(ws, target, spec, options.reason || 'boot-hash-target');
+      render();
+      return true;
+    }
+    if (spec?.kind === 'discussion') {
+      const source = typeof registerGitHubSource === 'function' ? registerGitHubSource(ws, {
+        id: githubSourceId(spec.repo),
+        repo: spec.repo,
+        ref: '',
+        rootPaths: [],
+        enabledSurfaces: { repoFiles: false, issues: true },
+        configuredIssueUrls: [target.url],
+        issueUrls: [target.url],
+        origin: `https://github.com/${spec.repo}`,
+        kind: 'github-discussion',
+        sourceAccessMode: 'web-surface',
+        sourceResolutionKind: 'github-social-target'
+      }) : null;
+      if (typeof addGitHubSocialTargetFinding === 'function') await addGitHubSocialTargetFinding(ws, target.url, source, 'Loaded from public Tiinex hash target.');
+      computeWorkspaceIndex(ws);
+      selectPublicHashTargetNode(ws, target, spec, options.reason || 'boot-hash-target');
+      render();
+      return true;
+    }
+    await loadUrlsIntoWorkspace(ws, [target.url]);
+    computeWorkspaceIndex(ws);
+    selectPublicHashTargetNode(ws, target, spec, options.reason || 'boot-hash-target');
+    render();
+    return true;
   }
 
   function routeSourcesMatch(state) {
@@ -1892,6 +3560,102 @@
 
 
 
+  const ARTIFACT_TRANSITION_CONTRACTS = Object.freeze({
+    continue: {
+      label: 'Continue',
+      schema: 'tiinex.artifact.transition.v1',
+      kind: 'continue',
+      role: 'lineage / creation transition',
+      result: 'new artifact with Parent trace back to the source artifact',
+      sourceMutation: 'source artifact unchanged',
+      limit: 'does not prove the parent is true, approved, replaced, or semantically complete'
+    },
+    reference: {
+      label: 'Reference',
+      schema: 'tiinex.artifact.transition.v1',
+      kind: 'reference',
+      role: 'relation / binding transition',
+      result: 'new artifact that points at a bounded reference target',
+      sourceMutation: 'reference target unchanged',
+      limit: 'does not create parent lineage, evidence status, agreement, dependency, or authority by itself'
+    },
+    'use-as': {
+      label: 'Use as',
+      schema: 'tiinex.artifact.transition.v1',
+      kind: 'use-as',
+      role: 'interpretive role transition',
+      result: 'new artifact that explicitly interprets the source under a chosen role/schema',
+      sourceMutation: 'source artifact unchanged',
+      limit: 'does not mutate, validate, prove, or silently promote the source artifact'
+    },
+    annotate: {
+      label: 'Annotate',
+      schema: 'tiinex.artifact.transition.v1',
+      kind: 'annotate',
+      role: 'annotation transition',
+      result: 'annotation layer bound to a target artifact or region',
+      sourceMutation: 'target artifact content unchanged unless an explicit local edit is made',
+      limit: 'does not make the annotation truth, evidence, validation, or preservation by itself'
+    },
+    project: {
+      label: 'Project',
+      schema: 'tiinex.artifact.transition.v1',
+      kind: 'project',
+      role: 'projection / reference-frame transition',
+      result: 'view or derived artifact in another reference frame',
+      sourceMutation: 'source artifact unchanged',
+      limit: 'does not make the projected view more authoritative than its source and method boundary'
+    },
+    validate: {
+      label: 'Validate',
+      schema: 'tiinex.artifact.transition.v1',
+      kind: 'validate',
+      role: 'validation transition',
+      result: 'validation finding/report candidate with explicit method boundary',
+      sourceMutation: 'target artifact unchanged',
+      limit: 'does not prove truth outside the declared validation method and scope'
+    },
+    refresh: {
+      label: 'Refresh',
+      schema: 'tiinex.artifact.transition.v1',
+      kind: 'refresh',
+      role: 'source refresh transition',
+      result: 'new source observation or workspace state based on current source resolution',
+      sourceMutation: 'remote source unchanged by this read-only app',
+      limit: 'does not claim historical completeness or commit-pinned finality unless the source boundary says so'
+    },
+    'resolve-source': {
+      label: 'Resolve Source',
+      schema: 'tiinex.artifact.transition.v1',
+      kind: 'resolve-source',
+      role: 'source resolution transition',
+      result: 'bounded source material observation',
+      sourceMutation: 'source unchanged',
+      limit: 'does not make the resolved material preserved evidence or truth automatically'
+    }
+  });
+
+  function artifactTransitionContract(kind) {
+    const key = String(kind || '').trim().toLowerCase();
+    return ARTIFACT_TRANSITION_CONTRACTS[key] || null;
+  }
+
+  function transitionDataset(kind) {
+    const contract = artifactTransitionContract(kind);
+    if (!contract) return {};
+    return { transitionKind: contract.kind, transitionSchema: contract.schema, transitionLabel: contract.label };
+  }
+
+  function transitionActionTitle(kind, fallback = '') {
+    const contract = artifactTransitionContract(kind);
+    if (!contract) return fallback || 'Run transition';
+    return `${contract.label}: ${contract.role}. Result: ${contract.result}. Source: ${contract.sourceMutation}. Limit: ${contract.limit}.`;
+  }
+
+
+
+
+
   function parseRootPaths(value) {
     return String(value || '.topics')
       .split(/[\n,]+/)
@@ -1966,29 +3730,37 @@
     return false;
   }
 
+  function visibleLineageChildCount(node, visibleIds) {
+    if (!node || !visibleIds) return 0;
+    return (node.children || []).filter((child) =>
+      child && visibleIds.has(child.id) && (!node.sourceId || !child.sourceId || child.sourceId === node.sourceId)
+    ).length;
+  }
+
   function renderDiscoveryTree(ws, nodes) {
     const tree = buildDiscoveryTree(ws, nodes);
     const roots = discoveryRootsForWorkspace(ws);
     const rootFolder = normalizedFolderPath(roots?.[0] || '.topics');
+    const visibleIds = new Set((nodes || []).map((node) => node.id));
     return `<div class="discovery-tree has-folder-add">
       <div class="tree-root-note root-add">
         <span><i class="fa-solid fa-folder-tree"></i> Root${roots.length === 1 ? '' : 's'}: ${escapeHtml(roots.join(', '))}</span>
         ${folderAddButton(ws, rootFolder, `Add local artifact in ${rootFolder}`)}
       </div>
-      ${renderTreeFolderChildren(ws, tree, 0)}
+      ${renderTreeFolderChildren(ws, tree, 0, visibleIds)}
     </div>`;
   }
 
-  function renderTreeFolderChildren(ws, folder, depth) {
+  function renderTreeFolderChildren(ws, folder, depth, visibleIds) {
     const folders = Array.from(folder.folders.values()).sort((a, b) => a.name.localeCompare(b.name));
     const files = folder.nodes.sort((a, b) => a.file.localeCompare(b.file));
     return [
-      ...folders.map((child) => renderTreeFolder(ws, child, depth)),
-      ...files.map(({ node, file }) => renderTreeFile(ws, node, file, depth))
+      ...folders.map((child) => renderTreeFolder(ws, child, depth, visibleIds)),
+      ...files.map(({ node, file }) => renderTreeFile(ws, node, file, depth, visibleIds))
     ].join('');
   }
 
-  function renderTreeFolder(ws, folder, depth) {
+  function renderTreeFolder(ws, folder, depth, visibleIds) {
     const expanded = treeFolderExpanded(ws, folder.path);
     const actualPath = treeFolderActualPath(ws, folder.path);
     return `<div class="tree-folder" style="--tree-depth:${depth}">
@@ -2002,7 +3774,7 @@
         </button>
         ${folderAddButton(ws, actualPath, `Add local artifact in ${actualPath}`)}
       </div>
-      ${expanded ? `<div class="tree-children">${renderTreeFolderChildren(ws, folder, depth + 1)}</div>` : ''}
+      ${expanded ? `<div class="tree-children">${renderTreeFolderChildren(ws, folder, depth + 1, visibleIds)}</div>` : ''}
     </div>`;
   }
 
@@ -2133,7 +3905,7 @@
     return `
       <article class="lineage-post origin-artifact-card">
         <div class="post-main">
-          <div class="post-chips">
+          <div class="post-chips" translate="no">
             <span class="badge-soft muted-chip"><i class="fa-solid fa-ban"></i>non-lineage origin</span>
             <span class="badge-soft muted-chip">${escapeHtml(fileExtension(origin.path || origin.href) || 'artifact')}</span>
           </div>
@@ -2200,9 +3972,236 @@
     return `<div class="schema-read-metric"><span>${escapeHtml(label)}</span><strong>${valueHtml}</strong></div>`;
   }
 
-  function renderSchemaActionList(items) {
-    const html = items.filter(Boolean).map((item) => `<span class="schema-action-chip">${escapeHtml(item)}</span>`).join('');
+  function stripMarkdownFence(text) {
+    let clean = normalizeNewlines(text || '').trim();
+    const fenceMatch = clean.match(/^```[a-z0-9_-]*\s*\n([\s\S]*?)\n```$/i);
+    if (fenceMatch) clean = fenceMatch[1].trim();
+    return clean;
+  }
+
+  function cleanObservedMaterialText(text) {
+    let clean = stripMarkdownFence(text || '').trim();
+    clean = clean.replace(/^[-*]\s+/gm, '').trim();
+    return clean;
+  }
+
+  function renderPrimaryReadBlock(label, value, options = {}) {
+    return renderMarkdownReadBlock(label, value, options);
+  }
+
+  function renderReadMetaChip(label, value, options = {}) {
+    const clean = String(value || '').trim();
+    if (isLowSignalReadValue(label, clean)) return '';
+    const href = options.href ? safeUrl(options.href) : '';
+    const valueHtml = href
+      ? `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(clean)}</a>`
+      : escapeHtml(clean);
+    return `<span class="schema-meta-chip ${options.className || ''}"><span>${escapeHtml(label)}</span><strong>${valueHtml}</strong></span>`;
+  }
+
+  function renderReadMetaStrip(items) {
+    const html = (items || []).map((item) => {
+      if (!item) return '';
+      const [label, value, options] = item;
+      return renderReadMetaChip(label, value, options || {});
+    }).filter(Boolean).join('');
+    return html ? `<div class="schema-meta-strip">${html}</div>` : '';
+  }
+
+
+  function normalizeSectionName(name = '') {
+    return String(name || '').trim().toLowerCase().replace(/[\s_-]+/g, ' ');
+  }
+
+  function sectionValueAny(map, names = []) {
+    for (const name of names || []) {
+      const direct = sectionValue(map, name);
+      if (String(direct || '').trim()) return direct;
+      const wanted = normalizeSectionName(name);
+      const found = Object.keys(map || {}).find((key) => normalizeSectionName(key) === wanted);
+      if (found && String(map[found] || '').trim()) return map[found];
+    }
+    return '';
+  }
+
+  function sectionPlainAny(map, names = []) {
+    return plainBlock(sectionValueAny(map, names));
+  }
+
+  function introPlain(map) {
+    return plainBlock(map?._intro || '');
+  }
+
+  function sectionTextEquals(a, b) {
+    const norm = (value) => stripMarkdownInline(String(value || '')).replace(/\s+/g, ' ').trim().toLowerCase();
+    const aa = norm(a);
+    const bb = norm(b);
+    return Boolean(aa && bb && aa === bb);
+  }
+
+  function renderReadMarkdownSection(label, value, options = {}) {
+    const clean = String(value || '').trim();
+    if (!clean || isLowSignalReadValue(label, clean)) return '';
+    return renderMarkdownReadBlock(label, clean, options);
+  }
+
+  function renderReadDetailSections(label, sections = [], options = {}) {
+    const blocks = (sections || []).filter(Boolean).map((section) => {
+      const sectionLabel = section.label || 'Section';
+      const value = section.value || '';
+      return renderReadMarkdownSection(sectionLabel, value, Object.assign({}, options, { limit: section.limit || options.limit || 520 }));
+    }).filter(Boolean);
+    return renderSchemaContextDetails(label, blocks);
+  }
+
+  const PRESENTATION_IMPORTANT_SECTION_RULES = Object.freeze({
+    'tiinex.topic.v1': ['Content', 'Current Read', 'Design Direction', 'Next Artifacts', 'Good Child Candidates', 'Transition Boundary'],
+    'tiinex.feedback.v1': ['Feedback Target', 'Feedback Received', 'Disposition', 'Follow-up', 'Limits', 'Interpretation Limits', 'Discovery Finding Basis'],
+    'tiinex.task.v1': ['Objective', 'Task Objective', 'Done Criteria', 'Scope', 'Dependencies', 'Grounding', 'Non-Goals', 'Discovery Finding Basis'],
+    'tiinex.evidence.v1': ['Supported Claim', 'Supports', 'Evidence Material', 'Unavailable Material', 'Provenance', 'Interpretation Limits', 'Interpretation Notes and Limits', 'Discovery Finding Basis'],
+    'tiinex.pointer.v1': ['Pointer Target', 'Target', 'Linked Artifacts', 'Pointer Reason', 'Reason', 'Interpretation Limits', 'Limits', 'Discovery Finding Basis'],
+    'tiinex.discovery.finding.v1': ['Discovery Context', 'Finding', 'Evidence Material', 'Observed Material', 'Provenance', 'Triage', 'Interpretation Limits']
+  });
+
+  function schemaPresentationImportantSections(node = {}) {
+    const schema = String(node.currentSchemaText || node.currentSchema || '').trim();
+    if (PRESENTATION_IMPORTANT_SECTION_RULES[schema]) return PRESENTATION_IMPORTANT_SECTION_RULES[schema].slice();
+    if (String(schema).startsWith('tiinex.resource.')) return ['Resource Identity', 'Need Statement', 'Budget Envelope', 'Allocation Statement', 'Usage Statement', 'Contribution Statement', 'Receipt Statement', 'Resource State', 'Resource Boundary', 'Restrictions Or Conditions'];
+    if (String(schema).startsWith('tiinex.instrument.')) return ['Instrument Identity', 'Financial Instrument', 'Consent Statement', 'Status And Effect', 'Consent Scope', 'Financial Terms', 'Boundaries', 'Terms Or Permissions', 'Use Boundary', 'Revocation Or Expiry'];
+    return [];
+  }
+
+  function schemaPresentationCoverageForNode(node = {}) {
+    const map = sectionMap(node.body || node.rawMarkdown);
+    const important = schemaPresentationImportantSections(node);
+    const present = important.filter((name) => String(sectionValueAny(map, [name]) || '').trim());
+    const schema = String(node.currentSchemaText || node.currentSchema || '').trim();
+    let surfaced = [];
+    if (schema === 'tiinex.topic.v1') surfaced = ['Content', 'Current Read', 'Design Direction', 'Next Artifacts', 'Good Child Candidates', 'Transition Boundary'];
+    else if (schema === 'tiinex.feedback.v1') surfaced = ['Feedback Target', 'Feedback Received', 'Disposition', 'Follow-up', 'Limits', 'Interpretation Limits', 'Discovery Finding Basis'];
+    else if (schema === 'tiinex.task.v1') surfaced = ['Objective', 'Task Objective', 'Done Criteria', 'Scope', 'Dependencies', 'Grounding', 'Non-Goals', 'Discovery Finding Basis'];
+    else if (schema === 'tiinex.evidence.v1') surfaced = ['Supported Claim', 'Supports', 'Evidence Material', 'Unavailable Material', 'Provenance', 'Interpretation Limits', 'Interpretation Notes and Limits', 'Discovery Finding Basis'];
+    else if (schema === 'tiinex.pointer.v1') surfaced = ['Pointer Target', 'Target', 'Linked Artifacts', 'Pointer Reason', 'Reason', 'Interpretation Limits', 'Limits', 'Discovery Finding Basis'];
+    else if (schema === 'tiinex.discovery.finding.v1') surfaced = ['Discovery Context', 'Finding', 'Evidence Material', 'Observed Material', 'Provenance', 'Triage', 'Interpretation Limits'];
+    else if (String(schema).startsWith('tiinex.resource.')) surfaced = schemaPresentationImportantSections(node);
+    else if (String(schema).startsWith('tiinex.instrument.')) surfaced = schemaPresentationImportantSections(node);
+    const surfacedNorm = new Set(surfaced.map(normalizeSectionName));
+    const missingImportant = present.filter((name) => !surfacedNorm.has(normalizeSectionName(name)));
+    return {
+      title: node.title || '',
+      path: node.path || '',
+      schema,
+      introPresent: Boolean(introPlain(map)),
+      importantPresent: present,
+      surfaced,
+      missingImportant
+    };
+  }
+
+  function presentationCoverageReport(limit = 240) {
+    const rows = [];
+    for (const ws of app.workspaces || []) {
+      for (const node of ws.nodes || []) {
+        const row = schemaPresentationCoverageForNode(node);
+        if (!row.schema || (!row.importantPresent.length && !row.introPresent)) continue;
+        rows.push(Object.assign({ workspace: ws.label || ws.id || '' }, row));
+        if (rows.length >= limit) break;
+      }
+      if (rows.length >= limit) break;
+    }
+    const warnings = rows.filter((row) => row.missingImportant.length);
+    return { rows, warnings, warningCount: warnings.length };
+  }
+
+  function renderSchemaContextDetails(label, blocks) {
+    const html = (blocks || []).filter(Boolean).join('');
+    if (!html) return '';
+    return `<details class="schema-read-details"><summary>${escapeHtml(label)}</summary><div>${html}</div></details>`;
+  }
+
+  const USE_AS_CANDIDATE_SCHEMA_MAP = Object.freeze({
+    task: 'tiinex.task.v1',
+    feedback: 'tiinex.feedback.v1',
+    evidence: 'tiinex.evidence.v1',
+    'resource need': 'tiinex.resource.need.v1',
+    resource: 'tiinex.resource.v1',
+    pointer: 'tiinex.pointer.v1',
+    'external payload': 'tiinex.external.payload.v1'
+  });
+
+  function schemaIdForUseAsCandidate(label) {
+    const key = String(label || '').trim().toLowerCase().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ');
+    return USE_AS_CANDIDATE_SCHEMA_MAP[key] || '';
+  }
+
+  function isDiscoveryFindingNode(node) {
+    const schema = String(node?.currentSchemaText || node?.currentSchema || '').trim();
+    return schema === 'tiinex.discovery.finding.v1' || schemaKey(schema) === 'discovery.finding';
+  }
+
+  function discoveryFindingUseAsCandidateLabels(node) {
+    if (!isDiscoveryFindingNode(node)) return [];
+    const map = sectionMap(node.body || node.rawMarkdown);
+    const triage = sectionValue(map, 'Triage');
+    const candidates = bulletValue(triage, 'Use As Candidates') || bulletValue(triage, 'Candidate Artifact Types');
+    const labels = String(candidates || '')
+      .split(/,|;/)
+      .map((v) => v.trim())
+      .filter(Boolean);
+    const fallback = ['feedback', 'task', 'evidence', 'resource need', 'pointer', 'external payload'];
+    const seen = new Set();
+    return (labels.length ? labels : fallback).filter((label) => {
+      const key = String(label || '').toLowerCase().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function discoveryFindingHasUseAsTargets(node) {
+    return discoveryFindingUseAsCandidateLabels(node).some((label) => {
+      const schemaId = schemaIdForUseAsCandidate(label);
+      return schemaId && policyAllowsOrdinaryWizardSchema(schemaId);
+    });
+  }
+
+  function renderSchemaActionList(items, options = {}) {
+    const wsId = options.wsId || options.ws?.id || '';
+    const nodeId = options.nodeId || options.node?.id || '';
+    const actionable = Boolean(options.actionable && wsId && nodeId);
+    const html = items.filter(Boolean).map((item) => {
+      const label = String(item || '').trim();
+      const schemaId = schemaIdForUseAsCandidate(label);
+      const supported = Boolean(actionable && schemaId && policyAllowsOrdinaryWizardSchema(schemaId));
+      if (supported) {
+        return `<button type="button" class="schema-action-chip schema-action-button transition-action" data-action="use-finding-as" data-ws="${escapeAttr(wsId)}" data-node="${escapeAttr(nodeId)}" data-schema="${escapeAttr(schemaId)}" data-transition-kind="use-as" data-transition-schema="tiinex.artifact.transition.v1" title="${escapeAttr(transitionActionTitle('use-as', `Create a ${label} artifact that explicitly uses this finding as its basis`))}">${escapeHtml(label)}</button>`;
+      }
+      const title = schemaId && !supported ? 'Advanced use-as support is not enabled for this schema yet.' : 'Informational candidate.';
+      return `<span class="schema-action-chip ${schemaId ? 'schema-action-chip-muted' : ''}" title="${escapeAttr(title)}">${escapeHtml(label)}</span>`;
+    }).join('');
     return html ? `<div class="schema-action-list">${html}</div>` : '';
+  }
+
+  function renderPresenterHead(kicker, iconClass, title, summary, options = {}) {
+    const compact = Boolean(options.inline || options.compact);
+    const icon = iconClass || 'fa-solid fa-file-lines';
+    if (compact) {
+      return `<div class="schema-presenter-head schema-presenter-head-compact"><span class="schema-presenter-icon"><i class="${escapeAttr(icon)}"></i></span><div><p class="schema-presenter-kicker">${escapeHtml(kicker || 'Artifact')}</p></div></div>`;
+    }
+    return `<div class="schema-presenter-head"><span class="schema-presenter-icon"><i class="${escapeAttr(icon)}"></i></span><div><p class="schema-presenter-kicker">${escapeHtml(kicker || 'Artifact')}</p><h3>${escapeHtml(title || kicker || 'Artifact')}</h3>${summary ? `<p>${escapeHtml(summary)}</p>` : ''}</div></div>`;
+  }
+
+  function presenterClass(base, options = {}, extra = '') {
+    return `${base} human-presenter ${options.inline ? 'social-presenter' : ''} ${options.compact ? 'compact' : ''} ${extra}`.replace(/\s+/g, ' ').trim();
+  }
+
+  function isLowSignalReadValue(label, value) {
+    const clean = String(value || '').trim();
+    if (!clean) return true;
+    if (/^(?:-|—|n\/?a|none|null|not available)$/i.test(clean)) return true;
+    if (/^target$/i.test(String(label || '').trim()) && /^target$/i.test(clean)) return true;
+    if (/^follow[-\s]?up$/i.test(String(label || '').trim()) && /^follow[-\s]?up$/i.test(clean)) return true;
+    return false;
   }
 
   function renderDiscoveryFindingSummary(node, options = {}) {
@@ -2212,7 +4211,7 @@
     const provenance = sectionValue(map, 'Provenance');
     const triage = sectionValue(map, 'Triage');
     const limits = sectionValue(map, 'Interpretation Limits');
-    const status = bulletValue(finding, 'Finding Status') || bulletValue(context, 'Discovery State') || 'unknown';
+    const status = bulletValue(finding, 'Finding Status') || bulletValue(context, 'Discovery State') || 'observed';
     const type = bulletValue(finding, 'Finding Type') || bulletValue(context, 'Source') || 'finding';
     const source = bulletValue(context, 'Source') || bulletValue(provenance, 'Kind') || '';
     const repo = bulletValue(context, 'Repository') || bulletValue(context, 'Target') || bulletValue(provenance, 'Repository') || '';
@@ -2225,32 +4224,46 @@
     const accepted = bulletValue(triage, 'Accepted By Owner');
     const reason = bulletValue(provenance, 'Unavailable Reason');
     const statusClass = /unavailable|missing|stale|ambiguous/i.test(status) ? 'attention' : 'ok';
-    const metrics = [
-      renderReadMetric('Status', status),
-      renderReadMetric('Type', type),
-      renderReadMetric('Source', source),
-      renderReadMetric(repo.includes('#') ? 'Target' : 'Repository', repo),
-      renderReadMetric('Author', author),
-      renderReadMetric('Updated', updated),
-      renderReadMetric('Source URL', url ? 'Open source' : '', { href: url })
-    ].join('');
     const triageChips = String(candidates || '').split(/,|;/).map((v) => v.trim()).filter(Boolean);
-    const limitText = reason || shortText(stripMarkdownInline(limits), 220);
-    const compact = options.compact;
+    const limitText = reason || shortText(stripMarkdownInline(limits), 320);
+    const materialText = cleanObservedMaterialText(sectionPlain(map, 'Evidence Material') || sectionPlain(map, 'Observed Material') || '');
+    const materialLabel = /comment/i.test(source) || /comment/i.test(type) ? 'Comment' : 'Observed material';
+    const primaryMaterialBlock = materialText
+      ? renderPrimaryReadBlock(materialLabel, materialText, { compact: options.compact, className: 'discovery-observed-material', limit: options.compact ? 280 : 620 })
+      : '';
+    const resolvedArtifacts = typeof resolvedArtifactsForFinding === 'function' ? resolvedArtifactsForFinding(options.ws, node) : [];
+    const resolvedBlock = !options.inline && resolvedArtifacts.length
+      ? `<div class="schema-read-block continuity-block"><span class="schema-read-label">Working continuity</span><p>${escapeHtml(`${resolvedArtifacts.length} typed artifact${resolvedArtifacts.length === 1 ? '' : 's'} now carry the working continuity. This finding remains as source/provenance context.`)}</p><div class="schema-action-list">${resolvedArtifacts.slice(0, 4).map((item) => `<button type="button" class="schema-action-chip schema-action-button" data-action="select-node" data-ws="${escapeAttr(options.ws?.id || options.wsId || '')}" data-node="${escapeAttr(item.id || '')}">${escapeHtml(shortText(item.title || item.path || 'Artifact', 42))}</button>`).join('')}</div></div>`
+      : '';
+    const metaStrip = renderReadMetaStrip(options.inline ? [
+      ['From', author],
+      ['Source', source || type],
+      ['URL', url ? 'Open source' : '', { href: url }]
+    ] : [
+      ['Source', source || type],
+      [repo.includes('#') ? 'Target' : 'Repository', repo],
+      ['Author', author],
+      ['Updated', updated],
+      ['URL', url ? 'Open source' : '', { href: url }]
+    ]);
+    const interpretation = [
+      needsInterpretation ? `Needs interpretation: ${needsInterpretation}` : '',
+      canonicalStatus ? `Canonical status: ${canonicalStatus}` : '',
+      accepted ? `Accepted by owner: ${accepted}` : '',
+      status && !/^observed$/i.test(status) ? `Status: ${status}` : ''
+    ].filter(Boolean).join(' · ');
+    const contextDetails = renderSchemaContextDetails('Adapter context and limits', [
+      interpretation ? `<div class="schema-read-block"><span class="schema-read-label">Interpretation</span><p>${escapeHtml(interpretation)}</p></div>` : '',
+      limitText ? `<div class="schema-read-block"><span class="schema-read-label">Limit</span><p>${escapeHtml(limitText)}</p></div>` : ''
+    ]);
     return `
-      <section class="schema-presenter discovery-presenter ${statusClass} ${compact ? 'compact' : ''}">
-        <div class="schema-presenter-head">
-          <span class="schema-presenter-icon"><i class="fa-solid fa-magnifying-glass-location"></i></span>
-          <div>
-            <p class="schema-presenter-kicker">Discovery finding</p>
-            <h3>${escapeHtml(node.title || 'Discovery finding')}</h3>
-            <p>${escapeHtml(node.summary || '')}</p>
-          </div>
-        </div>
-        <div class="schema-read-grid">${metrics}</div>
-        ${triageChips.length ? `<div class="schema-read-block"><span class="schema-read-label">Can be used as</span>${renderSchemaActionList(triageChips)}</div>` : ''}
-        ${(needsInterpretation || accepted || canonicalStatus) ? `<div class="schema-read-block"><span class="schema-read-label">Interpretation</span><p>${escapeHtml([needsInterpretation ? `Needs interpretation: ${needsInterpretation}` : '', canonicalStatus ? `Canonical status: ${canonicalStatus}` : '', accepted ? `Accepted by owner: ${accepted}` : ''].filter(Boolean).join(' · '))}</p></div>` : ''}
-        ${limitText ? `<div class="schema-read-block"><span class="schema-read-label">Limit</span><p>${escapeHtml(limitText)}</p></div>` : ''}
+      <section class="${presenterClass('schema-presenter discovery-presenter', options, statusClass)}">
+        ${renderPresenterHead('Discovery finding', 'fa-solid fa-magnifying-glass-location', node.title || 'Discovery finding', node.summary || '', options)}
+        ${primaryMaterialBlock || (!options.inline && node.summary ? renderPrimaryReadBlock('Observed', node.summary, { compact: options.compact }) : '')}
+        ${resolvedBlock}
+        ${metaStrip}
+        ${!options.inline && triageChips.length ? `<div class="schema-read-block"><span class="schema-read-label">Can be used as</span>${renderSchemaActionList(triageChips, { actionable: false, wsId: options.ws?.id || options.wsId || '', nodeId: node.id || '', node })}</div>` : ''}
+        ${contextDetails}
       </section>`;
   }
 
@@ -2260,21 +4273,21 @@
     const resourceIdentity = firstBulletValue(map, [['Resource Identity', 'Resource'], ['Need Statement', 'Need'], ['Budget Envelope', 'Budget'], ['Allocation Statement', 'Allocation'], ['Usage Statement', 'Usage'], ['Contribution Statement', 'Contribution'], ['Receipt Statement', 'Receipt']]);
     const state = firstBulletValue(map, [['Resource State', 'Status'], ['Need Status', 'Need Status'], ['Budget Status', 'Budget Status'], ['Allocation Status', 'Allocation Status'], ['Usage Status', 'Usage Status'], ['Contribution Status', 'Contribution Status'], ['Receipt Status', 'Receipt Status']]);
     const boundary = firstBulletValue(map, [['Resource Boundary', 'Boundary'], ['Budget Boundary', 'Boundary'], ['Use Boundary', 'Boundary'], ['Restrictions Or Conditions', 'Restrictions']]);
+    const body = introPlain(map) || sectionPlainAny(map, ['Need Statement', 'Allocation Statement', 'Usage Statement', 'Contribution Statement', 'Receipt Statement']);
     return `
-      <section class="schema-presenter resource-presenter ${options.compact ? 'compact' : ''}">
-        <div class="schema-presenter-head">
-          <span class="schema-presenter-icon"><i class="fa-solid fa-layer-group"></i></span>
-          <div>
-            <p class="schema-presenter-kicker">Resource context</p>
-            <h3>${escapeHtml(node.title || shortSchema(schema))}</h3>
-            <p>${escapeHtml(node.summary || '')}</p>
-          </div>
-        </div>
+      <section class="${presenterClass('schema-presenter resource-presenter', options)}">
+        ${renderPresenterHead('Resource context', 'fa-solid fa-layer-group', node.title || shortSchema(schema), node.summary || '', options)}
+        ${body ? renderPrimaryReadBlock('Statement', body, { compact: options.compact, limit: options.compact ? 280 : 620 }) : ''}
         <div class="schema-read-grid">
           ${renderReadMetric('Resource', resourceIdentity || shortSchema(schema))}
           ${renderReadMetric('State', state || 'unknown')}
           ${renderReadMetric('Boundary', boundary)}
         </div>
+        ${!options.inline ? renderReadDetailSections('Resource context', [
+          sectionValueAny(map, ['Resource Identity']) ? { label: 'Resource identity', value: sectionValueAny(map, ['Resource Identity']), limit: 520 } : null,
+          sectionValueAny(map, ['Resource State']) ? { label: 'Resource state', value: sectionValueAny(map, ['Resource State']), limit: 520 } : null,
+          sectionValueAny(map, ['Resource Boundary', 'Budget Boundary', 'Use Boundary', 'Restrictions Or Conditions']) ? { label: 'Boundary', value: sectionValueAny(map, ['Resource Boundary', 'Budget Boundary', 'Use Boundary', 'Restrictions Or Conditions']), limit: 520 } : null
+        ], { compact: options.compact }) : ''}
       </section>`;
   }
 
@@ -2284,46 +4297,188 @@
     const identity = firstBulletValue(map, [['Instrument Identity', 'Instrument'], ['Financial Instrument', 'Instrument'], ['Consent Statement', 'Statement']]);
     const status = firstBulletValue(map, [['Status And Effect', 'Status'], ['Consent Scope', 'Status'], ['Financial Terms', 'Status']]);
     const boundary = firstBulletValue(map, [['Boundaries', 'Boundary'], ['Terms Or Permissions', 'Permission'], ['Use Boundary', 'Boundary'], ['Revocation Or Expiry', 'Expiry']]);
+    const body = introPlain(map) || sectionPlainAny(map, ['Consent Statement', 'Financial Instrument']);
     return `
-      <section class="schema-presenter instrument-presenter ${options.compact ? 'compact' : ''}">
-        <div class="schema-presenter-head">
-          <span class="schema-presenter-icon"><i class="fa-solid fa-file-signature"></i></span>
-          <div>
-            <p class="schema-presenter-kicker">Instrument boundary</p>
-            <h3>${escapeHtml(node.title || shortSchema(schema))}</h3>
-            <p>${escapeHtml(node.summary || '')}</p>
-          </div>
-        </div>
+      <section class="${presenterClass('schema-presenter instrument-presenter', options)}">
+        ${renderPresenterHead('Instrument boundary', 'fa-solid fa-file-signature', node.title || shortSchema(schema), node.summary || '', options)}
+        ${body ? renderPrimaryReadBlock('Statement', body, { compact: options.compact, limit: options.compact ? 280 : 620 }) : ''}
         <div class="schema-read-grid">
           ${renderReadMetric('Instrument', identity || shortSchema(schema))}
           ${renderReadMetric('Status', status || 'declared')}
           ${renderReadMetric('Boundary', boundary)}
         </div>
+        ${!options.inline ? renderReadDetailSections('Instrument context', [
+          sectionValueAny(map, ['Instrument Identity', 'Financial Instrument', 'Consent Statement']) ? { label: 'Identity / statement', value: sectionValueAny(map, ['Instrument Identity', 'Financial Instrument', 'Consent Statement']), limit: 620 } : null,
+          sectionValueAny(map, ['Status And Effect', 'Consent Scope', 'Financial Terms']) ? { label: 'Status / scope', value: sectionValueAny(map, ['Status And Effect', 'Consent Scope', 'Financial Terms']), limit: 620 } : null,
+          sectionValueAny(map, ['Boundaries', 'Terms Or Permissions', 'Use Boundary', 'Revocation Or Expiry']) ? { label: 'Boundary', value: sectionValueAny(map, ['Boundaries', 'Terms Or Permissions', 'Use Boundary', 'Revocation Or Expiry']), limit: 620 } : null
+        ], { compact: options.compact }) : ''}
+      </section>`;
+  }
+
+  function sectionPlain(map, name) {
+    return plainBlock(sectionValue(map, name) || '');
+  }
+
+  function renderBasisLine(map, options = {}) {
+    const basis = sectionValue(map, 'Discovery Finding Basis');
+    const source = bulletValue(basis, 'Source finding');
+    const useAs = bulletValue(basis, 'Use As');
+    const interpretation = bulletValue(basis, 'Interpretation');
+    if (!source && !useAs && !interpretation) return '';
+    if (options.inline) {
+      return renderReadMetaStrip([
+        ['Basis', source ? shortText(stripMarkdownInline(source), 80) : ''],
+        ['Use as', useAs ? shortText(stripMarkdownInline(useAs), 72) : '']
+      ]);
+    }
+    return `<div class="schema-read-block"><span class="schema-read-label">Finding basis</span>${source ? `<p><strong>Source:</strong> ${escapeHtml(source)}</p>` : ''}${useAs ? `<p><strong>Use as:</strong> ${escapeHtml(useAs)}</p>` : ''}${interpretation ? `<p>${escapeHtml(interpretation)}</p>` : ''}</div>`;
+  }
+
+  function renderFeedbackSummary(node, options = {}) {
+    const map = sectionMap(node.body || node.rawMarkdown);
+    const targetRaw = bulletValue(sectionValue(map, 'Feedback Target'), 'Target') || shortText(sectionPlainAny(map, ['Feedback Target']), 160);
+    const target = isLowSignalReadValue('Target', targetRaw) ? '' : targetRaw;
+    const received = sectionPlainAny(map, ['Feedback Received']) || introPlain(map);
+    const dispositionBlock = sectionValueAny(map, ['Disposition']);
+    const disposition = bulletValue(dispositionBlock, 'State') || bulletValue(dispositionBlock, 'Disposition') || '';
+    const followUp = bulletValue(dispositionBlock, 'Follow-Up') || sectionPlainAny(map, ['Follow-up']);
+    const limits = sectionValueAny(map, ['Limits', 'Interpretation Limits']);
+    return `
+      <section class="${presenterClass('schema-presenter feedback-presenter', options)}">
+        ${renderPresenterHead('Feedback', 'fa-solid fa-comment-dots', node.title || 'Feedback', node.summary || '', options)}
+        ${received ? renderPrimaryReadBlock('Feedback received', received, { compact: options.compact, limit: options.compact ? 300 : 680 }) : ''}
+        ${renderReadMetaStrip([
+          ['Target', target ? shortText(stripMarkdownInline(target), 90) : ''],
+          ['Disposition', disposition || 'pending'],
+          ['Follow-up', followUp ? shortText(stripMarkdownInline(followUp), 90) : '']
+        ])}
+        ${!options.inline ? renderReadDetailSections('Feedback context', [
+          target ? { label: 'Target', value: target, limit: 520 } : null,
+          dispositionBlock ? { label: 'Disposition', value: dispositionBlock, limit: 520 } : null,
+          followUp ? { label: 'Follow-up', value: followUp, limit: 520 } : null
+        ], { compact: options.compact }) : ''}
+        ${renderBasisLine(map, options)}
+        ${limits ? renderReadDetailSections('Limits', [{ label: 'Limits', value: limits, limit: 520 }], { compact: options.compact }) : ''}
+      </section>`;
+  }
+
+  function renderTaskSummary(node, options = {}) {
+    const map = sectionMap(node.body || node.rawMarkdown);
+    const objective = sectionPlainAny(map, ['Objective', 'Task Objective']) || introPlain(map);
+    const done = sectionValueAny(map, ['Done Criteria']);
+    const scope = sectionValueAny(map, ['Scope']);
+    const deps = sectionValueAny(map, ['Dependencies']);
+    const grounding = sectionValueAny(map, ['Grounding']);
+    const nonGoals = sectionValueAny(map, ['Non-Goals']);
+    return `
+      <section class="${presenterClass('schema-presenter task-presenter', options)}">
+        ${renderPresenterHead('Task', 'fa-solid fa-list-check', node.title || 'Task', node.summary || '', options)}
+        ${objective ? renderPrimaryReadBlock('Objective', objective, { compact: options.compact, limit: options.compact ? 300 : 680 }) : ''}
+        ${done ? renderReadMarkdownSection('Done criteria', done, { compact: options.compact, limit: options.compact ? 260 : 520 }) : ''}
+        ${renderReadMetaStrip([
+          ['Scope', scope ? shortText(stripMarkdownInline(scope), 90) : ''],
+          ['Dependencies', deps ? shortText(stripMarkdownInline(deps), 90) : '']
+        ])}
+        ${!options.inline ? renderReadDetailSections('Task context', [
+          scope ? { label: 'Scope', value: scope, limit: 520 } : null,
+          deps ? { label: 'Dependencies', value: deps, limit: 520 } : null,
+          grounding ? { label: 'Grounding', value: grounding, limit: 520 } : null,
+          nonGoals ? { label: 'Non-goals', value: nonGoals, limit: 520 } : null
+        ], { compact: options.compact }) : ''}
+        ${renderBasisLine(map, options)}
+      </section>`;
+  }
+
+  function renderEvidenceSummary(node, options = {}) {
+    const map = sectionMap(node.body || node.rawMarkdown);
+    const claim = sectionPlainAny(map, ['Supported Claim', 'Supports']) || introPlain(map);
+    const material = sectionValueAny(map, ['Evidence Material', 'Unavailable Material']);
+    const provenance = sectionValueAny(map, ['Provenance']);
+    const limits = sectionValueAny(map, ['Interpretation Limits', 'Interpretation Notes and Limits']);
+    return `
+      <section class="${presenterClass('schema-presenter evidence-presenter', options)}">
+        ${renderPresenterHead('Evidence', 'fa-solid fa-paperclip', node.title || 'Evidence', node.summary || '', options)}
+        ${claim ? renderPrimaryReadBlock('Supported claim', claim, { compact: options.compact, limit: options.compact ? 280 : 620 }) : ''}
+        ${material ? renderReadMarkdownSection('Material', cleanObservedMaterialText(material), { compact: options.compact, limit: options.compact ? 280 : 620 }) : ''}
+        ${renderReadMetaStrip([
+          ['Provenance', provenance ? shortText(stripMarkdownInline(provenance), 120) : '']
+        ])}
+        ${!options.inline && provenance ? renderReadDetailSections('Provenance', [{ label: 'Provenance', value: provenance, limit: 620 }], { compact: options.compact }) : ''}
+        ${renderBasisLine(map, options)}
+        ${limits ? renderReadDetailSections('Limits', [{ label: 'Interpretation limits', value: limits, limit: 520 }], { compact: options.compact }) : ''}
+      </section>`;
+  }
+
+  function renderTopicSummary(node, options = {}) {
+    const map = sectionMap(node.body || node.rawMarkdown);
+    const intro = introPlain(map);
+    const content = sectionPlainAny(map, ['Content']) || intro;
+    const current = sectionPlainAny(map, ['Current Read']);
+    const design = sectionPlainAny(map, ['Design Direction']);
+    const next = sectionValueAny(map, ['Next Artifacts']);
+    const candidates = sectionValueAny(map, ['Good Child Candidates']);
+    const transition = sectionValueAny(map, ['Transition Boundary']);
+    const primary = content || current || node.summary || design || '';
+    const secondarySections = [];
+    if (current && !sectionTextEquals(current, primary)) secondarySections.push({ label: 'Current read', value: current, limit: options.compact ? 260 : 520 });
+    if (design && !sectionTextEquals(design, primary)) secondarySections.push({ label: 'Design direction', value: design, limit: options.compact ? 240 : 520 });
+    const nextClean = String(next || '').trim();
+    const hasNext = nextClean && nextClean !== '-';
+    return `
+      <section class="${presenterClass('schema-presenter topic-presenter', options)}">
+        ${renderPresenterHead('Topic', 'fa-solid fa-seedling', node.title || 'Topic', node.summary || '', options)}
+        ${primary ? renderPrimaryReadBlock(content ? 'Content' : current ? 'Current read' : 'Summary', primary, { compact: options.compact, limit: options.compact ? 320 : 700 }) : ''}
+        ${secondarySections.map((section) => renderReadMarkdownSection(section.label, section.value, { compact: options.compact, limit: section.limit })).join('')}
+        ${hasNext ? renderReadMarkdownSection('Next artifacts', nextClean, { compact: options.compact, limit: options.compact ? 260 : 520 }) : ''}
+        ${!options.inline && candidates ? renderReadDetailSections('Candidate directions', [{ label: 'Good child candidates', value: candidates, limit: 520 }], { compact: options.compact }) : ''}
+        ${!options.inline && transition ? renderReadDetailSections('Transition context', [{ label: 'Transition boundary', value: transition, limit: 620 }], { compact: options.compact }) : ''}
+      </section>`;
+  }
+
+  function renderPointerSummary(node, options = {}) {
+    const map = sectionMap(node.body || node.rawMarkdown);
+    const target = sectionValueAny(map, ['Pointer Target', 'Target', 'Linked Artifacts']);
+    const reason = sectionValueAny(map, ['Pointer Reason', 'Reason']) || introPlain(map);
+    const limits = sectionValueAny(map, ['Interpretation Limits', 'Limits']);
+    return `
+      <section class="${presenterClass('schema-presenter pointer-presenter', options)}">
+        ${renderPresenterHead('Pointer', 'fa-solid fa-link', node.title || 'Pointer', node.summary || '', options)}
+        ${target ? renderPrimaryReadBlock('Target', target, { compact: options.compact, limit: options.compact ? 280 : 620 }) : ''}
+        ${reason ? renderReadMarkdownSection('Reason', reason, { compact: options.compact, limit: options.compact ? 260 : 520 }) : ''}
+        ${renderBasisLine(map, options)}
+        ${limits ? renderReadDetailSections('Limits', [{ label: 'Limits', value: limits, limit: 520 }], { compact: options.compact }) : ''}
       </section>`;
   }
 
   function renderSchemaReadPresenter(ws, node, options = {}) {
     const schema = node.currentSchemaText || node.currentSchema || '';
-    if (schema === 'tiinex.discovery.finding.v1') return renderDiscoveryFindingSummary(node, options);
-    if (String(schema).startsWith('tiinex.resource.')) return renderResourceSummary(node, options);
-    if (String(schema).startsWith('tiinex.instrument.')) return renderInstrumentSummary(node, options);
+    const presenterOptions = Object.assign({}, options, { ws });
+    if (schema === 'tiinex.discovery.finding.v1') return renderDiscoveryFindingSummary(node, presenterOptions);
+    if (schema === 'tiinex.topic.v1') return renderTopicSummary(node, presenterOptions);
+    if (schema === 'tiinex.feedback.v1') return renderFeedbackSummary(node, presenterOptions);
+    if (schema === 'tiinex.task.v1') return renderTaskSummary(node, presenterOptions);
+    if (schema === 'tiinex.evidence.v1') return renderEvidenceSummary(node, presenterOptions);
+    if (schema === 'tiinex.pointer.v1') return renderPointerSummary(node, presenterOptions);
+    if (String(schema).startsWith('tiinex.resource.')) return renderResourceSummary(node, presenterOptions);
+    if (String(schema).startsWith('tiinex.instrument.')) return renderInstrumentSummary(node, presenterOptions);
     return '';
   }
 
   function renderContinuityPreview(node, ws = null) {
-    const presenter = renderSchemaReadPresenter(ws, node, { compact: true });
+    const presenter = renderSchemaReadPresenter(ws, node, { compact: false, inline: true, full: true });
     if (presenter) return presenter + (ws ? renderMaterialSection(ws, node, { compact: true }) : '');
     const key = schemaKey(node.currentSchemaText || node.currentSchema);
     const sections = extractBodySections(node.body || node.rawMarkdown);
     let html = '';
-    if (key === 'topic') html = renderPreviewSections(sections, ['Current Read', 'Design Direction', 'Next Artifacts', 'Good Child Candidates']);
-    else if (key === 'evidence' || key === 'feedback') html = renderPreviewSections(sections, ['Supported Claim', 'Provenance', 'Evidence Material', 'Supports', 'Interpretation Limits', 'Interpretation Notes and Limits', 'Feedback Signal']);
-    else if (key === 'decision') html = renderPreviewSections(sections, ['Decision', 'Basis', 'Consequences', 'Review Conditions', 'Immediate Next Questions']);
-    else if (key === 'task') html = renderPreviewSections(sections, ['Objective', 'Done Criteria', 'Scope', 'Dependencies', 'Grounding', 'Non-Goals']);
-    else if (key === 'reduction') html = renderPreviewSections(sections, ['Carry-Forward State', 'Loss And Uncertainty', 'Validation', 'Review Checklist']);
+    const fullSectionOptions = { full: true, noTruncate: true, readMode: true };
+    if (key === 'topic') html = renderPreviewSectionsRich(sections, ['Current Read', 'Design Direction', 'Next Artifacts', 'Good Child Candidates'], fullSectionOptions);
+    else if (key === 'evidence' || key === 'feedback') html = renderPreviewSectionsRich(sections, ['Supported Claim', 'Provenance', 'Evidence Material', 'Supports', 'Interpretation Limits', 'Interpretation Notes and Limits', 'Feedback Signal'], fullSectionOptions);
+    else if (key === 'decision') html = renderPreviewSectionsRich(sections, ['Decision', 'Basis', 'Consequences', 'Review Conditions', 'Immediate Next Questions'], fullSectionOptions);
+    else if (key === 'task') html = renderPreviewSectionsRich(sections, ['Objective', 'Done Criteria', 'Scope', 'Dependencies', 'Grounding', 'Non-Goals'], fullSectionOptions);
+    else if (key === 'reduction') html = renderPreviewSectionsRich(sections, ['Carry-Forward State', 'Loss And Uncertainty', 'Validation', 'Review Checklist'], fullSectionOptions);
     else {
-      const picked = Object.keys(sections).filter((name) => !/^(continuity context|continuity integrity)$/i.test(name)).slice(0, 5);
-      html = picked.length ? renderPreviewSections(sections, picked) : '<p class="preview-note">No schema-specific preview available. Open detail or markdown for the full artifact.</p>';
+      const picked = Object.keys(sections).filter((name) => !/^(continuity context|continuity integrity)$/i.test(name));
+      html = picked.length ? renderPreviewSectionsRich(sections, picked, fullSectionOptions) : '<p class="preview-note">No schema-specific preview available. Open detail or markdown for the full artifact.</p>';
     }
     return html + (ws ? renderMaterialSection(ws, node, { compact: true }) : '');
   }
@@ -2333,9 +4488,10 @@
     const schema = node.currentSchemaText || (node.hasModernEnvelope ? 'unknown schema' : 'plain markdown');
     const presenter = renderSchemaReadPresenter(ws, node, { compact: false });
     return `
-      <div class="detail-read-head">
-        <div class="post-chips">
+      <div class="detail-read-head" ${artifactProseAttrs(node)}>
+        <div class="post-chips" translate="no">
           <span class="badge-soft badge-schema ${schemaBadgeClass(schema)}">${escapeHtml(shortSchema(schema))}</span>
+          ${authoringStyleBadgeHtml(node)}
           ${node.createdAt ? `<span class="badge-soft muted-chip">${escapeHtml(node.createdAt)}</span>` : ''}
           ${materialSchemaBadges(ws, node)}
           ${integrityBadge(node)}
@@ -2345,12 +4501,12 @@
       ${presenter || renderContinuityPreview(node)}
       ${renderMaterialSection(ws, node, { compact: false })}
       <hr class="soft-rule">
-      <details class="artifact-body-read">
+      <details class="artifact-body-read" ${artifactProseAttrs(node)}>
         <summary>
           <span class="schema-read-label">Artifact body</span>
           <small>Exact body rendered from the artifact. Use Markdown for full source.</small>
         </summary>
-        <div class="markdown-rendered">${renderSafeMarkdown(node.body || node.rawMarkdown)}</div>
+        <div class="markdown-rendered artifact-prose" ${artifactProseAttrs(node)}>${renderSafeMarkdown(node.body || node.rawMarkdown)}</div>
       </details>`;
   }
 
@@ -2568,8 +4724,7 @@
     if (action === 'set-discovery-filter' || action === 'set-filter') {
       const ws = getWorkspace(wsId);
       if (ws) {
-        ws.discoveryFilterSchema = event.currentTarget.dataset.filter || 'all';
-        ws.filterSchema = ws.discoveryFilterSchema;
+        setDiscoveryFilterList(ws, event.currentTarget.dataset.filter || 'all');
         setRouteState('push');
         render();
       }
@@ -2590,18 +4745,18 @@
     }
     if (action === 'load-demo') { await loadDemo(); setRouteState('push'); return; }
     if (action === 'create-workspace') { await createWorkspaceFromInputs(); setRouteState('push'); return; }
-    if (action === 'select-node') { selectNode(wsId, nodeId); setRouteState('push'); return; }
+    if (action === 'select-node') {
+      event.preventDefault();
+      event.stopPropagation();
+      selectNode(wsId, nodeId);
+      return;
+    }
     if (action === 'clear-selection') {
+      event.preventDefault();
+      event.stopPropagation();
       const ws = getWorkspace(wsId);
       if (ws) {
-        const clearSelectionFallback = () => {
-          ws.selectedNodeId = null;
-          ws.pendingSelectedRoute = null;
-          setRouteState('push');
-          render();
-          if (typeof scheduleRouteHistoryScrollRestore === 'function') scheduleRouteHistoryScrollRestore('ux-back-fallback');
-        };
-        runRouteHistoryBackOrFallback(clearSelectionFallback);
+        clearLineageSelectionToDiscovery(ws, 'ux-back-local', 'replace');
       }
       return;
     }
@@ -2654,8 +4809,12 @@
   app.settings = Object.assign({
     repoDiscoveryFetchConcurrency: 8,
     repoDiscoveryBatchRenderEvery: 80,
-    repoDiscoveryBatchRenderDelayMs: 16
+    repoDiscoveryBatchRenderDelayMs: 16,
+    repoDiscoveryPreferGitNative: true,
+    repoDiscoveryGitNativeReadConcurrency: 16
   }, app.settings || {});
+
+  hydratePersistedGitNativeDiscoveryConfig();
 
   async function runWithConcurrency(items, limit, worker) {
     const queue = Array.from(items || []);
@@ -3195,8 +5354,8 @@
     const label = String(ref?.label || ref?.title || '').toLowerCase();
     const target = String(ref?.path || ref?.href || ref?.rawUrl || ref?.browseUrl || '').toLowerCase();
 
-    if (['schema', 'validator', 'trace'].includes(kind)) return true;
-    if (/\.(schema|validator|trace|workspace)\.md(?:$|[?#])/i.test(target)) return true;
+    if (tiinexArtifactDefinitionForKind(kind)) return true;
+    if (isTiinexMarkdownArtifactPath(target)) return true;
     if (/\b(envelope schema|current schema|parent schema|parent origin|parent trace|method definition|method identifier)\b/i.test(label)) return true;
     if (/^sha256-base64url-c14n-v\d+$/.test(label)) return true;
     if (/commit-pinned permalink|validator artifact|validation method artifact|method definition/.test(target)) return true;
@@ -3248,7 +5407,7 @@
         text = ref.localAsset.content != null ? ref.localAsset.content : await ref.localAsset.blob.text();
       } else {
         if (!ref.rawUrl) throw new Error('No fetchable source URL.');
-        text = await fetchText(ref.rawUrl);
+        text = await fetchText(ref.rawUrl, 'material preview', { fallbackPolicy: 'defer-when-missing' });
       }
       const max = Number(app.settings.materialPreviewMaxChars || 120000);
       const payload = {
@@ -3501,6 +5660,7 @@
           content,
           type: blob.type || '',
           size: blob.size || 0,
+          lastModified: '',
           source: 'zip',
           kind: importEntryKind(path, content)
         });
@@ -3516,6 +5676,7 @@
       content,
       type: file.type || '',
       size: file.size || 0,
+      lastModified: file.lastModified ? new Date(file.lastModified).toISOString() : '',
       source: 'upload',
       kind: importEntryKind(relativePath, content)
     });
@@ -3614,6 +5775,7 @@
 
 
   function ensureWorkspaceSources(ws) {
+    if (!ws) return new Map();
     if (!ws.sources || !(ws.sources instanceof Map)) ws.sources = new Map();
     if (!Array.isArray(ws.sourceOrder)) ws.sourceOrder = [];
     return ws.sources;
@@ -3639,12 +5801,129 @@
     return ws.sources.get(id);
   }
 
+  const SOURCE_ACCESS_MODE_CONTRACTS = Object.freeze({
+    'web-surface': Object.freeze({
+      id: 'web-surface',
+      label: 'Web surface / raw HTTP access',
+      implemented: true,
+      remote: true,
+      gitNative: false,
+      sourceResultBoundary: 'bounded web/raw observation',
+      sourceCacheBoundary: 'browser-runtime-http-cache',
+      courtesyBoundary: 'scope and refresh must stay explicit; do not broad-crawl by default'
+    }),
+    'local-working-tree': Object.freeze({
+      id: 'local-working-tree',
+      label: 'User-provided local working tree material',
+      implemented: true,
+      remote: false,
+      gitNative: 'path-aware; history only when .git support exists',
+      sourceResultBoundary: 'user-provided local material',
+      sourceCacheBoundary: 'browser file/folder selection and local workspace state',
+      courtesyBoundary: 'no remote load; user chooses local material explicitly'
+    }),
+    'local-git-archive': Object.freeze({
+      id: 'local-git-archive',
+      label: 'User-provided local Git archive',
+      implemented: false,
+      remote: false,
+      gitNative: true,
+      sourceResultBoundary: 'future explicit local git object/ref/log resolution',
+      sourceCacheBoundary: 'future local repository/object cache chosen by user',
+      courtesyBoundary: 'preferred when repeated history traversal would otherwise pressure a remote host'
+    }),
+    'browser-remote-git': Object.freeze({
+      id: 'browser-remote-git',
+      label: 'Browser remote Git capability',
+      implemented: false,
+      remote: true,
+      gitNative: true,
+      sourceResultBoundary: 'future shallow/scoped remote git resolution',
+      sourceCacheBoundary: 'future browser storage quota and object cache boundary',
+      courtesyBoundary: 'must be shallow, user-invoked, scoped, and CORS/auth/storage-aware'
+    }),
+    'service-backed-git': Object.freeze({
+      id: 'service-backed-git',
+      label: 'Service-backed Git capability',
+      implemented: false,
+      remote: true,
+      gitNative: true,
+      sourceResultBoundary: 'future service-trust-bounded git resolution',
+      sourceCacheBoundary: 'service cache boundary must be disclosed',
+      courtesyBoundary: 'service trust, authentication, privacy, and remote load must be explicit'
+    })
+  });
+
+  function sourceAccessModeContract(mode) {
+    const key = String(mode || '').trim();
+    return SOURCE_ACCESS_MODE_CONTRACTS[key] || SOURCE_ACCESS_MODE_CONTRACTS['web-surface'];
+  }
+
+  function normalizeSourceAccessMode(mode, fallback = 'web-surface') {
+    const key = String(mode || fallback || 'web-surface').trim();
+    return SOURCE_ACCESS_MODE_CONTRACTS[key] ? key : 'web-surface';
+  }
+
+  function sourceAccessModeSummary(mode) {
+    const contract = sourceAccessModeContract(mode);
+    return {
+      id: contract.id,
+      label: contract.label,
+      implemented: contract.implemented,
+      remote: contract.remote,
+      gitNative: contract.gitNative,
+      sourceResultBoundary: contract.sourceResultBoundary,
+      sourceCacheBoundary: contract.sourceCacheBoundary,
+      courtesyBoundary: contract.courtesyBoundary
+    };
+  }
+
+  function defaultSourceAccessModeForKind(kind) {
+    const key = String(kind || '').trim().toLowerCase();
+    if (key === 'local' || key === 'draft' || key === 'zip-import') return 'local-working-tree';
+    return 'web-surface';
+  }
+
+  function sourceAccessModeForSource(source, fallbackKind = '') {
+    return normalizeSourceAccessMode(source?.sourceAccessMode || source?.accessMode || '', defaultSourceAccessModeForKind(source?.kind || fallbackKind));
+  }
+
+  function sourceResolutionBoundaryFor(source, resolutionKind = '') {
+    const mode = sourceAccessModeForSource(source, source?.kind || '');
+    const contract = sourceAccessModeContract(mode);
+    return {
+      sourceAccessMode: mode,
+      sourceAccess: sourceAccessModeSummary(mode),
+      sourceResolutionKind: resolutionKind || source?.sourceResolutionKind || 'source-resolution',
+      sourceResultBoundary: contract.sourceResultBoundary,
+      sourceCacheBoundary: contract.sourceCacheBoundary,
+      courtesyBoundary: contract.courtesyBoundary,
+      doesNotMean: 'source resolution does not create evidence, preservation, validation, truth, consent, authorship, or completeness by itself'
+    };
+  }
+
   function localSource(ws) {
-    return registerWorkspaceSource(ws, { id: 'local', kind: 'local', label: 'Local', origin: 'Local uploads, folders, zips, and pasted traces' });
+    return registerWorkspaceSource(ws, {
+      id: 'local',
+      kind: 'local',
+      label: 'Local',
+      origin: 'Local uploads, folders, zips, and pasted traces',
+      sourceAccessMode: 'local-working-tree',
+      sourceResolutionKind: 'manual-local-intake',
+      sourceBoundary: sourceResolutionBoundaryFor({ kind: 'local', sourceAccessMode: 'local-working-tree' }, 'manual-local-intake')
+    });
   }
 
   function draftSource(ws) {
-    return registerWorkspaceSource(ws, { id: 'draft', kind: 'draft', label: 'Drafts', origin: 'Generated inside this workspace' });
+    return registerWorkspaceSource(ws, {
+      id: 'draft',
+      kind: 'draft',
+      label: 'Drafts',
+      origin: 'Generated inside this workspace',
+      sourceAccessMode: 'local-working-tree',
+      sourceResolutionKind: 'workspace-draft',
+      sourceBoundary: sourceResolutionBoundaryFor({ kind: 'draft', sourceAccessMode: 'local-working-tree' }, 'workspace-draft')
+    });
   }
 
   function normalizeGithubSurfaceConfig(enabledSurfaces = {}) {
@@ -3657,11 +5936,76 @@
   function normalizedGitHubIssueUrls(issueUrls = [], repo = '') {
     const out = [];
     (Array.isArray(issueUrls) ? issueUrls : String(issueUrls || '').split(/[\n,]+/)).forEach((item) => {
-      const spec = typeof parseGitHubIssueSpec === 'function' ? parseGitHubIssueSpec(item) : null;
-      const url = spec && (!repo || spec.repo.toLowerCase() === String(repo || '').toLowerCase()) ? spec.issueUrl : String(item || '').trim();
+      const spec = typeof parseGitHubSocialTargetSpec === 'function' ? parseGitHubSocialTargetSpec(item) : null;
+      const url = spec && (!repo || spec.repo.toLowerCase() === String(repo || '').toLowerCase())
+        ? (spec.targetUrl || spec.issueUrl || spec.discussionUrl)
+        : String(item || '').trim();
       if (url && !out.includes(url)) out.push(url);
     });
     return out;
+  }
+
+  function configuredGitHubIssueUrls(source = {}, repo = '') {
+    const explicit = source.configuredIssueUrls || source.explicitIssueUrls || source.socialTargetUrls || [];
+    return normalizedGitHubIssueUrls(explicit, repo || source.repo || '');
+  }
+
+  function activeGitHubIssueUrls(source = {}, repo = '', ws = null) {
+    const cleanRepo = repo || source.repo || '';
+    const urls = [
+      ...configuredGitHubIssueUrls(source, cleanRepo),
+      ...(Array.isArray(source.discoveredIssueUrls) ? source.discoveredIssueUrls : []),
+      ...(ws ? workspaceGitHubIssueUrls(ws, cleanRepo) : [])
+    ];
+    return normalizedGitHubIssueUrls(urls, cleanRepo);
+  }
+
+  function setConfiguredGitHubIssueUrls(source, issueUrls = []) {
+    if (!source) return source;
+    const urls = normalizedGitHubIssueUrls(issueUrls, source.repo || '');
+    source.configuredIssueUrls = urls.slice();
+    // Compatibility alias for explicit user/workspace configuration only.
+    // Adapter-discovered or imported issue snapshots must not be written here.
+    source.issueUrls = urls.slice();
+    return source;
+  }
+
+  function noteDiscoveredGitHubIssueUrl(source, issueUrl = '') {
+    if (!source || !issueUrl) return;
+    const url = normalizedGitHubIssueUrls([issueUrl], source.repo || '')[0] || String(issueUrl || '').trim();
+    if (!url) return;
+    source.discoveredIssueUrls = Array.isArray(source.discoveredIssueUrls) ? source.discoveredIssueUrls : [];
+    if (!source.discoveredIssueUrls.includes(url)) source.discoveredIssueUrls.push(url);
+  }
+
+
+  function workspaceGitHubIssueUrls(ws, repo = '') {
+    if (!ws) return [];
+    const values = [];
+    const add = (value) => {
+      const spec = parseGitHubIssueSpec(value || '');
+      if (!spec) return;
+      if (repo && spec.repo.toLowerCase() !== String(repo || '').toLowerCase()) return;
+      if (!values.includes(spec.issueUrl)) values.push(spec.issueUrl);
+    };
+    const scanText = (text = '') => {
+      const re = /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/\d+(?:#[A-Za-z0-9_.-]+)?/gi;
+      let match;
+      while ((match = re.exec(String(text || '')))) add(match[0]);
+    };
+    for (const source of ws.sources?.values?.() || []) {
+      add(source?.origin);
+      (source?.configuredIssueUrls || source?.issueUrls || source?.discoveredIssueUrls || []).forEach(add);
+    }
+    for (const entry of ws.files?.values?.() || []) {
+      [entry?.sourceOrigin, entry?.publishedOriginUrl, entry?.recoveredFromUrl, entry?.rawUrl, entry?.browseUrl, entry?.origin].forEach(add);
+      scanText(entry?.content || entry?.rawMarkdown || entry?.body || '');
+    }
+    for (const node of ws.nodes || []) {
+      [node?.sourceOrigin, node?.publishedOriginUrl, node?.recoveredFromUrl, node?.rawUrl, node?.browseUrl, node?.origin].forEach(add);
+      scanText(node?.rawMarkdown || node?.body || '');
+    }
+    return values;
   }
 
   function normalizeGitHubSourceState(source = {}, ws = null) {
@@ -3674,7 +6018,9 @@
       repoFiles: source.repoDiscovery,
       issues: source.issueDiscovery
     });
-    const issueUrls = normalizedGitHubIssueUrls(source.issueUrls || source.issueUrl || [], repo);
+    const issueUrls = configuredGitHubIssueUrls(source, repo);
+    const sourceAccessMode = normalizeSourceAccessMode(source.sourceAccessMode || source.accessMode || 'web-surface', 'web-surface');
+    const sourceResolutionKind = source.sourceResolutionKind || 'github-web-source';
     return {
       id: source.id || githubSourceId(repo || source.origin || source.label || 'github'),
       kind: 'github',
@@ -3685,6 +6031,12 @@
       rootPaths: rootPaths.length ? rootPaths : ['.topics'],
       enabledSurfaces,
       issueUrls,
+      configuredIssueUrls: issueUrls.slice(),
+      discoveredIssueUrls: Array.isArray(source.discoveredIssueUrls) ? source.discoveredIssueUrls.slice() : [],
+      issueThreadCache: source.issueThreadCache && typeof source.issueThreadCache === 'object' ? source.issueThreadCache : {},
+      sourceAccessMode,
+      sourceResolutionKind,
+      sourceBoundary: source.sourceBoundary || sourceResolutionBoundaryFor({ kind: 'github', sourceAccessMode }, sourceResolutionKind),
       discoveryDirective: source.discoveryDirective || { kind: 'implicit-workspace-inline', source: 'workspace.md', status: 'bootstrap' },
       adapter: source.adapter || originAdapterSummary('github-file'),
       socialAdapter: source.socialAdapter || originAdapterSummary('github-issue')
@@ -3697,6 +6049,8 @@
     return [
       `github:${normalized.repo || ''}@${normalized.ref || ''}`,
       `roots:${(normalized.rootPaths || ['.topics']).map(normalizeRepoPath).join('|')}`,
+      `access:${normalized.sourceAccessMode || ''}`,
+      `resolution:${normalized.sourceResolutionKind || ''}`,
       `surfaces:repoFiles=${surfaces.repoFiles ? 'on' : 'off'};issues=${surfaces.issues ? 'on' : 'off'}`,
       `issues:${(normalized.issueUrls || []).join('|')}`
     ].join('::');
@@ -3712,6 +6066,9 @@
 
   function registerGitHubSource(ws, config = {}) {
     const normalized = normalizeGitHubSourceState(config, ws);
+    if (normalized.issueThreadCache && typeof mergeGitHubIssueThreadCacheSubset === 'function') {
+      mergeGitHubIssueThreadCacheSubset(normalized.issueThreadCache);
+    }
     return registerWorkspaceSource(ws, normalized);
   }
 
@@ -3725,14 +6082,21 @@
         label: file.sourceLabel || existing.label || file.sourceId,
         origin: file.sourceOrigin || existing.origin || file.rawUrl || file.browseUrl || '',
         repo: file.repo || existing.repo || '',
-        ref: file.ref || existing.ref || ''
+        ref: file.ref || existing.ref || '',
+        sourceAccessMode: file.sourceAccessMode || existing.sourceAccessMode || defaultSourceAccessModeForKind(file.sourceKind || existing.kind || 'local'),
+        sourceResolutionKind: file.sourceResolutionKind || existing.sourceResolutionKind || '',
+        sourceBoundary: file.sourceBoundary || existing.sourceBoundary || null
       };
+      source.sourceAccessMode = normalizeSourceAccessMode(source.sourceAccessMode, defaultSourceAccessModeForKind(source.kind));
+      source.sourceBoundary = source.sourceBoundary || sourceResolutionBoundaryFor(source, source.sourceResolutionKind);
       if (Array.isArray(file.rootPaths)) source.rootPaths = file.rootPaths.slice();
       else if (Array.isArray(existing.rootPaths)) source.rootPaths = existing.rootPaths.slice();
       if (file.enabledSurfaces) source.enabledSurfaces = normalizeGithubSurfaceConfig(file.enabledSurfaces);
       else if (existing.enabledSurfaces) source.enabledSurfaces = normalizeGithubSurfaceConfig(existing.enabledSurfaces);
-      if (Array.isArray(file.issueUrls)) source.issueUrls = file.issueUrls.slice();
-      else if (Array.isArray(existing.issueUrls)) source.issueUrls = existing.issueUrls.slice();
+      if (Array.isArray(file.configuredIssueUrls)) setConfiguredGitHubIssueUrls(source, file.configuredIssueUrls);
+      else if (Array.isArray(existing.configuredIssueUrls)) setConfiguredGitHubIssueUrls(source, existing.configuredIssueUrls);
+      if (Array.isArray(file.discoveredIssueUrls)) source.discoveredIssueUrls = file.discoveredIssueUrls.slice();
+      else if (Array.isArray(existing.discoveredIssueUrls)) source.discoveredIssueUrls = existing.discoveredIssueUrls.slice();
       if (existing.adapter && !source.adapter) source.adapter = existing.adapter;
       if (existing.socialAdapter && !source.socialAdapter) source.socialAdapter = existing.socialAdapter;
       return registerWorkspaceSource(ws, source);
@@ -3744,7 +6108,9 @@
         ref,
         origin: file.browseUrl || file.rawUrl || `https://github.com/${file.repo}`,
         rootPaths: Array.isArray(file.rootPaths) ? file.rootPaths : undefined,
-        enabledSurfaces: file.enabledSurfaces
+        enabledSurfaces: file.enabledSurfaces,
+        sourceAccessMode: file.sourceAccessMode || 'web-surface',
+        sourceResolutionKind: file.sourceResolutionKind || 'github-raw-file'
       });
     }
     if (file.rawUrl || file.browseUrl) {
@@ -3754,15 +6120,187 @@
         id: makeSourceId('url', file.rawUrl || file.browseUrl || label),
         kind: 'url',
         label,
-        origin: file.browseUrl || file.rawUrl || ''
+        origin: file.browseUrl || file.rawUrl || '',
+        sourceAccessMode: file.sourceAccessMode || 'web-surface',
+        sourceResolutionKind: file.sourceResolutionKind || 'url-fetch',
+        sourceBoundary: file.sourceBoundary || sourceResolutionBoundaryFor({ kind: 'url', sourceAccessMode: file.sourceAccessMode || 'web-surface' }, file.sourceResolutionKind || 'url-fetch')
       });
     }
     return localSource(ws);
   }
 
+  function sourceKindForFile(ws, file = {}) {
+    const source = file?.sourceId ? sourceById(ws, file.sourceId) : null;
+    return String(file?.sourceKind || source?.kind || (file?.sourceId === 'local' ? 'local' : '') || '').toLowerCase();
+  }
+
+  function stripTopLevelContinuityParentBlocks(markdown = '') {
+    const text = normalizeNewlines(markdown || '');
+    const separatorIndex = text.indexOf('\n---');
+    if (separatorIndex < 0) return text;
+    const envelope = text.slice(0, separatorIndex).trimEnd();
+    const rest = text.slice(separatorIndex);
+    const lines = envelope.split('\n');
+    const kept = [];
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      const indent = line.search(/\S/);
+      if (indent <= 1 && /^-\s+Parent(?:\s*$|\s|:)/i.test(trimmed)) {
+        i += 1;
+        while (i < lines.length) {
+          const nextLine = lines[i];
+          const nextTrimmed = nextLine.trim();
+          const nextIndent = nextLine.search(/\S/);
+          if (nextIndent <= 1 && /^-\s+/i.test(nextTrimmed)) {
+            i -= 1;
+            break;
+          }
+          i += 1;
+        }
+        continue;
+      }
+      kept.push(line);
+    }
+    return `${kept.join('\n').trimEnd()}${rest}`;
+  }
+
+  function duplicateComparableContent(content = '') {
+    const normalized = normalizeNewlines(content || '').trim();
+    if (!normalized) return '';
+    let comparable = normalized;
+    try { comparable = canonicalizeTraceableContinuityChecksumSource(comparable); } catch (_) {}
+    comparable = stripTopLevelContinuityParentBlocks(comparable);
+    return comparable.replace(/[ \t]+$/gm, '').trim();
+  }
+
+
+  function artifactBodyComparableContent(content = '') {
+    const normalized = normalizeNewlines(content || '').trim();
+    if (!normalized) return '';
+    let withoutIntegrity = normalized;
+    try { withoutIntegrity = canonicalizeTraceableContinuityChecksumSource(withoutIntegrity); } catch (_) {}
+    const bodyStart = withoutIntegrity.indexOf('\n---') >= 0 ? withoutIntegrity.indexOf('\n---') + 4 : 0;
+    const body = bodyStart ? withoutIntegrity.slice(bodyStart) : withoutIntegrity;
+    return stripTrailingBodySeparator(body).replace(/[ \t]+$/gm, '').trim();
+  }
+
+  function duplicateSemanticKeysForFile(file = {}) {
+    const full = duplicateComparableContent(file.content || '');
+    const body = artifactBodyComparableContent(file.content || '');
+    const title = String(file.title || markdownTitleFromFile(file) || '').trim().toLowerCase();
+    const schema = String(file.currentSchema || file.currentSchemaText || schemaIdFromText(file.content || '', '') || '').trim().toLowerCase();
+    const keys = [];
+    if (full) keys.push(`full:${full}`);
+    // Publishing/recovery may alter Parent, integrity or scope/source metadata
+    // while preserving the user-authored artifact body. Add a body-level key
+    // gated by title+schema so a published source artifact can shadow its local
+    // working copy without requiring byte-for-byte envelope equality.
+    if (body && title && schema) keys.push(`body:${schema}\n${title}\n${body}`);
+    return Array.from(new Set(keys));
+  }
+
+  function isLocalWorkspaceFile(ws, file = {}) {
+    const kind = sourceKindForFile(ws, file);
+    return kind === 'local' || file?.sourceId === 'local' || (!file?.sourceId && !file?.rawUrl && !file?.browseUrl && !file?.repo);
+  }
+
+  function isExternalImportedFile(ws, file = {}) {
+    const kind = sourceKindForFile(ws, file);
+    if (!file || isLocalWorkspaceFile(ws, file)) return false;
+    if (kind === 'draft') return false;
+    return Boolean(file.rawUrl || file.browseUrl || file.sourceOrigin || file.repo || kind === 'github' || kind === 'url');
+  }
+
+  function isLocalDraftShadowFile(ws, file = {}) {
+    if (!isLocalWorkspaceFile(ws, file)) return false;
+    return Boolean(
+      file.localEditDraft
+      || file.localDraftOf
+      || file.shadowSourceKey
+      || file.shadowSourceId
+      || file.shadowSourcePath
+      || file.shadowSourceOrigin
+      || file.isGenerated
+    );
+  }
+
+  function pruneLocalFilesShadowedByIdenticalSource(ws, context = '') {
+    if (!ws?.files || !(ws.files instanceof Map)) return 0;
+    const externalByContent = new Map();
+    for (const file of ws.files.values()) {
+      if (!isExternalImportedFile(ws, file)) continue;
+      for (const content of duplicateSemanticKeysForFile(file)) {
+        if (!content) continue;
+        if (!externalByContent.has(content)) externalByContent.set(content, []);
+        externalByContent.get(content).push(file);
+      }
+    }
+    if (!externalByContent.size) return 0;
+
+    let removed = 0;
+    let candidateCount = 0;
+    for (const [key, file] of Array.from(ws.files.entries())) {
+      if (!isLocalDraftShadowFile(ws, file)) continue;
+      const matches = duplicateSemanticKeysForFile(file).flatMap((content) => externalByContent.get(content) || []);
+      if (!matches.length) continue;
+      candidateCount += 1;
+      const localTitle = String(file.title || markdownTitleFromFile(file) || '').trim().toLowerCase();
+      const localSchema = String(file.currentSchema || file.currentSchemaText || schemaIdFromText(file.content || '', '') || '').trim().toLowerCase();
+      const compatible = matches.some((external) => {
+        const externalTitle = String(external.title || markdownTitleFromFile(external) || '').trim().toLowerCase();
+        const externalSchema = String(external.currentSchema || external.currentSchemaText || schemaIdFromText(external.content || '', '') || '').trim().toLowerCase();
+        return Boolean(localTitle && externalTitle && localTitle === externalTitle && localSchema && externalSchema && localSchema === externalSchema);
+      });
+      if (!compatible) continue;
+
+      ws.files.delete(key);
+      removed += 1;
+      try { removeWorkspaceAssetMatches(ws, Object.assign({}, file, { sourceId: file.sourceId || 'local' })); } catch (_) {}
+    }
+
+    if (removed) {
+      ws.logs?.push?.(`Pruned ${removed} identical local ${removed === 1 ? 'copy' : 'copies'} shadowed by imported source material${context ? ` (${context})` : ''}.`);
+      try { githubIssueImportTrace('local-shadow-pruned', { removed, candidateCount, context }); } catch (_) {}
+      scheduleLocalStateSaveAfterWorkspaceMutation();
+    } else if (candidateCount) {
+      try { githubIssueImportTrace('local-shadow-prune-candidates-kept', { candidateCount, context }); } catch (_) {}
+    }
+    return removed;
+  }
+
+  function pruneLocalDraftShadowsAfterSourceMaterial(ws, context = '') {
+    if (!ws?.files) return 0;
+    const before = ws.files.size;
+    const removedSemantic = pruneLocalFilesShadowedByIdenticalSource(ws, context || 'source material reconciliation');
+    // Publication import may preserve the same user-authored artifact with a
+    // different continuity envelope. The semantic prune above is the canonical
+    // owner for those cases; keep the byte/signature prune as a narrow fallback
+    // for exact publication cache matches.
+    const removedExact = typeof pruneLocalDuplicatesNowOwnedBySource === 'function'
+      ? pruneLocalDuplicatesNowOwnedBySource(ws)
+      : 0;
+    const removed = removedSemantic + removedExact;
+    if (removed || ws.files.size !== before) {
+      computeWorkspaceIndex(ws);
+      ws.logs?.push?.(`Reconciled ${removed} local draft shadow${removed === 1 ? '' : 's'} after source material became canonical${context ? ` (${context})` : ''}.`);
+    }
+    return removed;
+  }
+
   function sourceById(ws, sourceId) {
-    ensureWorkspaceSources(ws);
-    return ws.sources.get(sourceId || '') || null;
+    if (!ws) return null;
+    const sources = ensureWorkspaceSources(ws);
+    return sources.get(sourceId || '') || null;
+  }
+
+  function gitHubSourceForRepo(ws, repo = '') {
+    if (!ws || !repo) return null;
+    const clean = String(repo || '').trim().toLowerCase();
+    return Array.from(ensureWorkspaceSources(ws).values()).find((source) =>
+      String(source?.kind || '').toLowerCase() === 'github' &&
+      String(source?.repo || '').trim().toLowerCase() === clean
+    ) || null;
   }
 
   function sourceShortLabel(ws, sourceId) {
@@ -3774,7 +6312,7 @@
 
   function sourceBadgeClass(source) {
     if (!source) return 'source-unknown';
-    if (source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue') return 'source-github';
+    if (source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue' || source.kind === 'github-discussion' || source.kind === 'github-discussion') return 'source-github';
     if (source.kind === 'local') return 'source-local';
     if (source.kind === 'draft') return 'source-draft';
     return 'source-url';
@@ -3783,18 +6321,19 @@
   function renderSourceBadge(ws, nodeOrFile) {
     const source = sourceById(ws, nodeOrFile?.sourceId);
     if (!source) return '';
-    const icon = source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue' ? 'fa-brands fa-github'
+    const icon = source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue' || source.kind === 'github-discussion' || source.kind === 'github-discussion' ? 'fa-brands fa-github'
       : source.kind === 'local' ? 'fa-solid fa-laptop-file'
       : source.kind === 'draft' ? 'fa-solid fa-pen-nib'
       : 'fa-solid fa-link';
-    const editable = source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue';
+    const editable = source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue' || source.kind === 'github-discussion' || source.kind === 'github-discussion';
     const action = editable ? ` data-action="edit-source" data-ws="${escapeAttr(ws.id)}" data-source="${escapeAttr(source.id)}" role="button" tabindex="0"` : '';
     return `<span class="badge-soft source-chip ${sourceBadgeClass(source)}"${action} title="${escapeAttr(source.origin || source.label || source.id)}"><i class="${icon}"></i>${escapeHtml(shortText(sourceShortLabel(ws, source.id), 34))}</span>`;
   }
 
   function sourceCount(ws) {
-    ensureWorkspaceSources(ws);
-    return Array.from(ws.sources.values()).filter((s) => s.kind !== 'draft' || ws.generated?.length).length;
+    if (!ws) return 0;
+    const sources = ensureWorkspaceSources(ws);
+    return Array.from(sources.values()).filter((s) => s.kind !== 'draft' || ws.generated?.length).length;
   }
 
   function sourceFileKey(sourceId, path, isGenerated = false) {
@@ -3809,6 +6348,9 @@
     if (file.ref && !ws.ref) ws.ref = file.ref;
     const source = sourceFromFileMeta(ws, file);
     const sourceId = source?.id || '';
+    const sourceAccessMode = normalizeSourceAccessMode(file.sourceAccessMode || source?.sourceAccessMode || '', defaultSourceAccessModeForKind(source?.kind || file.sourceKind || 'local'));
+    const sourceResolutionKind = file.sourceResolutionKind || source?.sourceResolutionKind || (source?.kind === 'github' ? 'github-raw-file' : 'source-resolution');
+    const sourceBoundary = file.sourceBoundary || source?.sourceBoundary || sourceResolutionBoundaryFor(Object.assign({}, source || {}, { sourceAccessMode }), sourceResolutionKind);
     const content = normalizeNewlines(file.content || '');
     const key = sourceFileKey(sourceId, path, Boolean(file.isGenerated));
     ws.files.set(key, {
@@ -3816,6 +6358,14 @@
       path,
       sourceId,
       sourceLabel: source?.label || '',
+      sourceOrigin: file.sourceOrigin || source?.origin || '',
+      recoveredFromPath: file.recoveredFromPath || '',
+      recoveredFromUrl: file.recoveredFromUrl || '',
+      recoveryKind: file.recoveryKind || '',
+      githubParentResolutionMode: file.githubParentResolutionMode || '',
+      githubParentResolutionHint: file.githubParentResolutionHint || '',
+      githubParentResolutionScore: Number(file.githubParentResolutionScore || 0),
+      githubParentExplicit: Boolean(file.githubParentExplicit),
       storageKey: key,
       name: fileNameFromPath(path),
       content,
@@ -3824,12 +6374,39 @@
       repo: file.repo || '',
       ref: file.ref || '',
       isGenerated: Boolean(file.isGenerated),
+      observedAt: file.observedAt || file.importedAt || new Date().toISOString(),
+      importedAt: file.importedAt || file.observedAt || new Date().toISOString(),
+      lastModified: file.lastModified || '',
       generatedAt: file.generatedAt || '',
       gitCommittedAt: file.gitCommittedAt || '',
       gitCommitSha: file.gitCommitSha || '',
       gitCommitSortCheckedAt: file.gitCommitSortCheckedAt || '',
       gitCommitSortStatus: file.gitCommitSortStatus || '',
-      sourceSurface: file.sourceSurface || file.originSurface || ''
+      sourceAccessMode,
+      sourceResolutionKind,
+      sourceResultBoundary: file.sourceResultBoundary || sourceBoundary.sourceResultBoundary || '',
+      sourceCacheBoundary: file.sourceCacheBoundary || sourceBoundary.sourceCacheBoundary || '',
+      sourceSurface: file.sourceSurface || file.originSurface || '',
+      sourceKind: file.sourceKind || source?.kind || '',
+      resolvedEnvelope: Boolean(file.resolvedEnvelope || file.resolvedFindingEnvelope || file.sourceEnvelopeResolved),
+      resolvedByPath: file.resolvedByPath || '',
+      resolvedBySchema: file.resolvedBySchema || '',
+      resolvedByTitle: file.resolvedByTitle || '',
+      embeddedTiinexSchema: file.embeddedTiinexSchema || '',
+      embeddedTiinexTitle: file.embeddedTiinexTitle || '',
+      embeddedSourcePath: file.embeddedSourcePath || '',
+      embeddedSelfIntegrity: file.embeddedSelfIntegrity || '',
+      githubParentHintCount: Number(file.githubParentHintCount || 0),
+      shadowSourceNodeId: file.shadowSourceNodeId || '',
+      shadowSourceStorageKey: file.shadowSourceStorageKey || '',
+      shadowSourceTitle: file.shadowSourceTitle || '',
+      shadowSourceSchema: file.shadowSourceSchema || '',
+      shadowSourceKey: file.shadowSourceKey || '',
+      shadowSourceId: file.shadowSourceId || '',
+      shadowSourcePath: file.shadowSourcePath || '',
+      shadowSourceOrigin: file.shadowSourceOrigin || '',
+      localDraftOf: file.localDraftOf || '',
+      localEditDraft: Boolean(file.localEditDraft)
     });
     if (file.isGenerated || file.preserveAsAsset) {
       storeWorkspaceAsset(ws, path, content, { type: 'text/markdown;charset=utf-8', source: file.isGenerated ? 'generated' : 'trace', sourceId, sourceSurface: file.sourceSurface || file.originSurface || '' });
@@ -3851,7 +6428,13 @@
     const bodyTitle = (body.match(/^#\s+(.+)\s*$/m) || [null, topHeading])[1].trim();
     const fields = extractEnvelopeFields(envelopeText);
     const currentSchema = fields.current['Current Schema'] || fields.current['Schema'] || '';
+    const currentSchemaText = stripMarkdownInline(currentSchema);
     const summary = fields.current['Summary'] || inferSummary(body) || topHeading;
+    const title = bodyTitle || summary || topHeading;
+    const displayTitle = isSchemaDefinitionArtifact({ path: file.path, currentSchema, currentSchemaText })
+      ? normalizeSchemaBodyDisplayTitle(title, currentSchemaText || currentSchema)
+      : title;
+    const titleStyleDiagnostic = schemaBodyTitleStyleDiagnostic({ path: file.path, currentSchema, currentSchemaText, bodyTitle, topHeading, title });
     const parentTraceLink = parseMarkdownLink(fields.parent.Trace || '');
     const parentHref = parentTraceLink.href || parentTraceLink.text;
     const parentResolvedPath = parentHref ? joinPath(dirname(file.path), parentHref) : '';
@@ -3865,7 +6448,10 @@
       storageKey: file.storageKey || sourceFileKey(file.sourceId, file.path, file.isGenerated),
       file,
       isGenerated: Boolean(file.isGenerated),
-      title: bodyTitle || summary || topHeading,
+      title,
+      displayTitle,
+      authoringStyleWarnings: titleStyleDiagnostic ? [titleStyleDiagnostic] : [],
+      titleStyleDiagnostic,
       topHeading,
       bodyTitle,
       summary,
@@ -3873,7 +6459,7 @@
       authors: fields.current.Authors || '',
       createdAt: fields.current['Created At'] || '',
       currentSchema,
-      currentSchemaText: stripMarkdownInline(currentSchema),
+      currentSchemaText,
       parentSchema: fields.parent['Parent Schema'] || '',
       parentTrace: fields.parent.Trace || '',
       parentHref,
@@ -3891,6 +6477,30 @@
       gitCommittedAt: file.gitCommittedAt || '',
       gitCommitSha: file.gitCommitSha || '',
       gitCommitSortStatus: file.gitCommitSortStatus || '',
+      observedAt: file.observedAt || file.importedAt || '',
+      lastModified: file.lastModified || '',
+      sourceOrigin: file.sourceOrigin || '',
+      resolvedEnvelope: Boolean(file.resolvedEnvelope || file.resolvedFindingEnvelope || file.sourceEnvelopeResolved),
+      resolvedByPath: file.resolvedByPath || '',
+      resolvedBySchema: file.resolvedBySchema || '',
+      resolvedByTitle: file.resolvedByTitle || '',
+      embeddedTiinexSchema: file.embeddedTiinexSchema || '',
+      embeddedTiinexTitle: file.embeddedTiinexTitle || '',
+      embeddedSourcePath: file.embeddedSourcePath || '',
+      embeddedSelfIntegrity: file.embeddedSelfIntegrity || '',
+      githubParentHintCount: Number(file.githubParentHintCount || 0),
+      recoveredFromPath: file.recoveredFromPath || '',
+      recoveredFromUrl: file.recoveredFromUrl || '',
+      recoveryKind: file.recoveryKind || '',
+      githubParentResolutionMode: file.githubParentResolutionMode || '',
+      githubParentResolutionHint: file.githubParentResolutionHint || '',
+      githubParentResolutionScore: Number(file.githubParentResolutionScore || 0),
+      githubParentExplicit: Boolean(file.githubParentExplicit),
+      shadowSourceKey: file.shadowSourceKey || '',
+      shadowSourceId: file.shadowSourceId || '',
+      shadowSourcePath: file.shadowSourcePath || '',
+      shadowSourceOrigin: file.shadowSourceOrigin || '',
+      localDraftOf: file.localDraftOf || '',
       envelopeReason: hasModernEnvelope ? '' : 'No # Continuity Context envelope found.'
     };
   }
@@ -4021,7 +6631,7 @@
       assetCount += 1;
       if (shouldIndexAsTrace(targetPath, entry.content)) {
         const content = entry.content != null ? entry.content : (entry.blob ? await entry.blob.text() : '');
-        addFileToWorkspace(ws, { path: targetPath, content, preserveAsAsset: true, sourceId, sourceKind: 'local', sourceLabel: 'Local' });
+        addFileToWorkspace(ws, { path: targetPath, content, preserveAsAsset: true, sourceId, sourceKind: 'local', sourceLabel: 'Local', lastModified: entry.lastModified || '' });
         traceCount += 1;
       }
     }
@@ -4073,13 +6683,22 @@
       root: Array.isArray(source.rootPaths) && source.rootPaths.length ? source.rootPaths.join('\n') : (source.rootPath || '.topics'),
       repoDiscovery: surfaces.repoFiles,
       issueDiscovery: surfaces.issues,
-      issueUrls: Array.isArray(source.issueUrls) ? source.issueUrls.join('\n') : '',
+      issueUrls: configuredGitHubIssueUrls(source, source.repo || '').join('\n'),
       addMode: 'git',
       openSections: {}
     };
     render();
   }
 
+
+  function sourceRefreshOperationKey(ws, source) {
+    return `${ws?.id || ''}::${source?.id || source?.repo || ''}`;
+  }
+
+  function sourceRefreshIsRunning(ws, source) {
+    const key = sourceRefreshOperationKey(ws, source);
+    return Boolean(key && app.sourceRefreshInFlight?.has?.(key));
+  }
 
   async function refreshEditedGitHubSource(hardRefresh = false) {
     const modal = app.modal?.type === 'source' ? app.modal : null;
@@ -4089,18 +6708,46 @@
       toast('No editable GitHub source is open.', 'warn');
       return;
     }
-    if (hardRefresh) {
-      clearAdapterRuntimeCache(source.repo || '');
+    const key = sourceRefreshOperationKey(ws, source);
+    app.sourceRefreshInFlight = app.sourceRefreshInFlight || new Set();
+    if (app.sourceRefreshInFlight.has(key)) {
+      toast(`Refresh already running for ${source.repo || 'GitHub source'}.`, 'warn');
+      return;
     }
-    const label = hardRefresh ? 'Hard refresh' : 'Refresh';
-    toast(`${label} started for ${source.repo || 'GitHub source'}.`, 'info');
-    await loadGitHubStateSourceIntoWorkspace(ws, source, {
-      refreshExisting: true,
-      hardRefresh: Boolean(hardRefresh),
-      userInitiated: true
+    app.sourceRefreshInFlight.add(key);
+    if (modal) {
+      modal.refreshingSourceId = source.id;
+      modal.refreshingHard = Boolean(hardRefresh);
+      modal.refreshStartedAt = new Date().toISOString();
+    }
+    ws.loading = true;
+    ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
+      phase: hardRefresh ? 'source-reset-start' : 'source-refresh-start',
+      loaded: 0,
+      total: 1,
+      failed: 0,
+      sourceProgress: 'github-source-refresh'
     });
-    if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
     render();
+    await progressYield(ws);
+    try {
+      if (hardRefresh) clearAdapterRuntimeCache(source.repo || '');
+      const label = hardRefresh ? 'Cache reset' : 'Refresh';
+      toast(`${label} started for ${source.repo || 'GitHub source'}.`, 'info');
+      await loadGitHubStateSourceIntoWorkspace(ws, source, {
+        refreshExisting: true,
+        hardRefresh: Boolean(hardRefresh),
+        userInitiated: true
+      });
+      if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
+    } finally {
+      app.sourceRefreshInFlight.delete(key);
+      if (modal && modal.type === 'source' && modal.editSourceId === source.id) {
+        modal.refreshingSourceId = '';
+        modal.refreshingHard = false;
+      }
+      render();
+    }
   }
 
   function renderAddChoiceCard(icon, title, body, actionAttrs, extraClass = '') {
@@ -4143,6 +6790,7 @@
       kind: 'local',
       capabilities: adapterCapabilitySet({ discover: true, read: true, create: true, append: true, edit: true, replace: true, delete: true, hashContent: true, observeMetadata: true }),
       guarantees: adapterGuaranteeSet({ addressable: 'browser-local', mutable: true, versioned: false, contentHashable: true, authorKnown: false, timestamped: true, deletable: true, permalinkStable: false, requiresAuth: false, clientSide: true, telemetry: 'none' }),
+      sourceAccessModes: Object.freeze(['local-working-tree', 'local-git-archive']),
       editPreconditions: Object.freeze(['hash-match', 'user-confirmed-overwrite'])
     }),
     'github-file': Object.freeze({
@@ -4151,6 +6799,7 @@
       kind: 'github-file',
       capabilities: adapterCapabilitySet({ discover: true, read: true, create: true, edit: true, replace: true, delete: true, resolvePermalink: true, hashContent: true, observeMetadata: true }),
       guarantees: adapterGuaranteeSet({ addressable: true, mutable: 'branch-mutable', versioned: true, contentHashable: true, authorKnown: true, timestamped: true, deletable: true, permalinkStable: 'commit-pinned when ref is a commit', requiresAuth: 'write-only', clientSide: true, telemetry: 'none' }),
+      sourceAccessModes: Object.freeze(['web-surface', 'local-git-archive', 'browser-remote-git', 'service-backed-git']),
       editPreconditions: Object.freeze(['ref-match', 'content-hash-match', 'user-confirmed-overwrite'])
     }),
     'github-issue': Object.freeze({
@@ -4159,6 +6808,16 @@
       kind: 'github-issue',
       capabilities: adapterCapabilitySet({ discover: true, read: true, create: true, append: true, edit: true, replace: true, delete: true, resolvePermalink: true, hashContent: true, observeMetadata: true, observeReactions: true }),
       guarantees: adapterGuaranteeSet({ addressable: true, mutable: true, versioned: 'weak/platform-dependent', contentHashable: true, authorKnown: true, timestamped: true, deletable: true, permalinkStable: true, requiresAuth: 'write-only', clientSide: true, telemetry: 'none' }),
+      sourceAccessModes: Object.freeze(['web-surface', 'service-backed-git']),
+      editPreconditions: Object.freeze(['comment-id-match', 'updated-at-match', 'body-hash-match', 'user-confirmed-overwrite'])
+    }),
+    'github-discussion': Object.freeze({
+      id: 'github-discussion',
+      label: 'GitHub discussion social origin',
+      kind: 'github-discussion',
+      capabilities: adapterCapabilitySet({ discover: true, read: false, create: true, append: true, edit: true, replace: true, delete: true, resolvePermalink: true, hashContent: true, observeMetadata: true, observeReactions: true }),
+      guarantees: adapterGuaranteeSet({ addressable: true, mutable: true, versioned: 'weak/platform-dependent', contentHashable: 'target-only unless material is pasted/imported', authorKnown: 'not observed in anonymous target registration', timestamped: 'not observed in anonymous target registration', deletable: true, permalinkStable: true, requiresAuth: 'write-or-GraphQL-enrichment', clientSide: true, telemetry: 'none' }),
+      sourceAccessModes: Object.freeze(['web-surface', 'service-backed-git']),
       editPreconditions: Object.freeze(['comment-id-match', 'updated-at-match', 'body-hash-match', 'user-confirmed-overwrite'])
     }),
     'zip-import': Object.freeze({
@@ -4167,6 +6826,7 @@
       kind: 'zip-import',
       capabilities: adapterCapabilitySet({ read: true, hashContent: true, observeMetadata: true }),
       guarantees: adapterGuaranteeSet({ addressable: 'package-local', mutable: false, versioned: false, contentHashable: true, authorKnown: false, timestamped: false, deletable: false, permalinkStable: false, requiresAuth: false, clientSide: true, telemetry: 'none' }),
+      sourceAccessModes: Object.freeze(['local-working-tree', 'local-git-archive']),
       editPreconditions: Object.freeze([])
     })
   });
@@ -4176,6 +6836,7 @@
     if (ORIGIN_ADAPTER_CONTRACTS[key]) return ORIGIN_ADAPTER_CONTRACTS[key];
     if (key === 'github' || key === 'github-tree') return ORIGIN_ADAPTER_CONTRACTS['github-file'];
     if (key === 'local' || key === 'draft') return ORIGIN_ADAPTER_CONTRACTS.local;
+    if (key.includes('discussion')) return ORIGIN_ADAPTER_CONTRACTS['github-discussion'];
     if (key.includes('issue')) return ORIGIN_ADAPTER_CONTRACTS['github-issue'];
     return Object.freeze({
       id: key || 'unknown',
@@ -4183,6 +6844,7 @@
       kind: key || 'unknown',
       capabilities: adapterCapabilitySet({ read: true, hashContent: true }),
       guarantees: adapterGuaranteeSet({ addressable: Boolean(key), mutable: 'unknown', versioned: 'unknown', contentHashable: true, clientSide: true, telemetry: 'none' }),
+      sourceAccessModes: Object.freeze(['web-surface']),
       editPreconditions: Object.freeze(['user-confirmed-overwrite'])
     });
   }
@@ -4196,12 +6858,41 @@
       label: contract.label,
       capabilities: caps,
       guarantees,
+      sourceAccessModes: Array.from(contract.sourceAccessModes || []),
       editPreconditions: Array.from(contract.editPreconditions || [])
     };
   }
 
 
   // --- Source/import modal rendering ---
+
+  function sourceDialogRefreshNotice(ws, source, modal = {}) {
+    if (!ws || !source) return '';
+    const running = sourceRefreshIsRunning(ws, source);
+    const hasProgress = workspaceHasActiveDiscoveryProgress(ws) && (ws.discoveryProgress?.sourceProgress || running);
+    if (!hasProgress) return '';
+    const mode = modal.refreshingHard ? 'Reset cache' : 'Refresh';
+    const pct = discoveryProgressPercent(ws);
+    return `<div class="source-refresh-progress-panel" aria-live="polite">
+      <div class="source-refresh-progress-copy">
+        <strong>${escapeHtml(mode)} in progress</strong>
+        <span>${escapeHtml(discoveryProgressTitle(ws))}</span>
+      </div>
+      ${loadingProgressNotice(ws)}
+    </div>`;
+  }
+
+  async function waitForRenderedSourceRefreshCommit(ws) {
+    if (app.renderTimers?.main) {
+      clearTimeout(app.renderTimers.main);
+      app.renderTimers.main = null;
+    }
+    if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
+    if (typeof render === 'function') render();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    if (typeof updateDiscoveryProgressDom === 'function') updateDiscoveryProgressDom(ws);
+    await new Promise((resolve) => setTimeout(resolve, Math.max(120, Number(app.settings.sourceRefreshSettledDelayMs || 240))));
+  }
 
   function renderSourceModal(modal) {
     const append = modal.appendWsId ? getWorkspace(modal.appendWsId) : null;
@@ -4215,7 +6906,7 @@
                 <h2 class="modal-title-lite">Create workspace</h2>
                 <p class="text-secondary mb-0">Start with an empty workspace. Add material afterwards from inside the workspace.</p>
               </div>
-              <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+              <button class="tv-btn small subtle share-modal-close" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
             </div>
             <div class="create-workspace-body">
               <label>
@@ -4263,7 +6954,7 @@
                 <input class="visually-hidden-file" id="source-folder" type="file" multiple webkitdirectory directory>
               </label>
 
-              ${renderAddChoiceCard('<i class="fa-brands fa-github"></i>', 'GitHub source', 'Add a GitHub repo/community with repo files and issue discussions as selectable discovery surfaces.', 'data-action="choose-add-mode" data-mode="git"')}
+              ${renderAddChoiceCard('<i class="fa-brands fa-github"></i>', 'GitHub source', 'Start with conservative web-surface/raw access; git-native/local archive modes are modeled as first-class future capabilities.', 'data-action="choose-add-mode" data-mode="git"')}
               ${renderAddChoiceCard('<i class="fa-solid fa-link"></i>', 'Explicit URLs', 'Paste raw/blob trace URLs or manifests.', 'data-action="choose-add-mode" data-mode="urls"')}
               ${renderAddChoiceCard('<i class="fa-solid fa-hand-pointer"></i>', 'Drag and drop', 'Turn the dialog into a focused drop target for this workspace.', 'data-action="choose-add-mode" data-mode="drop"', 'desktop-only-choice')}
             </div>
@@ -4279,6 +6970,10 @@
       const repoDiscovery = modal.repoDiscovery !== false;
       const issueDiscovery = modal.issueDiscovery !== false;
       const editing = Boolean(modal.editSourceId);
+      const editingSource = editing ? sourceById(append, modal.editSourceId) : null;
+      const sourceRefreshing = editing && sourceRefreshIsRunning(append, editingSource);
+      const refreshDisabled = sourceRefreshing ? ' disabled aria-disabled="true"' : '';
+      const sourceRefreshNotice = editing ? sourceDialogRefreshNotice(append, editingSource, modal) : '';
       return `
         <div class="modal-backdrop-custom focus-modal" role="dialog" aria-modal="true">
           <div class="modal-panel source-modal-panel add-flow-modal github-source-modal">
@@ -4286,7 +6981,7 @@
               <div>
                 <p class="kicker">${editing ? 'Edit GitHub source' : 'GitHub source'}</p>
                 <h2 class="modal-title-lite">${title}</h2>
-                <p class="text-secondary mb-0">One client-side, read-only GitHub repo/community source.</p>
+                <p class="text-secondary mb-0">One client-side, read-only GitHub repo/community source. Current load uses conservative web-surface/raw access; git-native/local archive modes remain explicit future capabilities.</p>
               </div>
               <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
             </div>
@@ -4313,20 +7008,21 @@
                   <input type="checkbox" id="source-repo-discovery" ${repoDiscovery ? 'checked' : ''}>
                 </label>
                 <label class="display-option-row source-surface-row">
-                  <span><strong>Issue discussion discovery</strong><small>Issues/comments as feedback/proposals under this source.</small></span>
+                  <span><strong>Issue snapshot discovery</strong><small>Public GitHub issues/comments are imported as read-only source snapshots.</small></span>
                   <input type="checkbox" id="source-issue-discovery" ${issueDiscovery ? 'checked' : ''}>
                 </label>
               </div>
               <details class="github-advanced-issues" ${modal.issueUrls ? 'open' : ''}>
                 <summary>Issue URLs <em>optional</em></summary>
-                <textarea class="form-control source-url-box" id="source-issue-urls" placeholder="Leave empty to sample open issues from this repo.&#10;https://github.com/Tiinex/docs/issues/123">${escapeHtml(modal.issueUrls || '')}</textarea>
+                <textarea class="form-control source-url-box" id="source-issue-urls" placeholder="Optional explicit issue targets. Leave empty to test bounded public issue discovery. Imported/discovered issues can be preserved by Save workspace.&#10;https://github.com/Tiinex/docs/issues/123">${escapeHtml(modal.issueUrls || '')}</textarea>
               </details>
-              <p class="source-safety-note">Read-only: no GitHub write, token, auth prompt, backend, or telemetry.</p>
+              <p class="source-safety-note">Read-only: no GitHub write, token, auth prompt, backend, or telemetry. Leave explicit targets empty to test bounded public issue discovery. Issue targets saved here are re-used as known source anchors. GitHub Discussions are a separate future surface and are not imported by this checkbox.</p>
             </div>
+            ${sourceRefreshNotice}
 
             <div class="modal-footer-actions">
-              ${editing ? '<button class="tv-btn subtle" data-action="refresh-source"><i class="fa-solid fa-rotate"></i>Refresh</button><button class="tv-btn subtle" data-action="hard-refresh-source"><i class="fa-solid fa-broom"></i>Hard refresh</button>' : '<button class="tv-btn subtle" data-action="choose-add-mode" data-mode=""><i class="fa-solid fa-arrow-left"></i>Back</button>'}
-              <button class="tv-btn primary" data-action="create-workspace"><i class="fa-brands fa-github"></i>${editing ? 'Save GitHub source' : 'Add GitHub source'}</button>
+              ${editing ? `<button class="tv-btn subtle" data-action="refresh-source" title="Re-read and reconcile this GitHub source without clearing adapter caches."${refreshDisabled}><i class="fa-solid fa-rotate"></i>Refresh</button><button class="tv-btn subtle" data-action="hard-refresh-source" title="Reset source adapter caches and force a fresh read. Use only when normal Refresh looks stale."${refreshDisabled}><i class="fa-solid fa-broom"></i>Reset cache</button>` : '<button class="tv-btn subtle" data-action="choose-add-mode" data-mode=""><i class="fa-solid fa-arrow-left"></i>Back</button>'}
+              <button class="tv-btn primary" data-action="create-workspace"${refreshDisabled}><i class="fa-brands fa-github"></i>${editing ? 'Save GitHub source' : 'Add GitHub source'}</button>
             </div>
           </div>
         </div>`;
@@ -4394,9 +7090,33 @@
 
   // --- Workspace indexing and relationship graph ---
 
+  function nodeExpansionKey(sourceId, path) {
+    return `${sourceId || ''}::${canonicalWorkspacePath(path || '')}`;
+  }
+
+  function captureExpandedNodeKeys(ws) {
+    const set = new Set();
+    for (const node of ws?.nodes || []) {
+      if (!node?.expanded) continue;
+      set.add(nodeExpansionKey(node.sourceId || '', node.path || ''));
+      set.add(nodeExpansionKey('', node.path || ''));
+    }
+    return set;
+  }
+
+  function restoreExpandedNodeKeys(ws, expandedKeys) {
+    if (!ws || !expandedKeys?.size) return;
+    for (const node of ws.nodes || []) {
+      const key = nodeExpansionKey(node.sourceId || '', node.path || '');
+      const fallback = nodeExpansionKey('', node.path || '');
+      if (expandedKeys.has(key) || expandedKeys.has(fallback)) node.expanded = true;
+    }
+  }
+
   function computeWorkspaceIndex(ws, options = {}) {
     ensureWorkspaceSources(ws);
     const previousSelected = ws.selectedNodeId;
+    const previousExpanded = captureExpandedNodeKeys(ws);
     const previousWindows = ws.lineageWindows || {};
     const previousIntegrity = ws.integrityCache || {};
     const previousParentFetches = ws.parentFetches || {};
@@ -4448,8 +7168,10 @@
     ws.leaves.sort(compareNodesDesc);
     ws.nodes.sort(compareNodesDesc);
     ws.selectedNodeId = previousSelected && ws.nodeById.get(previousSelected) ? previousSelected : null;
+    restoreExpandedNodeKeys(ws, previousExpanded);
     ws.filterSchema = ws.filterSchema || 'all';
     ws.discoveryFilterSchema = ws.discoveryFilterSchema || ws.filterSchema || 'all';
+    if (typeof setDiscoveryFilterList === 'function') setDiscoveryFilterList(ws, ws.discoveryFilterSchemas || ws.discoveryFilterSchema);
     ws.layoutMode = ws.layoutMode || 'expanded';
     ws.lineageWindows = previousWindows;
     ws.integrityCache = previousIntegrity;
@@ -4555,6 +7277,11 @@
     label: '',
     icon: '',
     home: 'https://github.com/Tiinex',
+    publicBaseUrl: '',
+    viewerBaseUrl: '',
+    shareBaseUrl: '',
+    workspaceHome: '',
+    logoHrefMode: 'workspace-home',
     configUrl: '',
     noWorkspaceSubtitle: 'Everything starts from somewhere.',
     noWorkspaceSubtitles: [
@@ -4783,7 +7510,7 @@
       if (typeof focusWorkspaceWindow === 'function') focusWorkspaceWindow(firstWs.id);
     }
     if (Number.isFinite(state.workspaceOffset)) app.workspaceOffset = Math.max(0, Number(state.workspaceOffset) || 0);
-    if (typeof setRouteState === 'function') setRouteState('replace');
+    if (typeof setRouteState === 'function' && options.preserveShareHash !== true) setRouteState('replace');
     return opened || sources.length;
   }
 
@@ -4837,25 +7564,56 @@
   }
 
   function parseGitHubIssueSpec(input) {
+    const spec = parseGitHubSocialTargetSpec(input);
+    return spec?.kind === 'issue' ? spec : null;
+  }
+
+  function parseGitHubDiscussionSpec(input) {
+    const spec = parseGitHubSocialTargetSpec(input);
+    return spec?.kind === 'discussion' ? spec : null;
+  }
+
+  function parseGitHubSocialTargetSpec(input) {
     const raw = String(input || '').trim();
     if (!raw) return null;
     let url;
     try { url = new URL(raw); } catch (_) { return null; }
     if (url.hostname.toLowerCase() !== 'github.com') return null;
     const parts = url.pathname.split('/').filter(Boolean);
-    const issueIndex = parts.indexOf('issues');
-    if (issueIndex !== 2 || parts.length < 4) return null;
+    if (parts.length < 4) return null;
+    const owner = parts[0];
+    const repoName = parts[1];
+    const repo = `${owner}/${repoName}`;
+    const surface = parts[2];
     const number = Number(parts[3]);
     if (!Number.isInteger(number) || number <= 0) return null;
-    return {
-      owner: parts[0],
-      repoName: parts[1],
-      repo: `${parts[0]}/${parts[1]}`,
-      issueNumber: number,
-      issueUrl: `https://github.com/${parts[0]}/${parts[1]}/issues/${number}`,
-      apiIssueUrl: `https://api.github.com/repos/${parts[0]}/${parts[1]}/issues/${number}`,
-      apiCommentsUrl: `https://api.github.com/repos/${parts[0]}/${parts[1]}/issues/${number}/comments`
-    };
+    const hash = String(url.hash || '').replace(/^#/, '');
+    const base = { owner, repoName, repo, number, hash, sourceUrl: '' };
+    if (surface === 'issues') {
+      const issueUrl = `https://github.com/${owner}/${repoName}/issues/${number}`;
+      return Object.assign(base, {
+        kind: 'issue',
+        targetLabel: `GitHub Issue #${number}`,
+        issueNumber: number,
+        targetUrl: issueUrl,
+        issueUrl,
+        apiIssueUrl: `https://api.github.com/repos/${owner}/${repoName}/issues/${number}`,
+        apiCommentsUrl: `https://api.github.com/repos/${owner}/${repoName}/issues/${number}/comments`,
+        commentAnchor: /^issuecomment-/i.test(hash) ? hash : ''
+      });
+    }
+    if (surface === 'discussions') {
+      const discussionUrl = `https://github.com/${owner}/${repoName}/discussions/${number}`;
+      return Object.assign(base, {
+        kind: 'discussion',
+        targetLabel: `GitHub Discussion #${number}`,
+        discussionNumber: number,
+        targetUrl: discussionUrl,
+        discussionUrl,
+        commentAnchor: /^discussioncomment-/i.test(hash) ? hash : ''
+      });
+    }
+    return null;
   }
 
   async function fetchGitHubJson(url, options = {}) {
@@ -4865,7 +7623,8 @@
       rateLimitKey: 'github-rest',
       headers: githubRestHeaders(),
       hardRefresh: Boolean(options.hardRefresh),
-      authMode: options.authMode || 'none'
+      authMode: options.authMode || 'none',
+      ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard)
     });
     return { data: result.data, headers: result.headers, request: result };
   }
@@ -4889,7 +7648,1167 @@
       url = comments.length >= limit ? '' : githubNextLink(page.headers);
       pages += 1;
     }
-    return { issue, comments, truncated: Boolean(url) };
+    return { issue, comments, truncated: Boolean(url), adapterMode: 'github-api' };
+  }
+
+  function githubWebIssueTextFromElement(root) {
+    if (!root) return '';
+    const textLines = [];
+    const seenBlocks = new Set();
+    const push = (value = '') => {
+      const clean = cleanWhitespace(String(value || '').replace(/\u00a0/g, ' '));
+      if (clean) textLines.push(clean);
+    };
+    const pushCode = (value = '', lang = '') => {
+      const code = normalizeNewlines(String(value || '')).trim();
+      if (!code || seenBlocks.has(code)) return;
+      seenBlocks.add(code);
+      textLines.push(markdownFence(code, lang || (/^#\s+Continuity Context/im.test(code) ? 'md' : '')));
+    };
+
+    const embeddedBlocks = Array.from(root.querySelectorAll?.('pre code, code') || [])
+      .map((el) => normalizeNewlines(el.textContent || '').trim())
+      .filter((code) => code && looksLikeStandaloneTiinexArtifact(code));
+    if (embeddedBlocks.length) {
+      return `## Source Markdown\n\n${markdownFence(embeddedBlocks[0], 'md')}`;
+    }
+
+    const walker = root.ownerDocument?.createTreeWalker
+      ? root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null)
+      : null;
+    if (!walker) {
+      return cleanWhitespace(root.textContent || '');
+    }
+
+    const handleElement = (el) => {
+      const tag = String(el.tagName || '').toLowerCase();
+      if (!tag || ['svg', 'style', 'script', 'button', 'clipboard-copy', 'include-fragment'].includes(tag)) return;
+      if (tag === 'pre') {
+        pushCode(el.textContent || '', el.querySelector?.('code')?.className?.match(/language-([A-Za-z0-9_-]+)/)?.[1] || '');
+        return;
+      }
+      if (/^h[1-6]$/.test(tag)) {
+        push(`${'#'.repeat(Number(tag.slice(1)) || 2)} ${el.textContent || ''}`);
+        return;
+      }
+      if (tag === 'p' || tag === 'li' || tag === 'blockquote') push(el.textContent || '');
+    };
+
+    handleElement(root);
+    let node = walker.currentNode;
+    while ((node = walker.nextNode())) handleElement(node);
+    return textLines.join('\n\n').trim() || cleanWhitespace(root.textContent || '');
+  }
+
+  function githubWebIssueContainerId(container) {
+    const candidates = [
+      container?.id || '',
+      container?.closest?.('[id]')?.id || '',
+      container?.querySelector?.('[id^="issuecomment-"]')?.id || ''
+    ];
+    return candidates.find(Boolean) || '';
+  }
+
+  function githubWebIssueCommentId(container, fallbackIndex) {
+    const raw = githubWebIssueContainerId(container);
+    const match = raw.match(/issuecomment-(\d+)/i);
+    return match ? match[1] : `web-${fallbackIndex}`;
+  }
+
+  function githubWebIssueAuthor(container) {
+    const el = container?.querySelector?.('a.author, .author, [data-hovercard-type="user"], [data-testid="issue-body-header-author"]');
+    return cleanWhitespace(el?.textContent || '');
+  }
+
+  function githubWebIssueDatetime(container) {
+    const el = container?.querySelector?.('relative-time[datetime], time-ago[datetime], time[datetime], [datetime]');
+    return el?.getAttribute?.('datetime') || '';
+  }
+
+  function githubWebIssueBodyElement(container) {
+    return container?.querySelector?.('.comment-body, .markdown-body, [data-testid="markdown-body"], [data-testid="issue-body"]') || container;
+  }
+
+  function parseGitHubIssueThreadWebHtml(spec, html) {
+    const text = String(html || '');
+    const doc = new DOMParser().parseFromString(text, 'text/html');
+    const title = cleanWhitespace(
+      doc.querySelector('bdi.js-issue-title, .js-issue-title, [data-testid="issue-title"], h1 bdi, h1')?.textContent
+      || doc.querySelector('meta[property="og:title"]')?.getAttribute('content')
+      || `GitHub issue #${spec.issueNumber}`
+    ).replace(/\s*·\s*Issue\s*#?\d+.*$/i, '').trim() || `GitHub issue #${spec.issueNumber}`;
+
+    const rawContainers = Array.from(doc.querySelectorAll('.js-comment-container, .timeline-comment, [id^="issuecomment-"], [data-testid="issue-comment"], [data-testid="issue-body"]'))
+      .filter((el) => githubWebIssueBodyElement(el));
+    const containers = [];
+    const seen = new Set();
+    for (const el of rawContainers) {
+      const body = githubWebIssueBodyElement(el);
+      if (!body) continue;
+      const key = githubWebIssueContainerId(el) || body.textContent || String(containers.length);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      containers.push(el);
+    }
+
+    const issueContainer = containers.find((el) => !/^issuecomment-/i.test(githubWebIssueContainerId(el))) || containers[0] || null;
+    const issueBody = issueContainer ? githubWebIssueTextFromElement(githubWebIssueBodyElement(issueContainer)) : '';
+    const issueTime = issueContainer ? githubWebIssueDatetime(issueContainer) : '';
+    const issueAuthor = issueContainer ? githubWebIssueAuthor(issueContainer) : '';
+    const issue = {
+      id: spec.issueNumber,
+      number: spec.issueNumber,
+      title,
+      body: issueBody,
+      html_url: spec.issueUrl,
+      state: /State--open|>\s*Open\s*</i.test(text) ? 'open' : (/State--closed|>\s*Closed\s*</i.test(text) ? 'closed' : ''),
+      user: { login: issueAuthor },
+      created_at: issueTime,
+      updated_at: issueTime
+    };
+
+    const comments = [];
+    let fallback = 1;
+    for (const container of containers) {
+      const rawId = githubWebIssueContainerId(container);
+      if (container === issueContainer && !/^issuecomment-/i.test(rawId)) continue;
+      const commentId = githubWebIssueCommentId(container, fallback++);
+      const body = githubWebIssueTextFromElement(githubWebIssueBodyElement(container));
+      if (!body) continue;
+      const dt = githubWebIssueDatetime(container);
+      const author = githubWebIssueAuthor(container);
+      comments.push({
+        id: commentId,
+        body,
+        html_url: `${spec.issueUrl}#issuecomment-${commentId}`,
+        user: { login: author },
+        created_at: dt,
+        updated_at: dt
+      });
+    }
+    return { issue, comments, truncated: false, adapterMode: 'github-web-fallback' };
+  }
+
+  async function fetchGitHubIssueThreadViaWeb(spec, options = {}) {
+    const html = await adapterFetchText(spec.issueUrl, {
+      adapter: 'github-web',
+      label: 'GitHub issue web page',
+      rateLimitKey: `github-web:${spec.repo}`,
+      hardRefresh: Boolean(options.hardRefresh),
+      headers: { Accept: 'text/html,application/xhtml+xml' }
+    });
+    const parsed = parseGitHubIssueThreadWebHtml(spec, html);
+    if (!parsed.issue?.body && !parsed.comments.length) {
+      throw new Error('GitHub web fallback returned no readable issue body or comments.');
+    }
+    return parsed;
+  }
+
+
+  function githubReaderFallbackUrls(spec) {
+    if (!spec?.issueUrl) return [];
+    const stripped = spec.issueUrl.replace(/^https?:\/\//i, '');
+    const noScheme = stripped.replace(/^www\./i, '');
+    return Array.from(new Set([
+      // Jina Reader style endpoints. Use valid target URL shapes first; the
+      // previous malformed http://https:// variants made the fallback behave
+      // like a different adapter because no issue material was ever read.
+      `https://r.jina.ai/http://https://${noScheme}`,
+      `https://r.jina.ai/http://http://${noScheme}`,
+      `https://r.jina.ai/http://${noScheme}`,
+      `https://r.jina.ai/http://r.jina.ai/http://https://${noScheme}`,
+      `https://r.jina.ai/http://r.jina.ai/http://http://${noScheme}`,
+      `https://r.jina.ai/http://r.jina.ai/http://${noScheme}`
+    ]));
+  }
+
+  function stripReaderBoilerplateLine(line = '') {
+    const clean = cleanWhitespace(line || '');
+    if (!clean) return '';
+    if (/^(Title|URL Source|Markdown Content|Warning|This page may require|Links|Images):/i.test(clean)) return '';
+    if (/^\[(Skip to content|Sign in|Sign up|New issue|Create sub-issue|Close issue|Comment|Add a comment|Assignees|Labels|Projects|Milestone|Notifications|Participants)\]/i.test(clean)) return '';
+    if (/^(Skip to content|Sign in|Sign up|New issue|Create sub-issue|Close issue|Comment|Add a comment|Assignees|Labels|Projects|Milestone|Notifications|Participants)$/i.test(clean)) return '';
+    if (/^(No labels|No milestone|No projects|No type|None yet|Assign yourself|Unsubscribe)$/i.test(clean)) return '';
+    if (/^You(?:'|’)re receiving notifications/i.test(clean)) return '';
+    return clean;
+  }
+
+  function removeTiinexEmbeddedPayloadsFromText(text = '') {
+    let out = normalizeNewlines(text || '');
+    const marker = TIINEX_GITHUB_PRESENTATION_MARKER_RE;
+    if (marker.test(out)) {
+      out = out.replace(new RegExp(`${marker.source}[\\s\\S]*?(?=\\n(?:#{1,3}\\s+|\\[[^\\]]+\\]\\([^\\)]+\\)\\s+commented|[^\\n]{1,80}\\s+commented\\b)|$)`, 'ig'), '\n');
+    }
+    out = out.replace(/^##\s+Source Markdown[\s\S]*?(?=\n#{1,3}\s+|\n[^\n]{1,80}\s+commented\b|$)/gim, '\n');
+    out = out.replace(/```(?:md|markdown)?\s*\n#\s+Continuity Context[\s\S]*?\n```/gim, '\n');
+    return out;
+  }
+
+  function extractAllEmbeddedTiinexMarkdownFromGitHubBody(body) {
+    const text = stripGitHubPresentationLayerForTiinexImport(body || '');
+    const out = [];
+    const seen = new Set();
+    const push = (candidate = '') => {
+      const clean = normalizeNewlines(candidate || '').trim();
+      if (!clean || !looksLikeStandaloneTiinexArtifact(clean) || seen.has(clean)) return;
+      seen.add(clean);
+      out.push(clean);
+    };
+    const sourceRe = /^##\s+Source Markdown(?:\s+Excerpt|\s+Payload)?\s*$/gim;
+    let sourceMatch;
+    while ((sourceMatch = sourceRe.exec(text))) {
+      const rest = text.slice(sourceMatch.index);
+      const fenceRe = /```(?:md|markdown)?\s*\n([\s\S]*?)\n```/gi;
+      const match = fenceRe.exec(rest);
+      if (match) push(match[1] || '');
+    }
+    const fenceRe = /```(?:md|markdown)?\s*\n([\s\S]*?)\n```/gi;
+    let match;
+    while ((match = fenceRe.exec(text))) push(match[1] || '');
+    if (looksLikeStandaloneTiinexArtifact(text.trim())) push(text.trim());
+    return out;
+  }
+
+  function readerMarkdownContent(raw = '') {
+    const text = normalizeNewlines(raw || '');
+    const marker = text.search(/^Markdown Content:\s*$/im);
+    return marker >= 0 ? text.slice(marker).replace(/^Markdown Content:\s*$/im, '').trim() : text.trim();
+  }
+
+  function readerIssueTitle(spec, raw = '') {
+    const text = normalizeNewlines(raw || '');
+    const titleLine = text.match(/^Title:\s*(.+)$/im)?.[1] || '';
+    const heading = readerMarkdownContent(text).match(/^#\s+(.+)$/m)?.[1] || '';
+    return cleanWhitespace(stripMarkdownInline(titleLine || heading || `GitHub issue #${spec.issueNumber}`))
+      .replace(/\s*·\s*Issue\s*#?\d+.*$/i, '')
+      .replace(new RegExp(`\\s*#${spec.issueNumber}\\s*$`, 'i'), '')
+      .trim() || `GitHub issue #${spec.issueNumber}`;
+  }
+
+  function splitReaderIssueComments(content = '') {
+    const text = normalizeNewlines(content || '');
+    const commentStartRe = /(?:^|\n)(?:#{2,4}\s+)?(?:\[[^\]\n]+\]\([^\)]+\)|@?[A-Za-z0-9-]+)\s+(?:commented|added a comment)\b[^\n]*\n/ig;
+    const starts = [];
+    let match;
+    while ((match = commentStartRe.exec(text))) starts.push({ index: match.index + (match[0].startsWith('\n') ? 1 : 0), header: match[0].trim() });
+    if (!starts.length) return [];
+    const comments = [];
+    for (let i = 0; i < starts.length; i += 1) {
+      const start = starts[i];
+      const next = starts[i + 1]?.index ?? text.length;
+      const block = text.slice(start.index, next).trim();
+      const lines = block.split('\n');
+      const header = cleanWhitespace(lines.shift() || start.header || '');
+      const author = cleanWhitespace((header.match(/\[([^\]]+)\]/)?.[1] || header.match(/^@?([A-Za-z0-9-]+)\s+/)?.[1] || ''));
+      const bodyLines = lines.map(stripReaderBoilerplateLine).filter(Boolean);
+      const body = removeTiinexEmbeddedPayloadsFromText(bodyLines.join('\n')).trim();
+      if (body) comments.push({ author, body, header });
+    }
+    return comments;
+  }
+
+  function parseGitHubIssueThreadReaderMarkdown(spec, markdown) {
+    const raw = normalizeNewlines(markdown || '');
+    const content = readerMarkdownContent(raw);
+    const title = readerIssueTitle(spec, raw);
+    const embedded = extractAllEmbeddedTiinexMarkdownFromGitHubBody(content);
+    const issueBody = embedded[0]
+      ? `## Source Markdown\n\n${markdownFence(embedded[0], 'md')}`
+      : removeTiinexEmbeddedPayloadsFromText(content)
+          .split('\n')
+          .map(stripReaderBoilerplateLine)
+          .filter(Boolean)
+          .slice(0, 80)
+          .join('\n')
+          .trim();
+    const now = new Date().toISOString();
+    const issue = {
+      id: spec.issueNumber,
+      number: spec.issueNumber,
+      title,
+      body: issueBody,
+      html_url: spec.issueUrl,
+      state: /\bclosed\b/i.test(content) && !/\bopen\b/i.test(content) ? 'closed' : 'open',
+      user: { login: '' },
+      created_at: '',
+      updated_at: now
+    };
+    const comments = [];
+    const readerComments = splitReaderIssueComments(content);
+    let ordinal = 1;
+    for (const comment of readerComments) {
+      comments.push({
+        id: `reader-${ordinal}`,
+        body: comment.body,
+        html_url: `${spec.issueUrl}#tiinex-reader-comment-${ordinal}`,
+        user: { login: comment.author || '' },
+        created_at: '',
+        updated_at: now
+      });
+      ordinal += 1;
+    }
+    for (let i = 1; i < embedded.length; i += 1) {
+      comments.push({
+        id: `reader-embedded-${i}`,
+        body: `## Source Markdown\n\n${markdownFence(embedded[i], 'md')}`,
+        html_url: `${spec.issueUrl}#tiinex-reader-embedded-${i}`,
+        user: { login: '' },
+        created_at: '',
+        updated_at: now
+      });
+    }
+    if (!issue.body && !comments.length) throw new Error('Reader fallback returned no readable issue body or comments.');
+    return { issue, comments, truncated: false, adapterMode: 'github-reader-fallback' };
+  }
+
+  async function fetchGitHubIssueThreadViaReader(spec, options = {}) {
+    let lastError = null;
+    for (const url of githubReaderFallbackUrls(spec)) {
+      try {
+        const markdown = await adapterFetchText(url, {
+          adapter: 'github-reader',
+          label: 'GitHub issue reader fallback',
+          rateLimitKey: `github-reader:${spec.repo}`,
+          hardRefresh: Boolean(options.hardRefresh),
+          ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard),
+          headers: { Accept: 'text/plain,text/markdown,*/*' }
+        });
+        const parsed = parseGitHubIssueThreadReaderMarkdown(spec, markdown);
+        if (parsed.issue?.body || parsed.comments.length) return parsed;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error('GitHub reader fallback unavailable.');
+  }
+
+  function githubIssueCacheKey(spec) {
+    return `${String(spec?.repo || '').toLowerCase()}#${String(spec?.issueNumber || '')}`;
+  }
+
+  function githubIssueCacheSpecFromKey(key = '') {
+    const match = String(key || '').match(/^([^#]+)#(\d+)$/);
+    if (!match) return null;
+    return parseGitHubIssueSpec(`https://github.com/${match[1]}/issues/${match[2]}`);
+  }
+
+  function readGitHubIssueThreadCache() {
+    try {
+      const cache = storageReadJson(localStorage, STORAGE_KEYS.githubIssueThreadCache, {});
+      return cache && typeof cache === 'object' ? cache : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function writeGitHubIssueThreadCache(cache) {
+    try { storageWriteJson(localStorage, STORAGE_KEYS.githubIssueThreadCache, cache || {}); } catch (_) {}
+  }
+
+  function cleanCachedGitHubIssueItem(item, fallbackIssueUrl = '') {
+    const body = normalizeNewlines(item?.body || '');
+    return {
+      id: item?.id || '',
+      number: item?.number || '',
+      title: cleanWhitespace(item?.title || ''),
+      body,
+      html_url: item?.html_url || fallbackIssueUrl || '',
+      state: item?.state || '',
+      user: { login: item?.user?.login || item?.author || '' },
+      created_at: item?.created_at || item?.createdAt || '',
+      updated_at: item?.updated_at || item?.updatedAt || ''
+    };
+  }
+
+  function cleanCachedGitHubCommentItem(item, spec) {
+    const url = item?.html_url || (spec?.issueUrl && item?.id ? `${spec.issueUrl}#issuecomment-${item.id}` : spec?.issueUrl || '');
+    return {
+      id: item?.id || '',
+      body: normalizeNewlines(item?.body || ''),
+      html_url: url,
+      user: { login: item?.user?.login || item?.author || '' },
+      created_at: item?.created_at || item?.createdAt || '',
+      updated_at: item?.updated_at || item?.updatedAt || ''
+    };
+  }
+
+  function sanitizeGitHubIssueThreadForCache(spec, thread = {}) {
+    const comments = Array.isArray(thread.comments) ? thread.comments : [];
+    return {
+      issue: cleanCachedGitHubIssueItem(thread.issue || {}, spec?.issueUrl || ''),
+      comments: comments.map((comment) => cleanCachedGitHubCommentItem(comment, spec)).filter((comment) => comment.body || comment.html_url),
+      truncated: Boolean(thread.truncated),
+      adapterMode: thread.adapterMode || 'github-cacheable-thread'
+    };
+  }
+
+  function cacheGitHubIssueThread(spec, thread = {}, meta = {}) {
+    if (!spec?.repo || !spec.issueNumber || !thread?.issue) return false;
+    const key = githubIssueCacheKey(spec);
+    const cache = readGitHubIssueThreadCache();
+    cache[key] = Object.assign(sanitizeGitHubIssueThreadForCache(spec, thread), {
+      cachedAt: new Date().toISOString(),
+      cacheSource: meta.source || thread.adapterMode || 'github-api',
+      freshness: meta.freshness || 'observed-live',
+      issueUrl: spec.issueUrl,
+      repo: spec.repo,
+      issueNumber: spec.issueNumber
+    });
+    const entries = Object.entries(cache).sort((a, b) => Date.parse(b[1]?.cachedAt || 0) - Date.parse(a[1]?.cachedAt || 0));
+    writeGitHubIssueThreadCache(Object.fromEntries(entries.slice(0, 96)));
+    return true;
+  }
+
+  function cachedGitHubIssueThread(spec, options = {}) {
+    if (!spec?.repo || !spec.issueNumber) return null;
+    const cache = readGitHubIssueThreadCache();
+    const entry = cache[githubIssueCacheKey(spec)];
+    if (!entry?.issue) return null;
+    const cachedAt = Date.parse(entry.cachedAt || '') || 0;
+    const ageMs = cachedAt ? Math.max(0, Date.now() - cachedAt) : Infinity;
+    const maxAgeMs = Number(options.maxAgeMs || 0);
+    if (maxAgeMs && ageMs > maxAgeMs && !options.allowStale) return null;
+    const thread = sanitizeGitHubIssueThreadForCache(spec, entry);
+    thread.adapterMode = options.allowStale && ageMs > maxAgeMs ? 'github-cache-stale' : 'github-cache';
+    thread.cachedAt = entry.cachedAt || '';
+    thread.cacheAgeMs = ageMs;
+    thread.cacheSource = entry.cacheSource || '';
+    thread.freshness = entry.freshness || 'cached-observation';
+    return thread;
+  }
+
+
+  function githubIssueThreadCacheSubsetForUrls(urls = []) {
+    const cache = readGitHubIssueThreadCache();
+    const out = {};
+    (Array.isArray(urls) ? urls : []).forEach((url) => {
+      const spec = parseGitHubIssueSpec(url || '');
+      if (!spec) return;
+      const key = githubIssueCacheKey(spec);
+      if (cache[key]?.issue) out[key] = cache[key];
+    });
+    return out;
+  }
+
+  function mergeGitHubIssueThreadCacheSubset(cacheSubset = {}) {
+    if (!cacheSubset || typeof cacheSubset !== 'object') return 0;
+    const current = readGitHubIssueThreadCache();
+    let merged = 0;
+    for (const [key, entry] of Object.entries(cacheSubset)) {
+      const spec = githubIssueCacheSpecFromKey(key);
+      if (!spec || !entry?.issue) continue;
+      const clean = Object.assign(sanitizeGitHubIssueThreadForCache(spec, entry), {
+        cachedAt: entry.cachedAt || new Date().toISOString(),
+        cacheSource: entry.cacheSource || 'workspace-state',
+        freshness: entry.freshness || 'workspace-state-cache',
+        issueUrl: spec.issueUrl,
+        repo: spec.repo,
+        issueNumber: spec.issueNumber
+      });
+      current[key] = clean;
+      merged += 1;
+    }
+    if (merged) writeGitHubIssueThreadCache(current);
+    return merged;
+  }
+
+  function githubIssueCacheFreshnessLabel(thread = {}) {
+    if (!thread?.cachedAt) return '';
+    const ageMs = Number(thread.cacheAgeMs || (Date.now() - (Date.parse(thread.cachedAt) || Date.now())));
+    const minutes = Math.max(0, Math.round(ageMs / 60000));
+    if (minutes < 2) return 'cached just now';
+    if (minutes < 120) return `cached ${minutes} min ago`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 48) return `cached ${hours} h ago`;
+    return `cached ${Math.round(hours / 24)} d ago`;
+  }
+
+
+  function publicReaderProxyUrls(url = '') {
+    const clean = String(url || '').trim();
+    if (!clean) return [];
+    const encoded = encodeURIComponent(clean);
+    const withoutScheme = clean.replace(/^https?:\/\//i, '');
+    // Client-only GitHub fallback must use CORS-readable reader/proxy surfaces.
+    // Keep the list bounded, but include both Jina Reader URL shapes seen in
+    // practice. Bad reader URLs were causing explicit issue targets to degrade
+    // immediately to target-only findings even when a public reader could have
+    // fetched the GitHub issue/API JSON.
+    return Array.from(new Set([
+      `https://r.jina.ai/http://https://${withoutScheme}`,
+      `https://r.jina.ai/http://http://${withoutScheme}`,
+      `https://r.jina.ai/http://${clean}`,
+      `https://r.jina.ai/http://r.jina.ai/http://https://${withoutScheme}`,
+      `https://r.jina.ai/http://r.jina.ai/http://http://${withoutScheme}`,
+      `https://r.jina.ai/http://r.jina.ai/http://${withoutScheme}`,
+      `https://api.allorigins.win/raw?url=${encoded}`,
+      `https://corsproxy.io/?${encoded}`
+    ]));
+  }
+
+  function escapeJsonStringControlCharacters(source = '') {
+    const text = String(source || '');
+    let out = '';
+    let inString = false;
+    let escape = false;
+
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      if (inString) {
+        if (escape) {
+          // JSON only permits a bounded escape set. Jina reader output can
+          // surface markdown backslashes inside API string values; preserve
+          // those as literal backslashes instead of letting JSON.parse fail
+          // later with an invalid escape sequence.
+          if ('"\\/bfnrt'.includes(ch) || ch === 'u') out += ch;
+          else out += `\\${ch}`;
+          escape = false;
+          continue;
+        }
+        if (ch === '\\') {
+          out += ch;
+          escape = true;
+          continue;
+        }
+        if (ch === '"') {
+          out += ch;
+          inString = false;
+          continue;
+        }
+        if (ch === '\n') { out += '\\n'; continue; }
+        if (ch === '\r') { out += '\\r'; continue; }
+        if (ch === '\t') { out += '\\t'; continue; }
+        const code = ch.charCodeAt(0);
+        if (code >= 0 && code < 32) {
+          out += `\\u${code.toString(16).padStart(4, '0')}`;
+          continue;
+        }
+        out += ch;
+        continue;
+      }
+
+      out += ch;
+      if (ch === '"') inString = true;
+    }
+
+    return out;
+  }
+
+  function decodeLooseJsonStringFragment(fragment = '') {
+    const text = String(fragment || '');
+    let repaired = '';
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      if (ch === '\n') { repaired += '\\n'; continue; }
+      if (ch === '\r') { repaired += '\\r'; continue; }
+      if (ch === '\t') { repaired += '\\t'; continue; }
+      const code = ch.charCodeAt(0);
+      if (code >= 0 && code < 32) {
+        repaired += `\\u${code.toString(16).padStart(4, '0')}`;
+        continue;
+      }
+      if (ch === '\\') {
+        const next = text[i + 1] || '';
+        if ('"\\/bfnrt'.includes(next) || next === 'u') {
+          repaired += ch + next;
+          i += 1;
+        } else {
+          repaired += '\\\\';
+        }
+        continue;
+      }
+      if (ch === '"') {
+        repaired += '\\"';
+        continue;
+      }
+      repaired += ch;
+    }
+    try { return JSON.parse(`"${repaired}"`); } catch (_) { return text; }
+  }
+
+  function escapeRegExpLiteral(value = '') {
+    return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function looseJsonStringField(block = '', fieldName = '', nextFieldNames = []) {
+    const text = String(block || '');
+    const escapedField = escapeRegExpLiteral(fieldName);
+    const fieldRe = new RegExp(`"${escapedField}"\\s*:\\s*`, 'i');
+    const match = fieldRe.exec(text);
+    if (!match) return '';
+    let valueStart = match.index + match[0].length;
+    if (text.slice(valueStart, valueStart + 4) === 'null') return '';
+    if (text[valueStart] !== '"') return '';
+    valueStart += 1;
+
+    const delimiterIndexes = [];
+    for (const nextField of nextFieldNames || []) {
+      const escapedNext = escapeRegExpLiteral(nextField);
+      const re = new RegExp(`"\\s*,\\s*\\n\\s*"${escapedNext}"\\s*:`, 'i');
+      const sub = text.slice(valueStart);
+      const next = re.exec(sub);
+      if (next) delimiterIndexes.push(valueStart + next.index);
+    }
+    if (delimiterIndexes.length) {
+      return decodeLooseJsonStringFragment(text.slice(valueStart, Math.min(...delimiterIndexes)));
+    }
+
+    // Jina Reader can expose GitHub API JSON as JSON-like markdown where long
+    // markdown bodies contain raw newlines or quotes. If we do not know the
+    // exact next field name, fall back to the next GitHub-style field boundary
+    // instead of stopping at the first quote inside the body. This is still
+    // bounded to line-start object fields and is only used for loose reader
+    // extraction, never as a general JSON parser.
+    const genericBoundary = /"\s*,\s*\n\s*"[A-Za-z_][A-Za-z0-9_]*"\s*:/g;
+    const sub = text.slice(valueStart);
+    const genericNext = genericBoundary.exec(sub);
+    if (genericNext) {
+      return decodeLooseJsonStringFragment(text.slice(valueStart, valueStart + genericNext.index));
+    }
+
+    let escape = false;
+    for (let i = valueStart; i < text.length; i += 1) {
+      const ch = text[i];
+      if (escape) { escape = false; continue; }
+      if (ch === '\\') { escape = true; continue; }
+      if (ch === '"') return decodeLooseJsonStringFragment(text.slice(valueStart, i));
+    }
+    return decodeLooseJsonStringFragment(text.slice(valueStart));
+  }
+
+  function looseJsonNumberField(block = '', fieldName = '') {
+    const escapedField = escapeRegExpLiteral(fieldName);
+    const match = String(block || '').match(new RegExp(`"${escapedField}"\\s*:\\s*(-?\\d+)`, 'i'));
+    return match ? Number(match[1]) : '';
+  }
+
+  function looseGitHubApiIssueFromReaderText(text = '', spec = {}) {
+    const content = readerMarkdownContent(text || '');
+    const objectStart = content.indexOf('{');
+    const source = objectStart >= 0 ? content.slice(objectStart) : content;
+    if (!source || !/"html_url"\s*:\s*"https:\/\/github\.com\//i.test(source)) return null;
+    const id = looseJsonNumberField(source, 'id') || spec?.issueNumber || '';
+    const number = looseJsonNumberField(source, 'number') || spec?.issueNumber || '';
+    const htmlUrl = looseJsonStringField(source, 'html_url', ['id', 'node_id']) || spec?.issueUrl || '';
+    const title = looseJsonStringField(source, 'title', ['user']) || `GitHub issue #${number || spec?.issueNumber || ''}`.trim();
+    const state = looseJsonStringField(source, 'state', ['locked', 'assignee', 'assignees']) || '';
+    const createdAt = looseJsonStringField(source, 'created_at', ['updated_at']) || '';
+    const updatedAt = looseJsonStringField(source, 'updated_at', ['closed_at', 'author_association']) || createdAt;
+    const body = looseJsonStringField(source, 'body', [
+      'closed_by',
+      'reactions',
+      'timeline_url',
+      'performed_via_github_app',
+      'state_reason'
+    ]) || '';
+    const userBlock = source.match(new RegExp('\"user\"\\s*:\\s*\\{([\\s\\S]*?)\\n\\s*\\}', 'i'))?.[1] || '';
+    const author = looseJsonStringField(userBlock, 'login', ['id', 'node_id']) || '';
+    if (!htmlUrl && !title && !body) return null;
+    return {
+      id,
+      number,
+      title,
+      body,
+      html_url: htmlUrl,
+      state,
+      user: { login: author },
+      created_at: createdAt,
+      updated_at: updatedAt
+    };
+  }
+
+  function looseGitHubApiCommentBlocksFromReaderText(text = '') {
+    const content = readerMarkdownContent(text || '');
+    const arrayStart = content.indexOf('[');
+    const source = arrayStart >= 0 ? content.slice(arrayStart) : content;
+    const starts = [];
+    const startRe = /\{\s*\n\s*"url"\s*:\s*"https:\/\/api\.github\.com\/repos\/[^"]+\/issues\/comments\/\d+"/g;
+    let match;
+    while ((match = startRe.exec(source))) starts.push(match.index);
+    if (!starts.length) return [];
+    const blocks = [];
+    for (let i = 0; i < starts.length; i += 1) {
+      const blockStart = starts[i];
+      const blockEnd = starts[i + 1] || source.lastIndexOf(']');
+      blocks.push(source.slice(blockStart, blockEnd > blockStart ? blockEnd : source.length).replace(/,\s*$/, '').trim());
+    }
+    return blocks;
+  }
+
+  function looseGitHubApiCommentsFromReaderText(text = '', spec = {}) {
+    const blocks = looseGitHubApiCommentBlocksFromReaderText(text);
+    return blocks.map((block, index) => {
+      const id = looseJsonNumberField(block, 'id') || `reader-comment-${index + 1}`;
+      const htmlUrl = looseJsonStringField(block, 'html_url', ['issue_url']) || (spec?.issueUrl ? `${spec.issueUrl}#issuecomment-${id}` : '');
+      const body = looseJsonStringField(block, 'body', ['author_association', 'reactions', 'performed_via_github_app']) || '';
+      const createdAt = looseJsonStringField(block, 'created_at', ['updated_at']) || '';
+      const updatedAt = looseJsonStringField(block, 'updated_at', ['body']) || createdAt;
+      const userBlock = block.match(/"user"\s*:\s*\{([\s\S]*?)\n\s*\}/i)?.[1] || '';
+      const author = looseJsonStringField(userBlock, 'login', ['id', 'node_id']) || '';
+      return {
+        id,
+        html_url: htmlUrl,
+        issue_url: spec?.issueUrl || '',
+        user: { login: author },
+        created_at: createdAt,
+        updated_at: updatedAt,
+        body
+      };
+    }).filter((comment) => comment.body || comment.html_url);
+  }
+
+  function jsonFromPossiblyWrappedText(text = '') {
+    const raw = String(text || '').trim();
+    if (!raw) throw new Error('empty response');
+
+    const tryParse = (candidate = '') => {
+      const value = String(candidate || '').trim();
+      if (!value) return null;
+      try { return JSON.parse(value); } catch (_) {}
+      const repaired = escapeJsonStringControlCharacters(value);
+      if (repaired !== value) {
+        try { return JSON.parse(repaired); } catch (_) {}
+      }
+      return null;
+    };
+
+    const stripFence = (candidate = '') => String(candidate || '')
+      .replace(/^```(?:json|javascript|js|md|markdown)?\s*\n/i, '')
+      .replace(/\n```\s*$/i, '')
+      .trim();
+
+    const content = readerMarkdownContent(raw);
+    const candidates = [raw, content, stripFence(content), stripFence(raw)];
+    for (const candidate of candidates) {
+      const parsed = tryParse(candidate);
+      if (parsed !== null) return parsed;
+    }
+
+    const balancedParse = (candidate = '') => {
+      const source = String(candidate || '');
+      for (let start = 0; start < source.length; start += 1) {
+        const open = source[start];
+        if (open !== '{' && open !== '[') continue;
+        const close = open === '{' ? '}' : ']';
+        let depth = 0;
+        let inString = false;
+        let escape = false;
+        for (let i = start; i < source.length; i += 1) {
+          const ch = source[i];
+          if (inString) {
+            if (escape) escape = false;
+            else if (ch === '\\') escape = true;
+            else if (ch === '"') inString = false;
+            continue;
+          }
+          if (ch === '"') { inString = true; continue; }
+          if (ch === open) depth += 1;
+          if (ch === close) depth -= 1;
+          if (depth === 0) {
+            const parsed = tryParse(source.slice(start, i + 1));
+            if (parsed !== null) return parsed;
+            break;
+          }
+        }
+      }
+      return null;
+    };
+
+    for (const candidate of candidates) {
+      const parsed = balancedParse(candidate);
+      if (parsed !== null) return parsed;
+    }
+
+    throw new Error('response did not contain parseable JSON');
+  }
+
+
+
+  function githubIssueUrlMatchesSpec(url = '', spec = {}) {
+    const text = String(url || '').trim();
+    if (!text || !spec?.owner || !spec?.repoName || !spec?.issueNumber) return false;
+    const re = new RegExp(`github\\.com/${escapeRegExpLiteral(spec.owner)}/${escapeRegExpLiteral(spec.repoName)}/issues/${escapeRegExpLiteral(String(spec.issueNumber))}(?:[#?]|$)`, 'i');
+    return re.test(text);
+  }
+
+  function isGitHubApiIssuePayload(value, spec = {}) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    if (value.pull_request) return false;
+    const number = Number(value.number || 0);
+    const htmlUrl = String(value.html_url || '');
+    const apiUrl = String(value.url || '');
+    const issueUrlOk = githubIssueUrlMatchesSpec(htmlUrl, spec)
+      || (spec?.repo && spec?.issueNumber && new RegExp(`/repos/${escapeRegExpLiteral(spec.repo)}/issues/${escapeRegExpLiteral(String(spec.issueNumber))}(?:$|[/?#])`, 'i').test(apiUrl));
+    const hasIssueIdentity = issueUrlOk || (number && Number(spec?.issueNumber || 0) === number);
+    const hasIssueMaterial = typeof value.body === 'string' || typeof value.title === 'string' || typeof value.comments_url === 'string';
+    return Boolean(hasIssueIdentity && hasIssueMaterial);
+  }
+
+  function isGitHubApiIssueCommentPayload(value, spec = {}) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const htmlUrl = String(value.html_url || '');
+    const apiUrl = String(value.url || '');
+    const issueUrl = String(value.issue_url || '');
+    const hasCommentUrl = /\/issues\/comments\/\d+(?:$|[/?#])/i.test(apiUrl) || /#issuecomment-\d+/i.test(htmlUrl);
+    const belongsToIssue = !spec?.issueNumber
+      || githubIssueUrlMatchesSpec(htmlUrl.replace(/#issuecomment-.+$/i, ''), spec)
+      || new RegExp(`/repos/${escapeRegExpLiteral(spec.repo || '')}/issues/${escapeRegExpLiteral(String(spec.issueNumber || ''))}(?:$|[/?#])`, 'i').test(issueUrl);
+    return Boolean(hasCommentUrl && belongsToIssue && (typeof value.body === 'string' || value.id));
+  }
+
+  function normalizeGitHubApiCommentArray(value, spec = {}) {
+    if (!Array.isArray(value)) return [];
+    return value.filter((comment) => isGitHubApiIssueCommentPayload(comment, spec));
+  }
+
+  async function fetchJsonViaPublicReader(url, options = {}) {
+    let lastError = null;
+    for (const readerUrl of publicReaderProxyUrls(url)) {
+      try {
+        const text = await adapterFetchText(readerUrl, {
+          adapter: 'github-public-reader',
+          label: options.label || 'GitHub public reader',
+          rateLimitKey: `github-public-reader:${url}`,
+          hardRefresh: Boolean(options.hardRefresh),
+          ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard),
+          headers: { Accept: 'application/json,text/plain,*/*' }
+        });
+        return jsonFromPossiblyWrappedText(text);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error('public reader unavailable');
+  }
+
+  async function fetchGitHubIssueThreadViaPublicReaderApi(spec, options = {}) {
+    if (!spec?.repo || !spec.issueNumber) throw new Error('Missing GitHub issue spec.');
+    const issueApiUrl = `https://api.github.com/repos/${spec.repo}/issues/${spec.issueNumber}`;
+    const commentsApiUrl = `https://api.github.com/repos/${spec.repo}/issues/${spec.issueNumber}/comments?per_page=${Math.min(100, Math.max(1, Number(options.commentLimit || 100)))}`;
+    let issue = null;
+    let issueText = '';
+    let issueError = null;
+    try {
+      issue = await fetchJsonViaPublicReader(issueApiUrl, Object.assign({}, options, { label: 'GitHub issue public-reader API fallback' }));
+    } catch (error) {
+      issueError = error;
+      for (const readerUrl of publicReaderProxyUrls(issueApiUrl)) {
+        try {
+          issueText = await adapterFetchText(readerUrl, {
+            adapter: 'github-public-reader',
+            label: 'GitHub issue public-reader API fallback text',
+            rateLimitKey: `github-public-reader:${issueApiUrl}`,
+            hardRefresh: Boolean(options.hardRefresh),
+            ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard),
+            headers: { Accept: 'text/plain,text/markdown,*/*' }
+          });
+          issue = looseGitHubApiIssueFromReaderText(issueText, spec);
+          if (issue) break;
+        } catch (_) {}
+      }
+    }
+    if (!isGitHubApiIssuePayload(issue, spec)) {
+      const looseIssue = issueText ? looseGitHubApiIssueFromReaderText(issueText, spec) : null;
+      if (isGitHubApiIssuePayload(looseIssue, spec) || looseIssue?.body) issue = looseIssue;
+    }
+    if (!isGitHubApiIssuePayload(issue, spec)) throw new Error(`public reader did not return a GitHub issue payload${issueError ? `: ${issueError.message}` : ''}`);
+    let comments = [];
+    try {
+      const loadedComments = await fetchJsonViaPublicReader(commentsApiUrl, Object.assign({}, options, { label: 'GitHub issue comments public-reader API fallback' }));
+      comments = normalizeGitHubApiCommentArray(loadedComments, spec);
+      if (!comments.length && Array.isArray(loadedComments) && loadedComments.length) {
+        throw new Error('public reader parsed JSON, but it was not a GitHub issue comments array.');
+      }
+    } catch (error) {
+      comments = [];
+      for (const readerUrl of publicReaderProxyUrls(commentsApiUrl)) {
+        try {
+          const commentsText = await adapterFetchText(readerUrl, {
+            adapter: 'github-public-reader',
+            label: 'GitHub issue comments public-reader API fallback text',
+            rateLimitKey: `github-public-reader:${commentsApiUrl}`,
+            hardRefresh: Boolean(options.hardRefresh),
+            ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard),
+            headers: { Accept: 'text/plain,text/markdown,*/*' }
+          });
+          comments = looseGitHubApiCommentsFromReaderText(commentsText, spec);
+          if (comments.length) break;
+        } catch (_) {}
+      }
+    }
+    return {
+      issue: cleanCachedGitHubIssueItem(issue, spec.issueUrl),
+      comments: comments.map((comment) => cleanCachedGitHubCommentItem(comment, spec)).filter((comment) => comment.body || comment.html_url),
+      truncated: false,
+      adapterMode: 'github-public-reader-api-fallback'
+    };
+  }
+
+
+  function parsePastedGitHubIssueThreadMaterial(spec, text = '') {
+    const raw = normalizeNewlines(text || '').trim();
+    if (!raw) throw new Error('Paste GitHub issue page text, reader markdown, HTML, or API JSON first.');
+
+    // Full API/cache thread JSON pasted from diagnostics or a future helper.
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed?.issue || Array.isArray(parsed?.comments)) {
+        return {
+          issue: cleanCachedGitHubIssueItem(parsed.issue || {}, spec.issueUrl),
+          comments: (Array.isArray(parsed.comments) ? parsed.comments : []).map((comment) => cleanCachedGitHubCommentItem(comment, spec)).filter((comment) => comment.body || comment.html_url),
+          truncated: Boolean(parsed.truncated),
+          adapterMode: 'github-manual-paste-fallback'
+        };
+      }
+      if (parsed?.html_url || parsed?.body || parsed?.title) {
+        return {
+          issue: cleanCachedGitHubIssueItem(parsed, spec.issueUrl),
+          comments: [],
+          truncated: false,
+          adapterMode: 'github-manual-paste-fallback'
+        };
+      }
+    } catch (_) {}
+
+    // Browser page source / saved HTML paste.
+    if (/<html[\s>]|<article[\s>]|class=["'][^"']*(markdown-body|js-comment-container|timeline-comment)/i.test(raw)) {
+      const parsed = parseGitHubIssueThreadWebHtml(spec, raw);
+      parsed.adapterMode = 'github-manual-paste-fallback';
+      if (parsed.issue?.body || parsed.comments.length) return parsed;
+    }
+
+    // Jina/reader markdown or GitHub page text copied from the rendered page.
+    if (/^Title:\s*|^URL Source:\s*|^Markdown Content:\s*|\bcommented\b|\bopened\b/i.test(raw)) {
+      const parsed = parseGitHubIssueThreadReaderMarkdown(spec, raw);
+      parsed.adapterMode = 'github-manual-paste-fallback';
+      if (parsed.issue?.body || parsed.comments.length) return parsed;
+    }
+
+    // Last-resort explicit paste: treat the pasted material as the visible issue
+    // body. This is still a real material import, not a target-only finding.
+    const firstLine = cleanWhitespace(stripMarkdownInline(raw.split('\n').find((line) => cleanWhitespace(line)) || ''));
+    const now = new Date().toISOString();
+    return {
+      issue: {
+        id: spec.issueNumber,
+        number: spec.issueNumber,
+        title: firstLine && firstLine.length < 120 ? firstLine : `GitHub issue #${spec.issueNumber}`,
+        body: raw,
+        html_url: spec.issueUrl,
+        state: '',
+        user: { login: '' },
+        created_at: '',
+        updated_at: now
+      },
+      comments: [],
+      truncated: false,
+      adapterMode: 'github-manual-paste-fallback'
+    };
+  }
+
+  async function loadPastedGitHubIssueThreadIntoWorkspace(ws, spec, text = '', options = {}) {
+    if (!ws || !spec?.issueUrl) throw new Error('Missing workspace or GitHub issue target.');
+    const thread = parsePastedGitHubIssueThreadMaterial(spec, text);
+    if (!thread.issue?.body && !thread.comments?.length) throw new Error('Pasted material did not contain readable issue body or comments.');
+    cacheGitHubIssueThread(spec, thread, { source: thread.adapterMode || 'github-manual-paste-fallback', freshness: 'pasted-by-user' });
+    return loadGitHubIssueThreadSnapshotIntoWorkspace(ws, spec, thread, options);
+  }
+
+  function openGitHubIssuePasteImportModal(ws, node, spec, error = null) {
+    app.modal = {
+      type: 'github-issue-paste-import',
+      wsId: ws?.id || '',
+      nodeId: node?.id || '',
+      issueUrl: spec?.issueUrl || '',
+      repo: spec?.repo || '',
+      issueNumber: spec?.issueNumber || '',
+      error: error?.message || String(error || '')
+    };
+    updateUrlState({ replace: true });
+    render();
+  }
+
+
+  function githubJinaApiReaderUrl(url = '') {
+    const clean = String(url || '').trim();
+    return clean ? `https://r.jina.ai/http://${clean}` : '';
+  }
+
+  async function fetchGitHubIssueThreadViaJinaApiDirect(spec, options = {}) {
+    if (!spec?.repo || !spec.issueNumber) throw new Error('Missing GitHub issue spec.');
+    const commentLimit = Math.min(100, Math.max(1, Number(options.commentLimit || 100)));
+    const issueApiUrl = `https://api.github.com/repos/${spec.repo}/issues/${spec.issueNumber}`;
+    const commentsApiUrl = `https://api.github.com/repos/${spec.repo}/issues/${spec.issueNumber}/comments?per_page=${commentLimit}`;
+    const issueReaderUrl = githubJinaApiReaderUrl(issueApiUrl);
+    const commentsReaderUrl = githubJinaApiReaderUrl(commentsApiUrl);
+    githubIssueImportTrace('jina-api-direct.start', { repo: spec.repo, issueNumber: spec.issueNumber, issueReaderUrl, commentsReaderUrl, commentLimit, hardRefresh: Boolean(options.hardRefresh), ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard) });
+
+    const issueText = await adapterFetchText(issueReaderUrl, {
+      adapter: 'github-jina-api-reader',
+      label: 'GitHub issue Jina API reader',
+      rateLimitKey: `github-jina-api-reader:${issueApiUrl}`,
+      hardRefresh: Boolean(options.hardRefresh),
+      ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard),
+      headers: { Accept: 'text/plain,text/markdown,*/*' }
+    });
+    githubIssueImportTrace('jina-api-direct.issue-text', { length: issueText.length, hasMarkdownContent: /^Markdown Content:/im.test(issueText), hasSourceMarkdown: /Source Markdown/i.test(issueText), hasCurrentSchema: /Current Schema/i.test(issueText), preview: issueText.slice(0, 500) });
+    let issue = null;
+    let issueParseError = null;
+    let issueParseMode = 'strict-json';
+    try {
+      issue = jsonFromPossiblyWrappedText(issueText);
+    } catch (error) {
+      issueParseError = error;
+      issueParseMode = 'loose-after-strict-error';
+      issue = looseGitHubApiIssueFromReaderText(issueText, spec);
+    }
+    if (!isGitHubApiIssuePayload(issue, spec)) {
+      const looseIssue = looseGitHubApiIssueFromReaderText(issueText, spec);
+      if (isGitHubApiIssuePayload(looseIssue, spec) || looseIssue?.body) {
+        issue = looseIssue;
+        issueParseMode = 'loose-after-invalid-shape';
+      }
+    }
+    githubIssueImportTrace('jina-api-direct.issue-parsed', { mode: issueParseMode, valid: isGitHubApiIssuePayload(issue, spec), parseError: issueParseError?.message || '', issue: { number: issue?.number || '', title: issue?.title || '', html_url: issue?.html_url || '', bodyLength: String(issue?.body || '').length, bodyHasSourceMarkdown: /Source Markdown/i.test(issue?.body || ''), bodyHasCurrentSchema: /Current Schema/i.test(issue?.body || '') } });
+    if (!isGitHubApiIssuePayload(issue, spec)) {
+      const error = new Error(`Jina API reader did not return a GitHub issue payload${issueParseError ? `: ${issueParseError.message}` : ''}`);
+      githubIssueImportTrace('jina-api-direct.issue-invalid', { error, looseIssue: issue });
+      throw error;
+    }
+
+    let comments = [];
+    let commentsError = null;
+    try {
+      const commentsText = await adapterFetchText(commentsReaderUrl, {
+        adapter: 'github-jina-api-reader',
+        label: 'GitHub issue comments Jina API reader',
+        rateLimitKey: `github-jina-api-reader:${commentsApiUrl}`,
+        hardRefresh: Boolean(options.hardRefresh),
+        ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard),
+        headers: { Accept: 'text/plain,text/markdown,*/*' }
+      });
+      githubIssueImportTrace('jina-api-direct.comments-text', { length: commentsText.length, hasMarkdownContent: /^Markdown Content:/im.test(commentsText), hasSourceMarkdown: /Source Markdown/i.test(commentsText), hasCurrentSchema: /Current Schema/i.test(commentsText), preview: commentsText.slice(0, 500) });
+      let commentsParseMode = 'strict-json';
+      try {
+        const parsedComments = jsonFromPossiblyWrappedText(commentsText);
+        comments = normalizeGitHubApiCommentArray(parsedComments, spec);
+        if (!comments.length) {
+          const looseComments = looseGitHubApiCommentsFromReaderText(commentsText, spec);
+          if (looseComments.length) {
+            comments = looseComments;
+            commentsParseMode = 'loose-after-empty-or-invalid-array';
+          }
+        }
+      } catch (strictError) {
+        commentsParseMode = 'loose-after-strict-error';
+        const looseComments = looseGitHubApiCommentsFromReaderText(commentsText, spec);
+        if (looseComments.length) comments = looseComments;
+        else throw strictError;
+      }
+      githubIssueImportTrace('jina-api-direct.comments-parsed', { mode: commentsParseMode, count: comments.length, first: comments[0] ? { id: comments[0].id || '', html_url: comments[0].html_url || '', author: comments[0].user?.login || '', bodyLength: String(comments[0].body || '').length, bodyHasSourceMarkdown: /Source Markdown/i.test(comments[0].body || ''), bodyHasCurrentSchema: /Current Schema/i.test(comments[0].body || ''), bodyPreview: String(comments[0].body || '').slice(0, 320) } : null });
+    } catch (error) {
+      commentsError = error;
+      githubIssueImportTrace('jina-api-direct.comments-error', { error });
+      comments = [];
+    }
+
+    const thread = {
+      issue: cleanCachedGitHubIssueItem(issue, spec.issueUrl),
+      comments: comments.map((comment) => cleanCachedGitHubCommentItem(comment, spec)).filter((comment) => comment.body || comment.html_url),
+      truncated: false,
+      adapterMode: 'github-jina-api-reader-fallback'
+    };
+    githubIssueImportTrace('jina-api-direct.thread-built', githubIssueThreadTraceSummary(thread));
+    if (!thread.issue?.body && !thread.comments.length) {
+      const error = new Error(`Jina API reader returned no issue body or comments${commentsError ? `; comments: ${commentsError.message}` : ''}`);
+      githubIssueImportTrace('jina-api-direct.thread-empty', { error, thread: githubIssueThreadTraceSummary(thread) });
+      throw error;
+    }
+    if (commentsError) thread.warning = `Issue body loaded through Jina API reader, but comments were unavailable: ${commentsError.message}`;
+    return thread;
+  }
+
+  async function fetchGitHubIssueThreadWithFallback(spec, options = {}) {
+    const cacheMaxAgeMs = Number(options.cacheMaxAgeMs || 5 * 60 * 1000);
+    githubIssueImportTrace('issue-thread-fallback.start', { spec: { repo: spec?.repo || '', issueNumber: spec?.issueNumber || '', issueUrl: spec?.issueUrl || '' }, options: { hardRefresh: Boolean(options.hardRefresh), preferCache: Boolean(options.preferCache), configuredTarget: Boolean(options.configuredTarget), userInitiated: Boolean(options.userInitiated), allowWebFallback: options.allowWebFallback !== false, preferApiFirst: Boolean(options.preferApiFirst), cacheMaxAgeMs } });
+    if (options.preferCache && !options.hardRefresh) {
+      const hit = cachedGitHubIssueThread(spec, { maxAgeMs: cacheMaxAgeMs, allowStale: false });
+      if (hit) {
+        githubIssueImportTrace('issue-thread-fallback.cache-hit', githubIssueThreadTraceSummary(hit));
+        return hit;
+      }
+      githubIssueImportTrace('issue-thread-fallback.cache-miss', { cacheMaxAgeMs });
+    }
+
+    const errors = [];
+    const remember = (label, error) => {
+      if (!error) return;
+      errors.push({ label, error });
+      githubIssueImportTrace('issue-thread-fallback.attempt-failed', { label, error });
+    };
+    const tryThread = async (label, loader, cacheSource) => {
+      githubIssueImportTrace('issue-thread-fallback.attempt-start', { label, cacheSource });
+      try {
+        const thread = await loader();
+        githubIssueImportTrace('issue-thread-fallback.attempt-ok', { label, thread: githubIssueThreadTraceSummary(thread) });
+        cacheGitHubIssueThread(spec, thread, { source: cacheSource || thread.adapterMode || label, freshness: 'observed-live' });
+        if (errors.length) thread.fallbackErrors = errors.slice();
+        return thread;
+      } catch (error) {
+        remember(label, error);
+        return null;
+      }
+    };
+
+    // Issue detail reads are the rate-limit hot path. Prefer public reader/web
+    // surfaces before GitHub REST when the caller has not explicitly requested
+    // API-first behavior. Listing open issues can still use the API; known issue
+    // targets should not burn detail requests when a read-only web surface works.
+    const liveOptions = Object.assign({}, options, {
+      // Explicit issue targets should not be trapped behind a stale reader-side
+      // guard once the browser can actually read the issue again. REST detail
+      // calls use apiOptions below so a remembered GitHub API rate limit is
+      // still respected across refreshes.
+      ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard || options.configuredTarget || options.userInitiated)
+    });
+    const apiOptions = Object.assign({}, options, { ignoreRateLimitGuard: false });
+
+    if (options.allowWebFallback !== false && options.preferApiFirst !== true) {
+      const jinaApiThread = await tryThread('GitHub Jina API reader fallback', () => fetchGitHubIssueThreadViaJinaApiDirect(spec, liveOptions), 'github-jina-api-reader-fallback');
+      if (jinaApiThread) return jinaApiThread;
+      const publicReaderApiThread = await tryThread('GitHub public reader API fallback', () => fetchGitHubIssueThreadViaPublicReaderApi(spec, liveOptions), 'github-public-reader-api-fallback');
+      if (publicReaderApiThread) return publicReaderApiThread;
+      const readerThread = await tryThread('GitHub reader fallback', () => fetchGitHubIssueThreadViaReader(spec, liveOptions), 'github-reader-fallback');
+      if (readerThread) return readerThread;
+      // Direct github.com issue HTML is not a viable browser fallback because
+      // GitHub does not send Access-Control-Allow-Origin for issue pages. Keep
+      // the parser for pasted/saved HTML, but do not spend an automatic fallback
+      // attempt on a guaranteed CORS failure.
+    }
+
+    const apiThread = await tryThread('GitHub API', () => fetchGitHubIssueThread(spec, apiOptions), 'github-api');
+    if (apiThread) return apiThread;
+
+    if (options.allowWebFallback !== false && options.preferApiFirst === true) {
+      const jinaApiThread = await tryThread('GitHub Jina API reader fallback', () => fetchGitHubIssueThreadViaJinaApiDirect(spec, liveOptions), 'github-jina-api-reader-fallback');
+      if (jinaApiThread) return jinaApiThread;
+      const publicReaderApiThread = await tryThread('GitHub public reader API fallback', () => fetchGitHubIssueThreadViaPublicReaderApi(spec, liveOptions), 'github-public-reader-api-fallback');
+      if (publicReaderApiThread) return publicReaderApiThread;
+      const readerThread = await tryThread('GitHub reader fallback', () => fetchGitHubIssueThreadViaReader(spec, liveOptions), 'github-reader-fallback');
+      if (readerThread) return readerThread;
+    }
+
+    const cached = cachedGitHubIssueThread(spec, { maxAgeMs: 0, allowStale: true });
+    if (cached) {
+      cached.fallbackErrors = errors.slice();
+      cached.warning = errors[0]?.error?.message || 'Live GitHub issue material unavailable; cached snapshot used.';
+      githubIssueImportTrace('issue-thread-fallback.stale-cache-hit', { warning: cached.warning, thread: githubIssueThreadTraceSummary(cached), priorErrors: errors });
+      return cached;
+    }
+    const primary = errors[0]?.error || new Error('GitHub issue material unavailable.');
+    primary.fallbackErrors = errors;
+    githubIssueImportTrace('issue-thread-fallback.failed-all', { error: primary, errors });
+    throw primary;
   }
 
   async function fetchGitHubRepoIssueSpecs(repo, options = {}) {
@@ -4944,6 +8863,7 @@ ${fence}`;
       author: item?.user?.login || '',
       createdAt: item?.created_at || '',
       updatedAt: item?.updated_at || '',
+      observedAt: rootTimestamp(),
       bodyHash: hash ? `${ISSUE_BODY_HASH_METHOD_ID}:${hash}` : ''
     };
   }
@@ -4954,13 +8874,171 @@ ${fence}`;
       `- Kind: ${origin.kind || ''}`,
       `- Repository: ${origin.repo || ''}`,
       `- Issue: #${origin.issueNumber || ''}`,
+      `- Discussion: #${origin.discussionNumber || ''}`,
       `- Id: ${origin.id || ''}`,
       `- URL: ${origin.url || ''}`,
       `- Author: ${origin.author || ''}`,
       `- Created At: ${origin.createdAt || ''}`,
       `- Updated At: ${origin.updatedAt || ''}`,
+      `- Observed At: ${origin.observedAt || ''}`,
       `- Body Hash: ${origin.bodyHash || ''}`
     ].filter((line) => !/:\s*$/.test(line)).join('\n');
+  }
+
+  function gitHubSocialAdapterIdForKind(kind) {
+    return String(kind || '').toLowerCase() === 'discussion' ? 'github-discussion' : 'github-issue';
+  }
+
+  function gitHubSocialAdapterLabelForKind(kind) {
+    return String(kind || '').toLowerCase() === 'discussion' ? 'GitHub discussion discovery adapter' : 'GitHub issue discovery adapter';
+  }
+
+  function gitHubSocialAdapterBoundaryMarkdown(kind, mode = 'target-registration') {
+    const cleanKind = String(kind || '').toLowerCase() === 'discussion' ? 'discussion' : 'issue';
+    const adapter = gitHubSocialAdapterIdForKind(cleanKind);
+    const contract = originAdapterSummary(adapter);
+    const readState = cleanKind === 'discussion' && mode !== 'material-import'
+      ? 'target-only in anonymous client mode; GitHub Discussion body/comment import is not available without a future service-backed or explicit-paste enrichment path'
+      : (mode === 'material-import' ? 'explicit material import' : 'target registration');
+    return `## Adapter Boundary
+
+- Adapter: ${adapter}
+- Adapter Label: ${gitHubSocialAdapterLabelForKind(cleanKind)}
+- Surface: GitHub ${cleanKind}
+- Access Mode: web-surface
+- Discovery Mode: ${mode}
+- Read Boundary: ${readState}
+- Capabilities: ${(contract.capabilities || []).join(', ') || 'unknown'}
+- Source Access Modes: ${(contract.sourceAccessModes || []).join(', ') || 'web-surface'}
+- Does Not Mean: this adapter result is truth, acceptance, validation, evidence, preservation, task status, owner consent, or canonical Tiinex lineage by itself
+`;
+  }
+
+  function gitHubSocialTargetSpecFromNode(node) {
+    const raw = node?.rawMarkdown || node?.body || '';
+    if (!raw) return null;
+    const combined = [
+      markdownSectionContent(raw, 'Discovery Context', 2),
+      markdownSectionContent(raw, 'Provenance', 2),
+      raw
+    ].filter(Boolean).join('\n');
+    const map = sectionKeyValueMap(combined);
+    const url = firstKv(map, ['URL', 'Issue URL', 'Discussion URL', 'Source URL'], '') || node?.browseUrl || node?.rawUrl || '';
+    const spec = parseGitHubSocialTargetSpec(url);
+    if (!spec) return null;
+    const adapter = firstKv(map, ['Adapter'], '');
+    if (adapter && adapter !== gitHubSocialAdapterIdForKind(spec.kind)) return null;
+    return spec;
+  }
+
+  function nodeCanImportLiveGitHubIssue(node) {
+    const spec = gitHubSocialTargetSpecFromNode(node);
+    if (!spec || spec.kind !== 'issue') return false;
+    const raw = node?.rawMarkdown || node?.body || '';
+    if (/^# GitHub Issue Comment\b/m.test(raw)) return false;
+    if (/^# GitHub Issue #?\d*$/m.test(raw) && /## Evidence Material\n[\s\S]*?```/m.test(raw)) return false;
+    return /Discovery State:\s*(target-only|unavailable)/i.test(raw) || /Live Material:\s*not imported/i.test(raw) || /external-social-origin-target/i.test(raw);
+  }
+
+  function gitHubSocialTargetSlug(spec) {
+    const kind = spec?.kind === 'discussion' ? 'discussion' : 'issue';
+    const number = spec?.number || spec?.issueNumber || spec?.discussionNumber || 'target';
+    return `${kind}-${number}`;
+  }
+
+  function gitHubSocialTargetPath(spec) {
+    const kind = spec?.kind === 'discussion' ? 'discussion' : 'issue';
+    const folder = kind === 'discussion' ? 'github-discussions' : 'github-issues';
+    const slug = `${spec.owner || 'owner'}-${spec.repoName || 'repo'}-${gitHubSocialTargetSlug(spec)}-target`;
+    return normalizeAssetPath(`.topics/${folder}/${slug}/target.trace.md`);
+  }
+
+
+  function removeGitHubSocialTargetPlaceholder(ws, spec) {
+    if (!ws || !spec) return 0;
+    const targetPath = canonicalWorkspacePath(gitHubSocialTargetPath(spec));
+    let removed = 0;
+    const removeFromMap = (map, revoke = false) => {
+      if (!map?.entries) return;
+      for (const [key, entry] of Array.from(map.entries())) {
+        const path = canonicalWorkspacePath(entry?.path || entry?.name || key || '');
+        const text = normalizeNewlines(entry?.content || entry?.rawMarkdown || entry?.body || '');
+        const isSamePath = targetPath && path === targetPath;
+        const isUnavailableTarget = text.includes(`- Issue: #${spec.issueNumber}`)
+          && text.includes(`- Repository: ${spec.repo}`)
+          && /Finding Type:\s*external-discussion-target|Discovery State:\s*unavailable|discovery target only/i.test(text);
+        if (!isSamePath && !isUnavailableTarget) continue;
+        if (revoke && ws.assetUrls?.has(key)) {
+          try { URL.revokeObjectURL(ws.assetUrls.get(key)); } catch (_) {}
+          ws.assetUrls.delete(key);
+        }
+        map.delete(key);
+        removed += 1;
+      }
+    };
+    removeFromMap(ws.files, false);
+    removeFromMap(ws.assets, true);
+    return removed;
+  }
+
+  async function githubSocialTargetMarkdown(spec, reason, rootPath) {
+    const kind = spec?.kind === 'discussion' ? 'discussion' : 'issue';
+    const title = spec?.targetLabel || `GitHub ${kind}`;
+    const url = spec?.targetUrl || spec?.issueUrl || spec?.discussionUrl || '';
+    const adapter = kind === 'discussion' ? 'github-discussion' : 'github-issue';
+    const targetLine = kind === 'discussion' ? `- Discussion: #${spec.discussionNumber || spec.number || ''}` : `- Issue: #${spec.issueNumber || spec.number || ''}`;
+    const summary = `${title} social-origin discovery target for ${spec.repo || ''}.`;
+    const draft = `# Continuity Context
+
+- Envelope Schema: ${envelopeSchemaReference(rootPath)}
+${currentBlockForPath('tiinex.discovery.finding.v1', summary, rootPath, 'Preserves a GitHub social-origin target without requiring a live API read.')}---
+
+# ${title}
+
+## Discovery Context
+
+- Source: GitHub ${kind}
+- Repository: ${spec.repo || ''}
+${targetLine}
+- URL: ${url}
+- Adapter: ${adapter}
+- Discovery State: target-only
+
+## Finding
+
+- Finding Type: external-social-origin-target
+- Finding Status: target-known
+- Title: ${title}
+
+## Provenance
+
+- Adapter: ${adapter}
+- Kind: ${kind}-target
+- Repository: ${spec.repo || ''}
+${targetLine}
+- URL: ${url}
+${spec.commentAnchor ? `- Comment Anchor: ${spec.commentAnchor}\n` : ''}- Access Mode: anonymous-safe target registration
+- Live Material: not imported
+- Reason: ${String(reason || 'Configured as a GitHub social-origin target.').trim()}
+
+${gitHubSocialAdapterBoundaryMarkdown(kind, 'target-registration')}
+## Triage
+
+- Use As Candidates: task, feedback, evidence, resource need, pointer, external payload
+- Canonical Status: discovery target only
+- Needs Interpretation: yes
+
+## Unavailable Material
+
+_Live GitHub ${kind} material was not imported by this anonymous-safe discovery pass. Open the source URL, paste visible material into Tiinex, or use a future explicit enrichment path if available._
+
+## Interpretation Limits
+
+- This artifact preserves the target identity and origin URL.
+- It does not preserve the ${kind} body, comments, author, timestamps, reactions, answer state, or current GitHub state.
+- Treat this as a discovery target/gap until material is explicitly imported, pasted, preserved, or enriched.
+`;
+    return markdownWithSelfIntegrity(draft);
   }
 
   async function githubIssueRootMarkdown(spec, issue, rootPath) {
@@ -4971,7 +9049,7 @@ ${fence}`;
     const draft = `# Continuity Context
 
 - Envelope Schema: ${envelopeSchemaReference(rootPath)}
-${currentBlockForPath('tiinex.discovery.finding.v1', summary, rootPath, 'Normalizes a GitHub issue as a discovery finding candidate, not canonical project truth.')}---
+${currentBlockForPath('tiinex.discovery.finding.v1', summary, rootPath, 'Normalizes a GitHub issue as a discovery finding candidate, not canonical project truth.', { createdAt: issue?.created_at || '' })}---
 
 # ${title}
 
@@ -4993,6 +9071,7 @@ ${currentBlockForPath('tiinex.discovery.finding.v1', summary, rootPath, 'Normali
 
 ${originMarkdownLines(origin)}
 
+${gitHubSocialAdapterBoundaryMarkdown('issue', 'material-import')}
 ## Triage
 
 - Use As Candidates: task, feedback, evidence, resource need, pointer, external payload
@@ -5015,7 +9094,7 @@ ${body ? markdownFence(body, 'md') : '_No issue body was present._'}
   async function githubIssueUnavailableMarkdown(spec, error, rootPath) {
     const reason = String(error?.message || error || 'unavailable').trim();
     const title = `GitHub Issue #${spec.issueNumber}`;
-    const summary = `GitHub issue discovery target for ${spec.repo}#${spec.issueNumber} could not be loaded from the GitHub API.`;
+    const summary = `GitHub issue discovery target for ${spec.repo}#${spec.issueNumber} could not be loaded from public readers, cache, or the GitHub API.`;
     const draft = `# Continuity Context
 
 - Envelope Schema: ${envelopeSchemaReference(rootPath)}
@@ -5047,6 +9126,7 @@ ${currentBlockForPath('tiinex.discovery.finding.v1', summary, rootPath, 'Preserv
 - URL: ${spec.issueUrl}
 - Unavailable Reason: ${reason}
 
+${gitHubSocialAdapterBoundaryMarkdown('issue', 'unavailable-target')}
 ## Triage
 
 - Use As Candidates: task, feedback, evidence, resource need, pointer, external payload
@@ -5055,7 +9135,7 @@ ${currentBlockForPath('tiinex.discovery.finding.v1', summary, rootPath, 'Preserv
 
 ## Unavailable Material
 
-_Live GitHub issue material was not loaded. Open the source URL or retry discovery after GitHub API access is available._
+_Live GitHub issue material was not loaded. Open the source URL, retry discovery, or use a cached/published Tiinex origin binding if public readers and API access are unavailable._
 
 ## Interpretation Limits
 
@@ -5066,12 +9146,12 @@ _Live GitHub issue material was not loaded. Open the source URL or retry discove
     return markdownWithSelfIntegrity(draft);
   }
 
-  function addGitHubIssueUnavailableFinding(ws, issueUrl, source, error) {
-    const spec = parseGitHubIssueSpec(issueUrl);
-    if (!ws || !spec) return false;
-    const titleSlug = `issue-${spec.issueNumber}-unavailable`;
-    const rootPath = normalizeAssetPath(`.topics/github-issues/${spec.owner}-${spec.repoName}-${spec.issueNumber}-${titleSlug}/issue-unavailable.trace.md`);
-    return githubIssueUnavailableMarkdown(spec, error, rootPath).then((markdown) => {
+  function addGitHubSocialTargetFinding(ws, targetUrl, source, reason = '') {
+    const spec = parseGitHubSocialTargetSpec(targetUrl);
+    if (!ws || !spec) return Promise.resolve(false);
+    const rootPath = gitHubSocialTargetPath(spec);
+    if (workspaceHasPathInSource(ws, source?.id || '', rootPath) || workspaceAnyHasPath(ws, rootPath)) return Promise.resolve(false);
+    return githubSocialTargetMarkdown(spec, reason, rootPath).then((markdown) => {
       addFileToWorkspace(ws, {
         path: rootPath,
         content: markdown,
@@ -5079,15 +9159,41 @@ _Live GitHub issue material was not loaded. Open the source URL or retry discove
         sourceId: source?.id || '',
         sourceKind: source?.kind || 'github',
         sourceLabel: source?.label || gitHubSourceLabel(spec.repo, source?.ref || ''),
-        sourceOrigin: spec.issueUrl,
-        rawUrl: spec.issueUrl,
-        browseUrl: spec.issueUrl,
+        sourceOrigin: spec.targetUrl || spec.issueUrl || spec.discussionUrl,
+        rawUrl: spec.targetUrl || spec.issueUrl || spec.discussionUrl,
+        browseUrl: spec.targetUrl || spec.issueUrl || spec.discussionUrl,
         repo: spec.repo,
-        ref: source?.ref || ws.ref || `issue-${spec.issueNumber}`,
+        ref: source?.ref || ws.ref || `${spec.kind}-${spec.number}`,
         sourceSurface: 'issues'
       });
       return true;
     });
+  }
+
+  function addGitHubIssueUnavailableFinding(ws, issueUrl, source, error) {
+    return addGitHubSocialTargetFinding(ws, issueUrl, source, `Live material unavailable: ${String(error?.message || error || 'unavailable').trim()}`);
+  }
+
+  function githubCommentPlainExcerpt(body, limit = 96) {
+    const plain = stripMarkdownInline(plainBlock(String(body || '')) || String(body || ''))
+      .replace(/\s+/g, ' ')
+      .trim();
+    return plain ? shortText(plain, limit) : '';
+  }
+
+  function githubIssueCommentFindingTitle(origin, body) {
+    const excerpt = githubCommentPlainExcerpt(body, 88);
+    if (excerpt) return excerpt;
+    return origin?.author ? `Comment from ${origin.author}` : 'GitHub issue comment';
+  }
+
+  function githubIssueCommentFindingSummary(origin, body, parseLevel, intent) {
+    const author = origin?.author || 'GitHub user';
+    const excerpt = githubCommentPlainExcerpt(body, 140);
+    const target = origin?.repo && origin?.issueNumber ? `${origin.repo}#${origin.issueNumber}` : 'GitHub issue';
+    const kind = parseLevel === 'raw' ? 'Untyped' : (parseLevel === 'structured' ? 'Structured' : 'Inferred');
+    const intentText = intent && intent !== 'unknown' ? ` · ${intent}` : '';
+    return `${kind} comment by ${author} on ${target}${intentText}${excerpt ? `: ${excerpt}` : ''}`;
   }
 
   async function githubIssueCommentMarkdown(spec, comment, commentPath, rootNode) {
@@ -5095,7 +9201,8 @@ _Live GitHub issue material was not loaded. Open the source URL or retry discove
     const origin = await githubIssueOriginRecord('issue-comment', spec, comment, body);
     const parseLevel = issueContributionParseLevel(body);
     const intent = issueContributionIntent(body);
-    const summary = `${intent} GitHub issue comment finding from ${origin.author || 'GitHub issue comment'} (${parseLevel})`;
+    const findingTitle = githubIssueCommentFindingTitle(origin, body);
+    const summary = githubIssueCommentFindingSummary(origin, body, parseLevel, intent);
     const parentTrace = parentTraceReferenceForPath(rootNode, commentPath);
     const parentSchema = parentSchemaReferenceForPath(rootNode, commentPath);
     const draft = `# Continuity Context
@@ -5108,9 +9215,9 @@ _Live GitHub issue material was not loaded. Open the source URL or retry discove
     - github issue: ${spec.issueUrl}
     - issue comment: ${origin.url || ''}
     - body hash: ${origin.bodyHash || ''}
-${currentBlockForPath('tiinex.discovery.finding.v1', summary, commentPath, 'Preserves a GitHub issue comment as a discovery finding candidate, not canonical replacement content.')}---
+${currentBlockForPath('tiinex.discovery.finding.v1', summary, commentPath, 'Preserves a GitHub issue comment as a discovery finding candidate, not canonical replacement content.', { createdAt: comment?.created_at || '' })}---
 
-# GitHub Issue Comment ${origin.id || ''}
+# ${findingTitle}
 
 ## Discovery Context
 
@@ -5124,6 +9231,9 @@ ${currentBlockForPath('tiinex.discovery.finding.v1', summary, commentPath, 'Pres
 
 - Finding Type: external-comment
 - Finding Status: observed
+- Title: ${findingTitle}
+- Author: ${origin.author || ''}
+- Comment Preview: ${githubCommentPlainExcerpt(body, 220)}
 - Parse Level: ${parseLevel}
 - Intent: ${ORIGIN_MUTATION_INTENTS.includes(intent) ? intent : 'unknown'}
 
@@ -5131,6 +9241,7 @@ ${currentBlockForPath('tiinex.discovery.finding.v1', summary, commentPath, 'Pres
 
 ${originMarkdownLines(origin)}
 
+${gitHubSocialAdapterBoundaryMarkdown('issue', 'comment-material-import')}
 ## Triage
 
 - Use As Candidates: feedback, task, evidence, resource need, pointer, external payload
@@ -5151,26 +9262,512 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return markdownWithParentTargetIntegrity(rootNode, commentPath, draft);
   }
 
-  async function loadGitHubIssueIntoWorkspace(ws, issueUrl, options = {}) {
-    const spec = parseGitHubIssueSpec(issueUrl);
+  function looksLikeStandaloneTiinexArtifact(markdown) {
+    const text = normalizeNewlines(markdown || '').trim();
+    return /^#\s+Continuity Context/im.test(text) && /Current Schema:/i.test(text);
+  }
+
+  const TIINEX_GITHUB_PRESENTATION_MARKER_RE = /<!--\s*tiinex-artifact-start\b[\s\S]*?-->/i;
+
+  function stripGitHubPresentationLayerForTiinexImport(body) {
+    const text = normalizeNewlines(body || '');
+    const match = text.match(TIINEX_GITHUB_PRESENTATION_MARKER_RE);
+    if (!match) return text;
+    const start = match.index || 0;
+    return text.slice(start);
+  }
+
+  function extractEmbeddedTiinexMarkdownFromGitHubComment(body) {
+    const text = stripGitHubPresentationLayerForTiinexImport(body || '');
+    if (!/#\s+Continuity Context/i.test(text) || !/Current Schema:/i.test(text)) return '';
+    const sourceSection = text.search(/^##\s+Source Markdown(?:\s+Excerpt|\s+Payload)?\s*$/im);
+    const searchText = sourceSection >= 0 ? text.slice(sourceSection) : text;
+    const fenceRe = /```(?:md|markdown)?\s*\n([\s\S]*?)\n```/gi;
+    let match;
+    while ((match = fenceRe.exec(searchText))) {
+      const candidate = normalizeNewlines(match[1] || '').trim();
+      if (looksLikeStandaloneTiinexArtifact(candidate)) return candidate;
+    }
+    const direct = text.trim();
+    if (sourceSection < 0 && looksLikeStandaloneTiinexArtifact(direct)) return direct;
+    return '';
+  }
+
+  function githubRecoveredEmbeddedArtifactPath(ws, base, item, ordinal, markdown, sourceKind = 'comment') {
+    const schema = schemaIdFromText(markdown, 'tiinex.topic.v1');
+    const title = markdownTitleFromFile({ content: markdown, currentSchema: schema });
+    const folder = normalizeAssetPath(base || '.topics/github-issues');
+    const id = String(item?.id || ordinal || sourceKind || 'source').replace(/[^A-Za-z0-9_.-]+/g, '-');
+    const slug = slugifyTitle(title || schema || 'artifact').slice(0, 52) || 'artifact';
+    if (sourceKind === 'issue') return `${folder}/issue-root-recovered-${slug}.trace.md`;
+    return `${folder}/comment-${String(ordinal || 1).padStart(3, '0')}-${id}-recovered-${slug}.trace.md`;
+  }
+
+  function githubRecoveredCommentArtifactPath(ws, base, comment, ordinal, markdown) {
+    return githubRecoveredEmbeddedArtifactPath(ws, base, comment, ordinal, markdown, 'comment');
+  }
+
+  function reparentRecoveredTiinexArtifactMarkdown(markdown = '', parentNode = null, childPath = '') {
+    const normalized = normalizeNewlines(markdown || '').trim();
+    if (!normalized || !parentNode?.path || !looksLikeStandaloneTiinexArtifact(normalized)) return normalized;
+    const separatorIndex = normalized.indexOf('\n---');
+    if (separatorIndex < 0) return normalized;
+    const envelope = normalized.slice(0, separatorIndex).trimEnd();
+    const rest = normalized.slice(separatorIndex).trimStart();
+    const parentBlock = parentContinuityBlock(parentNode, childPath).trimEnd();
+    if (!parentBlock) return normalized;
+
+    const lines = envelope.split('\n');
+    const kept = [];
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      const indent = line.search(/\S/);
+      // Recovered GitHub artifacts may carry Parent in either the modern
+      // Tiinex block form (`- Parent` with nested fields) or in older/exported
+      // flattened forms such as `- Parent Trace:`. Strip every top-level
+      // parent declaration before writing the import-local parent edge. This
+      // prevents imported issue artifacts from keeping publication-time parent
+      // links that can resolve to missing GitHub blobs or self-cycles.
+      if (indent <= 1 && /^-\s+Parent(?:\s*$|\s|:)/i.test(trimmed)) {
+        i += 1;
+        while (i < lines.length) {
+          const nextLine = lines[i];
+          const nextTrimmed = nextLine.trim();
+          const nextIndent = nextLine.search(/\S/);
+          if (nextIndent <= 1 && /^-\s+/i.test(nextTrimmed)) {
+            i -= 1;
+            break;
+          }
+          i += 1;
+        }
+        continue;
+      }
+      kept.push(line);
+    }
+
+    const currentIndex = kept.findIndex((line) => /^-\s+Current\s*$/i.test(line.trim()) && line.search(/\S/) <= 1);
+    if (currentIndex >= 0) kept.splice(currentIndex, 0, ...parentBlock.split('\n'));
+    else kept.push(...parentBlock.split('\n'));
+    return `${kept.join('\n').trimEnd()}\n\n${rest}`;
+  }
+
+  async function reparentRecoveredTiinexArtifactForWorkspace(markdown = '', parentNode = null, childPath = '') {
+    const parentPath = canonicalWorkspacePath(parentNode?.path || '');
+    const child = canonicalWorkspacePath(childPath || '');
+    const reparented = reparentRecoveredTiinexArtifactMarkdown(markdown, parentNode, childPath);
+    if (!parentPath || (child && parentPath === child) || reparented === markdown) return reparented;
+    return markdownWithParentTargetIntegrity(parentNode, childPath, reparented);
+  }
+
+  function githubParentCommentIdsFromEmbeddedMarkdown(markdown = '') {
+    const text = normalizeNewlines(markdown || '');
+    const envelope = text.split(/\n---/)[0] || '';
+    const parentIndex = envelope.search(/^-\s+Parent(?:\s*$|:)/im);
+    const ids = new Set();
+    const scan = (slice = '') => {
+      for (const match of String(slice || '').matchAll(/#issuecomment-(\d+)/gi)) ids.add(match[1]);
+      for (const match of String(slice || '').matchAll(/\/issues\/comments\/(\d+)(?:$|[/?#)\s])/gi)) ids.add(match[1]);
+      for (const match of String(slice || '').matchAll(/Tiinex Parent Comment ID:\s*issuecomment-(\d+)/gi)) ids.add(match[1]);
+    };
+    scan(parentIndex >= 0 ? envelope.slice(parentIndex) : envelope);
+    const transition = text.match(/(?:^|\n)##\s+(?:Tiinex\s+)?(?:Transition|Tiinex)\s+Boundary\s*(?:\n|$)[\s\S]*?(?=\n##\s+Source Markdown\s*$|\n##\s+Publication Notes\s*$|\n#\s+Continuity Integrity\s*$|\n---\s*$|$)/im)?.[0] || '';
+    scan(transition);
+    const sourceLine = text.match(/(?:^|\n)-\s+Source Artifact:\s*.*$/im)?.[0] || '';
+    scan(sourceLine);
+    return Array.from(ids);
+  }
+
+  function tiinexEmbeddedMarkdownParentHints(markdown = '') {
+    const text = normalizeNewlines(markdown || '').trim();
+    const envelope = text.split(/\n---/)[0] || '';
+    const fields = extractEnvelopeFields(envelope);
+    const hints = [];
+    const add = (kind, value) => {
+      const raw = String(value || '').trim();
+      if (!raw) return;
+      const link = parseMarkdownLink(raw);
+      const href = String(link.href || '').trim();
+      const label = String(link.text || raw).trim();
+      const values = [raw, href, label].filter(Boolean);
+      for (const candidate of values) {
+        const normalized = stripMarkdownInline(candidate).trim();
+        if (!normalized) continue;
+        hints.push({ kind, raw, value: normalized, href, label });
+      }
+    };
+    add('parent.trace', fields.parent.Trace || '');
+    add('parent.origin.browse', fields.parentOrigin['browse + git'] || '');
+    add('parent.origin.relative', fields.parentOrigin.relative || fields.parentOrigin.Relative || '');
+    const transition = text.match(/(?:^|\n)##\s+(?:Tiinex\s+)?(?:Transition|Tiinex)\s+Boundary\s*(?:\n|$)[\s\S]*?(?=\n##\s+Source Markdown\s*$|\n##\s+Publication Notes\s*$|\n#\s+Continuity Integrity\s*$|\n---\s*$|$)/im)?.[0] || '';
+    for (const line of transition.matchAll(/(?:^|\n)-\s+(Source Artifact|Parent Artifact|Parent Trace|Source Path):\s*(.*)$/gim)) add(String(line[1] || '').toLowerCase().replace(/\s+/g, '.'), line[2] || '');
+    for (const line of text.matchAll(/(?:^|\n)-\s+Towards:\s*(.*)$/gim)) add('integrity.towards', line[1] || '');
+    const deduped = [];
+    const seen = new Set();
+    for (const hint of hints) {
+      const key = `${hint.kind}|${hint.value.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(hint);
+    }
+    return deduped;
+  }
+
+
+  function tiinexEmbeddedMarkdownSourcePath(markdown = '') {
+    const text = normalizeNewlines(markdown || '').trim();
+    const transition = text.match(/(?:^|\n)##\s+(?:Tiinex\s+)?(?:Transition|Tiinex)\s+Boundary\s*(?:\n|$)[\s\S]*?(?=\n##\s+Source Markdown\s*$|\n##\s+Publication Notes\s*$|\n#\s+Continuity Integrity\s*$|\n---\s*$|$)/im)?.[0] || '';
+    const sourcePath = transition.match(/(?:^|\n)-\s+Source Path:\s*(.*)$/im)?.[1] || '';
+    const parentTrace = (text.split(/\n---/)[0] || '').match(/(?:^|\n)\s*-\s+Trace:\s*(.*)$/im)?.[1] || '';
+    return stripMarkdownInline(sourcePath || parentTrace || '').trim();
+  }
+
+  function tiinexEmbeddedMarkdownSelfIntegrityValue(markdown = '') {
+    const entries = parseIntegrityEntries(markdown || '');
+    const self = entries.find((entry) => /^self$/i.test(String(entry.towards || '').trim()) && entry.value);
+    return self?.value || '';
+  }
+
+  function githubIssueIndexedAfterImport(ws, reason = 'github-issue-import-live-index') {
+    if (!ws) return;
+    try {
+      computeWorkspaceIndex(ws, { reason });
+    } catch (error) {
+      githubIssueImportTrace('issue-thread-loader.live-index-failed', { reason, message: error?.message || String(error || '') });
+    }
+  }
+
+  function gitHubIssueNodeSameThread(node, fallbackParent = null) {
+    const a = [node?.path, node?.recoveredFromPath, node?.recoveredFromUrl, node?.sourceOrigin, node?.rawUrl, node?.browseUrl, node?.file?.path, node?.file?.recoveredFromPath, node?.file?.recoveredFromUrl, node?.file?.sourceOrigin, node?.file?.rawUrl, node?.file?.browseUrl].filter(Boolean).join(' ');
+    const b = [fallbackParent?.path, fallbackParent?.recoveredFromPath, fallbackParent?.recoveredFromUrl, fallbackParent?.sourceOrigin, fallbackParent?.rawUrl, fallbackParent?.browseUrl, fallbackParent?.file?.path, fallbackParent?.file?.recoveredFromPath, fallbackParent?.file?.recoveredFromUrl, fallbackParent?.file?.sourceOrigin, fallbackParent?.file?.rawUrl, fallbackParent?.file?.browseUrl].filter(Boolean).join(' ');
+    const issueA = a.match(/github-issues\/([^\/]+)\//i)?.[1] || a.match(/github\.com\/([^\s#]+\/[^\s#]+)\/issues\/(\d+)/i)?.slice(1, 3).join('-') || '';
+    const issueB = b.match(/github-issues\/([^\/]+)\//i)?.[1] || b.match(/github\.com\/([^\s#]+\/[^\s#]+)\/issues\/(\d+)/i)?.slice(1, 3).join('-') || '';
+    return !issueA || !issueB || issueA === issueB;
+  }
+
+  function gitHubIssueParentHintNeedle(hint = {}) {
+    const value = String(hint.value || '').trim();
+    const href = String(hint.href || '').trim();
+    const label = String(hint.label || '').trim();
+    const raw = String(hint.raw || '').trim();
+    const candidates = [value, href, label, raw].filter(Boolean);
+    const out = [];
+    for (const candidate of candidates) {
+      const stripped = stripMarkdownInline(candidate).trim();
+      if (!stripped || /^self$/i.test(stripped)) continue;
+      out.push(stripped);
+      const noHash = stripped.split('#')[0];
+      if (noHash && noHash !== stripped) out.push(noHash);
+      const base = fileNameFromPath(noHash || stripped);
+      if (base) {
+        out.push(base);
+        out.push(base.replace(/\.trace\.md$/i, '').replace(/\.md$/i, ''));
+      }
+    }
+    const deduped = [];
+    const seen = new Set();
+    for (const item of out) {
+      const key = item.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(item);
+    }
+    return deduped;
+  }
+
+  function scoreGitHubIssueParentNodeForHint(node, hint, fallbackParent = null, newComment = null) {
+    if (!node) return 0;
+    const path = node.path || node.file?.path || '';
+    const newId = String(newComment?.id || '').trim();
+    if (newId) {
+      const nodeText = [path, node.recoveredFromUrl, node.sourceOrigin, node.rawUrl, node.browseUrl, node.file?.recoveredFromUrl, node.file?.sourceOrigin, node.file?.rawUrl, node.file?.browseUrl].filter(Boolean).join(' ');
+      if (nodeText.includes(`issuecomment-${newId}`) || nodeText.includes(`/issues/comments/${newId}`)) return 0;
+    }
+    if (!gitHubIssueNodeSameThread(node, fallbackParent)) return 0;
+    const schema = schemaKey(node.currentSchemaText || node.currentSchema || node.file?.currentSchema || '');
+    const title = String(node.displayTitle || node.title || node.file?.resolvedByTitle || node.resolvedByTitle || '').trim();
+    const nodeValues = [
+      path,
+      fileNameFromPath(path),
+      fileNameFromPath(path).replace(/\.trace\.md$/i, '').replace(/\.md$/i, ''),
+      title,
+      slugifyTitle(title),
+      node.resolvedByTitle,
+      node.embeddedTiinexTitle,
+      node.file?.resolvedByTitle,
+      node.file?.embeddedTiinexTitle,
+      node.embeddedSourcePath,
+      node.file?.embeddedSourcePath,
+      node.embeddedSelfIntegrity,
+      node.file?.embeddedSelfIntegrity,
+      node.recoveredFromUrl,
+      node.sourceOrigin,
+      node.rawUrl,
+      node.browseUrl,
+      node.file?.recoveredFromUrl,
+      node.file?.sourceOrigin,
+      node.file?.rawUrl,
+      node.file?.browseUrl
+    ].filter(Boolean).map((value) => String(value).trim()).filter(Boolean);
+    const nodeLower = nodeValues.map((value) => value.toLowerCase());
+    let best = 0;
+    for (const needle of gitHubIssueParentHintNeedle(hint)) {
+      const needleLower = needle.toLowerCase();
+      const needleSlug = slugifyTitle(needle);
+      const needleBase = fileNameFromPath(needle).replace(/\.trace\.md$/i, '').replace(/\.md$/i, '');
+      if (!needleLower || /^self$/i.test(needleLower)) continue;
+      for (const value of nodeLower) {
+        if (value === needleLower) best = Math.max(best, 220);
+        if (needleBase && value === needleBase.toLowerCase()) best = Math.max(best, 210);
+        if (needleSlug && value === needleSlug) best = Math.max(best, 205);
+        if (needleBase && value.includes(needleBase.toLowerCase())) best = Math.max(best, 160);
+        if (needleSlug && value.includes(needleSlug)) best = Math.max(best, 150);
+      }
+    }
+    if (!best) return 0;
+    if (schema && schema !== 'discovery.finding') best += 80;
+    if (node.recoveredFromPath || node.recoveredFromUrl || node.recoveryKind || node.file?.recoveryKind) best += 45;
+    if (schema === 'discovery.finding') best -= 35;
+    if (/issue-root-recovered-/i.test(path)) best += 30;
+    return best;
+  }
+
+  function resolveGitHubIssueParentNodeForRecoveredArtifact(ws, embeddedMarkdown = '', fallbackParent = null, newComment = null) {
+    const newId = String(newComment?.id || '').trim();
+    const ids = githubParentCommentIdsFromEmbeddedMarkdown(embeddedMarkdown).filter((id) => id && id !== newId);
+    const nodes = Array.from(ws?.nodeById?.values?.() || []);
+    const result = { node: fallbackParent || null, mode: fallbackParent ? 'issue-root-fallback' : 'unresolved', hint: '', score: 0, explicit: false };
+    if (!ws || !nodes.length) return result;
+    const scoreCommentNode = (node, id) => {
+      if (!node) return 0;
+      const values = [node.recoveredFromUrl, node.sourceOrigin, node.rawUrl, node.browseUrl, node.file?.recoveredFromUrl, node.file?.sourceOrigin, node.file?.rawUrl, node.file?.browseUrl].filter(Boolean).join(' ');
+      if (!values.includes(`issuecomment-${id}`) && !values.includes(`/issues/comments/${id}`)) return 0;
+      const schema = schemaKey(node.currentSchemaText || node.currentSchema || node.file?.currentSchema || '');
+      if (schema && schema !== 'discovery.finding') return 300;
+      if (node.resolvedEnvelope || node.file?.resolvedEnvelope) return 180;
+      return 90;
+    };
+    for (const id of ids) {
+      for (const node of nodes) {
+        const score = scoreCommentNode(node, id);
+        if (score > result.score) Object.assign(result, { node, mode: 'explicit-comment-id', hint: `issuecomment-${id}`, score, explicit: true });
+      }
+    }
+    for (const hint of tiinexEmbeddedMarkdownParentHints(embeddedMarkdown)) {
+      for (const node of nodes) {
+        const score = scoreGitHubIssueParentNodeForHint(node, hint, fallbackParent, newComment);
+        if (score > result.score) Object.assign(result, { node, mode: `explicit-${hint.kind}`, hint: hint.value, score, explicit: true });
+      }
+    }
+    return result;
+  }
+
+  function preferredGitHubParentNodeForRecoveredArtifact(ws, embeddedMarkdown = '', fallbackParent = null, newComment = null) {
+    return resolveGitHubIssueParentNodeForRecoveredArtifact(ws, embeddedMarkdown, fallbackParent, newComment).node || fallbackParent;
+  }
+
+  function githubIssueNestedContinuityReport() {
+    const workspaces = Array.isArray(app?.workspaces) ? app.workspaces : [];
+    const rows = [];
+    const warnings = [];
+    for (const ws of workspaces) {
+      const nodes = Array.isArray(ws?.nodes) ? ws.nodes : [];
+      for (const node of nodes) {
+        const text = [node?.path, node?.recoveredFromPath, node?.recoveredFromUrl, node?.sourceOrigin, node?.rawUrl, node?.browseUrl].filter(Boolean).join(' ');
+        if (!/\.topics\/github-issues\//.test(text) && !/github\.com\/[^\s]+\/issues\//.test(text)) continue;
+        const parent = node?.parentNode || null;
+        const recovered = Boolean(node?.recoveredFromPath || node?.recoveredFromUrl || node?.recoveryKind || node?.file?.recoveryKind);
+        const resolutionMode = node.githubParentResolutionMode || node.file?.githubParentResolutionMode || '';
+        const resolutionHint = node.githubParentResolutionHint || node.file?.githubParentResolutionHint || '';
+        const resolutionScore = Number(node.githubParentResolutionScore || node.file?.githubParentResolutionScore || 0);
+        const explicitParent = Boolean(node.githubParentExplicit || node.file?.githubParentExplicit);
+        const hintCount = Number(node.githubParentHintCount || node.file?.githubParentHintCount || 0);
+        const row = {
+          workspace: ws.label || ws.id || '',
+          path: node.path || '',
+          title: node.title || '',
+          schema: node.currentSchemaText || node.currentSchema || '',
+          recovered,
+          sourceUrl: node.recoveredFromUrl || node.sourceOrigin || node.rawUrl || node.browseUrl || '',
+          parentPath: parent?.path || '',
+          parentTitle: parent?.title || '',
+          parentSchema: parent?.currentSchemaText || parent?.currentSchema || '',
+          parentSourceUrl: parent?.recoveredFromUrl || parent?.sourceOrigin || parent?.rawUrl || parent?.browseUrl || '',
+          resolutionMode,
+          resolutionHint,
+          resolutionScore,
+          explicitParent,
+          parentHintCount: hintCount
+        };
+        rows.push(row);
+        if (recovered && !row.parentPath) warnings.push({ path: row.path, reason: 'recovered artifact has no resolved parent' });
+        if (recovered && row.parentPath && row.parentPath === row.path) warnings.push({ path: row.path, reason: 'recovered artifact self-parented' });
+        if (recovered && hintCount > 0 && !explicitParent) warnings.push({ path: row.path, parentPath: row.parentPath, resolutionMode, resolutionHint, hintCount, reason: 'embedded parent hints existed but no explicit parent binding was resolved' });
+        if (recovered && /github-comment-embedded-tiinex-artifact/i.test(node.recoveryKind || node.file?.recoveryKind || '') && /comment-\d+-.*-recovered-/i.test(row.parentPath) && !explicitParent) warnings.push({ path: row.path, parentPath: row.parentPath, reason: 'recovered comment artifact is chained to a previous comment without explicit parent binding' });
+      }
+    }
+    return { rows, warnings, warningCount: warnings.length };
+  }
+
+  function markdownRendererSmokeTest() {
+    const fixture = '# Heading\n\nParagraph line one\nline two\n\n- first\n  - nested\n- second\n\n---\n\n1. one\n2. two\n\n> quoted\n\n```md\n- literal\n```';
+    return { fixture, html: renderSafeMarkdown(fixture), hasRule: /class="md-rule"/.test(renderSafeMarkdown(fixture)) };
+  }
+
+  function presentationTruncationReport(limit = 240) {
+    const rows = [];
+    for (const ws of app.workspaces || []) {
+      for (const node of ws.nodes || []) {
+        const html = renderSchemaReadPresenter(ws, node, { compact: false, full: true }) || renderContinuityPreview(node, ws) || '';
+        const bodyHtml = renderSafeMarkdown(node.body || node.rawMarkdown || '');
+        const hasPresenterEllipsis = /(?:^|>)\s*…\s*(?:<|$)/.test(html) || /read-truncation-note/.test(html);
+        const hasBodyRule = /class="md-rule"/.test(bodyHtml);
+        if (hasPresenterEllipsis || hasBodyRule) {
+          rows.push({
+            workspace: ws.label || ws.id || '',
+            title: node.title || '',
+            path: node.path || '',
+            schema: node.currentSchemaText || node.currentSchema || '',
+            presenterTruncated: hasPresenterEllipsis,
+            bodyHasRenderedRule: hasBodyRule
+          });
+        }
+        if (rows.length >= limit) break;
+      }
+      if (rows.length >= limit) break;
+    }
+    const warnings = rows.filter((row) => row.presenterTruncated);
+    return { rows, warnings, warningCount: warnings.length };
+  }
+
+  function languageSurfaceRows() {
+    return Array.from(document.querySelectorAll('[data-tiinex-language-surface]')).map((el) => ({
+      surface: el.getAttribute('data-tiinex-language-surface') || '',
+      tag: String(el.tagName || '').toLowerCase(),
+      lang: el.getAttribute('lang') || '',
+      translate: el.getAttribute('translate') || '',
+      textPreview: String(el.textContent || '').trim().slice(0, 120)
+    }));
+  }
+
+  function activeLanguageSurfaceReport() {
+    const rows = languageSurfaceRows();
+    return {
+      rows,
+      count: rows.length,
+      artifactSurfaceCount: rows.filter((row) => /^artifact/.test(row.surface)).length,
+      langCounts: rows.reduce((map, row) => { const key = row.lang || 'missing'; map[key] = (map[key] || 0) + 1; return map; }, {})
+    };
+  }
+
+  function translationStabilityReport() {
+    return {
+      browserTranslateLikelyActive: browserTranslateLikelyActive(),
+      htmlClass: document.documentElement?.className || '',
+      currentHash: location.hash || '',
+      hasReadableShareHash: Boolean(parseHashShareTarget(location.hash || '')),
+      activePublicShareTarget: app.activePublicShareTarget || app.viewerIdentity?.publicShareTarget || null,
+      staticDiskMode: staticDiskMode(),
+      routeUrlMutationSuppressed: shouldPreserveReadableRouteHash() || shouldSuppressRouteUrlMutationForTranslate(),
+      languageSurfaces: activeLanguageSurfaceReport()
+    };
+  }
+
+  function githubIssueCommentIdFromAny(value = '') {
+    const text = String(value || '');
+    const hash = text.match(/#issuecomment-(\d+)/i);
+    if (hash) return hash[1];
+    const api = text.match(/\/issues\/comments\/(\d+)(?:$|[/?#])/i);
+    if (api) return api[1];
+    const path = text.match(/(?:^|[\/-])comment-\d+-([0-9]+)(?:[\.-]|$)/i);
+    return path ? path[1] : '';
+  }
+
+  function githubIssueEntryCommentId(entry = {}) {
+    const fields = [
+      entry.sourceOrigin, entry.publishedOriginUrl, entry.recoveredFromUrl,
+      entry.rawUrl, entry.browseUrl, entry.origin, entry.path, entry.storageKey, entry.name
+    ];
+    for (const field of fields) {
+      const id = githubIssueCommentIdFromAny(field || '');
+      if (id) return id;
+    }
+    return '';
+  }
+
+  function removeStaleGitHubIssueCommentSourceEntries(ws, sourceId, spec, comment) {
+    const commentId = String(comment?.id || githubIssueCommentIdFromAny(comment?.html_url || '') || '').trim();
+    if (!ws || !sourceId || !commentId) return 0;
+    const repo = String(spec?.repo || '').toLowerCase();
+    const issueBase = String(spec?.issueUrl || '').replace(/#.*$/, '');
+    let removed = 0;
+    const shouldRemove = (entry = {}, key = '') => {
+      const entrySource = entry.sourceId || '';
+      if (entrySource && entrySource !== sourceId) return false;
+      if (!entrySource && !String(key || '').startsWith(`${sourceId}::`)) return false;
+      if (sourceSurfaceForEntry(Object.assign({}, entry, { storageKey: key })) !== 'issues') return false;
+      if (repo && entry.repo && String(entry.repo || '').toLowerCase() !== repo) return false;
+      if (githubIssueEntryCommentId(Object.assign({}, entry, { storageKey: key })) !== commentId) return false;
+      const urlText = [entry.sourceOrigin, entry.publishedOriginUrl, entry.recoveredFromUrl, entry.rawUrl, entry.browseUrl].filter(Boolean).join(' ');
+      if (issueBase && urlText && !urlText.includes(issueBase) && !String(entry.path || key || '').includes(`/github-issues/`)) return false;
+      return true;
+    };
+    for (const [key, file] of Array.from(ws.files?.entries?.() || [])) {
+      if (!shouldRemove(file, key)) continue;
+      ws.files.delete(key);
+      removed += 1;
+    }
+    for (const [key, asset] of Array.from(ws.assets?.entries?.() || [])) {
+      if (!shouldRemove(asset, key)) continue;
+      if (ws.assetUrls?.has(key)) {
+        try { URL.revokeObjectURL(ws.assetUrls.get(key)); } catch (_) {}
+        ws.assetUrls.delete(key);
+      }
+      ws.assets.delete(key);
+      removed += 1;
+    }
+    if (removed) ws.logs?.push?.(`Replaced ${removed} stale GitHub issue comment artifact entr${removed === 1 ? 'y' : 'ies'} for issuecomment-${commentId}.`);
+    return removed;
+  }
+
+  async function loadGitHubIssueThreadSnapshotIntoWorkspace(ws, spec, thread, options = {}) {
     if (!spec) throw new Error('Paste a GitHub issue URL like https://github.com/owner/repo/issues/123.');
-    const { issue, comments, truncated } = await fetchGitHubIssueThread(spec, options);
+    const beforeFiles = ws?.files?.size || 0;
+    const beforeNodes = Array.isArray(ws?.nodes) ? ws.nodes.length : 0;
+    const { issue, comments, truncated, adapterMode } = thread || {};
+    githubIssueImportTrace('issue-thread-loader.start', { workspace: { id: ws?.id || '', label: ws?.label || '', beforeFiles, beforeNodes }, spec: { repo: spec?.repo || '', issueNumber: spec?.issueNumber || '', issueUrl: spec?.issueUrl || '' }, thread: githubIssueThreadTraceSummary(thread || {}), options: { includeBody: options.includeBody !== false, hardRefresh: Boolean(options.hardRefresh), sourceId: options.source?.id || '' } });
     const issueSlug = slugify(issue?.title || `issue-${spec.issueNumber}`) || `issue-${spec.issueNumber}`;
     const base = normalizeAssetPath(`.topics/github-issues/${spec.owner}-${spec.repoName}-${spec.issueNumber}-${issueSlug}`);
-    const source = options.source || registerGitHubSource(ws, {
+    githubIssueImportTrace('issue-thread-loader.paths', { base, issueSlug });
+    const existingSource = options.source || gitHubSourceForRepo(ws, spec.repo);
+    const source = existingSource || registerGitHubSource(ws, {
       repo: spec.repo,
       ref: options.ref || ws.ref || '',
       enabledSurfaces: { repoFiles: false, issues: true },
-      issueUrls: [spec.issueUrl]
+      configuredIssueUrls: options.persistConfiguredTarget ? [spec.issueUrl] : []
     });
-    if (!source.issueUrls) source.issueUrls = [];
-    if (!source.issueUrls.includes(spec.issueUrl)) source.issueUrls.push(spec.issueUrl);
+    if (options.persistConfiguredTarget) {
+      const configured = configuredGitHubIssueUrls(source, spec.repo);
+      if (!configured.includes(spec.issueUrl)) setConfiguredGitHubIssueUrls(source, [...configured, spec.issueUrl]);
+    }
+    noteDiscoveredGitHubIssueUrl(source, spec.issueUrl);
+    // A successful issue/thread import supersedes any previous target-only or
+    // unavailable placeholder for the same issue. Keep the real issue/comment
+    // material so the UX does not show the fallback artifact beside the loaded
+    // thread.
+    const removedPlaceholders = removeGitHubSocialTargetPlaceholder(ws, spec);
+    githubIssueImportTrace('issue-thread-loader.placeholder-removed', { removedPlaceholders });
 
     let rootPath = `${base}/issue-root.trace.md`;
     let rootMarkdown = '';
     let rootNode = null;
+    let issueWorkingParentNode = null;
     if (options.includeBody !== false) {
       rootMarkdown = await githubIssueRootMarkdown(spec, issue, rootPath);
+      const embeddedIssue = extractEmbeddedTiinexMarkdownFromGitHubComment(issue?.body || '');
+      const issueRecoveredPath = embeddedIssue ? githubRecoveredEmbeddedArtifactPath(ws, base, issue, 0, embeddedIssue, 'issue') : '';
+      const issueRecoveredSchema = embeddedIssue ? schemaIdFromText(embeddedIssue, 'tiinex.topic.v1') : '';
+      const issueRecoveredTitle = embeddedIssue ? markdownTitleFromFile({ content: embeddedIssue, currentSchema: issueRecoveredSchema }) : '';
       addFileToWorkspace(ws, {
         path: rootPath,
         content: rootMarkdown,
@@ -5183,18 +9780,73 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         browseUrl: spec.issueUrl,
         repo: spec.repo,
         ref: source.ref || options.ref || `issue-${spec.issueNumber}`,
-        sourceSurface: 'issues'
+        sourceSurface: 'issues',
+        resolvedEnvelope: Boolean(embeddedIssue),
+        resolvedByPath: issueRecoveredPath,
+        resolvedBySchema: issueRecoveredSchema,
+        resolvedByTitle: issueRecoveredTitle,
+        embeddedTiinexSchema: issueRecoveredSchema,
+        embeddedTiinexTitle: issueRecoveredTitle
       });
-      rootNode = { path: rootPath, rawMarkdown: rootMarkdown, currentSchemaText: 'tiinex.discovery.finding.v1', currentSchema: 'tiinex.discovery.finding.v1' };
+      githubIssueImportTrace('issue-thread-loader.root-added', { path: rootPath, contentLength: rootMarkdown.length, issueBodyLength: String(issue?.body || '').length, resolvedEnvelope: Boolean(embeddedIssue), resolvedByPath: issueRecoveredPath });
+      githubIssueIndexedAfterImport(ws, 'issue-root-added');
+      rootNode = sameWorkspacePathLookup(ws, rootPath, source.id) || sameWorkspacePathLookup(ws, rootPath, '') || { path: rootPath, rawMarkdown: rootMarkdown, currentSchemaText: 'tiinex.discovery.finding.v1', currentSchema: 'tiinex.discovery.finding.v1', resolvedEnvelope: Boolean(embeddedIssue), resolvedByPath: issueRecoveredPath, resolvedBySchema: issueRecoveredSchema, resolvedByTitle: issueRecoveredTitle };
+      issueWorkingParentNode = rootNode;
+      if (embeddedIssue) {
+        const recoveredPath = issueRecoveredPath;
+        const recoveredSchema = issueRecoveredSchema;
+        const recoveredIssueMarkdown = await reparentRecoveredTiinexArtifactForWorkspace(embeddedIssue, rootNode, recoveredPath);
+        addFileToWorkspace(ws, {
+          path: recoveredPath,
+          content: recoveredIssueMarkdown,
+          preserveAsAsset: true,
+          sourceId: source.id,
+          sourceKind: source.kind,
+          sourceLabel: source.label,
+          sourceOrigin: spec.issueUrl,
+          rawUrl: spec.issueUrl,
+          browseUrl: spec.issueUrl,
+          repo: spec.repo,
+          ref: source.ref || options.ref || `issue-${spec.issueNumber}`,
+          sourceSurface: 'issues',
+          recoveredFromPath: rootPath,
+          recoveredFromUrl: spec.issueUrl,
+          recoveryKind: 'github-issue-embedded-tiinex-artifact',
+          embeddedSourcePath: tiinexEmbeddedMarkdownSourcePath(embeddedIssue),
+          embeddedSelfIntegrity: tiinexEmbeddedMarkdownSelfIntegrityValue(embeddedIssue),
+          githubParentHintCount: tiinexEmbeddedMarkdownParentHints(embeddedIssue).length
+        });
+        githubIssueIndexedAfterImport(ws, 'issue-embedded-added');
+        githubIssueImportTrace('issue-thread-loader.issue-embedded-added', { path: recoveredPath, schema: recoveredSchema, contentLength: recoveredIssueMarkdown.length, reparentedTo: rootNode?.path || '' });
+        // When the issue body already contains a typed Tiinex artifact, later
+        // untyped issue comments are not new root-level discoveries. They are
+        // unresolved observations attached to the typed issue artifact, so the
+        // default working-leaf feed can show the comment instead of showing both
+        // the topic and its unresolved comment as disconnected leaves.
+        issueWorkingParentNode = {
+          path: recoveredPath,
+          rawMarkdown: recoveredIssueMarkdown,
+          currentSchemaText: recoveredSchema,
+          currentSchema: recoveredSchema
+        };
+      }
     } else {
       rootNode = { path: rootPath, rawMarkdown: '', currentSchemaText: 'tiinex.discovery.finding.v1', currentSchema: 'tiinex.discovery.finding.v1' };
+      issueWorkingParentNode = rootNode;
     }
 
     let commentCount = 0;
+    const issueCommentShellParentNode = issueWorkingParentNode || rootNode;
     for (const comment of comments) {
       const n = String(commentCount + 1).padStart(3, '0');
       const commentPath = `${base}/comment-${n}-${comment.id || n}.trace.md`;
-      const commentMarkdown = await githubIssueCommentMarkdown(spec, comment, commentPath, rootNode);
+      const commentParentNode = issueCommentShellParentNode || rootNode;
+      const commentMarkdown = await githubIssueCommentMarkdown(spec, comment, commentPath, commentParentNode);
+      const embedded = extractEmbeddedTiinexMarkdownFromGitHubComment(comment.body || '');
+      const recoveredPath = embedded ? githubRecoveredCommentArtifactPath(ws, base, comment, commentCount + 1, embedded) : '';
+      const recoveredSchema = embedded ? schemaIdFromText(embedded, 'tiinex.topic.v1') : '';
+      const recoveredTitle = embedded ? markdownTitleFromFile({ content: embedded, currentSchema: recoveredSchema }) : '';
+      removeStaleGitHubIssueCommentSourceEntries(ws, source.id, spec, comment);
       addFileToWorkspace(ws, {
         path: commentPath,
         content: commentMarkdown,
@@ -5207,26 +9859,122 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         browseUrl: comment.html_url || spec.issueUrl,
         repo: spec.repo,
         ref: source.ref || options.ref || `issue-${spec.issueNumber}`,
-        sourceSurface: 'issues'
+        sourceSurface: 'issues',
+        resolvedEnvelope: Boolean(embedded),
+        resolvedByPath: recoveredPath,
+        resolvedBySchema: recoveredSchema,
+        resolvedByTitle: recoveredTitle,
+        embeddedTiinexSchema: recoveredSchema,
+        embeddedTiinexTitle: recoveredTitle
       });
+      githubIssueImportTrace('issue-thread-loader.comment-added', { path: commentPath, id: comment.id || '', bodyLength: String(comment.body || '').length, html_url: comment.html_url || '', resolvedEnvelope: Boolean(embedded), resolvedByPath: recoveredPath });
+      githubIssueIndexedAfterImport(ws, 'issue-comment-shell-added');
+      if (embedded) {
+        githubIssueIndexedAfterImport(ws, 'before-comment-embedded-parent-resolution');
+        const parentHints = tiinexEmbeddedMarkdownParentHints(embedded);
+        const parentResolution = resolveGitHubIssueParentNodeForRecoveredArtifact(ws, embedded, issueWorkingParentNode || rootNode, comment);
+        const recoveredParentNode = parentResolution.node || issueWorkingParentNode || rootNode;
+        const recoveredCommentMarkdown = await reparentRecoveredTiinexArtifactForWorkspace(embedded, recoveredParentNode, recoveredPath);
+        addFileToWorkspace(ws, {
+          path: recoveredPath,
+          content: recoveredCommentMarkdown,
+          preserveAsAsset: true,
+          sourceId: source.id,
+          sourceKind: source.kind,
+          sourceLabel: source.label,
+          sourceOrigin: comment.html_url || spec.issueUrl,
+          rawUrl: comment.html_url || spec.issueUrl,
+          browseUrl: comment.html_url || spec.issueUrl,
+          repo: spec.repo,
+          ref: source.ref || options.ref || `issue-${spec.issueNumber}`,
+          sourceSurface: 'issues',
+          recoveredFromPath: commentPath,
+          recoveredFromUrl: comment.html_url || spec.issueUrl,
+          recoveryKind: 'github-comment-embedded-tiinex-artifact',
+          githubParentResolutionMode: parentResolution.mode || '',
+          githubParentResolutionHint: parentResolution.hint || '',
+          githubParentResolutionScore: parentResolution.score || 0,
+          githubParentExplicit: Boolean(parentResolution.explicit),
+          embeddedSourcePath: tiinexEmbeddedMarkdownSourcePath(embedded),
+          embeddedSelfIntegrity: tiinexEmbeddedMarkdownSelfIntegrityValue(embedded),
+          githubParentHintCount: parentHints.length
+        });
+        githubIssueIndexedAfterImport(ws, 'comment-embedded-added');
+        const recoveredLineageNode = {
+          path: recoveredPath,
+          rawMarkdown: recoveredCommentMarkdown,
+          currentSchemaText: recoveredSchema,
+          currentSchema: recoveredSchema,
+          recoveredFromPath: commentPath,
+          recoveredFromUrl: comment.html_url || spec.issueUrl,
+          sourceOrigin: comment.html_url || spec.issueUrl,
+          rawUrl: comment.html_url || spec.issueUrl,
+          browseUrl: comment.html_url || spec.issueUrl,
+          githubParentResolutionMode: parentResolution.mode || '',
+          githubParentResolutionHint: parentResolution.hint || '',
+          githubParentResolutionScore: parentResolution.score || 0,
+          githubParentExplicit: Boolean(parentResolution.explicit),
+          embeddedSourcePath: tiinexEmbeddedMarkdownSourcePath(embedded),
+          embeddedSelfIntegrity: tiinexEmbeddedMarkdownSelfIntegrityValue(embedded),
+          githubParentHintCount: parentHints.length
+        };
+        githubIssueImportTrace('issue-thread-loader.comment-embedded-added', {
+          path: recoveredPath,
+          from: commentPath,
+          contentLength: recoveredCommentMarkdown.length,
+          reparentedTo: recoveredParentNode?.path || '',
+          parentResolutionMode: parentResolution.mode || '',
+          parentResolutionHint: parentResolution.hint || '',
+          parentResolutionScore: parentResolution.score || 0,
+          parentMode: parentResolution.explicit ? 'explicit-parent-binding' : 'issue-root-fallback'
+        });
+      }
       commentCount += 1;
     }
 
+    const prunedLocalCopies = pruneLocalFilesShadowedByIdenticalSource(ws, `GitHub issue ${spec.repo}#${spec.issueNumber}`);
+    githubIssueImportTrace('issue-thread-loader.local-shadow-pruned', { prunedLocalCopies });
     computeWorkspaceIndex(ws);
-    if (!ws.discoverySource) ws.discoverySource = { kind: 'github-tree', repo: spec.repo, ref: source.ref || '', rootPath: '.topics', rootPaths: ['.topics'], sourceId: source.id, issueUrls: [spec.issueUrl] };
-    ws.logs.push(`Loaded GitHub issue discussion ${spec.repo}#${spec.issueNumber}: ${commentCount} comment node(s)${truncated ? ' (truncated after 500 comments)' : ''}.`);
-    if (options.toast !== false) toast(`Loaded GitHub issue discussion: ${commentCount} comment node${commentCount === 1 ? '' : 's'}.`, 'ok');
+    if (!ws.discoverySource) ws.discoverySource = { kind: 'github-tree', repo: spec.repo, ref: source.ref || '', rootPath: '.topics', rootPaths: ['.topics'], sourceId: source.id, issueUrls: configuredGitHubIssueUrls(source, spec.repo) };
+    const modeNote = adapterMode === 'github-web-fallback' ? ' via GitHub web fallback' : '';
+    ws.logs.push(`Loaded GitHub issue discussion ${spec.repo}#${spec.issueNumber}${modeNote}: ${commentCount} comment node(s)${truncated ? ' (truncated after 500 comments)' : ''}.`);
+    githubIssueImportTrace('issue-thread-loader.complete', { commentCount, beforeFiles, afterFiles: ws.files?.size || 0, beforeNodes, afterNodes: Array.isArray(ws.nodes) ? ws.nodes.length : 0, adapterMode });
+    const cacheNote = adapterMode === 'github-cache' || adapterMode === 'github-cache-stale' ? ` (${githubIssueCacheFreshnessLabel(thread) || 'cached snapshot'})` : '';
+    if (options.toast !== false) toast(`Loaded GitHub issue discussion${modeNote || cacheNote}: ${commentCount} comment node${commentCount === 1 ? '' : 's'}.`, adapterMode === 'github-cache-stale' ? 'warn' : 'ok');
+  }
+
+  async function loadGitHubIssueIntoWorkspace(ws, issueUrl, options = {}) {
+    const spec = parseGitHubIssueSpec(issueUrl);
+    if (!spec) throw new Error('Paste a GitHub issue URL like https://github.com/owner/repo/issues/123.');
+    githubIssueImportTrace('issue-import.start', { issueUrl, spec: { repo: spec.repo, issueNumber: spec.issueNumber, issueUrl: spec.issueUrl }, workspace: { id: ws?.id || '', label: ws?.label || '' }, options: { hardRefresh: Boolean(options.hardRefresh), preferCache: Boolean(options.preferCache), configuredTarget: Boolean(options.configuredTarget), userInitiated: Boolean(options.userInitiated), includeBody: options.includeBody !== false } });
+    try {
+      const thread = await fetchGitHubIssueThreadWithFallback(spec, options);
+      githubIssueImportTrace('issue-import.thread-ready', githubIssueThreadTraceSummary(thread));
+      if (!/^github-cache/u.test(String(thread.adapterMode || ''))) {
+        cacheGitHubIssueThread(spec, thread, { source: thread.adapterMode || 'github-issue-loader', freshness: 'observed-live' });
+        githubIssueImportTrace('issue-import.cache-written', { source: thread.adapterMode || 'github-issue-loader' });
+      }
+      const result = await loadGitHubIssueThreadSnapshotIntoWorkspace(ws, spec, thread, options);
+      githubIssueImportTrace('issue-import.complete', { result: Boolean(result), files: ws?.files?.size || 0, nodes: Array.isArray(ws?.nodes) ? ws.nodes.length : 0 });
+      return result;
+    } catch (error) {
+      githubIssueImportTrace('issue-import.error', { issueUrl, error });
+      throw error;
+    }
   }
 
   function parseSourceIssueUrls(value, repo = '') {
+    // Source configuration currently supports GitHub issues as importable
+    // social material. Discussions are intentionally not persisted here until a
+    // real discussion reader exists, so the UI cannot imply parity with issues.
     return String(value || '')
       .split(/[\n,]+/)
       .map((item) => item.trim())
       .filter(Boolean)
-      .filter((item, index, arr) => arr.indexOf(item) === index)
       .map((item) => parseGitHubIssueSpec(item))
       .filter((spec) => spec && (!repo || spec.repo.toLowerCase() === repo.toLowerCase()))
-      .map((spec) => spec.issueUrl);
+      .map((spec) => spec.issueUrl)
+      .filter((url, index, arr) => url && arr.indexOf(url) === index);
   }
 
   function sourceSurfaceForEntry(entry) {
@@ -5234,8 +9982,33 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (explicit) return explicit;
     const kind = String(entry?.sourceKind || entry?.source || '').toLowerCase();
     const path = String(entry?.path || entry?.name || '').toLowerCase();
-    if (kind.includes('issue') || path.includes('/github-issues/')) return 'issues';
+    if (kind.includes('issue') || kind.includes('discussion') || path.includes('/github-issues/') || path.includes('/github-discussions/')) return 'issues';
     return 'repoFiles';
+  }
+
+  function workspaceHasSourceSurface(ws, sourceId, surface) {
+    if (!ws || !sourceId || !surface) return false;
+    const wanted = String(surface || '').trim();
+    for (const file of ws.files?.values?.() || []) {
+      if ((file.sourceId || '') === sourceId && sourceSurfaceForEntry(file) === wanted) return true;
+    }
+    for (const asset of ws.assets?.values?.() || []) {
+      if ((asset.sourceId || '') === sourceId && sourceSurfaceForEntry(asset) === wanted) return true;
+    }
+    return false;
+  }
+
+  function protectExistingGitHubSourceSurfaces(ws, source, surfaces, options = {}) {
+    const out = normalizeGithubSurfaceConfig(surfaces || {});
+    if (!ws || !source?.id || options.allowSurfaceDisable === true) return out;
+    // Refresh/reconcile is not the owner for destructive source-surface changes.
+    // If repo material is already present, a later issue snapshot import or a
+    // stale persisted source config must not silently flip the GitHub source into
+    // issues-only and prune the repo-files surface. Explicit Save/source-edit
+    // remains the canonical owner for disabling a surface.
+    if (out.repoFiles === false && workspaceHasSourceSurface(ws, source.id, 'repoFiles')) out.repoFiles = true;
+    if (out.issues === false && workspaceHasSourceSurface(ws, source.id, 'issues')) out.issues = true;
+    return out;
   }
 
   function removeWorkspaceSourceEntries(ws, sourceId, predicate = () => true) {
@@ -5277,70 +10050,166 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
   function githubIssueDiscoveryManualHint(source) {
     const repo = source?.repo || 'owner/repo';
-    return `Add explicit Issue URLs under this source (for example https://github.com/${repo}/issues/4) or add authenticated GitHub access when that mode is explicitly available.`;
+    return `Leave issue URLs empty to discover recent open public issues for ${repo} within bounded limits, or add explicit targets such as https://github.com/${repo}/issues/123. GitHub Discussions are disabled in this browser adapter until an explicit discussion importer exists.`;
   }
 
   async function discoverGitHubIssuesIntoWorkspace(ws, source, issueUrls = [], options = {}) {
     if (!ws || !source?.repo) return 0;
+    clearGithubIssueImportTrace();
+    githubIssueImportTrace('discovery.start', { workspace: { id: ws?.id || '', label: ws?.label || '', fileCount: ws?.files?.size || 0, nodeCount: Array.isArray(ws?.nodes) ? ws.nodes.length : 0 }, source: { id: source?.id || '', repo: source?.repo || '', ref: source?.ref || '', kind: source?.kind || '' }, issueUrls, options: { hardRefresh: Boolean(options.hardRefresh), userInitiated: Boolean(options.userInitiated), preferCache: Boolean(options.preferCache), limit: options.limit || '' } });
     const canonicalSource = registerGitHubSource(ws, source);
-    let urls = Array.isArray(issueUrls) ? issueUrls.slice() : [];
-    setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: 'running', message: urls.length ? `Loading ${urls.length} configured issue URL(s).` : 'Sampling latest open issues from GitHub API.' });
-    if (typeof render === 'function' && options.renderStatus !== false) render();
-    if (!urls.length) {
-      try {
-        const specs = await fetchGitHubRepoIssueSpecs(source.repo, { limit: app.settings.githubIssueDiscoveryLimit || 10, hardRefresh: Boolean(options.hardRefresh) });
-        urls = specs.map((spec) => spec.issueUrl);
-      } catch (error) {
-        const message = `Issue discovery failed for ${source.repo}: ${error.message}. ${githubIssueDiscoveryManualHint(source)}`;
-        setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: error.rateLimited ? 'rate-limited' : 'failed', message, error: error.message, needsIssueUrls: true, rateLimitUntil: error.rateLimitUntil || 0, cacheState: error.cacheState || '' });
+    let specs = (Array.isArray(issueUrls) ? issueUrls.slice() : [])
+      .map((url) => parseGitHubSocialTargetSpec(url))
+      .filter((spec) => spec && spec.repo.toLowerCase() === String(source.repo || '').toLowerCase());
+    specs = specs.filter((spec, index, arr) => {
+      const url = spec.targetUrl || spec.issueUrl || spec.discussionUrl;
+      return url && arr.findIndex((candidate) => (candidate.targetUrl || candidate.issueUrl || candidate.discussionUrl) === url) === index;
+    });
+
+    let mode = 'bounded-public-issue-import';
+    if (!specs.length) {
+      const limit = Math.max(0, Number(options.limit || app.settings.githubIssueDiscoveryLimit || 10));
+      if (!limit) {
+        const message = `GitHub social discovery is enabled for ${source.repo}, but the bounded public issue discovery limit is 0.`;
+        setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: 'ready', message, loaded: 0, mode });
         ws.logs.push(message);
-        toast(message, 'warn');
         if (typeof render === 'function' && options.renderStatus !== false) render();
         return 0;
       }
-    }
-    if (!urls.length) {
-      const message = `Issue discovery found no open issues for ${source.repo}. Add Issue URLs to follow specific discussions.`;
-      setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: 'empty', message });
-      ws.logs.push(message);
+      setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: 'running', message: `Discovering up to ${limit} recent open public issue(s) for ${source.repo} without login.`, mode });
+      if (options.discoveryProgress) {
+        ws.loading = true;
+        ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, { phase: 'issues-list', loaded: 0, total: 0, failed: 0, sourceProgress: options.sourceProgress || ws.discoveryProgress?.sourceProgress || '' });
+      }
       if (typeof render === 'function' && options.renderStatus !== false) render();
-      return 0;
+      try {
+        specs = await fetchGitHubRepoIssueSpecs(source.repo, { limit, hardRefresh: Boolean(options.hardRefresh), authMode: 'none' });
+      } catch (error) {
+        const message = `Could not list public GitHub issues for ${source.repo}: ${error.message}`;
+        setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: 'failed', message, loaded: 0, failed: 1, error: message, mode });
+        ws.logs.push(message);
+        if (typeof render === 'function' && options.renderStatus !== false) render();
+        return 0;
+      }
+      if (!specs.length) {
+        const message = `No recent open public GitHub issues were discovered for ${source.repo}.`;
+        setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: 'loaded', message, loaded: 0, failed: 0, mode });
+        ws.logs.push(message);
+        if (typeof render === 'function' && options.renderStatus !== false) render();
+        return 0;
+      }
+    } else {
+      mode = 'configured-social-target-import';
+      setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: 'running', message: `Importing ${specs.length} configured GitHub social target(s) where public material is available.`, mode });
+      if (typeof render === 'function' && options.renderStatus !== false) render();
     }
+
+    if (options.discoveryProgress) {
+      ws.loading = true;
+      ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, { phase: 'issues', loaded: 0, total: specs.length, failed: 0, sourceProgress: options.sourceProgress || ws.discoveryProgress?.sourceProgress || '' });
+      updateDiscoveryProgressDom(ws);
+      if (typeof progressYield === 'function') await progressYield(ws);
+    }
+
+    let importedIssues = 0;
+    let registeredDiscussions = 0;
     let loaded = 0;
     const failures = [];
-    for (const issueUrl of urls) {
+    githubIssueImportTrace('discovery.specs-ready', { mode, count: specs.length, specs: specs.map((spec) => ({ kind: spec.kind, repo: spec.repo, issueNumber: spec.issueNumber || spec.number || '', targetUrl: spec.targetUrl || spec.issueUrl || spec.discussionUrl || '' })) });
+    for (const spec of specs) {
+      const targetUrl = spec.targetUrl || spec.issueUrl || spec.discussionUrl;
+      if (!targetUrl) continue;
+      githubIssueImportTrace('discovery.target-start', { kind: spec.kind, targetUrl, issueNumber: spec.issueNumber || '' });
       try {
-        await loadGitHubIssueIntoWorkspace(ws, issueUrl, { source: canonicalSource, ref: canonicalSource.ref || ws.ref || '', commentLimit: options.commentLimit || 50, toast: false, hardRefresh: Boolean(options.hardRefresh) });
-        loaded += 1;
+        if (spec.kind === 'issue') {
+          await loadGitHubIssueIntoWorkspace(ws, spec.issueUrl, {
+            source: canonicalSource,
+            ref: canonicalSource.ref || ws.ref || '',
+            commentLimit: options.commentLimit || 100,
+            toast: false,
+            hardRefresh: Boolean(options.hardRefresh || options.userInitiated),
+            preferCache: options.preferCache !== false,
+            cacheMaxAgeMs: options.cacheMaxAgeMs || 5 * 60 * 1000,
+            includeBody: true,
+            configuredTarget: Boolean(issueUrls && issueUrls.length)
+          });
+          importedIssues += 1;
+          loaded += 1;
+          githubIssueImportTrace('discovery.target-imported', { targetUrl, importedIssues, loaded, files: ws?.files?.size || 0, nodes: Array.isArray(ws?.nodes) ? ws.nodes.length : 0 });
+        } else {
+          const added = await addGitHubSocialTargetFinding(ws, targetUrl, canonicalSource, 'Configured GitHub discussion target; anonymous browser mode cannot reliably import discussion body/comments without service-backed or explicit-paste enrichment.');
+          if (added) {
+            registeredDiscussions += 1;
+            loaded += 1;
+          }
+        }
       } catch (error) {
-        const message = `Could not load issue discussion ${issueUrl}: ${error.message}`;
+        const message = `Could not import GitHub ${spec.kind || 'social'} target ${targetUrl}: ${error.message}`;
+        githubIssueImportTrace('discovery.target-failed', { targetUrl, kind: spec.kind || 'social', message, error });
         failures.push(message);
         ws.logs.push(message);
         try {
-          const addedFallback = await addGitHubIssueUnavailableFinding(ws, issueUrl, canonicalSource, error);
-          if (addedFallback) {
-            ws.logs.push(`Added unavailable GitHub issue discovery target for ${issueUrl}.`);
+          if (spec.kind === 'issue') {
+            const rootPath = gitHubSocialTargetPath(spec);
+            if (!workspaceHasPathInSource(ws, canonicalSource?.id || '', rootPath) && !workspaceAnyHasPath(ws, rootPath)) {
+              const markdown = await githubIssueUnavailableMarkdown(spec, error, rootPath);
+              addFileToWorkspace(ws, {
+                path: rootPath,
+                content: markdown,
+                preserveAsAsset: true,
+                sourceId: canonicalSource?.id || '',
+                sourceKind: canonicalSource?.kind || 'github',
+                sourceLabel: canonicalSource?.label || gitHubSourceLabel(spec.repo, canonicalSource?.ref || ''),
+                sourceOrigin: spec.issueUrl,
+                rawUrl: spec.issueUrl,
+                browseUrl: spec.issueUrl,
+                repo: spec.repo,
+                ref: canonicalSource?.ref || ws.ref || `issue-${spec.issueNumber}`,
+                sourceSurface: 'issues'
+              });
+              loaded += 1;
+            }
+          } else {
+            const addedFallback = await addGitHubSocialTargetFinding(ws, targetUrl, canonicalSource, `Registration fallback after error: ${error.message}`);
+            if (addedFallback) loaded += 1;
           }
         } catch (fallbackError) {
-          ws.logs.push(`Could not add unavailable issue target for ${issueUrl}: ${fallbackError.message}`);
+          ws.logs.push(`Could not add social target fallback for ${targetUrl}: ${fallbackError.message}`);
+        }
+      } finally {
+        if (options.discoveryProgress && ws.discoveryProgress) {
+          ws.discoveryProgress.loaded = loaded;
+          ws.discoveryProgress.failed = failures.length;
+          ws.discoveryProgress.total = specs.length;
+          updateDiscoveryProgressDom(ws);
+          if (typeof progressYield === 'function') await progressYield(ws);
         }
       }
     }
+
     ws.githubIssueDiscoveryRuns = ws.githubIssueDiscoveryRuns || {};
     ws.githubIssueDiscoveryRuns[canonicalSource.id] = {
-      signature: gitHubSourceStateSignature(Object.assign({}, canonicalSource, { issueUrls: urls })),
+      signature: gitHubSourceStateSignature(Object.assign({}, canonicalSource, { issueUrls: specs.map((spec) => spec.targetUrl || spec.issueUrl || spec.discussionUrl).filter(Boolean) })),
       loaded,
+      importedIssues,
+      registeredDiscussions,
       failed: failures.length,
-      completedAt: new Date().toISOString()
+      completedAt: new Date().toISOString(),
+      mode
     };
-    if (loaded) {
-      setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: failures.length ? 'partial' : 'loaded', message: `Loaded ${loaded} GitHub issue discussion${loaded === 1 ? '' : 's'}${failures.length ? `; ${failures.length} failed` : ''}.`, loaded, failed: failures.length });
-      toast(`Loaded ${loaded} GitHub issue discussion${loaded === 1 ? '' : 's'}.`, 'ok');
-    } else if (failures.length) {
-      const message = `${failures.length} GitHub issue target${failures.length === 1 ? '' : 's'} unavailable; fallback finding added when possible.`;
-      setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: failures.some((item) => /rate-limited|retry after/i.test(item)) ? 'rate-limited' : 'failed', message, error: failures[0], failed: failures.length, needsAuth: true });
-      toast(message, 'warn');
+
+    if (failures.length) {
+      const message = `Imported ${importedIssues} GitHub issue snapshot(s), registered ${registeredDiscussions} discussion target(s); ${failures.length} target(s) failed.`;
+      githubIssueImportTrace('discovery.complete', { state: loaded ? 'partial' : 'failed', message, loaded, importedIssues, registeredDiscussions, failed: failures.length, failures, files: ws?.files?.size || 0, nodes: Array.isArray(ws?.nodes) ? ws.nodes.length : 0 });
+      setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: loaded ? 'partial' : 'failed', message: `${message} Diagnostic trace: TiinexDiagnostics.githubIssueImportTraceJson()`, loaded, importedIssues, registeredDiscussions, failed: failures.length, error: failures[0], failures, traceKey: STORAGE_KEYS.githubIssueImportTrace, mode });
+      toast(message, loaded ? 'warn' : 'error');
+    } else {
+      const message = `Imported ${importedIssues} GitHub issue snapshot(s)${registeredDiscussions ? ` and registered ${registeredDiscussions} discussion target(s)` : ''}.`;
+      githubIssueImportTrace('discovery.complete', { state: 'loaded', message, loaded, importedIssues, registeredDiscussions, failed: 0, files: ws?.files?.size || 0, nodes: Array.isArray(ws?.nodes) ? ws.nodes.length : 0 });
+      setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: 'loaded', message, loaded, importedIssues, registeredDiscussions, failed: 0, traceKey: STORAGE_KEYS.githubIssueImportTrace, mode });
+      if (loaded) toast(message, 'ok');
     }
+    if (loaded && typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
     if (typeof render === 'function' && options.renderStatus !== false) render();
     return loaded;
   }
@@ -5358,8 +10227,18 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       const canonical = registerGitHubSource(ws, source);
       const surfaces = normalizeGithubSurfaceConfig(canonical.enabledSurfaces || {});
       if (!surfaces.issues) continue;
-      if (!options.refreshExisting && workspaceHasGitHubIssueSurface(ws, canonical.id)) continue;
-      loaded += await discoverGitHubIssuesIntoWorkspace(ws, canonical, canonical.issueUrls || [], { commentLimit: options.commentLimit || 50 });
+      const existingIssueSurface = workspaceHasGitHubIssueSurface(ws, canonical.id);
+      const issueTargets = activeGitHubIssueUrls(canonical, canonical.repo || '', ws);
+      // GitHub issue/comment material is live social material, not a static repo
+      // snapshot. On browser/local-state refresh, re-read known issue targets so
+      // new untyped comments can appear as unresolved discovery findings instead
+      // of being hidden by a stale runtime/local workspace snapshot.
+      loaded += await discoverGitHubIssuesIntoWorkspace(ws, canonical, issueTargets, {
+        commentLimit: options.commentLimit || 50,
+        refreshExisting: Boolean(options.refreshExisting || existingIssueSurface || issueTargets.length),
+        hardRefresh: Boolean(options.hardRefresh || existingIssueSurface || issueTargets.length),
+        renderStatus: false
+      });
     }
     if (loaded && typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
     if (loaded && typeof render === 'function') render();
@@ -5368,10 +10247,26 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
   function scheduleWorkspaceStartupGitHubIssueDiscovery(ws, reason = 'startup') {
     if (!ws?.id) return false;
+    if (reason === 'local-state-merge' || reason === 'local-state-restore') return false;
+    ensureWorkspaceSources(ws);
+    const signature = Array.from(ws.sources?.values?.() || [])
+      .filter((source) => source?.kind === 'github' && source.repo)
+      .map((source) => `${source.id || ''}:${source.repo || ''}:${(activeGitHubIssueUrls(source, source.repo || '', ws) || []).join('|')}`)
+      .join('||');
+    const key = `${reason}:${signature}`;
+    if (ws.pendingGitHubIssueDiscoveryKey === key || ws.runningGitHubIssueDiscoveryKey === key || ws.completedGitHubIssueDiscoveryKey === key) return false;
     ws.pendingGitHubIssueDiscoveryReason = reason;
+    ws.pendingGitHubIssueDiscoveryKey = key;
     window.setTimeout(() => {
-      runWorkspaceStartupGitHubIssueDiscovery(ws, { reason }).catch((error) => {
+      if (ws.runningGitHubIssueDiscoveryKey === key || ws.completedGitHubIssueDiscoveryKey === key) return;
+      ws.runningGitHubIssueDiscoveryKey = key;
+      runWorkspaceStartupGitHubIssueDiscovery(ws, { reason }).then(() => {
+        ws.completedGitHubIssueDiscoveryKey = key;
+      }).catch((error) => {
         ws.logs?.push?.(`Startup issue discovery failed: ${error.message}`);
+      }).finally(() => {
+        if (ws.runningGitHubIssueDiscoveryKey === key) ws.runningGitHubIssueDiscoveryKey = '';
+        if (ws.pendingGitHubIssueDiscoveryKey === key) ws.pendingGitHubIssueDiscoveryKey = '';
       });
     }, 0);
     return true;
@@ -5381,9 +10276,14 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const normalizedSource = normalizeGitHubSourceState(source || {}, ws);
     if (!ws || !normalizedSource.repo) return null;
     const rootPaths = normalizedSource.rootPaths && normalizedSource.rootPaths.length ? normalizedSource.rootPaths : ['.topics'];
-    const enabledSurfaces = normalizeGithubSurfaceConfig(normalizedSource.enabledSurfaces || {});
     const githubSource = registerGitHubSource(ws, normalizedSource);
-    applyGitHubSourceSurfacePruning(ws, githubSource, enabledSurfaces, false);
+    const enabledSurfaces = protectExistingGitHubSourceSurfaces(ws, githubSource, normalizedSource.enabledSurfaces || {}, { allowSurfaceDisable: Boolean(options.allowSurfaceDisable) });
+    githubSource.enabledSurfaces = enabledSurfaces;
+    // Source refresh/reconcile must not be a destructive config owner. Explicit
+    // Save/source-edit owns disabling surfaces and has its own pruning path.
+    if (options.allowSurfaceDisable) applyGitHubSourceSurfacePruning(ws, githubSource, enabledSurfaces, false);
+    const progressScope = options.userInitiated || options.refreshExisting || options.hardRefresh ? 'github-source-refresh' : '';
+    const keepProgressForIssueStage = Boolean(progressScope && enabledSurfaces.repoFiles && enabledSurfaces.issues && typeof discoverGitHubIssuesIntoWorkspace === 'function');
     if (enabledSurfaces.repoFiles && typeof discoverGitHubRepoIntoWorkspace === 'function') {
       await discoverGitHubRepoIntoWorkspace(ws, {
         repo: normalizedSource.repo,
@@ -5391,16 +10291,42 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         rootPaths,
         refreshExisting: Boolean(options.refreshExisting),
         hardRefresh: Boolean(options.hardRefresh),
-        source: githubSource
+        preferStatic: true,
+        noApi: true,
+        source: githubSource,
+        sourceProgress: progressScope,
+        keepDiscoveryProgress: keepProgressForIssueStage
       });
     } else {
       ws.repo = normalizedSource.repo;
       if (normalizedSource.ref) ws.ref = normalizedSource.ref;
-      ws.discoverySource = { kind: 'github-tree', repo: normalizedSource.repo, ref: normalizedSource.ref || '', rootPath: rootPaths[0] || '.topics', rootPaths, sourceId: githubSource.id, enabledSurfaces, issueUrls: githubSource.issueUrls || [], discoveryDirective: githubSource.discoveryDirective || null };
+      ws.discoverySource = { kind: 'github-tree', repo: normalizedSource.repo, ref: normalizedSource.ref || '', rootPath: rootPaths[0] || '.topics', rootPaths, sourceId: githubSource.id, enabledSurfaces, issueUrls: configuredGitHubIssueUrls(githubSource, normalizedSource.repo), discoveryDirective: githubSource.discoveryDirective || null, sourceAccessMode: githubSource.sourceAccessMode || 'web-surface', sourceResolutionKind: githubSource.sourceResolutionKind || 'github-web-source', sourceBoundary: githubSource.sourceBoundary || null };
       if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
     }
     if (enabledSurfaces.issues && typeof discoverGitHubIssuesIntoWorkspace === 'function') {
-      await discoverGitHubIssuesIntoWorkspace(ws, githubSource, githubSource.issueUrls || [], { refreshExisting: Boolean(options.refreshExisting), hardRefresh: Boolean(options.hardRefresh) });
+      const issueTargets = activeGitHubIssueUrls(githubSource, githubSource.repo || '', ws);
+      await discoverGitHubIssuesIntoWorkspace(ws, githubSource, issueTargets, {
+        refreshExisting: Boolean(options.refreshExisting || issueTargets.length),
+        hardRefresh: Boolean(options.hardRefresh),
+        preferCache: !Boolean(options.userInitiated || options.refreshExisting || options.hardRefresh),
+        userInitiated: Boolean(options.userInitiated),
+        discoveryProgress: Boolean(progressScope),
+        sourceProgress: progressScope,
+        renderStatus: true
+      });
+    }
+    if (progressScope) {
+      ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, { phase: 'source-finalizing', sourceProgress: progressScope, loaded: 1, total: 1, failed: 0 });
+      updateDiscoveryProgressDom(ws);
+      if (typeof progressYield === 'function') await progressYield(ws);
+      await waitForRenderedSourceRefreshCommit(ws);
+      ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, { phase: 'source-complete', sourceProgress: progressScope, loaded: 1, total: 1, failed: 0 });
+      updateDiscoveryProgressDom(ws);
+      if (typeof progressYield === 'function') await progressYield(ws);
+      await waitForRenderedSourceRefreshCommit(ws);
+      ws.loading = false;
+      ws.discoveryProgress = null;
+      if (typeof render === 'function') render();
     }
     return githubSource;
   }
@@ -5471,6 +10397,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         ref: requestedRef || old?.ref || '',
         rootPaths: requestedRoots,
         enabledSurfaces,
+        configuredIssueUrls: issueUrls,
         issueUrls,
         origin: `https://github.com/${parsedRepo.repo}`
       });
@@ -5495,6 +10422,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         ref: githubSource.ref || '',
         rootPaths: githubSource.rootPaths || requestedRoots,
         refreshExisting: true,
+        preferStatic: true,
+        noApi: true,
         source: githubSource
       });
     }
@@ -5533,7 +10462,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     restoring: false,
     createIntent: false,
     promptShown: false,
-    lastSaveErrorKey: ''
+    lastSaveErrorKey: '',
+    startupRestoreDeferred: false,
+    startupRestoreAttempted: false
   }, app.localState || {});
 
   function localStateDataKey(id) {
@@ -5638,6 +10569,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       layoutMode: ws.layoutMode || 'expanded',
       discoveryView: ws.discoveryView || 'feed',
       discoveryFilterSchema: ws.discoveryFilterSchema || ws.filterSchema || 'all',
+      discoveryFilterSchemas: typeof normalizeDiscoveryFilterListForWorkspace === 'function' ? normalizeDiscoveryFilterListForWorkspace(ws) : [],
       discoverySearch: ws.discoverySearch || '',
       lineageSearch: ws.lineageSearch || '',
       repo: ws.repo || '',
@@ -5698,8 +10630,35 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     app.localState.saveTimer = setTimeout(saveLocalStateNow, 350);
   }
 
+  function localStateStartupMergePending() {
+    if (app.localState.restoring) return false;
+    if (app.localState.startupRestoreAttempted && !app.localState.startupRestoreDeferred) return false;
+    return Boolean(currentLocalStateCandidateId());
+  }
+
+  function markLocalStatePostRestoreSave(reason = 'post-restore-mutation') {
+    app.localState.postRestoreSavePending = true;
+    app.localState.postRestoreSaveReason = reason || app.localState.postRestoreSaveReason || 'post-restore-mutation';
+  }
+
+  function flushLocalStatePostRestoreSave(reason = 'post-restore-mutation') {
+    if (!app.localState.postRestoreSavePending || app.localState.restoring) return false;
+    app.localState.postRestoreSavePending = false;
+    app.localState.postRestoreSaveReason = '';
+    if (typeof saveLocalStateNow === 'function') saveLocalStateNow({ allowEmptyLocalStateDelete: true, reason });
+    return true;
+  }
+
   function scheduleLocalStateSaveAfterWorkspaceMutation() {
-    if (app.localState.restoring || app.isBootingFromUrl) return;
+    if (app.localState.restoring) {
+      markLocalStatePostRestoreSave('restore-mutation');
+      return;
+    }
+    if (app.isBootingFromUrl) return;
+    // During F5/static route boot, remote/source discovery can mutate the
+    // workspace before saved Local deltas have been merged back. Do not let
+    // that remote-only mutation overwrite the saved local profile.
+    if (startupHasExplicitSharedState() && localStateStartupMergePending()) return;
     window.setTimeout(() => {
       if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
     }, 0);
@@ -5714,6 +10673,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
   function applyLocalStateWorkspaceSnapshot(ws, saved) {
     if (!ws || !saved) return false;
+    let postRestorePruned = 0;
     app.localState.restoring = true;
     try {
       ensureWorkspaceSources(ws);
@@ -5741,12 +10701,15 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       });
       ws.layoutMode = saved.layoutMode || ws.layoutMode;
       ws.discoveryView = saved.discoveryView || ws.discoveryView;
-      ws.discoveryFilterSchema = saved.discoveryFilterSchema || ws.discoveryFilterSchema || ws.filterSchema;
-      ws.filterSchema = ws.discoveryFilterSchema || ws.filterSchema;
+      setDiscoveryFilterList(ws, saved.discoveryFilterSchemas || saved.discoveryFilterSchema || ws.discoveryFilterSchemas || ws.discoveryFilterSchema || ws.filterSchema);
       ws.discoverySearch = saved.discoverySearch || ws.discoverySearch || '';
       ws.lineageSearch = saved.lineageSearch || ws.lineageSearch || '';
       computeWorkspaceIndex(ws);
-      scheduleWorkspaceStartupGitHubIssueDiscovery(ws, 'local-state-merge');
+      postRestorePruned += pruneLocalDraftShadowsAfterSourceMaterial(ws, 'local-state-merge');
+      // Local-state restore must not start GitHub issue discovery. Discovery is
+      // on-demand at source init, hard refresh, or publish verification. Running
+      // it from restore caused background imports to repeatedly re-render and
+      // re-apply URL view state while the user was expanding/scrolling Lineage.
       if (saved.selectedPath) {
         const selected = ws.nodes.find((node) => node.path === saved.selectedPath);
         if (selected) ws.selectedNodeId = selected.id;
@@ -5754,6 +10717,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       return true;
     } finally {
       app.localState.restoring = false;
+      if (postRestorePruned) markLocalStatePostRestoreSave('local-state-merge-pruned-draft');
     }
   }
 
@@ -5774,6 +10738,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       if (state.viewerIdentity) app.viewerIdentity = Object.assign(app.viewerIdentity || {}, state.viewerIdentity);
     } finally {
       app.localState.restoring = false;
+      flushLocalStatePostRestoreSave('restore-current-workspaces');
     }
     if (state.activeWorkspaceLabel) {
       const active = app.workspaces.find((ws) => ws.label === state.activeWorkspaceLabel);
@@ -5783,6 +10748,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   }
 
   function restoreWorkspaceFromLocalState(saved) {
+    let postRestorePruned = 0;
     app.localState.restoring = true;
     try {
       const ws = createWorkspace(saved.label || 'Local workspace', saved.sourceNote || 'Restored local workspace.');
@@ -5793,8 +10759,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       ws.notice = saved.notice || ws.notice;
       ws.layoutMode = saved.layoutMode || 'expanded';
       ws.discoveryView = saved.discoveryView || 'feed';
-      ws.discoveryFilterSchema = saved.discoveryFilterSchema || 'all';
-      ws.filterSchema = ws.discoveryFilterSchema;
+      setDiscoveryFilterList(ws, saved.discoveryFilterSchemas || saved.discoveryFilterSchema || 'all');
       ws.discoverySearch = saved.discoverySearch || '';
       ws.lineageSearch = saved.lineageSearch || '';
       ws.sources = new Map();
@@ -5820,7 +10785,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         storeWorkspaceAsset(ws, asset.path, asset.content, asset);
       });
       computeWorkspaceIndex(ws);
-      scheduleWorkspaceStartupGitHubIssueDiscovery(ws, 'local-state-restore');
+      postRestorePruned += pruneLocalDraftShadowsAfterSourceMaterial(ws, 'local-state-restore');
+      // Do not auto-run GitHub issue discovery from local-state restore; local
+      // restore is a reconciliation pass, not a discovery trigger.
       if (saved.selectedPath) {
         const selected = ws.nodes.find((node) => node.path === saved.selectedPath);
         if (selected) ws.selectedNodeId = selected.id;
@@ -5828,6 +10795,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       return ws;
     } finally {
       app.localState.restoring = false;
+      if (postRestorePruned) markLocalStatePostRestoreSave('local-state-restore-pruned-draft');
     }
   }
 
@@ -5904,7 +10872,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     }
     ws.sources?.delete?.(sourceId);
     ws.sourceOrder = (ws.sourceOrder || []).filter((id) => id !== sourceId);
-    if ((source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue') && ws.discoverySource?.repo === source.repo) {
+    if ((source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue' || source.kind === 'github-discussion' || source.kind === 'github-discussion') && ws.discoverySource?.repo === source.repo) {
       ws.discoverySource = null;
       if (!Array.from(ws.sources?.values?.() || []).some((s) => s.kind === 'github')) {
         ws.repo = '';
@@ -5996,6 +10964,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       }
     } finally {
       app.localState.restoring = false;
+      flushLocalStatePostRestoreSave('open-local-state');
     }
 
     if (state.activeWorkspaceLabel) {
@@ -6024,6 +10993,36 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     }
   }
 
+
+  function pruneLocalStateQuotaPressure(keepId) {
+    const keepKey = keepId ? localStateDataKey(keepId) : '';
+    const removed = [];
+    const removeKey = (key) => {
+      if (!key || key === keepKey) return;
+      try {
+        localStorage.removeItem(key);
+        removed.push(key);
+      } catch (_) {}
+    };
+    try {
+      for (const key of Object.keys(localStorage || {})) {
+        const text = String(key || '');
+        if (
+          text.startsWith(STORAGE_KEYS.browserScrollStatePrefix) ||
+          text.startsWith('tiinex-scroll-v') ||
+          text.startsWith(STORAGE_KEYS.lensSessionPrefix) ||
+          text === STORAGE_KEYS.githubIssueImportTrace ||
+          text === STORAGE_KEYS.githubCommitCache ||
+          text === STORAGE_KEYS.githubIssueThreadCache
+        ) {
+          removeKey(text);
+        }
+      }
+    } catch (_) {}
+    try { pruneLocalStateStorage(keepId); } catch (_) {}
+    return removed;
+  }
+
   function reportLocalStateSaveError(error) {
     const message = error?.message || String(error || 'Unknown error');
     const currentId = app.localState.currentId || 'no-current-local-state';
@@ -6033,8 +11032,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     toast(`Could not save local workspace state: ${message}`, 'warn');
   }
 
-  function saveLocalStateNow() {
-    if (!app.localState.currentId && !app.localState.restoring && !app.isBootingFromUrl && app.workspaces?.some(workspaceHasLocalStateContent)) {
+  function saveLocalStateNow(options = {}) {
+    if (!options.noAutoConnect && !app.localState.currentId && !app.localState.restoring && !app.isBootingFromUrl && app.workspaces?.some(workspaceHasLocalStateContent)) {
       ensureLocalStateAutosaveProfile();
     }
     if (app.localState.currentId) rememberCurrentLocalStateId(app.localState.currentId);
@@ -6043,6 +11042,14 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     try {
       const state = serializeLocalState();
       if (!state.workspaces.length) {
+        const previous = localStateStoredSnapshot(app.localState.currentId);
+        if (!options.allowEmptyLocalStateDelete && startupHasExplicitSharedState() && previous?.workspaces?.length && savedLocalStateStillMissing(previous)) {
+          // Avoid clobbering saved local deltas during the remote-only phase of
+          // a static-route reload. A later render will merge them back. Explicit
+          // user discard/remove actions pass allowEmptyLocalStateDelete so a
+          // deliberate deletion can clear the last local draft deterministically.
+          return;
+        }
         localStorage.removeItem(key);
         removeLocalStateRegistryEntry(app.localState.currentId);
         app.localState.lastSaveErrorKey = '';
@@ -6062,7 +11069,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       if (error && (error.name === 'QuotaExceededError' || /quota/i.test(error.message || ''))) {
         try {
           try { localStorage.removeItem(key); } catch (_) {}
-          pruneLocalStateStorage(app.localState.currentId);
+          pruneLocalStateQuotaPressure(app.localState.currentId);
           const retryState = serializeLocalState();
           const retryJson = storageWriteJson(localStorage, key, retryState);
           upsertLocalStateRegistry({
@@ -6094,9 +11101,145 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
 
 
-  const TIINEX_SCHEMA_PERMALINK_COMMIT = '7aecdb99551c4b6850665cdee418f0b9907d9616';
-  const TIINEX_SCHEMA_PERMALINK_BASE = `https://github.com/Tiinex/docs/blob/${TIINEX_SCHEMA_PERMALINK_COMMIT}/.topics/.schemas/`;
-  const TIINEX_ROOT_SCHEMA_URL = `${TIINEX_SCHEMA_PERMALINK_BASE}tiinex.root.v1.schema.md`;
+  const TIINEX_SCHEMA_PERMALINK_COMMIT = 'master';
+  const TIINEX_SCHEMA_PERMALINK_REF = TIINEX_SCHEMA_PERMALINK_COMMIT;
+  const TIINEX_SCHEMA_REPO_PATH_PREFIX = '.topics/.schemas/';
+  const TIINEX_SCHEMA_PERMALINK_BASE = `https://github.com/Tiinex/docs/blob/${TIINEX_SCHEMA_PERMALINK_REF}/`;
+  const TIINEX_SCHEMA_PATH_INDEX = Object.freeze({
+      "tiinex.access.v1": ".topics/.schemas/access/tiinex.access.v1.schema.md",
+      "tiinex.digital.adapter.v1": ".topics/.schemas/adapter/digital/tiinex.digital.adapter.v1.schema.md",
+      "tiinex.adapter.v1": ".topics/.schemas/adapter/tiinex.adapter.v1.schema.md",
+      "tiinex.adapter.annotation.v1": ".topics/.schemas/annotation/artifact/adapter/tiinex.adapter.annotation.v1.schema.md",
+      "tiinex.semantic.annotation.v1": ".topics/.schemas/annotation/artifact/semantic/tiinex.semantic.annotation.v1.schema.md",
+      "tiinex.projection.annotation.v1": ".topics/.schemas/annotation/artifact/spatial/projection/tiinex.projection.annotation.v1.schema.md",
+      "tiinex.spatial.annotation.v1": ".topics/.schemas/annotation/artifact/spatial/tiinex.spatial.annotation.v1.schema.md",
+      "tiinex.style.annotation.v1": ".topics/.schemas/annotation/artifact/style/tiinex.style.annotation.v1.schema.md",
+      "tiinex.temporal.annotation.v1": ".topics/.schemas/annotation/artifact/temporal/tiinex.temporal.annotation.v1.schema.md",
+      "tiinex.artifact.annotation.v1": ".topics/.schemas/annotation/artifact/tiinex.artifact.annotation.v1.schema.md",
+      "tiinex.validation.annotation.v1": ".topics/.schemas/annotation/artifact/validation/tiinex.validation.annotation.v1.schema.md",
+      "tiinex.annotation.v1": ".topics/.schemas/annotation/tiinex.annotation.v1.schema.md",
+      "tiinex.attestation.v1": ".topics/.schemas/attestation/tiinex.attestation.v1.schema.md",
+      "tiinex.availability.v1": ".topics/.schemas/coordination/availability/tiinex.availability.v1.schema.md",
+      "tiinex.invitation.v1": ".topics/.schemas/coordination/invitation/tiinex.invitation.v1.schema.md",
+      "tiinex.milestone.v1": ".topics/.schemas/coordination/milestone/tiinex.milestone.v1.schema.md",
+      "tiinex.project.v1": ".topics/.schemas/coordination/project/tiinex.project.v1.schema.md",
+      "tiinex.schedule.v1": ".topics/.schemas/coordination/schedule/tiinex.schedule.v1.schema.md",
+      "tiinex.decision.v1": ".topics/.schemas/core/decision/tiinex.decision.v1.schema.md",
+      "tiinex.evidence.v1": ".topics/.schemas/core/evidence/tiinex.evidence.v1.schema.md",
+      "tiinex.feedback.v1": ".topics/.schemas/core/feedback/tiinex.feedback.v1.schema.md",
+      "tiinex.interpretation.v1": ".topics/.schemas/core/interpretation/tiinex.interpretation.v1.schema.md",
+      "tiinex.pointer.v1": ".topics/.schemas/core/pointer/tiinex.pointer.v1.schema.md",
+      "tiinex.preservation.v1": ".topics/.schemas/core/preservation/tiinex.preservation.v1.schema.md",
+      "tiinex.signal.v1": ".topics/.schemas/core/signal/tiinex.signal.v1.schema.md",
+      "tiinex.task.v1": ".topics/.schemas/core/task/tiinex.task.v1.schema.md",
+      "tiinex.topic.v1": ".topics/.schemas/core/topic/tiinex.topic.v1.schema.md",
+      "tiinex.discovery.breakthrough.v1": ".topics/.schemas/discovery/breakthrough/tiinex.discovery.breakthrough.v1.schema.md",
+      "tiinex.discovery.expedition.v1": ".topics/.schemas/discovery/expedition/tiinex.discovery.expedition.v1.schema.md",
+      "tiinex.discovery.finding.v1": ".topics/.schemas/discovery/finding/tiinex.discovery.finding.v1.schema.md",
+      "tiinex.discovery.follow.v1": ".topics/.schemas/discovery/follow/tiinex.discovery.follow.v1.schema.md",
+      "tiinex.discovery.monitoring.v1": ".topics/.schemas/discovery/monitoring/tiinex.discovery.monitoring.v1.schema.md",
+      "tiinex.discovery.research.v1": ".topics/.schemas/discovery/research/tiinex.discovery.research.v1.schema.md",
+      "tiinex.discovery.surveillance.v1": ".topics/.schemas/discovery/surveillance/tiinex.discovery.surveillance.v1.schema.md",
+      "tiinex.discovery.v1": ".topics/.schemas/discovery/tiinex.discovery.v1.schema.md",
+      "tiinex.event.deadline.v1": ".topics/.schemas/event/deadline/tiinex.event.deadline.v1.schema.md",
+      "tiinex.event.incident.v1": ".topics/.schemas/event/incident/tiinex.event.incident.v1.schema.md",
+      "tiinex.event.meeting.v1": ".topics/.schemas/event/meeting/tiinex.event.meeting.v1.schema.md",
+      "tiinex.event.session.v1": ".topics/.schemas/event/session/tiinex.event.session.v1.schema.md",
+      "tiinex.event.v1": ".topics/.schemas/event/tiinex.event.v1.schema.md",
+      "tiinex.event.window.v1": ".topics/.schemas/event/window/tiinex.event.window.v1.schema.md",
+      "tiinex.external.payload.v1": ".topics/.schemas/external/payload/tiinex.external.payload.v1.schema.md",
+      "tiinex.instrument.consent.v1": ".topics/.schemas/instrument/consent/tiinex.instrument.consent.v1.schema.md",
+      "tiinex.instrument.financial.v1": ".topics/.schemas/instrument/financial/tiinex.instrument.financial.v1.schema.md",
+      "tiinex.instrument.v1": ".topics/.schemas/instrument/tiinex.instrument.v1.schema.md",
+      "tiinex.interaction.unit.v1": ".topics/.schemas/interaction/unit/tiinex.interaction.unit.v1.schema.md",
+      "tiinex.interface.v1": ".topics/.schemas/interface/tiinex.interface.v1.schema.md",
+      "tiinex.claim.v1": ".topics/.schemas/knowledge/claim/tiinex.claim.v1.schema.md",
+      "tiinex.condition.v1": ".topics/.schemas/knowledge/condition/tiinex.condition.v1.schema.md",
+      "tiinex.derivation.v1": ".topics/.schemas/knowledge/derivation/tiinex.derivation.v1.schema.md",
+      "tiinex.question.v1": ".topics/.schemas/knowledge/question/tiinex.question.v1.schema.md",
+      "tiinex.lineage.upgrade.deferral.v1": ".topics/.schemas/lineage/upgrade/deferral/tiinex.lineage.upgrade.deferral.v1.schema.md",
+      "tiinex.digital.origin.v1": ".topics/.schemas/origin/digital/tiinex.digital.origin.v1.schema.md",
+      "tiinex.natural.origin.v1": ".topics/.schemas/origin/natural/tiinex.natural.origin.v1.schema.md",
+      "tiinex.origin.v1": ".topics/.schemas/origin/tiinex.origin.v1.schema.md",
+      "tiinex.party.group.v1": ".topics/.schemas/party/group/tiinex.party.group.v1.schema.md",
+      "tiinex.party.organization.v1": ".topics/.schemas/party/organization/tiinex.party.organization.v1.schema.md",
+      "tiinex.party.person.v1": ".topics/.schemas/party/person/tiinex.party.person.v1.schema.md",
+      "tiinex.party.role.v1": ".topics/.schemas/party/role/tiinex.party.role.v1.schema.md",
+      "tiinex.party.v1": ".topics/.schemas/party/tiinex.party.v1.schema.md",
+      "tiinex.portal.v1": ".topics/.schemas/portal/tiinex.portal.v1.schema.md",
+      "tiinex.portal.time.v1": ".topics/.schemas/portal/time/tiinex.portal.time.v1.schema.md",
+      "tiinex.presentation.surface.v1": ".topics/.schemas/presentation/surface/tiinex.presentation.surface.v1.schema.md",
+      "tiinex.privacy.boundary.v1": ".topics/.schemas/privacy/boundary/tiinex.privacy.boundary.v1.schema.md",
+      "tiinex.redaction.v1": ".topics/.schemas/reduction/redaction/tiinex.redaction.v1.schema.md",
+      "tiinex.reduction.v1": ".topics/.schemas/reduction/tiinex.reduction.v1.schema.md",
+      "tiinex.relation.v1": ".topics/.schemas/relation/tiinex.relation.v1.schema.md",
+      "tiinex.resource.allocation.v1": ".topics/.schemas/resource/allocation/tiinex.resource.allocation.v1.schema.md",
+      "tiinex.resource.allocation.usage.v1": ".topics/.schemas/resource/allocation/usage/tiinex.resource.allocation.usage.v1.schema.md",
+      "tiinex.resource.budget.v1": ".topics/.schemas/resource/budget/tiinex.resource.budget.v1.schema.md",
+      "tiinex.resource.contribution.receipt.v1": ".topics/.schemas/resource/contribution/receipt/tiinex.resource.contribution.receipt.v1.schema.md",
+      "tiinex.resource.contribution.v1": ".topics/.schemas/resource/contribution/tiinex.resource.contribution.v1.schema.md",
+      "tiinex.resource.need.v1": ".topics/.schemas/resource/need/tiinex.resource.need.v1.schema.md",
+      "tiinex.resource.v1": ".topics/.schemas/resource/tiinex.resource.v1.schema.md",
+      "tiinex.ai.runtime.v1": ".topics/.schemas/runtime/ai/tiinex.ai.runtime.v1.schema.md",
+      "tiinex.machine.runtime.v1": ".topics/.schemas/runtime/machine/tiinex.machine.runtime.v1.schema.md",
+      "tiinex.runtime.v1": ".topics/.schemas/runtime/tiinex.runtime.v1.schema.md",
+      "tiinex.schema.example.v1": ".topics/.schemas/schema/contract/example/tiinex.schema.example.v1.schema.md",
+      "tiinex.schema.field.v1": ".topics/.schemas/schema/contract/field/tiinex.schema.field.v1.schema.md",
+      "tiinex.schema.generation.v1": ".topics/.schemas/schema/contract/generation/tiinex.schema.generation.v1.schema.md",
+      "tiinex.schema.inheritance.v1": ".topics/.schemas/schema/contract/inheritance/tiinex.schema.inheritance.v1.schema.md",
+      "tiinex.schema.relation.v1": ".topics/.schemas/schema/contract/relation/tiinex.schema.relation.v1.schema.md",
+      "tiinex.schema.rule.v1": ".topics/.schemas/schema/contract/rule/tiinex.schema.rule.v1.schema.md",
+      "tiinex.schema.section.v1": ".topics/.schemas/schema/contract/section/tiinex.schema.section.v1.schema.md",
+      "tiinex.schema.contract.v1": ".topics/.schemas/schema/contract/tiinex.schema.contract.v1.schema.md",
+      "tiinex.schema.value.v1": ".topics/.schemas/schema/contract/value/tiinex.schema.value.v1.schema.md",
+      "tiinex.schema.family.v1": ".topics/.schemas/schema/family/tiinex.schema.family.v1.schema.md",
+      "tiinex.schema.module.v1": ".topics/.schemas/schema/module/tiinex.schema.module.v1.schema.md",
+      "tiinex.source.v1": ".topics/.schemas/source/tiinex.source.v1.schema.md",
+      "tiinex.root.v1": ".topics/.schemas/tiinex.root.v1.schema.md",
+      "tiinex.tool.v1": ".topics/.schemas/tool/tiinex.tool.v1.schema.md",
+      "tiinex.artifact.transition.v1": ".topics/.schemas/transition/artifact/tiinex.artifact.transition.v1.schema.md",
+      "tiinex.transition.v1": ".topics/.schemas/transition/tiinex.transition.v1.schema.md",
+      "tiinex.quantum.traversal.runtime.v1": ".topics/.schemas/traversal/runtime/quantum/tiinex.quantum.traversal.runtime.v1.schema.md",
+      "tiinex.traversal.runtime.v1": ".topics/.schemas/traversal/runtime/tiinex.traversal.runtime.v1.schema.md",
+      "tiinex.validation.finding.v1": ".topics/.schemas/validation/finding/tiinex.validation.finding.v1.schema.md",
+      "tiinex.validation.method.v1": ".topics/.schemas/validation/method/tiinex.validation.method.v1.schema.md",
+      "tiinex.validation.report.v1": ".topics/.schemas/validation/report/tiinex.validation.report.v1.schema.md"
+  });
+  const TIINEX_SCHEMA_FILENAME_PATH_INDEX = Object.freeze(Object.fromEntries(Object.values(TIINEX_SCHEMA_PATH_INDEX).map((path) => [fileNameFromPath(path).toLowerCase(), path])));
+  function tiinexSchemaPathForId(schemaId) {
+    const id = String(schemaId || '').trim();
+    return TIINEX_SCHEMA_PATH_INDEX[id] || `${TIINEX_SCHEMA_REPO_PATH_PREFIX}${id}.schema.md`;
+  }
+  function tiinexSchemaPermalinkForId(schemaId) {
+    return `${TIINEX_SCHEMA_PERMALINK_BASE}${tiinexSchemaPathForId(schemaId)}`;
+  }
+  function normalizeKnownTiinexDocsSchemaPath(path) {
+    const clean = normalizeRepoPath(path);
+    if (!clean || !clean.startsWith(TIINEX_SCHEMA_REPO_PATH_PREFIX)) return clean;
+    return TIINEX_SCHEMA_FILENAME_PATH_INDEX[fileNameFromPath(clean).toLowerCase()] || clean;
+  }
+  const TIINEX_SCHEMA_PATH_ID_INDEX = Object.freeze(Object.fromEntries(Object.entries(TIINEX_SCHEMA_PATH_INDEX).map(([id, path]) => [normalizeRepoPath(path).toLowerCase(), id])));
+  function tiinexSchemaIdForPath(path, fallback = '') {
+    const normalized = normalizeKnownTiinexDocsSchemaPath(path || '');
+    const key = String(normalized || '').toLowerCase();
+    if (key && TIINEX_SCHEMA_PATH_ID_INDEX[key]) return TIINEX_SCHEMA_PATH_ID_INDEX[key];
+    const file = fileNameFromPath(normalized || path || '');
+    const fromFile = schemaIdFromText(file.replace(/\.schema\.md$/i, ''), '');
+    return fromFile || fallback || '';
+  }
+  function normalizeDiscoveredTiinexDocsArtifactPaths(repo, paths = []) {
+    const isDocs = String(repo || '').toLowerCase() === 'tiinex/docs';
+    const seen = new Set();
+    const out = [];
+    for (const item of paths || []) {
+      const normalized = isDocs ? normalizeKnownTiinexDocsSchemaPath(item) : normalizeRepoPath(item);
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      out.push(normalized);
+    }
+    return out.sort((a, b) => a.localeCompare(b));
+  }
+  const TIINEX_ROOT_SCHEMA_URL = tiinexSchemaPermalinkForId('tiinex.root.v1');
   const TIINEX_VALIDATOR_PERMALINK_COMMIT = '3466e50d739a9ba65319297cef79c6b09844b1d7';
   const TIINEX_VALIDATOR_PERMALINK_BASE = `https://github.com/Tiinex/docs/blob/${TIINEX_VALIDATOR_PERMALINK_COMMIT}/.topics/.validators/`;
   const TIINEX_SHA256_C14N_METHOD_ID = 'sha256-base64url-c14n-v1';
@@ -6274,6 +11417,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   }
   function targetLooksDiscoveryFilter(target) {
     if (!target || target.tagName !== 'SELECT') return false;
+    if (target.hasAttribute('data-artifact-display-filter') || target.hasAttribute('data-add-discovery-filter') || target.hasAttribute('data-add-artifact-display-filter') || target.hasAttribute('data-temporal-lens-mode') || target.hasAttribute('data-temporal-lens-begin') || target.hasAttribute('data-temporal-lens-end')) return false;
     const action = target.dataset.action || '';
     return action === 'set-discovery-filter'
       || target.hasAttribute('data-discovery-filter-select')
@@ -6282,15 +11426,134 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       || target.closest?.('.filter-select-wrap');
   }
 
+  function targetLooksArtifactDisplayFilter(target) {
+    return Boolean(target && target.tagName === 'SELECT' && target.hasAttribute('data-artifact-display-filter'));
+  }
+
   function applyDiscoveryFilter(target) {
     const ws = typeof eventTargetWorkspace === 'function' ? eventTargetWorkspace(target) : getWorkspace(target.dataset.ws);
     if (!ws) return false;
-    ws.discoveryFilterSchema = target.value || target.dataset.filter || 'all';
-    ws.filterSchema = ws.discoveryFilterSchema;
+    setDiscoveryFilterList(ws, target.value || target.dataset.filter || 'all');
     if (typeof setRouteState === 'function') setRouteState('replace');
     else if (typeof updateUrlState === 'function') updateUrlState({ replace: true });
     render();
     return true;
+  }
+
+  function applyAddDiscoveryFilter(target) {
+    const ws = typeof eventTargetWorkspace === 'function' ? eventTargetWorkspace(target) : getWorkspace(target.dataset.ws);
+    const value = target?.value || '';
+    if (!ws || !value) return false;
+    addDiscoveryFilter(ws, value);
+    if (typeof setRouteState === 'function') setRouteState('replace');
+    else if (typeof updateUrlState === 'function') updateUrlState({ replace: true });
+    render();
+    return true;
+  }
+
+  function applyArtifactDisplayFilter(target) {
+    const ws = typeof eventTargetWorkspace === 'function' ? eventTargetWorkspace(target) : getWorkspace(target.dataset.ws);
+    if (!ws) return false;
+    const opts = workspaceDisplayOptions(ws);
+    opts.artifactKindFilters = normalizeArtifactDisplayFilterList(target.value || 'all');
+    opts.artifactKindFilter = opts.artifactKindFilters[0] || 'all';
+    if (typeof setRouteState === 'function') setRouteState('replace');
+    else if (typeof updateUrlState === 'function') updateUrlState({ replace: true });
+    render();
+    return true;
+  }
+
+  function applyAddArtifactDisplayFilter(target) {
+    const ws = typeof eventTargetWorkspace === 'function' ? eventTargetWorkspace(target) : getWorkspace(target.dataset.ws);
+    const value = target?.value || '';
+    if (!ws || !value) return false;
+    const opts = workspaceDisplayOptions(ws);
+    opts.artifactKindFilters = normalizeArtifactDisplayFilterList((opts.artifactKindFilters || []).concat([value]));
+    opts.artifactKindFilter = opts.artifactKindFilters[0] || 'all';
+    if (typeof setRouteState === 'function') setRouteState('replace');
+    else if (typeof updateUrlState === 'function') updateUrlState({ replace: true });
+    render();
+    return true;
+  }
+
+  function applyTemporalLensMode(target) {
+    const ws = typeof eventTargetWorkspace === 'function' ? eventTargetWorkspace(target) : getWorkspace(target.dataset.ws);
+    if (!ws) return false;
+    const mode = target?.value === 'as-of' ? 'as-of' : 'latest';
+    if (app.modal?.type === 'display-options' && app.modal.wsId === ws.id) {
+      const draft = displayOptionsModalTemporalDraft(ws);
+      if (mode === 'latest') {
+        draft.temporalStart = '';
+        draft.temporalEnd = '';
+        draft.temporalAsOf = '';
+      } else if (!draft.temporalEnd && !draft.temporalStart) {
+        draft.temporalEnd = dateToLocalMinuteValue(new Date());
+        draft.temporalAsOf = draft.temporalEnd;
+      }
+      draft.temporalMode = mode;
+      app.modal.temporalDraft = normalizeTemporalLensOptionsShape(draft);
+      render();
+      return true;
+    }
+    const opts = workspaceDisplayOptions(ws);
+    if (mode === 'latest') {
+      opts.temporalStart = '';
+      opts.temporalEnd = '';
+      opts.temporalAsOf = '';
+      opts.temporalMode = 'latest';
+    } else if (!opts.temporalEnd && !opts.temporalStart) {
+      opts.temporalEnd = dateToLocalMinuteValue(new Date());
+      opts.temporalAsOf = opts.temporalEnd;
+      opts.temporalMode = 'as-of';
+    }
+    if (typeof setRouteState === 'function') setRouteState('replace');
+    else if (typeof updateUrlState === 'function') updateUrlState({ replace: true });
+    scheduleTemporalSnapshotLoadAfterApply(ws);
+    render();
+    return true;
+  }
+
+  function applyTemporalLensAsOf(target) {
+    const ws = typeof eventTargetWorkspace === 'function' ? eventTargetWorkspace(target) : getWorkspace(target.dataset.ws);
+    if (!ws) return false;
+    const value = normalizeTemporalLensInput(target?.value || '');
+    const field = target?.hasAttribute?.('data-temporal-lens-begin') ? 'temporalStart'
+      : target?.hasAttribute?.('data-temporal-lens-end') ? 'temporalEnd'
+        : 'temporalEnd';
+    if (app.modal?.type === 'display-options' && app.modal.wsId === ws.id) {
+      const draft = displayOptionsModalTemporalDraft(ws);
+      draft[field] = value;
+      draft.temporalAsOf = draft.temporalEnd || '';
+      draft.temporalMode = (draft.temporalStart || draft.temporalEnd) ? 'as-of' : 'latest';
+      app.modal.temporalDraft = normalizeTemporalLensOptionsShape(draft);
+      render();
+      return true;
+    }
+    const opts = workspaceDisplayOptions(ws);
+    const beforeSnapshot = ws.temporalSourceSnapshot || null;
+    opts[field] = value;
+    const normalized = normalizeTemporalLensOptionsShape(opts);
+    opts.temporalStart = normalized.temporalStart;
+    opts.temporalEnd = normalized.temporalEnd;
+    opts.temporalAsOf = normalized.temporalAsOf;
+    opts.temporalMode = normalized.temporalMode;
+    ws.temporalSourceSnapshot = null;
+    if (typeof setRouteState === 'function') setRouteState('replace');
+    else if (typeof updateUrlState === 'function') updateUrlState({ replace: true });
+    if (!temporalLensNeedsSourceSnapshotForOptions(opts)) scheduleTemporalLatestRestoreAfterApply(ws, beforeSnapshot);
+    else scheduleTemporalSnapshotLoadAfterApply(ws);
+    render();
+    return true;
+  }
+
+  function applyTemporalSnapshotRefInput(target) {
+    const ws = typeof eventTargetWorkspace === 'function' ? eventTargetWorkspace(target) : getWorkspace(target.dataset.ws);
+    if (!ws) return false;
+    if (app.modal?.type === 'display-options' && app.modal.wsId === ws.id) {
+      app.modal.temporalSnapshotRef = target?.value || '';
+      return true;
+    }
+    return false;
   }
 
 
@@ -6300,6 +11563,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     hideCreateWorkspaceButtons(root);
     root.querySelectorAll('[data-action]').forEach((el) => {
       el.addEventListener('click', handleAction);
+    });
+    root.querySelectorAll('select[data-action="github-export-select-known-target"]').forEach((el) => {
+      el.addEventListener('change', handleAction);
     });
 
     root.querySelectorAll('input[data-field], textarea[data-field], select[data-field]').forEach((el) => {
@@ -6313,7 +11579,37 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     });
 
     root.querySelectorAll('select[data-discovery-filter-select], select[data-action="set-discovery-filter"], select.discovery-filter-select, select[data-filter-mode], .filter-select-wrap select').forEach((el) => {
-      el.addEventListener('change', (event) => applyDiscoveryFilter(event.currentTarget));
+      if (targetLooksDiscoveryFilter(el)) el.addEventListener('change', (event) => applyDiscoveryFilter(event.currentTarget));
+    });
+
+    root.querySelectorAll('select[data-add-discovery-filter]').forEach((el) => {
+      el.addEventListener('change', (event) => applyAddDiscoveryFilter(event.currentTarget));
+    });
+
+    root.querySelectorAll('select[data-artifact-display-filter]').forEach((el) => {
+      el.addEventListener('change', (event) => applyArtifactDisplayFilter(event.currentTarget));
+    });
+
+    root.querySelectorAll('select[data-add-artifact-display-filter]').forEach((el) => {
+      el.addEventListener('change', (event) => applyAddArtifactDisplayFilter(event.currentTarget));
+    });
+
+    root.querySelectorAll('select[data-temporal-lens-mode]').forEach((el) => {
+      el.addEventListener('change', (event) => applyTemporalLensMode(event.currentTarget));
+    });
+
+    root.querySelectorAll('input[data-temporal-lens-as-of], input[data-temporal-lens-begin], input[data-temporal-lens-end]').forEach((el) => {
+      el.addEventListener('change', (event) => applyTemporalLensAsOf(event.currentTarget));
+    });
+
+    root.querySelectorAll('input[data-temporal-snapshot-ref]').forEach((el) => {
+      el.addEventListener('input', (event) => applyTemporalSnapshotRefInput(event.currentTarget));
+      el.addEventListener('change', (event) => applyTemporalSnapshotRefInput(event.currentTarget));
+    });
+
+    root.querySelectorAll('input[data-temporal-ref-resolver]').forEach((el) => {
+      el.addEventListener('input', (event) => applyTemporalRefResolverInput(event.currentTarget));
+      el.addEventListener('change', (event) => applyTemporalRefResolverInput(event.currentTarget));
     });
 
     root.querySelectorAll('#source-files, #source-folder').forEach((el) => {
@@ -6356,7 +11652,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       });
       document.addEventListener('change', (event) => {
         const target = event.target;
-        if (targetLooksDiscoveryFilter(target)) applyDiscoveryFilter(target);
+        if (targetLooksArtifactDisplayFilter(target)) applyArtifactDisplayFilter(target);
+        else if (targetLooksDiscoveryFilter(target)) applyDiscoveryFilter(target);
       });
       app.delegatedViewerInputBound = true;
     }
@@ -6526,6 +11823,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         layoutMode: 'expanded',
         discoveryView: defaultView === 'tree' ? 'tree' : 'feed',
         discoveryFilterSchema: defaultFilter || 'all',
+        discoveryFilterSchemas: defaultFilter && defaultFilter !== 'all' ? [defaultFilter] : [],
         discoverySearch: defaultSearch,
         lineageSearch: '',
         treeExpandedFolders: {},
@@ -6542,7 +11840,12 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           repoFiles: isAffirmative(firstKv(map, ['Repo Files Discovery', 'Repo Discovery'], ''), true),
           issues: isAffirmative(firstKv(map, ['Issue Discussion Discovery', 'Issue Discovery'], ''), true)
         });
-        source.issueUrls = uniqueNonEmpty(splitCsv(allKv(map, ['Issue URL', 'Issue URLs'])));
+        source.configuredIssueUrls = parseSourceIssueUrls(splitCsv(allKv(map, ['Issue URL', 'Issue URLs', 'Social Target URL', 'Social Target URLs'])).join('\n'), source.repo);
+        source.issueUrls = source.configuredIssueUrls.slice();
+        const encodedIssueCache = firstKv(map, ['Issue Thread Cache', 'GitHub Issue Cache'], '');
+        if (encodedIssueCache) {
+          try { source.issueThreadCache = JSON.parse(b64UrlDecode(encodedIssueCache)); } catch (_) { source.issueThreadCache = {}; }
+        }
         if (!source.repo) return;
       } else if (kindRaw === 'urls' || kindRaw === 'url' || kindRaw.includes('direct')) {
         source.kind = 'urls';
@@ -6567,7 +11870,12 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
             repoFiles: isAffirmative(firstKv(map, ['Repo Files Discovery', 'Repo Discovery'], ''), true),
             issues: isAffirmative(firstKv(map, ['Issue Discussion Discovery', 'Issue Discovery'], ''), true)
           });
-          source.issueUrls = uniqueNonEmpty(splitCsv(allKv(map, ['Issue URL', 'Issue URLs'])));
+          source.configuredIssueUrls = parseSourceIssueUrls(splitCsv(allKv(map, ['Issue URL', 'Issue URLs', 'Social Target URL', 'Social Target URLs'])).join('\n'), source.repo);
+          source.issueUrls = source.configuredIssueUrls.slice();
+          const encodedIssueCache = firstKv(map, ['Issue Thread Cache', 'GitHub Issue Cache'], '');
+          if (encodedIssueCache) {
+            try { source.issueThreadCache = JSON.parse(b64UrlDecode(encodedIssueCache)); } catch (_) { source.issueThreadCache = {}; }
+          }
         }
       }
 
@@ -6667,9 +11975,12 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         if (source.ref) lines.push(`- Ref: ${source.ref}`);
         (source.rootPaths || [source.rootPath || '.topics']).filter(Boolean).forEach((root) => lines.push(`- Root Path: ${root}`));
         lines.push(`- Repo Files Discovery: ${surfaces.repoFiles ? 'on' : 'off'}`);
-        lines.push(`- Issue Discussion Discovery: ${surfaces.issues ? 'on' : 'off'}`);
+        lines.push(`- Issue Discovery: ${surfaces.issues ? 'on' : 'off'}`);
         if (source.discoveryDirective?.path) lines.push(`- Discovery Directive: ${source.discoveryDirective.path}`);
-        (source.issueUrls || []).filter(Boolean).forEach((url) => lines.push(`- Issue URL: ${url}`));
+        normalizedGitHubIssueUrls(source.issueUrls || source.configuredIssueUrls || [], source.repo || '').filter(Boolean).forEach((url) => lines.push(`- Issue URL: ${url}`));
+        if (source.issueThreadCache && Object.keys(source.issueThreadCache).length) {
+          try { lines.push(`- Issue Thread Cache: ${b64UrlEncode(JSON.stringify(source.issueThreadCache))}`); } catch (_) {}
+        }
       } else if (item.shareable && (source.urls || []).length) {
         lines.push('- Source Kind: urls');
         (source.urls || []).forEach((url) => lines.push(`- URL: ${url}`));
@@ -6980,12 +12291,12 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
   function renderTopbarHtml() {
     return `
-        <header class="topbar topbar-foundation topbar-shell topbar-layout topbar-actions topbar-branded">
+        <header class="topbar topbar-foundation topbar-shell topbar-layout topbar-actions topbar-branded" translate="no">
           ${renderViewerBrand()}
           <div class="top-actions workspace-top-actions-layout workspace-top-actions-toolbar">
             <button class="tv-btn primary" data-action="open-source-modal" title="Create or add a workspace/source"><i class="fa-solid fa-plus"></i>Create</button>
             <button class="tv-btn subtle" data-action="export-config" title="Save current view/lens as a portable .workspace.md file. Local-only material is noted but not embedded."><i class="fa-regular fa-floppy-disk"></i>Save workspace</button>
-            <button class="tv-btn subtle" data-action="copy-share" title="Copies the current view only. Local uploads, preserved assets, and unsaved workspace contents are not included." aria-label="Copies the current view only. Local uploads, preserved assets, and unsaved workspace contents are not included."><i class="fa-solid fa-link"></i>Copy link</button>
+            <button class="tv-btn subtle" data-action="open-share-modal" data-scope="active" title="Review share eligibility before copying a public or exact-view link." aria-label="Open Share options"><i class="fa-solid fa-share-nodes"></i>Share</button>
           </div>
           ${renderHelpButton()}
         </header>`;
@@ -6993,7 +12304,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
   function renderWorkspaceGridHtml(count, visible) {
     return `
-        <main class="workspace-grid workspace-foundation-grid workspace-shell-grid workspace-grid-layout workspace-grid-columns columns-${Math.max(1, Math.min(count, visible.length || 1))}" id="workspace-grid" ${workspaceGridStyleVar(visible)}>
+        <main class="workspace-grid workspace-foundation-grid workspace-shell-grid workspace-grid-layout workspace-grid-columns columns-${Math.max(1, Math.min(count, visible.length || 1))}" id="workspace-grid" ${workspaceGridStyleVar(visible)} data-tiinex-language-surface="workspace-grid">
           ${visible.length ? visible.map(renderWorkspace).join('') : renderNoWorkspace()}
         </main>`;
   }
@@ -7013,7 +12324,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         ${canPage ? renderWorkspacePager(count) : ''}
         ${renderWorkspaceGridHtml(count, visible)}
       </div>
-      <footer class="app-footer">Powered by <a href="https://github.com/Tiinex" target="_blank" rel="noopener">Tiinex</a></footer>
+      <footer class="app-footer" translate="no">Powered by <a href="https://github.com/Tiinex" target="_blank" rel="noopener">Tiinex</a></footer>
       ${renderToastsHtml()}
       ${renderModalRootHtml()}
     `;
@@ -7047,6 +12358,25 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return nextPager;
   }
 
+  function patchStableHtml(root, el, html, datasetKey, bind = true) {
+    if (!el) return null;
+    const stableHash = typeof hashFast === 'function' ? hashFast(html || '') : String(html || '').length;
+    if (root.dataset[datasetKey] === stableHash) return el;
+    const nextEl = replaceHtmlAndBind(el, html, bind);
+    root.dataset[datasetKey] = stableHash;
+    return nextEl;
+  }
+
+  function patchStableInnerHtml(root, el, html, datasetKey, bind = true) {
+    if (!el) return null;
+    const stableHash = typeof hashFast === 'function' ? hashFast(html || '') : String(html || '').length;
+    if (root.dataset[datasetKey] === stableHash) return el;
+    el.innerHTML = html || '';
+    if (bind) bindEvents(el);
+    root.dataset[datasetKey] = stableHash;
+    return el;
+  }
+
   function patchRender(root, count, visible, canPage, signature) {
     const shell = root.querySelector('.app-shell');
     const grid = root.querySelector('#workspace-grid');
@@ -7055,10 +12385,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (!shell || !grid || !toasts || !modalRoot) return false;
 
     patchWorkspacePager(root, shell, count, canPage);
-    replaceHtmlAndBind(grid, renderWorkspaceGridHtml(count, visible), true);
-    replaceHtmlAndBind(toasts, renderToastsHtml(), false);
-    modalRoot.innerHTML = app.modal ? renderModal(app.modal) : '';
-    bindEvents(modalRoot);
+    patchStableHtml(root, grid, renderWorkspaceGridHtml(count, visible), 'renderGridSignature', true);
+    patchStableHtml(root, toasts, renderToastsHtml(), 'renderToastsSignature', false);
+    patchStableInnerHtml(root, modalRoot, app.modal ? renderModal(app.modal) : '', 'renderModalSignature', true);
     root.dataset.renderChromeSignature = signature;
     root.dataset.renderBoundary = 'patched';
     return true;
@@ -7078,10 +12407,15 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (!patched) {
       root.innerHTML = renderFullAppHtml(count, visible, canPage);
       root.dataset.renderChromeSignature = signature;
+      root.dataset.renderGridSignature = '';
+      root.dataset.renderToastsSignature = '';
+      root.dataset.renderModalSignature = '';
       root.dataset.renderBoundary = 'full';
       bindEvents(root);
     }
     if (typeof restoreRenderScrolls === 'function') restoreRenderScrolls(snapshots);
+    document.body?.classList?.toggle('browser-translate-active', browserTranslateLikelyActive());
+    document.body?.setAttribute?.('data-tiinex-translate-active', browserTranslateLikelyActive() ? 'true' : 'false');
     scheduleLocalStateSave();
   }
 
@@ -7214,6 +12548,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const identityLines = linesOrEmpty([
       configLine('Label', cfg.label),
       configLine('Home', cfg.home, 'https://github.com/Tiinex'),
+      configLine('Public Viewer URL', cfg.publicBaseUrl || cfg.viewerBaseUrl || cfg.shareBaseUrl),
+      configLine('Workspace Home', cfg.workspaceHome),
       configLine('Icon', cfg.icon),
       configLine('Accent', cfg.accent),
       configLine('Theme', cfg.theme)
@@ -7242,7 +12578,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
 - Envelope Schema: [tiinex.root.v1](${TIINEX_ROOT_SCHEMA_URL})
 - Current
-  - Current Schema: [tiinex.workspace.v1](${TIINEX_SCHEMA_PERMALINK_BASE}tiinex.workspace.v1.schema.md)
+  - Current Schema: [tiinex.workspace.v1](${tiinexSchemaPermalinkForId('tiinex.workspace.v1')})
   - Created At: ${continuityTimestamp()}
   - Why: Captures the current Tiinex viewer lens as a portable workspace entrypoint.
   - Summary: ${summary}
@@ -7358,6 +12694,546 @@ ${bodySections}
     return '';
   }
 
+  function normalizeRepoSlug(value = '') {
+    return String(value || '').trim().replace(/^https?:\/\/github\.com\//i, '').replace(/^git@github\.com:/i, '').replace(/\.git$/i, '').toLowerCase();
+  }
+
+  function sameRepoSlug(a = '', b = '') {
+    const left = normalizeRepoSlug(a);
+    const right = normalizeRepoSlug(b);
+    return Boolean(left && right && left === right);
+  }
+
+  function gitNativeConfiguredRepo(config = {}) {
+    return String(config.repo || defaultGitNativeRepoForStartup(config) || '').trim();
+  }
+
+  function githubRepoPathStartIndex(segments = []) {
+    const pathRoots = new Set(['.topics', 'topics', '.github', 'src', 'tools', 'samples', 'assets']);
+    const rootFiles = new Set(['README.md', 'NOTICE', 'LICENSE', 'index.html', 'package.json', 'llms.txt', 'styles.css', 'tiinex.app.llm.v1.md', 'VALIDATION_NOTES.md']);
+    for (let i = 1; i < segments.length; i += 1) {
+      const segment = String(segments[i] || '');
+      if (pathRoots.has(segment) || rootFiles.has(segment)) return i;
+    }
+    return segments.length > 1 ? 1 : -1;
+  }
+
+  function githubFileUrlParts(url = '') {
+    const original = adapterResourceUrl(url).trim();
+    if (!original) return null;
+    try {
+      const parsed = new URL(original, location.href);
+      const host = parsed.hostname.toLowerCase();
+      const pathParts = parsed.pathname.split('/').filter(Boolean).map((part) => {
+        try { return decodeURIComponent(part); } catch (_) { return part; }
+      });
+
+      if (host === 'raw.githubusercontent.com') {
+        if (pathParts.length < 4) return null;
+        const owner = pathParts[0];
+        const repoName = pathParts[1];
+        const rest = pathParts.slice(2);
+        const pathStart = githubRepoPathStartIndex(rest);
+        if (pathStart < 0) return null;
+        const ref = rest.slice(0, pathStart).join('/');
+        const path = rest.slice(pathStart).join('/');
+        if (!ref || !path) return null;
+        return { repo: `${owner}/${repoName}`, ref, path: normalizeRepoPath(path), rawUrl: `https://raw.githubusercontent.com/${owner}/${repoName}/${ref}/${normalizeRepoPath(path)}` };
+      }
+
+      if (host === 'github.com') {
+        if (pathParts.length < 5) return null;
+        const owner = pathParts[0];
+        const repoName = pathParts[1];
+        const mode = String(pathParts[2] || '').toLowerCase();
+        if (mode !== 'blob' && mode !== 'raw') return null;
+        const rest = pathParts.slice(3);
+        const pathStart = githubRepoPathStartIndex(rest);
+        if (pathStart < 0) return null;
+        const ref = rest.slice(0, pathStart).join('/');
+        const path = rest.slice(pathStart).join('/');
+        if (!ref || !path) return null;
+        return { repo: `${owner}/${repoName}`, ref, path: normalizeRepoPath(path), rawUrl: `https://raw.githubusercontent.com/${owner}/${repoName}/${ref}/${normalizeRepoPath(path)}`, browseUrl: `https://github.com/${owner}/${repoName}/blob/${ref}/${normalizeRepoPath(path)}` };
+      }
+
+      if (host === 'api.github.com' && pathParts[0] === 'repos' && pathParts[3] === 'contents' && pathParts.length >= 5) {
+        const owner = pathParts[1];
+        const repoName = pathParts[2];
+        const path = pathParts.slice(4).join('/');
+        const ref = parsed.searchParams.get('ref') || 'master';
+        if (!path) return null;
+        return { repo: `${owner}/${repoName}`, ref, path: normalizeRepoPath(path), rawUrl: `https://raw.githubusercontent.com/${owner}/${repoName}/${ref}/${normalizeRepoPath(path)}` };
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function rawGithubSourceParts(url = '') {
+    const original = adapterResourceUrl(url).trim();
+    const candidates = [];
+    const add = (value) => {
+      const raw = String(value || '').trim();
+      if (raw && !candidates.includes(raw)) candidates.push(raw);
+    };
+    add(original);
+    try { add(decodeURIComponent(original)); } catch (_) {}
+    const converted = convertSourceUrl(original);
+    if (converted?.rawUrl) add(converted.rawUrl);
+    if (converted?.browseUrl) add(converted.browseUrl);
+    const embeddedRaw = String(original || '').match(/https?:\/\/raw\.githubusercontent\.com\/[^\s"'<>]+/i);
+    if (embeddedRaw?.[0]) {
+      add(embeddedRaw[0]);
+      try { add(decodeURIComponent(embeddedRaw[0])); } catch (_) {}
+    }
+    const embeddedBlob = String(original || '').match(/https?:\/\/github\.com\/[^\s"'<>]+\/(?:blob|raw)\/[^\s"'<>]+/i);
+    if (embeddedBlob?.[0]) {
+      add(embeddedBlob[0]);
+      try { add(decodeURIComponent(embeddedBlob[0])); } catch (_) {}
+    }
+
+    for (const candidate of candidates) {
+      const parts = githubFileUrlParts(candidate);
+      if (parts?.repo && parts.ref && parts.path) return parts;
+    }
+    return null;
+  }
+
+  function gitNativeCandidatePathsForRawPath(path = '') {
+    const clean = normalizeRepoPath(path);
+    const paths = [];
+    const add = (value) => {
+      const normalized = normalizeRepoPath(value);
+      if (normalized && !paths.includes(normalized)) paths.push(normalized);
+    };
+    add(clean);
+    if (/^topics\//i.test(clean)) add(`.${clean}`);
+    if (/^\.topics\//i.test(clean)) add(clean.replace(/^\./, ''));
+    return paths;
+  }
+
+  function gitNativeRawReadDisabledReason(parts = null, options = {}) {
+    if (!parts?.repo || !parts.path) return 'not-github-repo-material';
+    if (options?.skipGitNativeRawBridge === true) return 'skip-git-native-raw-bridge';
+    const config = effectiveGitNativeDiscoveryConfig({});
+    const exactOwner = gitNativeRepoMaterialOwnerRecord(parts) || gitNativeRepoMaterialWorkspaceOwner(parts);
+    const repoOwner = exactOwner || gitNativeRepoMaterialOwnerRecordAnyRef(parts) || gitNativeRepoMaterialWorkspaceOwnerAnyRef(parts);
+    const configuredRepo = gitNativeConfiguredRepo(config);
+    const configOwnsRepo = Boolean(config.enabled && (!configuredRepo || sameRepoSlug(configuredRepo, parts.repo)));
+    if (!configOwnsRepo && !repoOwner) return 'git-native-not-enabled';
+    if (!window.TiinexGitNativeRuntime?.ensureRuntime || !window.TiinexGitNativeRuntime?.readGitText) return 'runtime-bridge-not-loaded';
+    if (configuredRepo && !sameRepoSlug(configuredRepo, parts.repo) && !repoOwner) return 'repo-mismatch';
+    return '';
+  }
+
+  function gitNativeRawReadEnabledFor(parts = null, options = {}) {
+    return !gitNativeRawReadDisabledReason(parts, options);
+  }
+
+  function workspaceGitResolvedCommit(ws = null) {
+    return String(ws?.discoverySource?.resolvedCommit || ws?.resolvedCommit || ws?.commit || '').trim();
+  }
+
+  function workspaceGitRefLabel(ws = null) {
+    return String(ws?.discoverySource?.ref || ws?.ref || '').trim();
+  }
+
+  function sameWorkspaceGitRef(ws = null, left = '', right = '') {
+    const a = String(left || '').trim();
+    const b = String(right || '').trim();
+    if (!a || !b) return true;
+    if (a === b) return true;
+    const resolved = workspaceGitResolvedCommit(ws);
+    const label = workspaceGitRefLabel(ws);
+    if (resolved && label) {
+      if ((a === resolved && b === label) || (a === label && b === resolved)) return true;
+    }
+    return false;
+  }
+
+  function ensureGitNativeRepoMaterialOwners() {
+    app.gitNativeRepoMaterialOwners = app.gitNativeRepoMaterialOwners || new Map();
+    return app.gitNativeRepoMaterialOwners;
+  }
+
+  function gitNativeOwnerRefMatches(owner = null, requestedRef = '') {
+    if (!owner) return false;
+    const req = String(requestedRef || '').trim();
+    if (!req) return true;
+    const refs = [owner.ref, owner.requestedRef, owner.commit, owner.resolvedCommit, owner.branch]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean);
+    if (!refs.length) return true;
+    return refs.includes(req);
+  }
+
+  function rememberGitNativeRepoMaterialOwner(owner = {}) {
+    const repo = String(owner.repo || '').trim();
+    if (!repo) return null;
+    const key = normalizeRepoSlug(repo);
+    if (!key) return null;
+    const record = Object.freeze({
+      repo,
+      ref: String(owner.ref || owner.requestedRef || '').trim(),
+      requestedRef: String(owner.requestedRef || owner.ref || '').trim(),
+      commit: String(owner.commit || owner.resolvedCommit || '').trim(),
+      resolvedCommit: String(owner.resolvedCommit || owner.commit || '').trim(),
+      rootPaths: Array.isArray(owner.rootPaths) ? owner.rootPaths.map((item) => String(item || '').trim()).filter(Boolean) : [],
+      sourceId: String(owner.sourceId || '').trim(),
+      sourceResolutionKind: owner.sourceResolutionKind || 'git-native-local-object-store',
+      sourceAccessMode: owner.sourceAccessMode || 'git-object-store',
+      registeredAt: new Date().toISOString()
+    });
+    ensureGitNativeRepoMaterialOwners().set(key, record);
+    githubRepoFetchTrace('repo-material.owner.registered', {
+      repo: record.repo,
+      ref: record.ref,
+      commit: record.commit,
+      rootPaths: record.rootPaths,
+      sourceId: record.sourceId,
+      sourceResolutionKind: record.sourceResolutionKind,
+      sourceAccessMode: record.sourceAccessMode
+    });
+    return record;
+  }
+
+  function gitNativeRepoMaterialOwnerRecord(parts = null) {
+    if (!parts?.repo) return null;
+    const owner = ensureGitNativeRepoMaterialOwners().get(normalizeRepoSlug(parts.repo));
+    if (!owner) return null;
+    return gitNativeOwnerRefMatches(owner, parts.ref || '') ? owner : null;
+  }
+
+  function gitNativeRepoMaterialOwnerRecordAnyRef(parts = null) {
+    if (!parts?.repo) return null;
+    return ensureGitNativeRepoMaterialOwners().get(normalizeRepoSlug(parts.repo)) || null;
+  }
+
+  function workspaceUsesGitNativeRepoMaterial(ws = null) {
+    const source = ws?.discoverySource || {};
+    const values = [
+      ws?.sourceResolutionKind,
+      ws?.sourceAccessMode,
+      ws?.sourceResultBoundary,
+      ws?.sourceCacheBoundary,
+      source.sourceResolutionKind,
+      source.sourceAccessMode,
+      source.sourceResultBoundary,
+      source.sourceCacheBoundary
+    ].map((value) => String(value || '').toLowerCase());
+    return values.some((value) => value.includes('git-native') || value.includes('git-object-store') || value.includes('object-store'));
+  }
+
+  function gitNativeRepoMaterialWorkspaceOwner(parts = null) {
+    if (!parts?.repo) return null;
+    for (const ws of Array.isArray(app.workspaces) ? app.workspaces : []) {
+      const repo = ws?.repo || ws?.discoverySource?.repo || ws?.source?.repo || '';
+      if (!sameRepoSlug(repo, parts.repo)) continue;
+      if (!workspaceUsesGitNativeRepoMaterial(ws)) continue;
+      if (!sameWorkspaceGitRef(ws, ws?.ref || ws?.discoverySource?.ref || '', parts.ref || '')) {
+        // A branch label and its resolved commit are equivalent inside the
+        // loaded snapshot. A different historical commit is not exactly owned by
+        // this shallow snapshot, but the repo is still Git-native-owned and may
+        // provide a safe local same-path substitute for non-integrity reads.
+        const resolved = workspaceGitResolvedCommit(ws);
+        const label = workspaceGitRefLabel(ws);
+        if (parts.ref && resolved && parts.ref !== resolved && label && parts.ref !== label) continue;
+      }
+      return ws;
+    }
+    return null;
+  }
+
+  function gitNativeRepoMaterialWorkspaceOwnerAnyRef(parts = null) {
+    if (!parts?.repo) return null;
+    for (const ws of Array.isArray(app.workspaces) ? app.workspaces : []) {
+      const repo = ws?.repo || ws?.discoverySource?.repo || ws?.source?.repo || '';
+      if (!sameRepoSlug(repo, parts.repo)) continue;
+      if (!workspaceUsesGitNativeRepoMaterial(ws)) continue;
+      return ws;
+    }
+    return null;
+  }
+
+  function gitNativeRepoMaterialIntendedFor(parts = null) {
+    if (!parts?.repo || !parts.path) return false;
+    if (gitNativeRepoMaterialOwnerRecord(parts) || gitNativeRepoMaterialOwnerRecordAnyRef(parts)) return true;
+    const config = effectiveGitNativeDiscoveryConfig({});
+    const configuredRepo = gitNativeConfiguredRepo(config);
+    if (config.enabled && (!configuredRepo || sameRepoSlug(configuredRepo, parts.repo))) return true;
+    return Boolean(gitNativeRepoMaterialWorkspaceOwner(parts) || gitNativeRepoMaterialWorkspaceOwnerAnyRef(parts));
+  }
+
+  function shouldBlockImplicitRawRepoMaterial(parts = null, options = {}) {
+    if (!parts?.repo || !parts.path) return false;
+    if (options?.allowRawFallback === true || options?.skipGitNativeRawBridge === true) return false;
+    if (rawFallbackAllowedForRepoMaterial(parts, options)) return false;
+    return gitNativeRepoMaterialIntendedFor(parts);
+  }
+
+  function rawFallbackAllowedForRepoMaterial(parts = null, options = {}) {
+    if (options?.allowRawFallback === true) return true;
+    // Important: do not let a persisted/global allowRawFallback setting silently
+    // downgrade same-repo material reads. Raw permalink lookup is a per-read
+    // fallback decision, not a session-wide source owner override. This prevents
+    // older localStorage config from re-opening the raw.githubusercontent.com
+    // path after Git-native startup is active.
+    const policy = String(options?.fallbackPolicy || '').trim().toLowerCase();
+    return policy === 'allow' || policy === 'allow-raw' || policy === 'explicit' || policy === 'explicit-degraded';
+  }
+
+  function gitNativeLocalRefSubstituteAllowedFor(parts = null, label = '', options = {}) {
+    if (!parts?.repo || !parts.path) return false;
+    if (options?.exactRefRequired === true || options?.allowLocalRefSubstitute === false) return false;
+    const text = `${label || ''} ${options?.purpose || ''}`;
+    if (/integrity|checksum|byte-integrity/i.test(text)) return false;
+    const path = normalizeRepoPath(parts.path);
+    // Schema contracts are interpretive support material. If an artifact points at
+    // an older schema permalink that is not present in the shallow clone, prefer
+    // the locally available same-path schema over a hidden raw permalink fetch.
+    // Exact byte/integrity checks stay exact and are never substituted here.
+    return /^\.?topics\/\.schemas\/.+\.schema\.md$/i.test(path);
+  }
+
+  function gitNativeLocalRefSubstituteCommitFor(parts = null) {
+    const owner = gitNativeRepoMaterialOwnerRecord(parts)
+      || gitNativeRepoMaterialOwnerRecordAnyRef(parts)
+      || gitNativeRepoMaterialWorkspaceOwner(parts)
+      || gitNativeRepoMaterialWorkspaceOwnerAnyRef(parts);
+    const commit = String(owner?.commit || owner?.resolvedCommit || workspaceGitResolvedCommit(owner) || '').trim();
+    const requested = String(parts?.ref || '').trim();
+    return commit && commit !== requested ? commit : '';
+  }
+
+  function gitNativeHistoricalHydrationBaseRefFor(parts = null) {
+    const owner = gitNativeRepoMaterialOwnerRecord(parts)
+      || gitNativeRepoMaterialOwnerRecordAnyRef(parts)
+      || gitNativeRepoMaterialWorkspaceOwner(parts)
+      || gitNativeRepoMaterialWorkspaceOwnerAnyRef(parts);
+    return String(owner?.ref || owner?.requestedRef || workspaceGitRefLabel(owner) || '').trim() || 'master';
+  }
+
+  function gitNativeHistoricalHydrationNeeded(parts = null, commit = '') {
+    if (!parts?.repo || !parts.path || !isCommitRef(commit || parts.ref)) return false;
+    const requested = String(commit || parts.ref || '').trim();
+    const owner = gitNativeRepoMaterialOwnerRecord(parts)
+      || gitNativeRepoMaterialOwnerRecordAnyRef(parts)
+      || gitNativeRepoMaterialWorkspaceOwner(parts)
+      || gitNativeRepoMaterialWorkspaceOwnerAnyRef(parts);
+    const current = String(owner?.commit || owner?.resolvedCommit || workspaceGitResolvedCommit(owner) || '').trim();
+    return Boolean(requested && (!current || requested !== current) && gitNativeRepoMaterialIntendedFor(parts));
+  }
+
+  function repoMaterialUnavailableError(parts, cause, label = 'repo material') {
+    const err = new Error(`Git-native local object-store read unavailable for ${parts?.repo || 'repo'}@${parts?.ref || 'ref'}/${parts?.path || 'path'} (${label}): ${cause?.message || cause || 'object unavailable'}`);
+    err.gitNativeRepoMaterialUnavailable = true;
+    err.rawFallbackBlocked = true;
+    err.repo = parts?.repo || '';
+    err.ref = parts?.ref || '';
+    err.path = parts?.path || '';
+    return err;
+  }
+
+  async function readRepoMaterialText(input = {}) {
+    const label = input.label || input.purpose || 'repo material';
+    const resolved = input.url ? (() => { try { return new URL(input.url, location.href).href; } catch (_) { return String(input.url || ''); } })() : '';
+    const explicitParts = input.repo && input.path ? { repo: input.repo, ref: input.ref || '', path: normalizeRepoPath(input.path), rawUrl: input.rawUrl || resolved || `https://raw.githubusercontent.com/${input.repo}/${input.ref || 'master'}/${normalizeRepoPath(input.path)}` } : null;
+    const parts = explicitParts || rawGithubSourceParts(resolved || input.rawUrl || '');
+    if (!parts?.repo || !parts.path) return null;
+
+    const reasonDisabled = gitNativeRawReadDisabledReason(parts, input);
+    githubRepoFetchTrace('repo-material.read.start', { label, repo: parts.repo, ref: parts.ref, path: parts.path, rawUrl: parts.rawUrl || resolved, fallbackPolicy: input.fallbackPolicy || '', reason: reasonDisabled || 'git-native-candidate' });
+    if (reasonDisabled) {
+      if (shouldBlockImplicitRawRepoMaterial(parts, input)) {
+        githubRepoFetchTrace('repo-material.raw-fallback.blocked', { label, repo: parts.repo, ref: parts.ref, path: parts.path, rawUrl: parts.rawUrl || resolved, reason: reasonDisabled, policy: 'git-native-intended-no-implicit-raw' });
+        throw repoMaterialUnavailableError(parts, reasonDisabled, label);
+      }
+      return null;
+    }
+
+    try {
+      const bridged = await tryReadGithubRawViaGitNative(parts.rawUrl || resolved, label, Object.assign({}, input, { allowRawFallback: false }));
+      if (bridged?.ok) {
+        const sourceKind = bridged.sourceResolutionKind || (bridged.localRefSubstitute ? 'git-native-local-object-store-ref-substitute' : 'git-native-local-object-store');
+        githubRepoFetchTrace('repo-material.git-native.success', { label, repo: parts.repo, ref: parts.ref, path: bridged.parts?.path || parts.path, requestedPath: parts.path, rawUrl: parts.rawUrl || resolved, commit: bridged.commit || '', exactRef: bridged.exactRef !== false, sourceResolutionKind: sourceKind, bytes: String(bridged.text || '').length });
+        if (bridged.localRefSubstitute) githubRepoFetchTrace('repo-material.git-native.local-ref-substitute', { label, repo: parts.repo, requestedRef: parts.ref, substituteCommit: bridged.commit || '', path: bridged.parts?.path || parts.path, rawUrl: parts.rawUrl || resolved, reason: 'schema-same-path-local-substitute' });
+        return Object.assign({ ok: true, text: bridged.text }, bridged, { sourceState: 'git-native-local-object-store', sourceResolutionKind: sourceKind });
+      }
+    } catch (error) {
+      githubRepoFetchTrace('repo-material.git-native.miss', { label, repo: parts.repo, ref: parts.ref, path: parts.path, rawUrl: parts.rawUrl || resolved, error: error?.message || String(error) });
+      if (/integrity/i.test(label)) githubRepoFetchTrace('repo-material.integrity.deferred', { label, repo: parts.repo, ref: parts.ref, path: parts.path, rawUrl: parts.rawUrl || resolved, reason: 'git-native-object-unavailable' });
+      if (!rawFallbackAllowedForRepoMaterial(parts, input)) {
+        githubRepoFetchTrace('repo-material.raw-fallback.blocked', { label, repo: parts.repo, ref: parts.ref, path: parts.path, rawUrl: parts.rawUrl || resolved, reason: 'git-native-active-fallback-not-explicit' });
+        throw repoMaterialUnavailableError(parts, error, label);
+      }
+      githubRepoFetchTrace('repo-material.raw-fallback.explicit', { label, repo: parts.repo, ref: parts.ref, path: parts.path, rawUrl: parts.rawUrl || resolved, reason: input.fallbackPolicy || 'allowRawFallback' });
+      return null;
+    }
+    return null;
+  }
+
+  async function resolveGitNativeCommitForRawRead(runtime, bridge, opts, parts, traceDetail) {
+    if (isCommitRef(parts.ref)) return parts.ref;
+    try {
+      return await runtime.git.resolveRef({ fs: runtime.fs, dir: runtime.dir, ref: parts.ref, cache: runtime.cache });
+    } catch (error) {
+      githubRepoFetchTrace('git-native.raw-bridge.resolve-miss', Object.assign({}, traceDetail, { error: error?.message || String(error) }));
+    }
+
+    const snapshotKey = `${parts.repo}@${parts.ref}:${(opts.rootPaths || '.topics')}`;
+    app.gitNativeRawSnapshotInFlight = app.gitNativeRawSnapshotInFlight || new Map();
+    if (!app.gitNativeRawSnapshotInFlight.has(snapshotKey)) {
+      app.gitNativeRawSnapshotInFlight.set(snapshotKey, bridge.acquireSnapshot(Object.assign({}, opts, {
+        repo: parts.repo,
+        ref: parts.ref,
+        reuseExistingClone: true,
+        sampleReads: 0
+      })).finally(() => {
+        app.gitNativeRawSnapshotInFlight.delete(snapshotKey);
+      }));
+    }
+    const snapshot = await app.gitNativeRawSnapshotInFlight.get(snapshotKey);
+    if (!snapshot?.ok || !snapshot.commit) throw new Error(snapshot?.error || 'Git-native snapshot did not resolve a commit.');
+    return snapshot.commit;
+  }
+
+  async function tryReadGithubRawViaGitNative(resolved, label = 'resource', options = {}) {
+    const parts = rawGithubSourceParts(resolved);
+    if (!gitNativeRawReadEnabledFor(parts)) return null;
+    const bridge = window.TiinexGitNativeRuntime;
+    const config = effectiveGitNativeDiscoveryConfig({});
+    const opts = Object.assign({}, config, {
+      repo: parts.repo,
+      ref: parts.ref || config.ref || 'master',
+      rootPaths: config.rootPaths || '.topics',
+      reuseExistingClone: true
+    });
+    const traceDetail = {
+      label,
+      repo: parts.repo,
+      ref: parts.ref,
+      path: parts.path,
+      rawUrl: parts.rawUrl
+    };
+    githubRepoFetchTrace('git-native.raw-bridge.start', traceDetail);
+    try {
+      const runtime = await bridge.ensureRuntime(Object.assign({}, opts, { repo: parts.repo }));
+      const commit = await resolveGitNativeCommitForRawRead(runtime, bridge, opts, parts, traceDetail);
+      if (gitNativeHistoricalHydrationNeeded(parts, commit) && typeof bridge.hydrateCommit === 'function') {
+        const historyRef = gitNativeHistoricalHydrationBaseRefFor(parts) || opts.ref || 'master';
+        const hydrationOpts = Object.assign({}, opts, {
+          ref: historyRef,
+          historyRef,
+          historicalDepth: Math.max(1, Number(options.historicalDepth || config.historicalDepth || config.timePortalDepth || 64)),
+          historicalMaxDepth: Math.max(1, Number(options.historicalMaxDepth || config.historicalMaxDepth || config.timePortalMaxDepth || 256)),
+          historicalDepthSteps: options.historicalDepthSteps || config.historicalDepthSteps || ''
+        });
+        githubRepoFetchTrace('git-native.historical-hydrate.start', Object.assign({}, traceDetail, { commit, historyRef, depth: hydrationOpts.historicalDepth, maxDepth: hydrationOpts.historicalMaxDepth, depthSteps: hydrationOpts.historicalDepthSteps || '', reason: 'historical-commit-object-missing-candidate' }));
+        try {
+          const hydration = await bridge.hydrateCommit(runtime, commit, hydrationOpts);
+          githubRepoFetchTrace('git-native.historical-hydrate.success', Object.assign({}, traceDetail, { commit, historyRef, depth: hydration?.depth || hydrationOpts.historicalDepth, method: hydration?.method || '', alreadyPresent: Boolean(hydration?.alreadyPresent), attempts: hydration?.attempts || [] }));
+        } catch (error) {
+          githubRepoFetchTrace('git-native.historical-hydrate.failed', Object.assign({}, traceDetail, { commit, historyRef, depth: hydrationOpts.historicalDepth, maxDepth: hydrationOpts.historicalMaxDepth, depthSteps: hydrationOpts.historicalDepthSteps || '', error: error?.message || String(error), attempts: error?.attempts || [] }));
+        }
+      }
+      const candidatePaths = gitNativeCandidatePathsForRawPath(parts.path);
+      let lastError = null;
+      for (const candidatePath of candidatePaths) {
+        try {
+          const text = await bridge.readGitText(runtime, candidatePath, commit);
+          githubRepoFetchTrace('git-native.raw-bridge.success', Object.assign({}, traceDetail, { commit, path: candidatePath, requestedPath: parts.path, bytes: String(text || '').length }));
+          return { ok: true, text, parts: Object.assign({}, parts, { path: candidatePath, requestedPath: parts.path }), commit, exactRef: true };
+        } catch (error) {
+          lastError = error;
+          githubRepoFetchTrace('git-native.raw-bridge.path-miss', Object.assign({}, traceDetail, { commit, candidatePath, error: error?.message || String(error) }));
+        }
+      }
+
+      const substituteCommit = gitNativeLocalRefSubstituteAllowedFor(parts, label, options) ? gitNativeLocalRefSubstituteCommitFor(parts) : '';
+      if (substituteCommit) {
+        for (const candidatePath of candidatePaths) {
+          try {
+            const text = await bridge.readGitText(runtime, candidatePath, substituteCommit);
+            githubRepoFetchTrace('git-native.raw-bridge.local-substitute.success', Object.assign({}, traceDetail, { requestedRef: parts.ref, requestedCommit: commit, substituteCommit, path: candidatePath, requestedPath: parts.path, bytes: String(text || '').length, reason: 'schema-same-path-local-substitute' }));
+            return {
+              ok: true,
+              text,
+              parts: Object.assign({}, parts, { path: candidatePath, requestedPath: parts.path }),
+              commit: substituteCommit,
+              requestedCommit: commit,
+              requestedRef: parts.ref,
+              exactRef: false,
+              localRefSubstitute: true,
+              sourceResolutionKind: 'git-native-local-object-store-ref-substitute'
+            };
+          } catch (error) {
+            lastError = error;
+            githubRepoFetchTrace('git-native.raw-bridge.local-substitute.path-miss', Object.assign({}, traceDetail, { requestedRef: parts.ref, requestedCommit: commit, substituteCommit, candidatePath, error: error?.message || String(error) }));
+          }
+        }
+      }
+      throw lastError || new Error(`Git-native raw bridge could not read ${parts.path}.`);
+    } catch (error) {
+      githubRepoFetchTrace('git-native.raw-bridge.failed', Object.assign({}, traceDetail, { error: error?.message || String(error) }));
+      if (options.allowRawFallback === true) return null;
+      const err = new Error(`Git-native local object-store read failed for ${parts.repo}@${parts.ref}/${parts.path}: ${error?.message || String(error)}`);
+      err.gitNativeRawBridgeFailed = true;
+      err.rawFallbackBlocked = true;
+      throw err;
+    }
+  }
+
+  function installGitNativeRawFetchGate() {
+    if (app.gitNativeRawFetchGateInstalled) return;
+    if (typeof window === 'undefined' || typeof window.fetch !== 'function') return;
+    const nativeFetch = window.fetch.bind(window);
+    app.gitNativeRawFetchGateInstalled = true;
+    app.nativeFetch = app.nativeFetch || nativeFetch;
+    window.fetch = async function tiinexGitNativeRawFetchGate(resource, init = {}) {
+      const requestUrl = adapterResourceUrl(resource);
+      const parts = rawGithubSourceParts(requestUrl);
+      const reasonDisabled = parts ? gitNativeRawReadDisabledReason(parts, init || {}) : 'not-github-repo-material';
+      if (parts && !reasonDisabled && !(init && init.allowRawFallback === true) && !(init && init.skipGitNativeRawBridge === true)) {
+        try {
+          const bridged = await readRepoMaterialText({ url: parts.rawUrl || requestUrl, label: 'Git-native raw fetch gate', purpose: 'Git-native raw fetch gate', fallbackPolicy: 'never', allowRawFallback: false });
+          if (bridged?.ok) {
+            githubRepoFetchTrace('git-native.raw-fetch-gate.success', { repo: parts.repo, ref: parts.ref, path: bridged.parts?.path || parts.path, requestedPath: parts.path, rawUrl: parts.rawUrl || requestUrl, commit: bridged.commit || '', bytes: String(bridged.text || '').length });
+            const response = new Response(bridged.text || '', {
+              status: 200,
+              statusText: 'OK',
+              headers: {
+                'content-type': 'text/plain; charset=utf-8',
+                'x-tiinex-source-state': bridged.sourceResolutionKind || 'git-native-local-object-store',
+                'x-tiinex-git-native-raw-bridge': 'true',
+                'x-tiinex-git-native-exact-ref': bridged.exactRef === false ? 'false' : 'true'
+              }
+            });
+            try {
+              response.tiinexGitNativeSynthetic = true;
+              response.tiinexGitNativeBridge = bridged;
+            } catch (_) {}
+            return response;
+          }
+        } catch (error) {
+          githubRepoFetchTrace('git-native.raw-fetch-gate.failed', { repo: parts.repo, ref: parts.ref, path: parts.path, rawUrl: parts.rawUrl || requestUrl, error: error?.message || String(error) });
+          if (!(init && init.allowRawFallback === true)) throw error;
+        }
+      }
+      if (parts) {
+        const explicitFallback = Boolean(init && init.allowRawFallback === true);
+        const skipBridge = Boolean(init && init.skipGitNativeRawBridge === true);
+        const reason = explicitFallback ? 'explicit-raw-fallback' : skipBridge ? 'skip-git-native-raw-bridge' : (reasonDisabled || 'native-fetch-fallback');
+        const unexpected = !explicitFallback && !skipBridge && !reasonDisabled;
+        if (shouldBlockImplicitRawRepoMaterial(parts, init || {})) {
+          githubRepoFetchTrace('git-native.raw-fetch-gate.blocked', { repo: parts.repo, ref: parts.ref, path: parts.path, rawUrl: parts.rawUrl || requestUrl, reason, policy: 'git-native-intended-no-implicit-raw' });
+          githubRepoFetchTrace('repo-material.raw-fallback.blocked', { label: 'Git-native raw fetch gate', repo: parts.repo, ref: parts.ref, path: parts.path, rawUrl: parts.rawUrl || requestUrl, reason: 'fetch-gate-boundary' });
+          throw repoMaterialUnavailableError(parts, reason, 'Git-native raw fetch gate');
+        }
+        githubRepoFetchTrace('git-native.raw-fetch-gate.pass-through', { repo: parts.repo, ref: parts.ref, path: parts.path, rawUrl: parts.rawUrl || requestUrl, reason, unexpected });
+      }
+      return nativeFetch(resource, init);
+    };
+  }
+
   async function fetchText(url, label = 'resource', options = {}) {
     const resolved = (() => {
       try { return new URL(url, location.href).href; } catch (_) { return String(url || ''); }
@@ -7367,17 +13243,25 @@ ${bodySections}
       throw new Error(`${label} is local-only in file:// mode; drop the file or host the viewer over http://localhost.`);
     }
 
+    const repoMaterial = await readRepoMaterialText(Object.assign({}, options, { url: resolved, label, purpose: label }));
+    if (repoMaterial?.ok) return repoMaterial.text;
+
     return await adapterFetchText(resolved, {
       adapter: adapterIdForUrl(resolved),
       label,
-      hardRefresh: Boolean(options.hardRefresh)
+      hardRefresh: Boolean(options.hardRefresh),
+      allowRawFallback: Boolean(options.allowRawFallback),
+      fallbackPolicy: options.fallbackPolicy || '',
+      skipGitNativeRawBridge: Boolean(options.skipGitNativeRawBridge)
     });
   }
 
 
 
 
-  const EMBEDDED_DEFAULT_WORKSPACE_MD = "# Continuity Context\n\n- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.root.v1.schema.md)\n- Current\n  - Current Schema: [tiinex.workspace.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.workspace.v1.schema.md)\n  - Created At: 2026-06-16 00:00:00\n  - Why: Defines a portable multi-lineage workspace entrypoint.\n  - Summary: Opens the Tiinex docs workspace and declares the default viewer discovery lens.\n\n---\n\n# Tiinex Viewer\n\n## Viewer Identity\n\n- Icon: ../../assets/tiinex-logo-white-transparent.png\n- Home: https://github.com/Tiinex\n\n## Empty Stage\n\n- Subtitle: Every handoff starts somewhere\n- Subtitle: Start where the last thread ends\n- Subtitle: Leave enough for the next mind\n- Subtitle: A thread is waiting\n- Subtitle: Nothing starts from nothing\n\n## Workspace Discovery\n\n- [Tiinex docs workspaces](https://github.com/Tiinex/docs)\n  - Kind: github-tree\n  - Ref: master\n  - Root Path: .topics\n  - Match: *.workspace.md\n  - Label: Tiinex docs workspaces\n  - Open Behavior: chooser\n\n## Workspace Entrypoints\n\n### Tiinex docs\n\n- Source Kind: github-tree\n- Repository: Tiinex/docs\n- Ref: master\n- Root Path: .topics\n- Repo Files Discovery: on\n- Issue Discussion Discovery: on\n- Issue URL: https://github.com/Tiinex/docs/issues/4\n- Default View: feed\n- Default Filter: all\n\n## Help\n\n### What is this view?\n\nThis workspace opens Tiinex markdown artifacts so an external reviewer and their LLM helpers can inspect continuity, source material, integrity signals, and continuation paths.\n\n### What should I check first?\n\nStart with what is loaded.\n\nCheck the workspace source, then inspect the visible badges. Treat integrity mismatch, missing integrity, unknown schema, and local-only material as review signals, not automatic failure.\n\n### What should I trust?\n\nTrust only what the artifact and its sources actually show.\n\nUse `Source` to inspect where material came from, `Markdown` to read the artifact, `Open` to inspect the selected node, and `Continue` only when the next step is clear enough to preserve.\n\n### What should an LLM preserve?\n\nDo not collapse Parent and Origin.\n\nParent is the declared continuity edge. Origin is provenance for where the material came from. If either is missing or weak, say so rather than filling the gap.\n\n### What should I send back?\n\nA useful validation note names the selected artifact, the source inspected, the observed signal, and the smallest next correction or continuation.\n\n---\n\n# Continuity Integrity\n\n- [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)\n  - Towards: [viewer.workspace.md](viewer.workspace.md)\n  - Value: cq_1gsfGZ34oa4EQbEDrpO4Vaq9vYZAdn6Xwkl10blA\n";
+
+
+  const EMBEDDED_DEFAULT_WORKSPACE_MD = "# Continuity Context\n\n- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.root.v1.schema.md)\n- Current\n  - Current Schema: [tiinex.workspace.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.workspace.v1.schema.md)\n  - Created At: 2026-06-16 00:00:00\n  - Why: Defines a portable multi-lineage workspace entrypoint.\n  - Summary: Opens the Tiinex docs workspace and declares the default viewer discovery lens.\n\n---\n\n# Tiinex Viewer\n\n## Viewer Identity\n\n- Icon: ../../assets/tiinex-logo-white-transparent.png\n- Home: https://github.com/Tiinex\n- Public Viewer URL: https://tiinex.dev/\n- Workspace Home: https://tiinex.dev/\n\n## Empty Stage\n\n- Subtitle: Every handoff starts somewhere\n- Subtitle: Start where the last thread ends\n- Subtitle: Leave enough for the next mind\n- Subtitle: A thread is waiting\n- Subtitle: Nothing starts from nothing\n\n## Workspace Discovery\n\n- [Tiinex docs workspaces](https://github.com/Tiinex/docs)\n  - Kind: github-tree\n  - Ref: master\n  - Root Path: .topics\n  - Match: *.workspace.md\n  - Label: Tiinex docs workspaces\n  - Open Behavior: chooser\n\n## Workspace Entrypoints\n\n### Tiinex docs\n\n- Source Kind: github-tree\n- Repository: Tiinex/docs\n- Ref: master\n- Root Path: .topics\n- Repo Files Discovery: on\n- Issue Discovery: on\n- Issue URL: https://github.com/Tiinex/docs/issues/9\n- Default View: feed\n- Default Filter: all\n\n## Help\n\n### What is this view?\n\nThis workspace opens Tiinex markdown artifacts so an external reviewer and their LLM helpers can inspect continuity, source material, integrity signals, and continuation paths.\n\n### What should I check first?\n\nStart with what is loaded.\n\nCheck the workspace source, then inspect the visible badges. Treat integrity mismatch, missing integrity, unknown schema, and local-only material as review signals, not automatic failure.\n\n### What should I trust?\n\nTrust only what the artifact and its sources actually show.\n\nUse `Source` to inspect where material came from, `Markdown` to read the artifact, `Open` to inspect the selected node, and `Continue` only when the next step is clear enough to preserve.\n\n### What should an LLM preserve?\n\nDo not collapse Parent and Origin.\n\nParent is the declared continuity edge. Origin is provenance for where the material came from. If either is missing or weak, say so rather than filling the gap.\n\n### What should I send back?\n\nA useful validation note names the selected artifact, the source inspected, the observed signal, and the smallest next correction or continuation.\n\n---\n\n# Continuity Integrity\n\n- [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)\n  - Towards: [viewer.workspace.md](viewer.workspace.md)\n  - Value: r45Tk9hmaYpM6B2SUqCHAfNqieAWH5o1DO3_1TGKa0Y\n";
 
   function shouldUseEmbeddedDefaultWorkspace() {
     // Hash state describes current opened sources; it should not block loading
@@ -7482,6 +13366,16 @@ ${bodySections}
     }
     const home = readIdentityField(['Home', 'Href', 'Link', 'URL']);
     if (home) out.home = markdownConfigValue(home, configUrl);
+    const publicBase = readIdentityField(['Public Viewer URL', 'Public Viewer Url', 'Viewer Base URL', 'Viewer Base Url', 'Share Base URL', 'Share Base Url', 'Public Base URL', 'Public Base Url']);
+    if (publicBase) {
+      out.publicBaseUrl = markdownConfigValue(publicBase, configUrl);
+      out.viewerBaseUrl = out.publicBaseUrl;
+      out.shareBaseUrl = out.publicBaseUrl;
+    }
+    const workspaceHome = readIdentityField(['Workspace Home', 'Logo Home', 'Home State', 'Home Hash', 'Default State']);
+    if (workspaceHome) out.workspaceHome = markdownConfigValue(workspaceHome, configUrl);
+    const logoHrefMode = readIdentityField(['Logo Href Mode', 'Logo Link Mode']);
+    if (logoHrefMode) out.logoHrefMode = stripMarkdownInline(logoHrefMode);
     const accent = readIdentityField(['Accent']);
     if (accent) out.accent = accent;
     const theme = readIdentityField(['Theme']);
@@ -7509,10 +13403,10 @@ ${bodySections}
     return out;
   }
 
-  async function applyEmbeddedDefaultWorkspace() {
+  async function applyEmbeddedDefaultWorkspace(options = {}) {
     app.viewerIdentity.configUrl = '.topics/.workspaces/viewer.workspace.md';
     const parsed = parseViewerConfigMarkdown(EMBEDDED_DEFAULT_WORKSPACE_MD, app.viewerIdentity.configUrl);
-    await applyParsedViewerConfig(parsed, app.viewerIdentity.configUrl, { applyWorkspaceState: true });
+    await applyParsedViewerConfig(parsed, app.viewerIdentity.configUrl, { applyWorkspaceState: options.applyWorkspaceState !== false });
   }
 
   async function loadViewerConfig() {
@@ -7523,7 +13417,7 @@ ${bodySections}
 
     if (shouldUseEmbeddedDefaultWorkspace()) {
       try {
-        await applyEmbeddedDefaultWorkspace();
+        await applyEmbeddedDefaultWorkspace({ applyWorkspaceState: !startupHasPublicHashShareTarget() });
       } catch (error) {
         app.viewerIdentity.error = error?.message || String(error || '');
         applyViewerCustomCss('');
@@ -7585,19 +13479,31 @@ ${bodySections}
 
   // --- Branding and viewer chrome ---
 
+  function workspaceHomeHrefForBrand() {
+    const cfg = app.viewerIdentity || {};
+    const explicit = String(cfg.workspaceHome || '').trim();
+    if (explicit) {
+      const safe = safeUrl(explicit);
+      if (safe) return safe;
+      if (/^#/.test(explicit)) return `${location.pathname}${location.search}${explicit}`;
+    }
+    const publicBase = configuredPublicViewerBaseUrl();
+    if (publicBase && !staticDiskMode()) return publicBase;
+    return cleanViewerUrl();
+  }
+
   function renderViewerBrand() {
     const cfg = app.viewerIdentity || {};
     const label = String(cfg.label || '').trim();
     const display = String(cfg.displayName || cfg.heading || label || 'Tiinex').trim();
     const summary = String(cfg.summaryText || '').trim();
-    const home = cfg.home || 'https://github.com/Tiinex';
-    const href = safeUrl(home) || 'https://github.com/Tiinex';
-    const title = summary ? `${display}\n${summary}` : display;
+    const href = workspaceHomeHrefForBrand();
+    const title = summary ? `${display}\n${summary}` : `${display} home`;
     const iconUrl = resolveWorkspaceIconForRender();
     const fallbackIcon = DEFAULT_TIINEX_BRAND_ASSET;
     const onerror = "if(this.dataset.fallbackSrc&&!this.dataset.fallbackUsed){this.dataset.fallbackUsed='1';this.src=this.dataset.fallbackSrc}else{this.style.display='none';this.parentElement&&this.parentElement.classList.add('show-letter-fallback')}";
 
-    return `<a class="brand-inline viewer-brand viewer-brand-link ${label ? 'has-label' : 'symbol-only'}" href="${escapeAttr(href)}" target="_blank" rel="noopener" title="${escapeAttr(title)}" aria-label="${escapeAttr(display)}">
+    return `<a class="brand-inline viewer-brand viewer-brand-link ${label ? 'has-label' : 'symbol-only'}" href="${escapeAttr(href)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(display)} home">
       <span class="viewer-brand-link-slot">
         <span class="viewer-brand-link-letter" aria-hidden="true">T</span>
         <img class="viewer-brand-link-img" src="${escapeAttr(iconUrl)}" data-fallback-src="${escapeAttr(fallbackIcon)}" onerror="${escapeAttr(onerror)}" alt="" aria-hidden="true" loading="eager">
@@ -7666,36 +13572,183 @@ ${bodySections}
 
 
 
+  const TIINEX_MARKDOWN_ARTIFACT_REGISTRY = Object.freeze([
+    Object.freeze({ kind: 'trace', suffix: '.trace.md', label: 'Lineage traces', shortLabel: 'Traces', description: 'Regular trace lineage artifacts.', support: false, defaultVisible: true, icon: 'fa-solid fa-code-branch' }),
+    Object.freeze({ kind: 'schema', suffix: '.schema.md', label: 'Schemas', shortLabel: 'Schemas', description: 'Schema lineage artifacts and format rules.', support: true, supportDirectory: '.schemas', defaultVisible: true, icon: 'fa-solid fa-scroll' }),
+    Object.freeze({ kind: 'validator', suffix: '.validator.md', label: 'Validators', shortLabel: 'Validators', description: 'Validation method definitions used by integrity entries.', support: true, supportDirectory: '.validators', defaultVisible: true, icon: 'fa-solid fa-scale-balanced' }),
+    Object.freeze({ kind: 'workspace', suffix: '.workspace.md', label: 'Workspace entrypoints', shortLabel: 'Workspaces', description: 'Workspace entrypoints as lineage artifacts.', support: true, supportDirectory: '.workspaces', defaultVisible: true, icon: 'fa-solid fa-folder-tree' }),
+    Object.freeze({ kind: 'adapter', suffix: '.adapter.md', label: 'Adapters', shortLabel: 'Adapters', description: 'Adapter definitions for boundary crossing, intake, and delivery surfaces.', support: true, supportDirectory: '.adapters', defaultVisible: true, icon: 'fa-solid fa-plug' }),
+    Object.freeze({ kind: 'origin', suffix: '.origin.md', label: 'Origins', shortLabel: 'Origins', description: 'Origin boundary definitions for places, platforms, archives, repositories, and other starting contexts.', support: true, supportDirectory: '.origins', defaultVisible: true, icon: 'fa-solid fa-location-crosshairs' }),
+    Object.freeze({ kind: 'tool', suffix: '.tool.md', label: 'Tools', shortLabel: 'Tools', description: 'Reusable tool-definition artifacts.', support: true, supportDirectory: '.tools', defaultVisible: true, icon: 'fa-solid fa-screwdriver-wrench' }),
+    Object.freeze({ kind: 'interface', suffix: '.interface.md', label: 'Interfaces', shortLabel: 'Interfaces', description: 'Interface, contact boundary, handoff surface, or mediation boundary artifacts.', support: true, supportDirectory: '.interfaces', defaultVisible: true, icon: 'fa-solid fa-right-left' })
+  ]);
+
+  const TIINEX_ARTIFACT_KIND_LABELS = Object.freeze(Object.fromEntries(TIINEX_MARKDOWN_ARTIFACT_REGISTRY.map((entry) => [entry.kind, entry.label])));
+
+  function tiinexMarkdownArtifactRegistry() {
+    return TIINEX_MARKDOWN_ARTIFACT_REGISTRY;
+  }
+
+  function artifactSuffixRegex(suffix) {
+    return new RegExp(`${String(suffix || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:$|[?#])`, 'i');
+  }
+
+  function isHistoricalTiinexSchemaPath(value) {
+    const path = normalizeRepoPath(stripUrlDecorations(value || ''));
+    return /(?:^|\/)\.topics\/\.schemas\/tiinex\.[a-z0-9._-]+\.v\d+\.md$/i.test(path)
+      && !/\.schema\.md$/i.test(path);
+  }
+
+  function historicalSchemaFilenameForModernFilename(filename) {
+    const name = fileNameFromPath(filename || '');
+    if (!/\.schema\.md$/i.test(name)) return '';
+    return name.replace(/\.schema\.md$/i, '.md');
+  }
+
+  function modernSchemaFilenameForHistoricalFilename(filename) {
+    const name = fileNameFromPath(filename || '');
+    if (!/^tiinex\.[a-z0-9._-]+\.v\d+\.md$/i.test(name) || /\.schema\.md$/i.test(name)) return '';
+    return name.replace(/\.md$/i, '.schema.md');
+  }
+
+  function tiinexArtifactDefinitionForPath(value) {
+    const text = String(value || '');
+    if (isHistoricalTiinexSchemaPath(text)) return tiinexArtifactDefinitionForKind('schema');
+    return TIINEX_MARKDOWN_ARTIFACT_REGISTRY.find((entry) => artifactSuffixRegex(entry.suffix).test(text)) || null;
+  }
+
+  function tiinexArtifactDefinitionForKind(kind) {
+    const key = String(kind || '').trim();
+    return TIINEX_MARKDOWN_ARTIFACT_REGISTRY.find((entry) => entry.kind === key) || null;
+  }
+
+  function tiinexArtifactKindForPath(value) {
+    return tiinexArtifactDefinitionForPath(value)?.kind || '';
+  }
+
   function isSchemaPath(path) {
-    return /\.schema\.md(?:$|[?#])/i.test(String(path || ''));
+    return tiinexArtifactKindForPath(path) === 'schema';
   }
 
   function isTiinexMarkdownArtifactPath(value) {
-    return /\.(trace|schema|workspace|validator)\.md(?:$|[?#])/i.test(String(value || ''));
+    return Boolean(tiinexArtifactDefinitionForPath(value));
   }
 
   function isValidatorPath(path) {
-    return /\.validator\.md(?:$|[?#])/i.test(String(path || ''));
+    return tiinexArtifactKindForPath(path) === 'validator';
+  }
+
+  function pathsByTiinexArtifactKind(paths) {
+    const grouped = Object.fromEntries(TIINEX_MARKDOWN_ARTIFACT_REGISTRY.map((entry) => [`${entry.kind}Paths`, []]));
+    for (const path of paths || []) {
+      const kind = tiinexArtifactKindForPath(path);
+      if (kind && grouped[`${kind}Paths`]) grouped[`${kind}Paths`].push(path);
+    }
+    return grouped;
   }
 
   function schemaFilenameFromText(schemaText) {
+    return schemaFilenameCandidatesFromText(schemaText)[0] || '';
+  }
+
+  function schemaFilenameCandidatesFromText(schemaText) {
     let text = stripMarkdownInline(String(schemaText || '')).trim();
     text = text.replace(/^schema:\s*/i, '').replace(/^[`'"]|[`'"]$/g, '');
-    if (!text || /unknown|plain/i.test(text)) return '';
+    if (!text || /unknown|plain/i.test(text)) return [];
+
+    const candidates = [];
+    const add = (filename) => {
+      const clean = fileNameFromPath(stripUrlDecorations(filename || '')).trim();
+      if (clean && !candidates.includes(clean)) candidates.push(clean);
+    };
 
     const file = fileNameFromPath(stripUrlDecorations(text));
-    if (/\.schema\.md$/i.test(file)) return file;
+    if (/\.schema\.md$/i.test(file)) {
+      add(file);
+      add(historicalSchemaFilenameForModernFilename(file));
+      return candidates;
+    }
+    if (/^tiinex\.[a-z0-9._-]+\.v\d+\.md$/i.test(file) && !/\.schema\.md$/i.test(file)) {
+      add(modernSchemaFilenameForHistoricalFilename(file));
+      add(file);
+      return candidates;
+    }
 
     let key = schemaKey(text);
     if (!key || key === 'unknown') {
-      key = text.replace(/^tiinex\./i, '').replace(/\.schema\.md$/i, '').replace(/\.v\d+$/i, '');
+      key = text.replace(/^tiinex\./i, '').replace(/\.schema\.md$/i, '').replace(/\.v\d+$/i, '').replace(/\.md$/i, '');
     }
     key = String(key || '').trim().toLowerCase();
-    if (!key) return '';
+    if (!key) return [];
 
-    if (/^tiinex\.[a-z0-9._-]+\.v\d+$/i.test(text)) return `${text}.schema.md`;
-    if (/^tiinex\./i.test(text)) return `${text.replace(/\.schema\.md$/i, '')}.schema.md`.replace(/^.*\//, '');
-    return `tiinex.${key}.v1.schema.md`;
+    if (/^tiinex\.[a-z0-9._-]+\.v\d+$/i.test(text)) {
+      add(`${text}.schema.md`);
+      add(`${text}.md`);
+      return candidates;
+    }
+    if (/^tiinex\./i.test(text)) {
+      const base = text.replace(/\.schema\.md$/i, '').replace(/\.md$/i, '').replace(/^.*\//, '');
+      add(`${base}.schema.md`);
+      if (/\.v\d+$/i.test(base)) add(`${base}.md`);
+      return candidates;
+    }
+    add(`tiinex.${key}.v1.schema.md`);
+    add(`tiinex.${key}.v1.md`);
+    return candidates;
+  }
+
+  function schemaLinkedSourceCandidateForNode(ws, node) {
+    const rawSchema = String(node?.currentSchema || node?.currentSchemaText || '').trim();
+    const link = parseMarkdownLink(rawSchema);
+    const href = stripUrlDecorations(link.href || (/^https?:\/\//i.test(rawSchema) ? rawSchema : ''));
+    if (!href) return null;
+
+    if (/^https?:\/\//i.test(href)) {
+      const converted = convertSourceUrl(href) || {};
+      const path = normalizeRepoPath(converted.path || fileNameFromPath(href));
+      if (!isSchemaPath(path)) return null;
+      return {
+        path,
+        rawUrl: converted.rawUrl || href,
+        browseUrl: converted.browseUrl || href,
+        repo: converted.repo || '',
+        ref: converted.ref || '',
+        sourceAccessMode: 'web-surface',
+        sourceResolutionKind: 'schema-current-link'
+      };
+    }
+
+    const path = normalizeRepoPath(joinPath(dirname(node?.path || ''), href));
+    if (!isSchemaPath(path)) return null;
+    return {
+      path,
+      rawUrl: '',
+      browseUrl: '',
+      repo: node?.repo || ws?.repo || '',
+      ref: node?.ref || ws?.ref || '',
+      sourceAccessMode: node?.sourceAccessMode || 'web-surface',
+      sourceResolutionKind: 'schema-current-relative-link'
+    };
+  }
+
+  function sourceRefLooksSynthetic(ref = '') {
+    return /^issue-\d+$/i.test(String(ref || '').trim()) || /^github-issue-/i.test(String(ref || '').trim());
+  }
+
+  function schemaSourceContextForNode(ws, node) {
+    const source = sourceById(ws, node?.sourceId) || {};
+    const discovery = ws?.discoverySource || {};
+    const repo = node?.repo || source.repo || discovery.repo || ws?.repo || '';
+    let ref = node?.ref || source.ref || discovery.ref || ws?.ref || '';
+    if (sourceRefLooksSynthetic(ref)) ref = source.ref || discovery.ref || ws?.ref || '';
+    if (sourceRefLooksSynthetic(ref)) ref = '';
+    return {
+      repo,
+      ref,
+      source,
+      sourceAccessMode: source.sourceAccessMode || node?.sourceAccessMode || 'web-surface',
+      sourceResolutionKind: source.sourceResolutionKind || node?.sourceResolutionKind || 'schema-repo-file'
+    };
   }
 
   function schemaPathCandidatesForNode(ws, node) {
@@ -7710,8 +13763,11 @@ ${bodySections}
     const link = parseMarkdownLink(rawSchema);
     if (link.href) add(joinPath(dirname(node.path || ''), link.href));
 
-    const filename = schemaFilenameFromText(schemaText);
-    if (filename) {
+    const indexedSchemaId = schemaIdFromText(schemaText, '');
+    if (indexedSchemaId) add(tiinexSchemaPathForId(indexedSchemaId));
+
+    const filenames = schemaFilenameCandidatesFromText(schemaText);
+    for (const filename of filenames) {
       add(filename);
       add(`.topics/.schemas/${filename}`);
       add(`.schemas/${filename}`);
@@ -7727,8 +13783,9 @@ ${bodySections}
   function loadedSchemaNodeForCandidates(ws, candidates, schemaText = '') {
     if (!ws) return null;
     const wantedNames = new Set(candidates.map(fileNameFromPath).filter(Boolean).map((name) => name.toLowerCase()));
-    const schemaFile = schemaFilenameFromText(schemaText).toLowerCase();
-    if (schemaFile) wantedNames.add(schemaFile);
+    const schemaFiles = schemaFilenameCandidatesFromText(schemaText).map((name) => name.toLowerCase()).filter(Boolean);
+    for (const schemaFile of schemaFiles) wantedNames.add(schemaFile);
+    const schemaFile = schemaFiles[0] || '';
     for (const candidate of candidates) {
       const found = sameWorkspacePathLookup(ws, candidate);
       if (found) return found;
@@ -7746,11 +13803,33 @@ ${bodySections}
     const existing = loadedSchemaNodeForCandidates(ws, candidates, node?.currentSchemaText || node?.currentSchema || '');
     if (existing) return { existing, candidates };
 
+    const linked = schemaLinkedSourceCandidateForNode(ws, node);
+    if (linked?.rawUrl) {
+      return Object.assign({ existing: null, candidates }, linked);
+    }
+
+    const absolute = candidates.find((item) => /^https?:\/\//i.test(String(item || '')) && isSchemaPath(item));
+    if (absolute) {
+      const converted = convertSourceUrl(absolute) || {};
+      return {
+        existing: null,
+        candidates,
+        path: normalizeRepoPath(converted.path || fileNameFromPath(absolute)),
+        rawUrl: converted.rawUrl || absolute,
+        browseUrl: converted.browseUrl || absolute,
+        repo: converted.repo || '',
+        ref: converted.ref || '',
+        sourceAccessMode: 'web-surface',
+        sourceResolutionKind: 'schema-absolute-url'
+      };
+    }
+
     const path = candidates.find((item) => isSchemaPath(item)) || '';
     if (!path) return { existing: null, candidates };
 
-    const repo = node?.repo || ws?.repo || '';
-    const ref = node?.ref || ws?.ref || '';
+    const context = schemaSourceContextForNode(ws, node);
+    const repo = context.repo || '';
+    const ref = context.ref || '';
     if (repo && ref && !/^[a-z]+:/i.test(path)) {
       return {
         existing: null,
@@ -7759,20 +13838,26 @@ ${bodySections}
         rawUrl: githubRawUrl(repo, ref, path),
         browseUrl: githubBrowseUrl(repo, ref, path),
         repo,
-        ref
+        ref,
+        sourceAccessMode: context.sourceAccessMode || 'web-surface',
+        sourceResolutionKind: context.sourceResolutionKind || 'schema-repo-file'
       };
     }
 
     if (node?.rawUrl) {
       try {
+        const rawUrl = new URL(path, sourceUrlDirectory(node.rawUrl)).toString();
+        const converted = convertSourceUrl(rawUrl) || {};
         return {
           existing: null,
           candidates,
-          path,
-          rawUrl: new URL(path, sourceUrlDirectory(node.rawUrl)).toString(),
-          browseUrl: '',
-          repo,
-          ref
+          path: converted.path || path,
+          rawUrl: converted.rawUrl || rawUrl,
+          browseUrl: converted.browseUrl || '',
+          repo: converted.repo || repo,
+          ref: converted.ref || ref,
+          sourceAccessMode: context.sourceAccessMode || 'web-surface',
+          sourceResolutionKind: 'schema-relative-source-url'
         };
       } catch (_) {}
     }
@@ -7782,11 +13867,20 @@ ${bodySections}
 
   async function openSchemaNode(ws, schemaNode, reason = 'schema') {
     if (!ws || !schemaNode) return;
+    const wasDiscovery = !selectedNode(ws) && !ws.pendingSelectedRoute;
     app.activeWorkspaceId = ws.id;
-    ws.selectedNodeId = schemaNode.id;
     focusWorkspaceWindow(ws.id);
+    if (wasDiscovery && typeof rememberDiscoveryScrollForRoute === 'function') {
+      try { rememberDiscoveryScrollForRoute(ws, 'schema-nav-before-lineage'); } catch (_) {}
+      if (typeof setRouteState === 'function') setRouteState('replace');
+    }
+    ws.selectedNodeId = schemaNode.id;
+    ws.pendingSelectedRoute = null;
+    try { suppressCachedLens('schema-nav-lineage-route', 1800); } catch (_) {}
+    try { lockLineageView(ws, schemaNode, 'schema-nav'); } catch (_) {}
     toast(`Opened ${reason}: ${shortSchema(schemaNode.currentSchemaText || schemaNode.currentSchema || schemaNode.path)}.`, 'ok');
-    setRouteState('push');
+    if (typeof setRouteState === 'function') setRouteState('push');
+    else updateUrlState();
     render();
   }
 
@@ -7802,13 +13896,21 @@ ${bodySections}
 
     try {
       const content = await fetchText(candidate.rawUrl, 'schema');
+      const source = sourceById(ws, node.sourceId) || null;
       addFileToWorkspace(ws, {
         path: candidate.path || fileNameFromPath(candidate.rawUrl),
         content,
         rawUrl: candidate.rawUrl,
         browseUrl: candidate.browseUrl || '',
         repo: candidate.repo || ws.repo || '',
-        ref: candidate.ref || ws.ref || ''
+        ref: candidate.ref || ws.ref || '',
+        sourceId: source?.id || node.sourceId || '',
+        sourceKind: source?.kind || node.sourceKind || 'github',
+        sourceLabel: source?.label || node.sourceLabel || '',
+        sourceOrigin: candidate.browseUrl || candidate.rawUrl,
+        sourceAccessMode: candidate.sourceAccessMode || source?.sourceAccessMode || node.sourceAccessMode || 'web-surface',
+        sourceResolutionKind: candidate.sourceResolutionKind || source?.sourceResolutionKind || node.sourceResolutionKind || 'schema-file',
+        sourceSurface: 'repoFiles'
       });
       computeWorkspaceIndex(ws);
       const loaded = loadedSchemaNodeForCandidates(ws, candidate.candidates, node.currentSchemaText || node.currentSchema)
@@ -8015,6 +14117,507 @@ ${bodySections}
 
 
 
+  function renderGitHubIssuePasteImportModal(modal) {
+    const spec = parseGitHubIssueSpec(modal.issueUrl || '');
+    const title = spec ? `${spec.repo}#${spec.issueNumber}` : 'GitHub issue';
+    const error = modal.error ? `<p class="validation-warning"><i class="fa-solid fa-triangle-exclamation"></i> Automatic browser import could not read this issue: ${escapeHtml(modal.error)}</p>` : '';
+    return `<div class="modal-backdrop"><section class="modal-card source-modal github-issue-paste-modal">
+      <div class="modal-header">
+        <div>
+          <p class="kicker">GitHub issue import</p>
+          <h2>Import ${escapeHtml(title)}</h2>
+          <p class="subtle-text">Automatic fallback readers can be blocked by CORS, public-reader downtime, or GitHub rate limits. Pasting the visible issue text/HTML here uses the same Tiinex issue/comment discovery pipeline without GitHub API calls.</p>
+        </div>
+        <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body source-form">
+        ${error}
+        <div class="form-row">
+          <label>Issue URL</label>
+          <input value="${escapeAttr(modal.issueUrl || '')}" readonly>
+        </div>
+        <div class="form-row">
+          <label>Paste issue material</label>
+          <textarea id="github-issue-paste-material" rows="14" placeholder="Paste copied GitHub issue page text, saved HTML, Jina reader markdown, or API/cache JSON. Tiinex will normalize it through the same issue/comment discovery path.">${escapeHtml(modal.pasted || '')}</textarea>
+        </div>
+        <p class="subtle-text">Tip: open the GitHub issue, select the visible body/comments and copy, or paste saved page/source HTML. If the paste contains an embedded Tiinex Source Markdown block, Tiinex recovers the typed artifact and ignores the presentation layer.</p>
+      </div>
+      <div class="modal-actions">
+        ${modal.issueUrl ? `<a class="tv-btn subtle" href="${escapeAttr(modal.issueUrl)}" target="_blank" rel="noopener"><i class="fa-brands fa-github"></i>Open issue</a>` : ''}
+        <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+        <button class="tv-btn primary" data-action="github-issue-paste-import" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}" data-issue-url="${escapeAttr(modal.issueUrl || '')}"><i class="fa-solid fa-file-import"></i>Import pasted material</button>
+      </div>
+    </section></div>`;
+  }
+
+  registerRenderModalWrapper(function renderModalWithGitHubIssuePasteImport(modal, next) {
+    if (modal?.type === 'github-issue-paste-import') return renderGitHubIssuePasteImportModal(modal);
+    return next(modal);
+  });
+
+  registerActionHandler(async function githubIssuePasteImportAction(event, next) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action !== 'github-issue-paste-import') return next(event);
+    event.preventDefault();
+    event.stopPropagation();
+    const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
+    const node = ws?.nodeById?.get?.(event.currentTarget.dataset.node || app.modal?.nodeId || '');
+    const spec = parseGitHubIssueSpec(event.currentTarget.dataset.issueUrl || app.modal?.issueUrl || '') || gitHubSocialTargetSpecFromNode(node);
+    const text = document.getElementById('github-issue-paste-material')?.value || '';
+    if (!ws || !spec) return toast('Missing workspace or GitHub issue target.', 'warn');
+    if (!text.trim()) return toast('Paste issue material first.', 'warn');
+    const source = sourceById(ws, node?.sourceId || '') || Array.from(ws.sources?.values?.() || []).find((item) => item?.kind === 'github' && item.repo === spec.repo) || null;
+    try {
+      const loaded = await loadPastedGitHubIssueThreadIntoWorkspace(ws, spec, text, {
+        source: source || undefined,
+        ref: source?.ref || ws.ref || '',
+        commentLimit: 100,
+        toast: false,
+        hardRefresh: true,
+        userInitiated: true
+      });
+      removeGitHubSocialTargetPlaceholder(ws, spec);
+      if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
+      app.modal = null;
+      toast(`Imported pasted GitHub issue material for ${spec.repo}#${spec.issueNumber}.`, loaded ? 'ok' : 'warn');
+      render();
+      scheduleLocalStateSave?.();
+    } catch (error) {
+      toast(`Could not import pasted issue material: ${error.message}`, 'error');
+    }
+  });
+
+  registerActionHandler(async function githubSocialAdapterAction(event, next) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action !== 'import-github-issue-material') return next(event);
+    event.preventDefault();
+    event.stopPropagation();
+    const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+    const node = ws?.nodeById?.get?.(event.currentTarget.dataset.node || '');
+    const spec = gitHubSocialTargetSpecFromNode(node);
+    if (!ws || !node || !spec || spec.kind !== 'issue') {
+      toast('This action can only import an explicit GitHub issue target.', 'warn');
+      return;
+    }
+    const source = sourceById(ws, node.sourceId || '') || Array.from(ws.sources?.values?.() || []).find((item) => item?.kind === 'github' && item.repo === spec.repo) || null;
+    try {
+      await loadGitHubIssueIntoWorkspace(ws, spec.issueUrl, { source: source || undefined, ref: source?.ref || ws.ref || '', commentLimit: 100, toast: false, hardRefresh: true });
+      if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
+      toast(`Imported GitHub issue material for ${spec.repo}#${spec.issueNumber}.`, 'ok');
+      render();
+      scheduleLocalStateSave?.();
+    } catch (error) {
+      toast(`Automatic issue import could not read live material: ${error.message}`, 'warn');
+      try {
+        await addGitHubIssueUnavailableFinding(ws, spec.issueUrl, source || { id: node.sourceId || '', kind: 'github', label: node.sourceLabel || '', repo: spec.repo }, error);
+        if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
+      } catch (_) {}
+      openGitHubIssuePasteImportModal(ws, node, spec, error);
+    }
+  });
+
+
+  // --- GitHub outbound draft adapter ---
+
+  function githubOutboundRepoForNode(ws, node) {
+    if (node?.repo) return node.repo;
+    const source = sourceById(ws, node?.sourceId || '');
+    if (source?.kind === 'github' && source.repo) return source.repo;
+    if (ws?.repo) return ws.repo;
+    const githubSource = Array.from(ws?.sources?.values?.() || []).find((item) => item?.kind === 'github' && item.repo);
+    return githubSource?.repo || '';
+  }
+
+  function nodeCanDraftGitHubOutbound(ws, node) {
+    if (!ws || !node) return false;
+    return Boolean(githubOutboundRepoForNode(ws, node));
+  }
+
+  function githubOutboundUrlForRepo(repo, surface, params = {}) {
+    const cleanRepo = String(repo || '').trim();
+    if (!/^[-_.A-Za-z0-9]+\/[-_.A-Za-z0-9]+$/.test(cleanRepo)) return '';
+    const base = surface === 'discussion'
+      ? `https://github.com/${cleanRepo}/discussions/new`
+      : `https://github.com/${cleanRepo}/issues/new`;
+    const query = new URLSearchParams();
+    if (params.title) query.set('title', params.title);
+    const body = String(params.body || '');
+    // GitHub accepts body query params, but very large URLs become unreliable.
+    // Prefer copy-first for large Tiinex drafts and keep the open action safe.
+    if (body && body.length < 4200) query.set('body', body);
+    const suffix = query.toString();
+    return suffix ? `${base}?${suffix}` : base;
+  }
+
+  function githubOutboundTitleForNode(node, mode = 'issue') {
+    const fileLike = {
+      path: node?.path || '',
+      name: node?.path || '',
+      title: node?.title || '',
+      displayTitle: node?.displayTitle || node?.title || '',
+      bodyTitle: node?.bodyTitle || '',
+      content: node?.rawMarkdown || node?.body || '',
+      rawMarkdown: node?.rawMarkdown || node?.body || '',
+      currentSchemaText: node?.currentSchemaText || node?.currentSchema || '',
+      currentSchema: node?.currentSchema || node?.currentSchemaText || ''
+    };
+    const title = markdownTitleFromFile(fileLike);
+    const kind = githubIssueTitleSuffixForFile(fileLike);
+    const label = `${title}${kind ? ` · ${kind}` : ''}`;
+    if (mode === 'discussion') return label.slice(0, 240);
+    if (mode === 'comment') return label.slice(0, 240);
+    return label.slice(0, 240);
+  }
+
+  function markdownExcerptForOutbound(node, limit = 9000) {
+    const raw = normalizeNewlines(node?.rawMarkdown || node?.body || '');
+    if (!raw.trim()) return '_No markdown body was available in the viewer._';
+    if (raw.length <= limit) return raw;
+    return `${raw.slice(0, limit).trimEnd()}\n\n<!-- Tiinex outbound draft excerpt truncated at ${limit} characters. Open the source artifact for the complete body. -->`;
+  }
+
+  function githubOutboundTransitionBlock(ws, node, mode = 'issue') {
+    const sourceUrl = node?.browseUrl || node?.rawUrl || '';
+    const transitionKind = mode === 'comment' ? 'continue' : 'continue';
+    const transitionLabel = mode === 'discussion' ? 'Continue as GitHub discussion' : (mode === 'comment' ? 'Continue in GitHub issue comment' : 'Continue as GitHub issue');
+    const result = mode === 'discussion'
+      ? 'GitHub discussion draft prepared for the user to publish through GitHub web UI'
+      : (mode === 'comment'
+        ? 'GitHub issue comment draft prepared for the user to paste/post through GitHub web UI'
+        : 'GitHub issue draft prepared for the user to publish through GitHub web UI');
+    const surfaceLabel = mode === 'discussion' ? 'GitHub discussion' : (mode === 'comment' ? 'GitHub issue comment' : 'GitHub issue');
+    const sourceLabel = node?.title || displayFileName(node?.path || '') || 'selected artifact';
+    const sourceText = sourceUrl ? `[${sourceLabel}](${sourceUrl})` : sourceLabel;
+    return `- Transition: ${transitionKind} → ${surfaceLabel}\n- Source: ${sourceText}\n- Result: ${result}\n- Adapter: github-outbound-web-draft\n- Status: draft only until published on GitHub; source artifact remains unchanged.\n`;
+  }
+
+  function githubOutboundDraftBody(ws, node, mode = 'issue') {
+    const title = githubOutboundTitleForNode(node, mode);
+    const fileLike = {
+      path: node?.path || '',
+      name: node?.path || '',
+      title: node?.title || '',
+      displayTitle: node?.displayTitle || node?.title || '',
+      bodyTitle: node?.bodyTitle || '',
+      summary: node?.summary || node?.description || '',
+      description: node?.description || '',
+      content: node?.rawMarkdown || node?.body || '',
+      rawMarkdown: node?.rawMarkdown || node?.body || '',
+      body: node?.rawMarkdown || node?.body || '',
+      currentSchemaText: node?.currentSchemaText || node?.currentSchema || '',
+      currentSchema: node?.currentSchema || node?.currentSchemaText || '',
+      browseUrl: node?.browseUrl || '',
+      rawUrl: node?.rawUrl || '',
+      sourceOrigin: node?.sourceOrigin || '',
+      recoveredFromUrl: node?.recoveredFromUrl || ''
+    };
+    const summary = githubPresentationExcerpt(node?.summary || node?.description || '', 420);
+    const schema = node?.currentSchemaText || node?.currentSchema || tiinexSchemaIdForPath(node?.path || '') || 'unknown';
+    const schemaLabel = githubPresentationSchemaLabel(schema);
+    const sourceUrl = node?.browseUrl || node?.rawUrl || '';
+    const sourceLink = sourceUrl ? ` · [source](${sourceUrl})` : '';
+    const viewerLine = githubTiinexBridgeLine(ws, fileLike, { targetUrl: sourceUrl });
+    const delta = githubArtifactBodyDelta(fileLike);
+    const header = mode === 'comment' ? `## ${title}` : `# ${title}`;
+    return `${header}
+
+${summary ? `${summary}\n\n` : ''}> Tiinex ${schemaLabel} · ${workspaceDisplayLabel(ws) || ws?.label || 'workspace'}${sourceLink}
+> ${viewerLine}
+
+${delta ? `## Content\n\n${delta}\n\n` : ''}---
+
+<details>
+<summary>Tiinex source payload</summary>
+
+<!-- tiinex-artifact-start: presentation above is for GitHub readers; Tiinex importers recover the artifact from the Source Markdown below. -->
+
+## Tiinex Boundary
+
+${githubOutboundTransitionBlock(ws, node, mode)}
+
+## Source Markdown
+
+\`\`\`md
+${markdownExcerptForOutbound(node, 18000)}
+\`\`\`
+
+## Publication Notes
+
+- Review this draft before publishing on GitHub.
+- Publishing on GitHub creates or mutates GitHub material, not the original Tiinex artifact.
+- Paste the resulting GitHub URL back into Tiinex and verify before continuing to the next artifact.
+
+</details>
+`;
+  }
+
+  function githubOutboundExistingIssueSpec(ws, node, modal = {}) {
+    const direct = parseGitHubIssueSpec(modal.issueUrl || '');
+    if (direct) return direct;
+    const fromNode = gitHubSocialTargetSpecFromNode(node);
+    if (fromNode?.kind === 'issue') return fromNode;
+    const browse = parseGitHubIssueSpec(node?.browseUrl || node?.rawUrl || '');
+    if (browse) return browse;
+    return null;
+  }
+
+  function githubOutboundRepoForWorkspace(ws) {
+    if (ws?.repo) return ws.repo;
+    const githubSource = Array.from(ws?.sources?.values?.() || []).find((item) => item?.kind === 'github' && item.repo);
+    if (githubSource?.repo) return githubSource.repo;
+    const githubFile = Array.from(ws?.files?.values?.() || []).find((file) => file?.repo || /github\.com\//i.test(file?.browseUrl || file?.rawUrl || ''));
+    if (githubFile?.repo) return githubFile.repo;
+    const match = String(githubFile?.browseUrl || githubFile?.rawUrl || '').match(/github\.com\/([^\/]+\/[^\/]+)(?:\/|$)/i);
+    return match ? match[1] : '';
+  }
+
+  function githubOutboundFileExcerpt(file, limit = 6500) {
+    const raw = normalizeNewlines(file?.content || file?.rawMarkdown || file?.body || '');
+    if (!raw.trim()) return '_No markdown body was available in the workspace file._';
+    if (raw.length <= limit) return raw;
+    return `${raw.slice(0, limit).trimEnd()}
+
+<!-- Tiinex outbound draft excerpt truncated at ${limit} characters. Export/download the workspace for the complete file. -->`;
+  }
+
+  function githubOutboundWorkspaceTitle(ws, modal, mode = 'issue') {
+    const plan = buildExportPlan(ws, modal || {});
+    const label = workspaceDisplayLabel(ws) || ws?.label || 'Tiinex workspace';
+    const suffix = plan.selection?.mode === 'local' ? 'local draft export' : 'workspace export';
+    if (mode === 'discussion') return `Tiinex discussion: ${label} ${suffix}`.slice(0, 240);
+    if (mode === 'comment') return `Tiinex continuation: ${label} ${suffix}`.slice(0, 240);
+    return `Tiinex: ${label} ${suffix}`.slice(0, 240);
+  }
+
+  function githubOutboundWorkspaceTransitionBlock(ws, modal, mode = 'issue') {
+    const plan = buildExportPlan(ws, modal || {});
+    const result = mode === 'discussion'
+      ? 'GitHub discussion draft prepared for the user to publish through GitHub web UI'
+      : (mode === 'comment'
+        ? 'GitHub issue comment draft prepared for the user to paste/post through GitHub web UI'
+        : 'GitHub issue draft prepared for the user to publish through GitHub web UI');
+    return `## Tiinex Transition Boundary
+
+- Transition Schema: tiinex.artifact.transition.v1
+- Transition Kind: continue
+- Transition Label: ${mode === 'discussion' ? 'Continue workspace export as GitHub discussion' : mode === 'comment' ? 'Continue workspace export in GitHub issue comment' : 'Continue workspace export as GitHub issue'}
+- Source Workspace: ${workspaceDisplayLabel(ws) || ws?.label || 'workspace'}
+- Selection: ${plan.selection?.label || plan.selection?.mode || 'selected workspace files'}
+- Result Surface: ${mode === 'discussion' ? 'GitHub discussion' : mode === 'comment' ? 'GitHub issue comment' : 'GitHub issue'}
+- Result Boundary: ${result}
+- Adapter: github-outbound-web-draft
+- Access Mode: web-surface
+- Mutation Policy: loaded workspace and source artifacts unchanged; GitHub publication requires explicit user action outside Tiinex
+- Draft Status: prepared outbound draft only
+- Durable Identity: assigned by the published GitHub URL/comment and by any future Tiinex Continuity Integrity fingerprint, not by a local sequential draft id
+- Does Not Mean: this draft is already published, accepted, validated, evidence, preservation, or canonical Tiinex storage by itself
+`;
+  }
+
+  function githubOutboundWorkspaceDraftBody(ws, modal, mode = 'issue') {
+    const plan = buildExportPlan(ws, modal || {});
+    const title = githubOutboundWorkspaceTitle(ws, modal, mode);
+    const header = mode === 'comment' ? `## ${title}` : `# ${title}`;
+    const files = (plan.files || []).slice(0, 6);
+    const omitted = Math.max(0, (plan.files || []).length - files.length);
+    const fileBlocks = files.map((file, index) => {
+      const label = file.path || file.name || `workspace-file-${index + 1}.md`;
+      const schema = file.currentSchemaText || file.currentSchema || tiinexSchemaIdForPath(file.path || '') || '';
+      return `### ${label}
+
+- Schema: ${schema || 'unknown'}
+- Source: ${file.browseUrl || file.rawUrl || file.sourceLabel || 'workspace'}
+
+<details>
+<summary>Open markdown excerpt</summary>
+
+\`\`\`md
+${githubOutboundFileExcerpt(file)}
+\`\`\`
+
+</details>`;
+    }).join('\n\n');
+    return `${header}
+
+${githubOutboundWorkspaceTransitionBlock(ws, modal, mode)}
+## Export Selection
+
+- Workspace: ${workspaceDisplayLabel(ws) || ws?.label || 'workspace'}
+- Selection: ${plan.selection?.label || 'selected files'}
+- Markdown files: ${plan.counts?.files || 0}
+- Assets: ${plan.counts?.assets || 0}
+- Client side: yes
+- Hidden upload/telemetry: none
+
+## Included Markdown Excerpts
+
+${fileBlocks || '_No markdown files are selected for this outbound draft._'}
+
+${omitted ? `
+_Additional selected markdown files omitted from this GitHub draft body: ${omitted}. Use archive export for the complete workspace._
+` : ''}
+## Review Notes
+
+- Review this draft before publishing on GitHub.
+- Publishing on GitHub creates or mutates GitHub material, not the original Tiinex workspace artifacts.
+- Export/download the workspace if you need a complete local package.
+- Preserve the published URL after posting if it becomes part of the lineage.
+`;
+  }
+
+  function githubOutboundDraftsForExportModal(modal) {
+    const ws = getWorkspace(modal?.wsId || '');
+    if (!ws) return { ws: null, node: null, repo: '', issue: null, discussion: null, comment: null, issueSpec: null };
+    const repo = githubOutboundRepoForWorkspace(ws);
+    const issueBody = githubOutboundWorkspaceDraftBody(ws, modal, 'issue');
+    const discussionBody = githubOutboundWorkspaceDraftBody(ws, modal, 'discussion');
+    const commentBody = githubOutboundWorkspaceDraftBody(ws, modal, 'comment');
+    const issueTitle = githubOutboundWorkspaceTitle(ws, modal, 'issue');
+    const discussionTitle = githubOutboundWorkspaceTitle(ws, modal, 'discussion');
+    const issueSpec = parseGitHubIssueSpec(modal.githubIssueUrl || modal.issueUrl || '');
+    return {
+      ws,
+      node: null,
+      repo,
+      issueSpec,
+      issue: { title: issueTitle, body: issueBody, url: githubOutboundUrlForRepo(repo, 'issue', { title: issueTitle, body: issueBody }) },
+      discussion: { title: discussionTitle, body: discussionBody, url: githubOutboundUrlForRepo(repo, 'discussion', { title: discussionTitle, body: discussionBody }) },
+      comment: { title: githubOutboundWorkspaceTitle(ws, modal, 'comment'), body: commentBody, url: issueSpec?.issueUrl || '' }
+    };
+  }
+
+  function githubOutboundDraftsForModal(modal) {
+    if (modal?.type === 'export-workspace') return githubOutboundDraftsForExportModal(modal);
+    const ws = getWorkspace(modal?.wsId || '');
+    const node = ws?.nodeById?.get?.(modal?.nodeId || '');
+    if (!ws || !node) return { ws: null, node: null, repo: '', issue: null, discussion: null, comment: null, issueSpec: null };
+    const repo = githubOutboundRepoForNode(ws, node);
+    const issueBody = githubOutboundDraftBody(ws, node, 'issue');
+    const discussionBody = githubOutboundDraftBody(ws, node, 'discussion');
+    const commentBody = githubOutboundDraftBody(ws, node, 'comment');
+    const issueTitle = githubOutboundTitleForNode(node, 'issue');
+    const discussionTitle = githubOutboundTitleForNode(node, 'discussion');
+    const issueSpec = githubOutboundExistingIssueSpec(ws, node, modal);
+    return {
+      ws,
+      node,
+      repo,
+      issueSpec,
+      issue: {
+        title: issueTitle,
+        body: issueBody,
+        url: githubOutboundUrlForRepo(repo, 'issue', { title: issueTitle, body: issueBody })
+      },
+      discussion: {
+        title: discussionTitle,
+        body: discussionBody,
+        url: githubOutboundUrlForRepo(repo, 'discussion', { title: discussionTitle, body: discussionBody })
+      },
+      comment: {
+        title: githubOutboundTitleForNode(node, 'comment'),
+        body: commentBody,
+        url: issueSpec?.issueUrl || ''
+      }
+    };
+  }
+
+  function renderGithubOutboundDraftPanel(label, icon, draft, copyKey, note = '') {
+    const url = safeUrl(draft?.url || '') || '';
+    const body = draft?.body || '';
+    const openedPrefilled = url && body.length < 4200;
+    return `<section class="export-section github-outbound-section">
+      <h3><i class="${escapeAttr(icon)}"></i>${escapeHtml(label)}</h3>
+      ${note ? `<p class="muted">${escapeHtml(note)}</p>` : ''}
+      <div class="field-grid two">
+        <label>Title<input type="text" value="${escapeAttr(draft?.title || '')}" readonly></label>
+        <label>Boundary<input type="text" value="prepared outbound draft" readonly></label>
+      </div>
+      <pre class="source-block export-result-pre"><code>${escapeHtml(body)}</code></pre>
+      <div class="modal-footer-actions export-actions inline-actions">
+        <button class="tv-btn primary" data-action="copy-github-outbound-body" data-draft="${escapeAttr(copyKey)}"><i class="fa-regular fa-copy"></i>Copy body</button>
+        ${url ? `<a class="tv-btn subtle" href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer"><i class="fa-brands fa-github"></i>${openedPrefilled ? 'Open prefilled GitHub draft' : 'Open GitHub form'}</a>` : ''}
+      </div>
+      ${body.length >= 4200 ? '<p class="muted">Body is large, so the GitHub form is opened without a body query. Copy the body first and paste it into GitHub.</p>' : ''}
+    </section>`;
+  }
+
+  function renderGithubOutboundDraftModal(modal) {
+    const drafts = githubOutboundDraftsForModal(modal);
+    const ws = drafts.ws;
+    const node = drafts.node;
+    if (!ws || !node) {
+      return `<div class="modal-card"><div class="modal-header"><div><p class="kicker">GitHub outbound</p><h2>Draft unavailable</h2></div><button class="icon-action" data-action="close-modal"><i class="fa-solid fa-xmark"></i></button></div><div class="modal-body"><p>No source artifact is selected.</p></div></div>`;
+    }
+    const issueUrl = drafts.issueSpec?.issueUrl || modal.issueUrl || '';
+    return `<div class="modal-card wide-modal github-outbound-modal">
+      <div class="modal-header">
+        <div>
+          <p class="kicker">GitHub outbound adapter</p>
+          <h2>Prepare GitHub draft</h2>
+          <p class="muted">Copy-ready outbound drafts. Tiinex does not write to GitHub; publishing requires explicit user action in GitHub.</p>
+        </div>
+        <button class="icon-action" data-action="close-modal" title="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body stacked-modal-body">
+        <section class="export-section">
+          <h3>Outbound boundary</h3>
+          <p><strong>${escapeHtml(node.title || displayFileName(node.path || '') || 'Selected artifact')}</strong> → <strong>${escapeHtml(drafts.repo || 'GitHub repository')}</strong></p>
+          <p class="muted">Outbound draft ≠ published artifact. GitHub issue/comment/discussion ≠ Tiinex canonical storage. Copy-ready body ≠ posted material.</p>
+          <label>Existing issue URL for comment draft<input data-field="issueUrl" type="url" value="${escapeAttr(issueUrl)}" placeholder="https://github.com/${escapeAttr(drafts.repo || 'owner/repo')}/issues/123"></label>
+        </section>
+        ${renderGithubOutboundDraftPanel('New GitHub issue draft', 'fa-brands fa-github', drafts.issue, 'issue', 'Creates a GitHub new-issue web-form draft. Review in GitHub before submitting.')}
+        ${renderGithubOutboundDraftPanel('Existing issue comment draft', 'fa-regular fa-comment-dots', drafts.comment, 'comment', drafts.comment.url ? 'Copy this body and paste it into the existing issue comment box.' : 'Paste an existing issue URL above to enable the open-issue shortcut.')}
+        ${renderGithubOutboundDraftPanel('New GitHub discussion draft', 'fa-regular fa-comments', drafts.discussion, 'discussion', 'Opens GitHub Discussions web UI when available. Category handling may still require manual GitHub UI selection.')}
+      </div>
+      <div class="modal-footer-actions export-actions">
+        <button class="tv-btn subtle" data-action="close-modal">Close</button>
+      </div>
+    </div>`;
+  }
+
+  registerRenderModalWrapper(function renderModalWithGithubOutboundDraft(modal, next) {
+    if (modal?.type === 'github-outbound-draft') return renderGithubOutboundDraftModal(modal);
+    return next(modal);
+  });
+
+  registerActionHandler(async function githubOutboundDraftAction(event, next) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'open-github-outbound-draft') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      const node = ws?.nodeById?.get?.(event.currentTarget.dataset.node || '');
+      if (!nodeCanDraftGitHubOutbound(ws, node)) {
+        toast('No GitHub repository target was found for this artifact.', 'warn');
+        return;
+      }
+      const issueSpec = githubOutboundExistingIssueSpec(ws, node, {});
+      app.modal = { type: 'github-outbound-draft', wsId: ws.id, nodeId: node.id, issueUrl: issueSpec?.issueUrl || '' };
+      updateUrlState({ replace: true });
+      render();
+      return;
+    }
+    if (action === 'copy-github-outbound-body') {
+      event.preventDefault();
+      event.stopPropagation();
+      const key = event.currentTarget.dataset.draft || 'issue';
+      const drafts = githubOutboundDraftsForModal(app.modal || {});
+      const draft = drafts[key] || drafts.issue;
+      if (!draft?.body) return toast('No GitHub draft body available.', 'warn');
+      try {
+        await navigator.clipboard.writeText(draft.body);
+        toast(`${key === 'comment' ? 'Issue comment' : key === 'discussion' ? 'Discussion' : 'Issue'} draft copied.`, 'ok');
+      } catch (_) {
+        toast('Could not copy GitHub draft body.', 'warn');
+      }
+      return;
+    }
+    return next(event);
+  });
+
+
+
+
   function encodeJsonBase64Url(value) {
     const json = JSON.stringify(value || {});
     const bytes = new TextEncoder().encode(json);
@@ -8046,37 +14649,82 @@ ${bodySections}
     }
   }
 
+  function browserTranslateLikelyActive() {
+    const html = document.documentElement;
+    return Boolean(html?.classList?.contains('translated-ltr') || html?.classList?.contains('translated-rtl') || document.querySelector('html.translated-ltr, html.translated-rtl'));
+  }
+
+  function activeReadableShareHashTarget() {
+    return parseHashShareTarget(location.hash || '') || app.activePublicShareTarget || app.viewerIdentity?.publicShareTarget || null;
+  }
+
+  function shouldPreserveReadableRouteHash() {
+    return Boolean(parseHashShareTarget(location.hash || '') || app.activePublicShareTarget || app.viewerIdentity?.publicShareTarget);
+  }
+
+  function shouldSuppressRouteUrlMutationForTranslate() {
+    return Boolean(staticDiskMode() && browserTranslateLikelyActive());
+  }
+
 
   function setRouteState(kind = 'push') {
-    if (app.routing?.restoring || app.isBootingFromUrl) return;
+    if (app.routing?.restoring || app.isBootingFromUrl) {
+      routeOwnerRecord('route:write-skip', { kind, reason: app.routing?.restoring ? 'restoring' : 'booting' });
+      return;
+    }
 
     if (staticDiskMode()) {
       if (!app.workspaces.length) {
         if (location.hash) cleanHashOnly();
+        routeOwnerRecord('route:write-skip', { kind, reason: 'static-no-workspaces' });
         return;
       }
       const state = viewRouteState();
       const next = viewRouteUrl(state);
       const current = `${location.pathname}${location.search}${location.hash}`;
-      if (next === current) return;
-      const historyState = routeHistoryState(state, kind);
+      if (next === current) {
+        routeOwnerRecord('route:write-skip', { kind, reason: 'same-url', state: routeOwnerStateSummary(state) });
+        return;
+      }
+      const preserveReadableHash = shouldPreserveReadableRouteHash();
+      const suppressTranslateChurn = shouldSuppressRouteUrlMutationForTranslate();
+      const historyState = routeHistoryState(Object.assign({}, state, {
+        __tiinexReadableShareTarget: activeReadableShareHashTarget(),
+        __tiinexRouteUrlPreserved: preserveReadableHash || suppressTranslateChurn ? (location.hash || '') : ''
+      }), kind);
+      if (preserveReadableHash || suppressTranslateChurn) {
+        const preserveReason = preserveReadableHash ? 'preserve-readable-share-hash' : 'browser-translate-active';
+        routeOwnerRecord('route:write-preserve-url', { kind, reason: preserveReason, current, next, state: routeOwnerStateSummary(state) });
+        if (kind === 'replace') history.replaceState(historyState, '', current);
+        else history.pushState(historyState, '', current);
+        routeOwnerRecord('route:write-after', { kind, historyIndex: historyState.__tiinexRouteIndex || 0, urlPreserved: true });
+        return;
+      }
+      routeOwnerRecord('route:write-before', { kind, current, next, state: routeOwnerStateSummary(state) });
       if (kind === 'replace') history.replaceState(historyState, '', next);
       else history.pushState(historyState, '', next);
+      routeOwnerRecord('route:write-after', { kind, historyIndex: historyState.__tiinexRouteIndex || 0 });
       return;
     }
 
     const state = routeState();
     if (!app.workspaces.length || !state.sources?.length) {
+      routeOwnerRecord('route:clean-url', { kind, reason: !app.workspaces.length ? 'no-workspaces' : 'no-sources', state: routeOwnerStateSummary(state) });
       replaceWithCleanViewerUrl();
       return;
     }
 
     const next = routeUrl(state);
     const current = `${location.pathname}${location.search}${location.hash}`;
-    if (next === current) return;
+    if (next === current) {
+      routeOwnerRecord('route:write-skip', { kind, reason: 'same-url', state: routeOwnerStateSummary(state) });
+      return;
+    }
     const historyState = routeHistoryState(state, kind);
+    routeOwnerRecord('route:write-before', { kind, current, next, state: routeOwnerStateSummary(state) });
     if (kind === 'replace') history.replaceState(historyState, '', next);
     else history.pushState(historyState, '', next);
+    routeOwnerRecord('route:write-after', { kind, historyIndex: historyState.__tiinexRouteIndex || 0 });
   }
 
   function updateUrlState(options = {}) {
@@ -8088,10 +14736,25 @@ ${bodySections}
     const direct = params.get('url');
     app.isBootingFromUrl = true;
     try {
+      const hashTarget = parseHashShareTarget();
+      if (hashTarget) {
+        routeOwnerRecord('route:boot-share-target', { target: hashTarget });
+        await loadHashShareTarget(hashTarget, { reason: 'boot-hash-target', replaceWorkspaces: true });
+        return;
+      }
+
       if (staticDiskMode()) {
         const viewState = decodeViewRouteFromHash();
-        if (viewState && !dialogRouteSessionClosed(viewState.modal)) applyViewRouteState(viewState);
-        else if (/^#state=/i.test(location.hash || '') || dialogRouteSessionClosed(viewState?.modal)) cleanHashOnly();
+        if (viewState && !dialogRouteSessionClosed(viewState.modal)) {
+          routeOwnerRecord('route:boot-view', { state: routeOwnerStateSummary(viewState) });
+          applyViewRouteState(viewState);
+        } else if (/^#state=/i.test(location.hash || '') || dialogRouteSessionClosed(viewState?.modal)) {
+          routeOwnerRecord('route:boot-clean-hash', { hash: location.hash || '' });
+          cleanHashOnly();
+          handleBrowserHistoryNoRoute('boot-clean-hash');
+        } else {
+          handleBrowserHistoryNoRoute('boot-no-route');
+        }
         return;
       }
 
@@ -8114,6 +14777,7 @@ ${bodySections}
       }
 
       if (location.hash) replaceWithCleanViewerUrl();
+      else handleBrowserHistoryNoRoute('boot-no-route');
     } catch (error) {
       toast(`Could not restore URL state: ${error.message}`, 'warn');
       if (!staticDiskMode()) replaceWithCleanViewerUrl();
@@ -8122,10 +14786,42 @@ ${bodySections}
     }
   }
 
+  function handleBrowserHistoryNoRoute(reason = 'browser-no-route') {
+    routeOwnerRecord('route:no-route:start', { reason });
+    const hadLineage = (app.workspaces || []).some((ws) => Boolean(ws.selectedNodeId || ws.pendingSelectedRoute));
+    const hadModal = Boolean(app.modal || app.pendingRouteModal);
+    (app.workspaces || []).forEach((ws) => clearWorkspaceLineageSelection(ws, reason));
+    app.modal = null;
+    app.pendingRouteModal = null;
+    app.pendingViewRouteState = null;
+    app.pendingDurableLensState = null;
+    suppressCachedLens(reason, 6500);
+    try { sessionStorage.setItem(lensCacheKey(), JSON.stringify(currentLensState())); } catch (_) {}
+    app.durableLensApplied = true;
+    if (hadLineage || hadModal) {
+      render();
+      if (typeof scheduleRouteHistoryScrollRestore === 'function') scheduleRouteHistoryScrollRestore(`${reason}-discovery`);
+    }
+    routeOwnerRecord('route:no-route:end', { reason, hadLineage, hadModal });
+    return hadLineage || hadModal;
+  }
+
   async function restoreRouteFromBrowserHistory() {
+    const previousRestoring = Boolean(app.routing?.restoring);
+    app.routing = app.routing || {};
+    app.routing.restoring = true;
     try {
+      const hashTarget = parseHashShareTarget();
+      if (hashTarget) {
+        routeOwnerRecord('route:popstate-share-target', { target: hashTarget });
+        app.workspaces = [];
+        app.activeWorkspaceId = null;
+        await loadHashShareTarget(hashTarget, { reason: 'popstate-hash-target' });
+        return;
+      }
       if (staticDiskMode()) {
         const state = decodeViewRouteFromHash();
+        routeOwnerRecord('route:popstate-static', { state: routeOwnerStateSummary(state) });
         if (state) {
           if (dialogRouteSessionClosed(state.modal)) {
             skipClosedDialogHistoryEntry(state);
@@ -8134,17 +14830,24 @@ ${bodySections}
           applyViewRouteState(state);
           render();
           scheduleRouteHistoryScrollRestore('popstate');
+        } else {
+          handleBrowserHistoryNoRoute('popstate-no-route');
         }
         return;
       }
 
       const state = decodeRouteStateFromHash();
-      if (!state) return;
+      routeOwnerRecord('route:popstate-state', { state: routeOwnerStateSummary(state) });
+      if (!state) {
+        handleBrowserHistoryNoRoute('popstate-no-route');
+        return;
+      }
       if (dialogRouteSessionClosed(state.modal)) {
         skipClosedDialogHistoryEntry(state);
         return;
       }
       const restored = await applyRouteState(state, !routeSourcesMatch(state));
+      app.routing.restoring = true;
       if (restored) {
         render();
         scheduleRouteHistoryScrollRestore('popstate');
@@ -8152,6 +14855,8 @@ ${bodySections}
     } catch (error) {
       toast(`Could not restore browser history state: ${error.message}`, 'warn');
       render();
+    } finally {
+      app.routing.restoring = previousRestoring;
     }
   }
 
@@ -8175,7 +14880,11 @@ ${bodySections}
     const isTarget = ws.selectedNodeId === node.id;
     const items = [];
 
-    items.push(inLineage
+    const readOnly = (action) => Object.assign({ iconOnly: true, className: 'read-only-action' }, action, {
+      className: ['read-only-action', action.className || ''].filter(Boolean).join(' ')
+    });
+
+    items.push(readOnly(inLineage
       ? {
         label: 'Anchor',
         icon: 'fa-solid fa-anchor',
@@ -8188,33 +14897,46 @@ ${bodySections}
         icon: `fa-solid ${expanded ? 'fa-chevron-up' : 'fa-chevron-down'}`,
         dataset: Object.assign({ action: 'toggle-node-expand' }, base),
         title: expanded ? 'Collapse continuity preview' : 'Expand continuity preview'
-      });
+      }));
 
     items.push(
-      { label: 'Open', icon: 'fa-regular fa-window-maximize', dataset: Object.assign({ action: 'open-detail-modal' }, base), title: 'Open focused schema read view' },
-      { label: 'Markdown', icon: 'fa-brands fa-markdown', dataset: Object.assign({ action: 'open-markdown-modal' }, base), title: 'Open raw markdown source' },
-      { label: 'Continue', icon: 'fa-solid fa-code-branch', dataset: Object.assign({ action: 'open-create', mode: 'continue' }, base), disabled: node.hasModernEnvelope === false, title: 'Create a continuation leaf from this trace' },
-      { label: 'Reference', icon: 'fa-solid fa-link', className: 'gold', dataset: Object.assign({ action: 'open-create', mode: 'reference' }, base), title: 'Create a reference leaf pointing at this trace' }
+      readOnly({ label: 'Open', icon: 'fa-regular fa-window-maximize', dataset: Object.assign({ action: 'open-detail-modal' }, base), title: 'Open focused schema read view' }),
+      readOnly({ label: 'Markdown', icon: 'fa-brands fa-markdown', className: 'secondary-action markdown-action', dataset: Object.assign({ action: 'open-markdown-modal' }, base), title: 'Open raw markdown source' }),
+      readOnly({ label: 'Share', icon: 'fa-solid fa-share-nodes', className: 'share-action', dataset: Object.assign({ action: 'open-share-modal', scope: 'artifact' }, base), title: 'Review share eligibility for this artifact' })
     );
 
     if (node.browseUrl) {
-      items.push({ label: 'Source', icon: 'fa-brands fa-github', className: 'anchor', href: safeUrl(node.browseUrl) || node.browseUrl, title: 'Open original source location' });
+      items.push(readOnly({ label: 'Source', icon: 'fa-brands fa-github', className: 'anchor source-action', href: safeUrl(node.browseUrl) || node.browseUrl, title: 'Open original source location' }));
     }
+
     if (typeof canEditNode === 'function' && canEditNode(ws, node)) {
-      items.push({ label: 'Edit', icon: 'fa-solid fa-pen-to-square', className: 'constructive compact-tail-action edit-action', dataset: Object.assign({ action: 'open-node-edit' }, base), title: 'Edit local markdown' });
+      items.push({ label: 'Edit', icon: 'fa-solid fa-pen-to-square', iconOnly: true, className: 'constructive edit-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'open-node-edit' }, base), title: 'Edit this artifact' });
+    }
+
+    items.push(
+      { label: 'Continue', icon: 'fa-solid fa-code-branch', className: 'mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'continue' }, base, transitionDataset('continue')), disabled: node.hasModernEnvelope === false, title: transitionActionTitle('continue', 'Create a continuation leaf from this trace') },
+      { label: 'Reference', icon: 'fa-solid fa-link', className: 'gold mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'reference' }, base, transitionDataset('reference')), title: transitionActionTitle('reference', 'Create a reference leaf pointing at this trace') }
+    );
+
+    if (discoveryFindingHasUseAsTargets(node)) {
+      items.push({ label: 'Use as', icon: 'fa-solid fa-wand-magic-sparkles', className: 'use-as-action mutating-action conditional-mutating-action transition-action', dataset: Object.assign({ action: 'open-use-as-picker' }, base, transitionDataset('use-as')), title: transitionActionTitle('use-as', 'Create a new artifact that explicitly uses this finding as its basis') });
+    }
+    if (nodeCanImportLiveGitHubIssue(node)) {
+      items.push({ label: 'Import issue', icon: 'fa-brands fa-github', className: 'constructive mutating-action conditional-mutating-action adapter-action', dataset: Object.assign({ action: 'import-github-issue-material' }, base), title: 'Explicitly import visible GitHub issue body/comments as discovery findings; source artifact remains unchanged' });
     }
     if (typeof canRemoveNodeForNow === 'function' && canRemoveNodeForNow(ws, node)) {
-      items.push({ label: 'Remove', icon: 'fa-regular fa-trash-can', className: 'danger compact-tail-action remove-action', dataset: Object.assign({ action: 'remove-local-node' }, base), danger: true, title: 'Remove this local/uploaded node from the current workspace' });
+      items.push({ label: 'Remove', icon: 'fa-regular fa-trash-can', className: 'danger remove-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'remove-local-node' }, base), danger: true, title: 'Remove this local/uploaded node from the current workspace' });
     }
 
     return items;
   }
 
   function renderNodeActionItem(action) {
-    const classes = `icon-action ${action.className || ''}`.trim();
+    const classes = `icon-action ${action.iconOnly ? 'icon-only-action' : ''} ${action.className || ''}`.trim();
     const title = action.title || action.label || 'Action';
     const icon = `<i class="${escapeAttr(action.icon || 'fa-solid fa-circle-dot')}"></i>`;
-    const body = `${icon}<span>${escapeHtml(action.label || 'Action')}</span>`;
+    const label = escapeHtml(action.label || 'Action');
+    const body = action.iconOnly ? icon : `${icon}<span>${label}</span>`;
     if (action.href) {
       return `<a class="${escapeAttr(classes)}" href="${escapeAttr(action.href)}" target="_blank" rel="noopener" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}">${body}</a>`;
     }
@@ -8228,7 +14950,7 @@ ${bodySections}
 
   function renderNodePost(ws, node, opts = {}) {
     const schema = node.currentSchemaText || (node.hasModernEnvelope ? 'unknown schema' : 'plain markdown');
-    const relation = relationLabel(node, opts.index || 0, opts.lineage);
+    const relation = relationLabel(ws, node, opts.index || 0, opts.lineage);
     const expanded = Boolean(node.expanded);
     const isTarget = ws.selectedNodeId === node.id;
     const inLineage = Boolean(opts.lineage);
@@ -8237,73 +14959,232 @@ ${bodySections}
     const mainClass = inLineage ? 'post-main-toggle' : 'post-main-target';
     const actionHtml = nodeActionItems(ws, node, opts).map(renderNodeActionItem).join('');
 
-    return `
-      <article class="lineage-post ${expanded ? 'expanded' : ''} ${node.isGenerated ? 'generated' : ''} ${typeof isSchemaPath === 'function' && isSchemaPath(node.path) ? 'schema-lineage-post' : ''} ${isValidationMethodDefinitionNode(node) ? 'method-definition-lineage-post' : ''}" data-node="${escapeAttr(node.id)}" data-source="${escapeAttr(node.sourceId || '')}">
+    const card = `
+      <article class="lineage-post ${expanded ? 'expanded' : ''} ${nodeShowsAuthoringDraftState(ws, node) ? 'generated' : ''} ${opts.originalShadow ? 'original-shadow-post' : ''} ${typeof isSchemaPath === 'function' && isSchemaPath(node.path) ? 'schema-lineage-post' : ''} ${isValidationMethodDefinitionNode(node) ? 'method-definition-lineage-post' : ''}" data-node="${escapeAttr(node.id)}" data-source="${escapeAttr(node.sourceId || '')}">
         <div class="post-main ${mainClass}" data-action="${mainAction}" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="${escapeAttr(mainTitle)}" aria-label="${escapeAttr(mainTitle)}">
-          <div class="post-chips">
+          <div class="post-chips" translate="no">
             ${integrityBadge(node)}
             ${typeof schemaBadgeHtml === 'function' ? schemaBadgeHtml(ws, node, schema) : `<span class="badge-soft badge-schema ${schemaBadgeClass(schema)}">${escapeHtml(shortSchema(schema))}</span>`}
+            ${authoringStyleBadgeHtml(node)}
             ${methodDefinitionChipHtml(node)}
             ${node.createdAt ? `<span class="badge-soft muted-chip">${escapeHtml(node.createdAt.slice(0, 10))}</span>` : ''}
             ${relationChipHtml(ws, node, relation, isTarget, inLineage)}
             ${typeof materialSchemaBadges === 'function' ? materialSchemaBadges(ws, node) : ''}
             ${renderSourceBadge(ws, node)}
-            ${node.isGenerated ? '<span class="badge-soft"><i class="fa-solid fa-pen-nib"></i>draft</span>' : ''}
+            ${nodeShowsAuthoringDraftState(ws, node) ? '<span class="badge-soft"><i class="fa-solid fa-pen-nib"></i>draft</span>' : ''}
+            ${nodeIsLocalShadowDraft(ws, node) ? '<span class="badge-soft"><i class="fa-solid fa-pen-to-square"></i>local edit</span>' : ''}
           </div>
-          <h3 class="post-title">${escapeHtml(node.title)}</h3>
-          <p class="post-summary">${escapeHtml(shortText(node.summary || node.why || 'No summary extracted.', 280))}</p>
+          <h3 class="post-title" title="${escapeAttr(node.title || '')}" ${artifactProseAttrs(node)}>${escapeHtml(artifactDisplayTitle(node))}</h3>
+          <p class="post-summary" ${artifactProseAttrs(node)}>${escapeHtml(shortText(node.summary || node.why || 'No summary extracted.', 280))}</p>
         </div>
-        ${expanded ? `<div class="continuity-preview">${renderContinuityPreview(node, ws)}</div>` : ''}
-        <div class="post-actions">${actionHtml}</div>
+        ${expanded ? `<div class="continuity-preview" ${artifactProseAttrs(node)}>${renderContinuityPreview(node, ws)}</div>` : ''}
+        <div class="post-actions" translate="no">${actionHtml}</div>
       </article>`;
+    // Open-original shadows are lineage context, not discovery feed content.
+    // Discovery should show the active local draft without an extra separator,
+    // while lineage can reveal the source/original when the user asks for it.
+    return card + (inLineage ? renderOriginalShadowBlock(ws, node, opts) : '');
   }
 
 
 
+
+  function canonicalSchemaFilterKey(value) {
+    let raw = String(value || '').trim();
+    if (!raw) return '';
+    raw = raw.replace(/^(branch|exact):/i, '').trim();
+    const linked = schemaIdFromText(raw, '');
+    let candidate = linked || raw;
+    if (/https?:\/\//i.test(candidate) || candidate.includes('/')) candidate = fileNameFromPath(candidate);
+    candidate = String(candidate || '')
+      .replace(/^Current Schema:\s*/i, '')
+      .replace(/\.schema\.md$/i, '')
+      .replace(/\.md$/i, '')
+      .trim();
+    if (/^tiinex\.[a-z0-9._-]+\.v\d+$/i.test(candidate)) return candidate.toLowerCase();
+    return '';
+  }
+
+  function schemaFilterAliases(value) {
+    const aliases = new Set();
+    const exact = canonicalSchemaFilterKey(value);
+    if (exact) {
+      aliases.add(exact);
+      aliases.add(shortSchema(exact).toLowerCase());
+    }
+    const family = schemaKey(value);
+    if (family && family !== 'unknown' && family !== 'plain') aliases.add(family);
+    return aliases;
+  }
+
+  function discoverySchemaFilterParts(value) {
+    const raw = String(value || '').trim();
+    if (!raw || raw === 'all') return { kind: raw || 'all', key: raw || 'all', mode: 'all', schemaId: '' };
+    if (raw === 'draft') return { kind: 'draft', key: 'draft', mode: 'draft', schemaId: '' };
+    const match = raw.match(/^(branch|exact):(.+)$/i);
+    const mode = match ? match[1].toLowerCase() : 'branch';
+    const schemaId = canonicalSchemaFilterKey(match ? match[2] : raw);
+    if (schemaId) return { kind: 'schema', key: `${mode}:${schemaId}`, mode, schemaId };
+    return { kind: 'other', key: raw, mode: 'other', schemaId: '' };
+  }
+
+  function discoverySchemaFilterKeyFor(value, mode = 'branch') {
+    const schemaId = canonicalSchemaFilterKey(value);
+    if (!schemaId) return '';
+    const cleanMode = String(mode || 'branch').toLowerCase() === 'exact' ? 'exact' : 'branch';
+    return `${cleanMode}:${schemaId}`;
+  }
+
+  function schemaPathForFilterSchema(schemaId) {
+    const exact = canonicalSchemaFilterKey(schemaId);
+    if (!exact) return '';
+    return typeof TIINEX_SCHEMA_PATH_INDEX === 'object' && TIINEX_SCHEMA_PATH_INDEX ? (TIINEX_SCHEMA_PATH_INDEX[exact] || '') : '';
+  }
+
+  function schemaIsInBranch(candidateSchema, branchSchema) {
+    const candidate = canonicalSchemaFilterKey(candidateSchema);
+    const branch = canonicalSchemaFilterKey(branchSchema);
+    if (!candidate || !branch) return false;
+    if (candidate === branch) return true;
+    if (branch === 'tiinex.root.v1') return true;
+    const branchPath = schemaPathForFilterSchema(branch);
+    const candidatePath = schemaPathForFilterSchema(candidate);
+    if (!branchPath || !candidatePath) return false;
+    const branchDir = branchPath.split('/').slice(0, -1).join('/');
+    return Boolean(branchDir && candidatePath.startsWith(`${branchDir}/`));
+  }
+
+  function schemaMatchesDiscoveryFilterValue(schemaText, filterValue) {
+    const parts = discoverySchemaFilterParts(filterValue);
+    if (parts.kind === 'draft') return false;
+    if (parts.kind !== 'schema') {
+      const aliases = schemaFilterAliases(schemaText);
+      return aliases.has(String(filterValue || '').trim());
+    }
+    const candidate = canonicalSchemaFilterKey(schemaText);
+    if (!candidate) return false;
+    if (parts.mode === 'exact') return candidate === parts.schemaId;
+    return schemaIsInBranch(candidate, parts.schemaId);
+  }
+
+  function schemaFilterGroupLabel(key) {
+    const parts = discoverySchemaFilterParts(key);
+    const exact = parts.schemaId || canonicalSchemaFilterKey(key);
+    if (!exact) return 'Other';
+    const path = schemaPathForFilterSchema(exact);
+    const rel = String(path || '').replace(TIINEX_SCHEMA_REPO_PATH_PREFIX, '');
+    const group = rel.includes('/') ? rel.split('/')[0] : (exact === 'tiinex.root.v1' ? 'root' : 'other');
+    return group.split(/[._-]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ') || 'Other';
+  }
 
   function discoveryFilterLabel(key) {
     const labels = {
       all: 'All',
-      topic: 'Topics',
-      decision: 'Decisions',
-      evidence: 'Evidence',
-      feedback: 'Feedback',
-      task: 'Tasks',
-      reduction: 'Reductions',
-      draft: 'Drafts',
-      schema: 'Schemas'
+      draft: 'Drafts'
     };
     if (labels[key]) return labels[key];
+    const parts = discoverySchemaFilterParts(key);
+    if (parts.kind === 'schema') {
+      const base = shortSchema(parts.schemaId);
+      return parts.mode === 'exact' ? `${base} exact` : `${base} branch`;
+    }
+    const exact = canonicalSchemaFilterKey(key);
+    if (exact) return `${shortSchema(exact)} branch`;
     return String(key || '').split(/[._-]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ') || 'Other';
   }
 
   function discoveryFilterSortKey(key) {
-    const order = ['all', 'topic', 'decision', 'evidence', 'feedback', 'task', 'reduction', 'schema', 'draft'];
-    const index = order.indexOf(key);
-    return index >= 0 ? `${String(index).padStart(3, '0')}:${key}` : `999:${key}`;
+    if (key === 'all') return '000:all';
+    if (key === 'draft') return '998:draft';
+    const parts = discoverySchemaFilterParts(key);
+    const exact = parts.schemaId || canonicalSchemaFilterKey(key);
+    if (exact) {
+      const path = schemaPathForFilterSchema(exact);
+      return `100:${path || exact}:${parts.mode === 'exact' ? 'exact' : 'branch'}`;
+    }
+    return `999:${key}`;
+  }
+
+  function knownSchemaFilterKeys() {
+    const keys = new Set();
+    const addSchema = (value) => {
+      const exact = canonicalSchemaFilterKey(value);
+      if (exact) keys.add(discoverySchemaFilterKeyFor(exact, 'branch'));
+    };
+    if (typeof TIINEX_SCHEMA_PATH_INDEX === 'object' && TIINEX_SCHEMA_PATH_INDEX) {
+      Object.keys(TIINEX_SCHEMA_PATH_INDEX).forEach(addSchema);
+    }
+    if (Array.isArray(TIINEX_DOCS_SCHEMA_FRESHNESS_PATHS)) {
+      TIINEX_DOCS_SCHEMA_FRESHNESS_PATHS.forEach((path) => {
+        if (/\.schema\.md$/i.test(path)) addSchema(path);
+      });
+    }
+    if (typeof SCHEMA_CREATION_POLICY === 'object' && SCHEMA_CREATION_POLICY) {
+      Object.keys(SCHEMA_CREATION_POLICY).forEach(addSchema);
+    }
+    if (typeof SCHEMA_WIZARD_DEFINITIONS === 'object' && SCHEMA_WIZARD_DEFINITIONS) {
+      Object.keys(SCHEMA_WIZARD_DEFINITIONS).forEach(addSchema);
+    }
+    return keys;
   }
 
   function workspaceAvailableDiscoveryFilters(ws) {
-    const keys = new Set();
+    const keys = knownSchemaFilterKeys();
     for (const node of ws?.nodes || []) {
       if (node.isGenerated) keys.add('draft');
-      const key = schemaKey(node.currentSchemaText || node.currentSchema);
-      if (key && key !== 'unknown' && !/plain/i.test(key)) keys.add(key);
+      const exact = canonicalSchemaFilterKey(node.currentSchemaText || node.currentSchema);
+      if (exact) keys.add(discoverySchemaFilterKeyFor(exact, 'branch'));
     }
 
     const sorted = Array.from(keys).sort((a, b) => discoveryFilterSortKey(a).localeCompare(discoveryFilterSortKey(b)));
-    return [['all', 'All'], ...sorted.map((key) => [key, discoveryFilterLabel(key)])];
+    return [['all', 'All'], ...sorted.map((key) => [key, discoveryFilterLabel(key), schemaFilterGroupLabel(key)])];
+  }
+
+  function normalizeDiscoveryFilterListForWorkspace(ws, value = undefined) {
+    if (!ws) return [];
+    const available = new Set(workspaceAvailableDiscoveryFilters(ws).map(([key]) => key));
+    const rawValue = value !== undefined
+      ? value
+      : (Array.isArray(ws.discoveryFilterSchemas) ? ws.discoveryFilterSchemas : (ws.discoveryFilterSchema || ws.filterSchema || 'all'));
+    const result = [];
+    const seen = new Set();
+    for (const raw of filterListFromValue(rawValue)) {
+      const candidate = String(raw || '').trim();
+      if (!candidate || candidate === 'all') continue;
+      let key = candidate;
+      const parts = discoverySchemaFilterParts(candidate);
+      if (parts.kind === 'schema') key = parts.key;
+      if (!key || seen.has(key) || !available.has(key)) continue;
+      seen.add(key);
+      result.push(key);
+    }
+    ws.discoveryFilterSchemas = result;
+    ws.discoveryFilterSchema = result[0] || 'all';
+    ws.filterSchema = ws.discoveryFilterSchema;
+    return result;
   }
 
   function normalizeDiscoveryFilterForWorkspace(ws) {
-    const current = ws.discoveryFilterSchema || ws.filterSchema || 'all';
-    const options = workspaceAvailableDiscoveryFilters(ws).map(([key]) => key);
-    if (!options.includes(current)) {
-      ws.discoveryFilterSchema = 'all';
-      ws.filterSchema = 'all';
-      return 'all';
-    }
-    return current;
+    return normalizeDiscoveryFilterListForWorkspace(ws)[0] || 'all';
+  }
+
+  function setDiscoveryFilterList(ws, value) {
+    if (!ws) return [];
+    return normalizeDiscoveryFilterListForWorkspace(ws, value);
+  }
+
+  function addDiscoveryFilter(ws, value) {
+    if (!ws) return [];
+    const current = normalizeDiscoveryFilterListForWorkspace(ws);
+    const next = current.concat([value]);
+    return setDiscoveryFilterList(ws, next);
+  }
+
+  function removeDiscoveryFilter(ws, value) {
+    if (!ws) return [];
+    const key = String(value || '').trim();
+    const current = normalizeDiscoveryFilterListForWorkspace(ws);
+    return setDiscoveryFilterList(ws, current.filter((item) => item !== key));
   }
 
 
@@ -8378,8 +15259,8 @@ ${bodySections}
     if (converted?.path) {
       const sameRef = Array.from(ws?.nodeById?.values?.() || []).find((item) =>
         item.path === converted.path
-        && (!converted.repo || !item.repo || item.repo === converted.repo)
-        && (!converted.ref || !item.ref || item.ref === converted.ref)
+        && (!converted.repo || !item.repo || sameRepoSlug(item.repo, converted.repo))
+        && (!converted.ref || !item.ref || sameWorkspaceGitRef(ws, item.ref, converted.ref))
       );
       if (sameRef) return sameRef;
     }
@@ -9278,7 +16159,14 @@ ${bodySections}
     const cacheKey = `integrity-target:${remote.rawUrl}:sha256-base64url-c14n-v1`;
     if (!app.integrityTargetHashCache[cacheKey]) {
       app.integrityTargetHashCache[cacheKey] = (async () => {
-        const text = await fetchText(remote.rawUrl, 'integrity target');
+        const parts = rawGithubSourceParts(remote.rawUrl);
+        if (parts && gitNativeRepoMaterialIntendedFor(parts)) {
+          const repoMaterial = await readRepoMaterialText({ url: remote.rawUrl, label: 'integrity target', purpose: 'integrity target', fallbackPolicy: 'never', allowRawFallback: false });
+          if (repoMaterial?.ok) return integrityHashesForMarkdown(repoMaterial.text);
+          githubRepoFetchTrace('repo-material.integrity.deferred', { label: 'integrity target', repo: parts.repo, ref: parts.ref, path: parts.path, rawUrl: parts.rawUrl || remote.rawUrl, reason: 'git-native-owned-target-not-locally-resolved' });
+          throw repoMaterialUnavailableError(parts, 'git-native-owned-target-not-locally-resolved', 'integrity target');
+        }
+        const text = await fetchText(remote.rawUrl, 'integrity target', { fallbackPolicy: 'defer-when-missing', allowRawFallback: false });
         return integrityHashesForMarkdown(text);
       })();
     }
@@ -9508,16 +16396,56 @@ ${bodySections}
         if (before !== result.status) changed = true;
       }
 
-      if (changed) render();
+      if (changed) {
+        if (selected) lockLineageView(ws, selected, 'integrity-refresh');
+        render();
+      }
     } finally {
       ws.integrityRefreshInFlight = false;
     }
   }
+  function visibleIntegrityRefreshKey(ws, selected) {
+    if (!ws || !selected) return '';
+    let nodes = [];
+    try {
+      nodes = lineageTraversal(selected).nodes || [];
+    } catch (_) {
+      nodes = [selected];
+    }
+    const basis = nodes.map((node) => [
+      node?.storageKey || node?.path || node?.id || '',
+      node?.integrity?.method || '',
+      node?.integrity?.value || '',
+      node?.rawUrl || ''
+    ].join('@')).join('|');
+    return `${ws.id || ''}:${selected.id || selected.path || ''}:${hashFast(basis)}`;
+  }
+
+  function scheduleVisibleIntegrityRefresh(ws, selected) {
+    const key = visibleIntegrityRefreshKey(ws, selected);
+    if (!key) return;
+    if (ws.integrityRefreshCompletedKey === key) return;
+    if (ws.integrityRefreshQueuedKey === key || ws.integrityRefreshRunningKey === key) return;
+    ws.integrityRefreshQueuedKey = key;
+    setTimeout(async () => {
+      if (ws.integrityRefreshRunningKey === key) return;
+      ws.integrityRefreshQueuedKey = '';
+      ws.integrityRefreshRunningKey = key;
+      try {
+        await refreshVisibleIntegrityAfterLineageLoad(ws);
+        ws.integrityRefreshCompletedKey = key;
+      } finally {
+        if (ws.integrityRefreshRunningKey === key) ws.integrityRefreshRunningKey = '';
+      }
+    }, 0);
+  }
+
   registerRenderWorkspaceFeedWrapper(function renderWorkspaceFeedWithIntegrityRefresh(ws, selected, next) {
     const html = next(ws, selected);
-    // Defer verification refresh until after render call stack. This keeps typing/search
-    // responsive while letting lazy-loaded lineage parents update badge state.
-    if (selected) setTimeout(() => refreshVisibleIntegrityAfterLineageLoad(ws), 0);
+    // Defer verification refresh until after render call stack, but run it once per
+    // visible lineage signature. Scheduling this on every render caused idle DOM
+    // churn once recursive schema discovery increased the number of loaded cards.
+    if (selected) scheduleVisibleIntegrityRefresh(ws, selected);
     return html;
   });
 
@@ -9585,17 +16513,22 @@ ${bodySections}
     return `<span class="badge-soft integrity-badge ${item.cls} tree-integrity-badge" title="${escapeAttr(item.title)}"><i class="fa-solid ${item.icon}"></i>${escapeHtml(label)}</span>`;
   }
 
-  function renderTreeFile(ws, node, file, depth) {
+  function renderTreeFile(ws, node, file, depth, visibleIds = null) {
     const isSelected = ws.selectedNodeId === node.id;
-    const childBadge = node.children.length
-      ? `<span class="tree-count">${node.children.length} child${node.children.length === 1 ? '' : 'ren'}</span>`
+    const pickingParent = typeof parentPickerActiveFor === 'function' && parentPickerActiveFor(ws);
+    const action = pickingParent ? 'select-parent-placement' : 'select-node';
+    const visibleChildren = visibleLineageChildCount(node, visibleIds || new Set((ws?.nodes || []).map((item) => item.id)));
+    const childBadge = visibleChildren
+      ? `<span class="tree-count">${visibleChildren} child${visibleChildren === 1 ? '' : 'ren'}</span>`
       : '';
-    return `<button class="tree-row tree-file-row ${isSelected ? 'selected' : ''}" style="--tree-depth:${depth}" data-action="select-node" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="${escapeAttr(node.path)}">
+    const pickerBadge = pickingParent ? '<span class="tree-count tree-select-parent-hint"><i class="fa-solid fa-location-crosshairs"></i>Select as parent</span>' : '';
+    return `<button class="tree-row tree-file-row ${isSelected ? 'selected' : ''} ${pickingParent ? 'parent-pickable' : ''}" style="--tree-depth:${depth}" data-action="${action}" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="${escapeAttr(pickingParent ? 'Select as parent: ' + node.path : node.path)}">
       <span class="tree-primary">
         <i class="fa-regular fa-file-lines"></i>
         <span class="tree-name">${escapeHtml(file)}</span>
       </span>
       <span class="tree-badges">
+        ${pickerBadge}
         ${childBadge}
         <span class="badge-soft badge-schema ${schemaBadgeClass(node.currentSchemaText || node.currentSchema)}">${escapeHtml(shortSchema(node.currentSchemaText || node.currentSchema || 'trace'))}</span>
         ${treeIntegrityBadge(node)}
@@ -9787,7 +16720,7 @@ ${bodySections}
     return `
       <div class="modal-backdrop-custom focus-modal read-modal-backdrop" role="dialog" aria-modal="true">
         <div class="modal-panel read-modal-panel">
-          <div class="modal-header-lite sticky-modal-head read-modal-head">
+          <div class="modal-header-lite sticky-modal-head read-modal-head" translate="no">
             <div>
               <p class="kicker">${isMarkdown ? 'Raw markdown' : 'Schema read view'}</p>
               <h2 class="modal-title-lite">${escapeHtml(node.title)}</h2>
@@ -9796,7 +16729,7 @@ ${bodySections}
             <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
           </div>
           <div class="modal-read-scroll">
-            ${isMarkdown ? `<pre class="source-block modal-source"><code>${escapeHtml(node.rawMarkdown || '')}</code></pre>` : `<div class="modal-read-body">${renderDetailReadView(ws, node)}</div>`}
+            ${isMarkdown ? `<pre class="source-block modal-source" translate="no"><code>${escapeHtml(node.rawMarkdown || '')}</code></pre>` : `<div class="modal-read-body" ${artifactProseAttrs(node)}>${renderDetailReadView(ws, node)}</div>`}
           </div>
         </div>
       </div>`;
@@ -9964,6 +16897,18 @@ ${bodySections}
     const fromAbsolute = remoteCandidate(absoluteOrigin, 'absolute origin', 'absolute');
     if (fromAbsolute) return fromAbsolute;
 
+    if (/^\.topics\/\.schemas\/.*tiinex\..+\.schema\.md$/i.test(relativeParentPath || '') && String(node.repo || ws.repo || '').toLowerCase() !== 'tiinex/docs') {
+      return done({
+        key: `canonical-schema-registry:Tiinex/docs:master:${relativeParentPath}`,
+        rawUrl: `https://raw.githubusercontent.com/Tiinex/docs/master/${relativeParentPath}`,
+        browseUrl: `https://github.com/Tiinex/docs/blob/master/${relativeParentPath}`,
+        repo: 'Tiinex/docs',
+        ref: 'master',
+        path: relativeParentPath,
+        reason: 'canonical Tiinex schema registry parent'
+      });
+    }
+
     if (node.repo && node.ref && relativeParentPath && !/^[a-z]+:/i.test(relativeParentPath)) {
       return done({
         key: `repo-relative:${node.repo}:${node.ref}:${relativeParentPath}`,
@@ -10041,9 +16986,133 @@ ${bodySections}
     </div>`;
   }
 
+
+  function nodeOriginComparableUrls(node) {
+    return [
+      node?.shadowSourceOrigin,
+      node?.sourceOrigin,
+      node?.recoveredFromUrl,
+      node?.browseUrl,
+      node?.rawUrl,
+      node?.file?.shadowSourceOrigin,
+      node?.file?.sourceOrigin,
+      node?.file?.browseUrl,
+      node?.file?.rawUrl
+    ].map((value) => String(value || '').trim()).filter(Boolean);
+  }
+
+  function nodeIsLocalShadowDraft(ws, node) {
+    return Boolean(ws && node && nodeIsLocalEditableMaterial(ws, node) && (node.shadowSourceNodeId || node.shadowSourceStorageKey || node.shadowSourceKey || node.shadowSourceId || node.shadowSourcePath || node.shadowSourceOrigin || node.localDraftOf));
+  }
+
+  function nodeShadowExactOriginalScore(draft, original) {
+    if (!draft || !original || draft === original || nodeIsLocalEditableMaterial(null, original)) return 0;
+    const originalStorageKey = original.storageKey || original.file?.storageKey || sourceShadowKeyForNode(original);
+    if (draft.shadowSourceNodeId && original.id && draft.shadowSourceNodeId === original.id) return 120;
+    if (draft.shadowSourceStorageKey && originalStorageKey && draft.shadowSourceStorageKey === originalStorageKey) return 110;
+    const originalKey = sourceShadowKeyForNode(original);
+    if (draft.shadowSourceKey && originalKey && draft.shadowSourceKey === originalKey) return 100;
+    if (draft.shadowSourceId && draft.shadowSourcePath) {
+      if (String(original.sourceId || original.file?.sourceId || '') === String(draft.shadowSourceId)
+        && sameImportedPath(original.path || original.file?.path || '', draft.shadowSourcePath)) return 90;
+    }
+    return 0;
+  }
+
+  function nodeShadowOriginFallbackScore(draft, original) {
+    if (!draft || !original || draft === original || nodeIsLocalEditableMaterial(null, original)) return 0;
+    const draftOrigins = new Set(nodeOriginComparableUrls(draft));
+    if (draft.localDraftOf) draftOrigins.add(String(draft.localDraftOf));
+    if (draft.shadowSourceOrigin) draftOrigins.add(String(draft.shadowSourceOrigin));
+    if (!draftOrigins.size) return 0;
+    if (!nodeOriginComparableUrls(original).some((url) => draftOrigins.has(url))) return 0;
+
+    let score = 20;
+    const wantedTitle = String(draft.shadowSourceTitle || '').trim().toLowerCase();
+    const wantedSchema = String(draft.shadowSourceSchema || '').trim().toLowerCase();
+    const originalTitle = String(original.title || '').trim().toLowerCase();
+    const originalSchema = String(original.currentSchema || original.schema || '').trim().toLowerCase();
+    if (wantedTitle && originalTitle && wantedTitle === originalTitle) score += 10;
+    if (wantedSchema && originalSchema && wantedSchema === originalSchema) score += 10;
+    if (typeof isResolvedFindingWrapperNode === 'function' && isResolvedFindingWrapperNode(null, original)) score -= 15;
+    return Math.max(1, score);
+  }
+
+  function nodeMatchesShadowOriginal(draft, original) {
+    return Boolean(nodeShadowExactOriginalScore(draft, original) || nodeShadowOriginFallbackScore(draft, original));
+  }
+
+  function originalNodeForLocalShadowDraft(ws, node) {
+    if (!nodeIsLocalShadowDraft(ws, node)) return null;
+    const nodes = Array.from(ws.nodeById?.values?.() || []).filter((candidate) => !nodeIsLocalEditableMaterial(ws, candidate));
+    const ranked = nodes
+      .map((candidate) => ({ candidate, score: nodeShadowExactOriginalScore(node, candidate) || nodeShadowOriginFallbackScore(node, candidate) }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score);
+    return ranked[0]?.candidate || null;
+  }
+
+  function localShadowDraftForOriginal(ws, node) {
+    if (!ws || !node || nodeIsLocalEditableMaterial(ws, node)) return null;
+    const nodes = Array.from(ws.nodeById?.values?.() || []);
+    return nodes.find((candidate) => nodeIsLocalShadowDraft(ws, candidate) && nodeMatchesShadowOriginal(candidate, node)) || null;
+  }
+
+  function originalShadowUiKey(draft, original) {
+    return `${draft?.id || draft?.storageKey || draft?.path || 'draft'}::${original?.id || original?.storageKey || original?.path || 'original'}`;
+  }
+
+  function originalShadowExpanded(draft, original) {
+    const key = originalShadowUiKey(draft, original);
+    return Boolean(app.openOriginalShadows && app.openOriginalShadows[key]);
+  }
+
+  function renderOriginalShadowBlock(ws, draft, opts = {}) {
+    if (opts.originalShadow) return '';
+    const original = originalNodeForLocalShadowDraft(ws, draft);
+    if (!original) return '';
+    const key = originalShadowUiKey(draft, original);
+    const sourceLabel = sourceShortLabel(ws, original.sourceId || original.file?.sourceId || "");
+    if (!originalShadowExpanded(draft, original)) {
+      return `<div class="lineage-original-divider" role="separator" aria-label="Original source artifact">
+        <span class="lineage-scope-line"></span>
+        <button type="button" class="lineage-original-label" data-action="toggle-original-shadow" data-ws="${escapeAttr(ws.id)}" data-draft="${escapeAttr(draft.id)}" data-original="${escapeAttr(original.id)}" data-key="${escapeAttr(key)}" title="Show original source artifact">
+          <i class="fa-solid fa-layer-group"></i>
+          <strong>Open original</strong>
+          <small>${escapeHtml(sourceLabel || original.title || 'source')}</small>
+        </button>
+        <span class="lineage-scope-line"></span>
+      </div>`;
+    }
+    return `<div class="lineage-original-expanded">
+      <div class="lineage-original-divider expanded" role="separator" aria-label="Original source artifact">
+        <span class="lineage-scope-line"></span>
+        <button type="button" class="lineage-original-label" data-action="toggle-original-shadow" data-ws="${escapeAttr(ws.id)}" data-draft="${escapeAttr(draft.id)}" data-original="${escapeAttr(original.id)}" data-key="${escapeAttr(key)}" title="Hide original source artifact">
+          <i class="fa-solid fa-layer-group"></i>
+          <strong>Original source</strong>
+          <small>${escapeHtml(sourceLabel || original.title || 'source')}</small>
+        </button>
+        <span class="lineage-scope-line"></span>
+      </div>
+      ${renderNodePost(ws, original, Object.assign({}, opts, { originalShadow: true }))}
+    </div>`;
+  }
+
   function renderLineageNodeList(ws, nodes, mode, searchActive, lineageQuery) {
-    return nodes.map((node, index) => {
-      const previous = index > 0 ? nodes[index - 1] : null;
+    const selectedId = ws?.selectedNodeId || '';
+    const visibleNodes = (nodes || []).filter((node) => {
+      if (localShadowDraftForOriginal(ws, node)) return false;
+      // Resolved discovery findings are adapter/source envelopes once a typed
+      // artifact carries the working continuity. Keep them available if they are
+      // explicitly selected, but do not let them duplicate the typed artifact in
+      // ordinary feed/lineage rendering.
+      if (typeof isResolvedFindingWrapperNode === 'function'
+        && node?.id !== selectedId
+        && isResolvedFindingWrapperNode(ws, node)) return false;
+      return true;
+    });
+    return visibleNodes.map((node, index) => {
+      const previous = index > 0 ? visibleNodes[index - 1] : null;
       const divider = mode === 'lineage' ? lineageScopeDivider(ws, previous, node) : '';
       if (mode === 'lineage' && searchActive && !nodeMatchesSearch(node, lineageQuery)) {
         return divider + renderLineageSkimLine(node, index);
@@ -10143,8 +17212,7 @@ ${bodySections}
       const ws = getWorkspace(event.currentTarget.dataset.ws || '');
       const node = ws?.nodeById?.get(event.currentTarget.dataset.node || '');
       if (!ws || !node) return toast('No selected lineage to audit.', 'warn');
-      const loaded = await auditLineageBoundary(ws, node, { userInitiated: true });
-      if (!loaded) render();
+      await runLineageAudit(ws, node);
       return;
     }
     return next(event);
@@ -10269,57 +17337,957 @@ ${bodySections}
 
 
 
+  function filterListFromValue(value) {
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string' && value.includes(',')) return value.split(',');
+    return value ? [value] : [];
+  }
+
+  function normalizeArtifactDisplayFilterList(value) {
+    const result = [];
+    const seen = new Set();
+    for (const raw of filterListFromValue(value)) {
+      const key = String(raw || '').trim();
+      if (!key || key === 'all' || seen.has(key)) continue;
+      if (!tiinexArtifactDefinitionForKind(key)) continue;
+      seen.add(key);
+      result.push(key);
+    }
+    return result;
+  }
+
+  function normalizeArtifactDisplayFilter(value) {
+    return normalizeArtifactDisplayFilterList(value)[0] || 'all';
+  }
+
+  function migrateDisplayOptions(opts) {
+    if (!opts) return;
+    if (Array.isArray(opts.artifactKindFilters)) return;
+    if (typeof opts.artifactKindFilter === 'string' && opts.artifactKindFilter !== 'all') {
+      opts.artifactKindFilters = normalizeArtifactDisplayFilterList(opts.artifactKindFilter);
+      return;
+    }
+    const previousSuffixOptions = [
+      ['trace', opts.showTrace],
+      ['schema', opts.showSchema],
+      ['validator', opts.showValidator],
+      ['workspace', opts.showWorkspace]
+    ];
+    const visiblePreviousKinds = previousSuffixOptions.filter(([, visible]) => visible === true).map(([kind]) => kind);
+    const hiddenPreviousKinds = previousSuffixOptions.filter(([, visible]) => visible === false).map(([kind]) => kind);
+    // Preserve the common saved-link case where the user narrowed the view to one previous suffix.
+    // More complex previous multi-toggle states collapse back to all rather than creating a second filter system.
+    opts.artifactKindFilters = (visiblePreviousKinds.length === 1 && hiddenPreviousKinds.length) ? visiblePreviousKinds : [];
+  }
+
   function workspaceDisplayOptions(ws) {
     ws.displayOptions = ws.displayOptions || {};
-    if (typeof ws.displayOptions.leavesOnly !== 'boolean') ws.displayOptions.leavesOnly = true;
-    if (typeof ws.displayOptions.showTrace !== 'boolean') ws.displayOptions.showTrace = true;
-    if (typeof ws.displayOptions.showSchema !== 'boolean') ws.displayOptions.showSchema = true;
-    if (typeof ws.displayOptions.showValidator !== 'boolean') ws.displayOptions.showValidator = true;
-    if (typeof ws.displayOptions.showWorkspace !== 'boolean') ws.displayOptions.showWorkspace = true;
-    if (typeof ws.displayOptions.showAssets !== 'boolean') ws.displayOptions.showAssets = false;
-    return ws.displayOptions;
+    const opts = ws.displayOptions;
+    if (typeof opts.leavesOnly !== 'boolean') opts.leavesOnly = true;
+    if (typeof opts.showAssets !== 'boolean') opts.showAssets = false;
+    if (typeof opts.mismatchesOnly !== 'boolean') opts.mismatchesOnly = false;
+    migrateDisplayOptions(opts);
+    opts.artifactKindFilters = normalizeArtifactDisplayFilterList(opts.artifactKindFilters || opts.artifactKindFilter);
+    opts.artifactKindFilter = opts.artifactKindFilters[0] || 'all';
+    const legacyAsOf = normalizeTemporalLensInput(opts.temporalAsOf || '');
+    opts.temporalStart = normalizeTemporalLensInput(opts.temporalStart || '');
+    opts.temporalEnd = normalizeTemporalLensInput(opts.temporalEnd || '');
+    // Backward compatibility: older shared links stored a single As-of value.
+    // Treat it as the time portal end when the newer range fields are absent.
+    if (!opts.temporalStart && !opts.temporalEnd && legacyAsOf) opts.temporalEnd = legacyAsOf;
+    const startMs = opts.temporalStart ? Date.parse(opts.temporalStart) : NaN;
+    const endMs = opts.temporalEnd ? Date.parse(opts.temporalEnd) : NaN;
+    if (Number.isFinite(startMs) && Number.isFinite(endMs) && startMs > endMs) {
+      const tmp = opts.temporalStart;
+      opts.temporalStart = opts.temporalEnd;
+      opts.temporalEnd = tmp;
+    }
+    opts.temporalAsOf = opts.temporalEnd || '';
+    opts.temporalMode = (opts.temporalStart || opts.temporalEnd) ? 'as-of' : 'latest';
+    return opts;
+  }
+
+  function padDatePart(value) {
+    return String(value).padStart(2, '0');
+  }
+
+  function dateToLocalMinuteValue(date = new Date()) {
+    const d = date instanceof Date ? date : new Date(date);
+    if (!Number.isFinite(d.getTime())) return '';
+    return `${d.getFullYear()}-${padDatePart(d.getMonth() + 1)}-${padDatePart(d.getDate())}T${padDatePart(d.getHours())}:${padDatePart(d.getMinutes())}`;
+  }
+
+  function normalizeTemporalLensInput(value) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    const parsed = Date.parse(text);
+    if (!Number.isFinite(parsed)) return '';
+    // datetime-local controls carry local wall time and no zone. Preserve that shape
+    // for reviewable shared UI instead of silently rewriting it to UTC.
+    const localMatch = text.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2})?/);
+    if (localMatch && !/(?:z|[+-]\d{2}:?\d{2})$/i.test(text)) return `${localMatch[1]}T${localMatch[2]}`;
+    return dateToLocalMinuteValue(new Date(parsed));
+  }
+
+  function normalizeTemporalLensOptionsShape(value = {}) {
+    const opts = Object.assign({}, value || {});
+    const legacyAsOf = normalizeTemporalLensInput(opts.temporalAsOf || '');
+    opts.temporalStart = normalizeTemporalLensInput(opts.temporalStart || '');
+    opts.temporalEnd = normalizeTemporalLensInput(opts.temporalEnd || '');
+    if (!opts.temporalStart && !opts.temporalEnd && legacyAsOf) opts.temporalEnd = legacyAsOf;
+    const startMs = opts.temporalStart ? Date.parse(opts.temporalStart) : NaN;
+    const endMs = opts.temporalEnd ? Date.parse(opts.temporalEnd) : NaN;
+    if (Number.isFinite(startMs) && Number.isFinite(endMs) && startMs > endMs) {
+      const tmp = opts.temporalStart;
+      opts.temporalStart = opts.temporalEnd;
+      opts.temporalEnd = tmp;
+    }
+    opts.temporalAsOf = opts.temporalEnd || '';
+    opts.temporalMode = (opts.temporalStart || opts.temporalEnd) ? 'as-of' : 'latest';
+    return opts;
+  }
+
+  function temporalLensStartMs(opts) {
+    const normalized = normalizeTemporalLensOptionsShape(opts || {});
+    if (!normalized.temporalStart) return 0;
+    const t = Date.parse(normalized.temporalStart);
+    return Number.isFinite(t) ? t : 0;
+  }
+
+  function temporalLensEndMs(opts) {
+    const normalized = normalizeTemporalLensOptionsShape(opts || {});
+    if (!normalized.temporalEnd) return 0;
+    const t = Date.parse(normalized.temporalEnd);
+    return Number.isFinite(t) ? t : 0;
+  }
+
+  function temporalLensCutoffMs(opts) {
+    return temporalLensEndMs(opts);
+  }
+
+  function temporalLensActiveForOptions(opts) {
+    const normalized = normalizeTemporalLensOptionsShape(opts || {});
+    return Boolean((normalized.temporalStart || normalized.temporalEnd) && (temporalLensStartMs(normalized) || temporalLensEndMs(normalized)));
+  }
+
+  function temporalLensNeedsSourceSnapshotForOptions(opts) {
+    const normalized = normalizeTemporalLensOptionsShape(opts || {});
+    // Begin-only means "from this time until latest loaded/current state" and
+    // does not require source time travel. A concrete End requests a source
+    // state at that end boundary when the adapter supports it.
+    return Boolean(normalized.temporalEnd && temporalLensEndMs(normalized));
+  }
+
+  function temporalLensSnapshotTargetAsOf(wsOrOpts) {
+    const opts = wsOrOpts?.displayOptions ? workspaceDisplayOptions(wsOrOpts) : normalizeTemporalLensOptionsShape(wsOrOpts || {});
+    return temporalLensNeedsSourceSnapshotForOptions(opts) ? opts.temporalEnd : '';
+  }
+
+  function temporalLensLabelForOptions(opts) {
+    const normalized = normalizeTemporalLensOptionsShape(opts || {});
+    if (!temporalLensActiveForOptions(normalized)) return 'Latest';
+    const begin = normalized.temporalStart ? normalized.temporalStart.replace('T', ' ') : '';
+    const end = normalized.temporalEnd ? normalized.temporalEnd.replace('T', ' ') : 'latest';
+    if (begin && normalized.temporalEnd) return `${begin} → ${end}`;
+    if (begin) return `${begin} → latest`;
+    return `until ${end}`;
+  }
+
+  function displayOptionsModalTemporalDraft(ws, opts = null) {
+    const modal = app.modal;
+    const base = normalizeTemporalLensOptionsShape(opts || workspaceDisplayOptions(ws));
+    if (!modal || modal.type !== 'display-options' || modal.wsId !== ws?.id) return base;
+    modal.temporalDraft = normalizeTemporalLensOptionsShape(modal.temporalDraft || base);
+    return modal.temporalDraft;
+  }
+
+  function displayOptionsHasPendingTemporalChange(ws, modal = app.modal) {
+    if (!modal || modal.type !== 'display-options' || modal.wsId !== ws?.id || !modal.temporalDraft) return false;
+    const current = normalizeTemporalLensOptionsShape(workspaceDisplayOptions(ws));
+    const draft = normalizeTemporalLensOptionsShape(modal.temporalDraft);
+    return current.temporalMode !== draft.temporalMode
+      || current.temporalStart !== draft.temporalStart
+      || current.temporalEnd !== draft.temporalEnd
+      || current.temporalAsOf !== draft.temporalAsOf;
+  }
+
+  function markTemporalSnapshotNeedsRef(ws, note = '') {
+    if (!ws || !temporalLensActive(ws)) return false;
+    const opts = workspaceDisplayOptions(ws);
+    const source = primaryTemporalGitHubSource(ws);
+    if (!source?.repo) return false;
+    ws.temporalSourceSnapshot = {
+      asOf: temporalLensSnapshotTargetAsOf(opts),
+      repo: source.repo,
+      ref: '',
+      sourceRef: source.ref || ws.discoverySource?.ref || '',
+      state: 'needs-ref',
+      loadedAt: new Date().toISOString(),
+      error: '',
+      note: note || 'No-API snapshot mode requires an explicit GitHub tree URL, commit URL, or commit SHA.'
+    };
+    return true;
+  }
+
+  function scheduleTemporalSnapshotLoadAfterApply(ws, refInput = '') {
+    const refText = String(refInput || '').trim();
+    if (!ws || !temporalLensActive(ws) || !primaryTemporalGitHubSource(ws) || !temporalLensNeedsSourceSnapshotForOptions(workspaceDisplayOptions(ws))) return;
+    if (!refText) {
+      const source = primaryTemporalGitHubSource(ws);
+      const opts = workspaceDisplayOptions(ws);
+      const asOf = temporalLensSnapshotTargetAsOf(opts);
+      const baseRef = source?.ref && !isCommitRef(source.ref) ? source.ref : (ws.discoverySource?.ref && !isCommitRef(ws.discoverySource.ref) ? ws.discoverySource.ref : 'master');
+      const cachedCommit = resolveGitHubCommitFromLocalCache(source?.repo || '', baseRef || 'master', asOf);
+      if (cachedCommit?.ref) {
+        setTimeout(() => {
+          const current = getWorkspace(ws.id);
+          if (!current || !temporalLensActive(current)) return;
+          loadTemporalSourceSnapshot(current, { refInput: cachedCommit.ref, autoApply: true, cachedCommit });
+        }, 0);
+        return;
+      }
+      // No silent date-to-commit resolving in no-API snapshot mode. A pure
+      // date lens remains a projection until the user supplies a concrete
+      // source ref/URL. Ask through the source adapter lightbox rather than
+      // cluttering Display Options with GitHub-specific controls.
+      markTemporalSnapshotNeedsRef(ws);
+      setTimeout(() => {
+        const current = getWorkspace(ws.id);
+        if (!current || !temporalLensActive(current)) return;
+        openTemporalSourceRefModal(current, { reason: 'no-api-ref-required' });
+      }, 0);
+      return;
+    }
+    setTimeout(() => {
+      const current = getWorkspace(ws.id);
+      if (!current || !temporalLensActive(current)) return;
+      loadTemporalSourceSnapshot(current, { refInput: refText, autoApply: true });
+    }, 0);
+  }
+
+  function applyDisplayOptionsModalDraft(modal) {
+    if (!modal || modal.type !== 'display-options') return false;
+    const ws = getWorkspace(modal.wsId || '');
+    if (!ws) return false;
+    const pending = displayOptionsHasPendingTemporalChange(ws, modal);
+    if (!pending) return false;
+    const opts = workspaceDisplayOptions(ws);
+    const beforeStart = opts.temporalStart || '';
+    const beforeEnd = opts.temporalEnd || '';
+    const beforeAsOf = opts.temporalAsOf || '';
+    const beforeMode = opts.temporalMode || 'latest';
+    const beforeSnapshot = ws.temporalSourceSnapshot || null;
+    const draft = normalizeTemporalLensOptionsShape(modal.temporalDraft || opts);
+    opts.temporalMode = draft.temporalMode;
+    opts.temporalStart = draft.temporalStart;
+    opts.temporalEnd = draft.temporalEnd;
+    opts.temporalAsOf = draft.temporalAsOf;
+    const changed = beforeStart !== opts.temporalStart || beforeEnd !== opts.temporalEnd || beforeAsOf !== opts.temporalAsOf || beforeMode !== opts.temporalMode;
+    if (changed) ws.temporalSourceSnapshot = null;
+    if (typeof setRouteState === 'function') setRouteState('replace');
+    if (!temporalLensNeedsSourceSnapshotForOptions(opts)) scheduleTemporalLatestRestoreAfterApply(ws, beforeSnapshot);
+    else if (temporalLensActive(ws)) scheduleTemporalSnapshotLoadAfterApply(ws);
+    return true;
+  }
+
+  function temporalNodeStampCandidates(node) {
+    const candidates = [];
+    const add = (kind, label, value, confidence = 'bounded') => {
+      const text = String(value || '').trim();
+      const time = Date.parse(text);
+      if (!text || !Number.isFinite(time)) return;
+      candidates.push({ kind, label, value: text, time, confidence });
+    };
+
+    add('source-version', 'source version', node?.gitCommittedAt || node?.file?.gitCommittedAt || '', 'source-anchored');
+    add('source-modified', 'origin modified', node?.file?.lastModified || node?.lastModified || '', 'origin-exposed');
+    add('artifact-created', 'artifact created', node?.createdAt || '', 'artifact-declared');
+    add('observed', 'observed/imported', node?.observedAt || node?.file?.observedAt || node?.file?.importedAt || '', 'workspace-observed');
+    add('generated', 'generated', node?.file?.generatedAt || '', 'workspace-generated');
+    return candidates.sort((a, b) => {
+      const order = { 'source-version': 0, 'source-modified': 1, 'artifact-created': 2, observed: 3, generated: 4 };
+      return (order[a.kind] ?? 99) - (order[b.kind] ?? 99);
+    });
+  }
+
+  function temporalNodeStamp(node) {
+    return temporalNodeStampCandidates(node)[0] || null;
+  }
+
+  function temporalTimeInWindow(time, opts) {
+    if (!Number.isFinite(time)) return true;
+    const start = temporalLensStartMs(opts);
+    const end = temporalLensEndMs(opts);
+    if (start && time < start) return false;
+    if (end && time > end) return false;
+    return true;
+  }
+
+  function temporalLensAllowsNode(ws, node) {
+    const opts = workspaceDisplayOptions(ws);
+    if (!temporalLensActiveForOptions(opts)) return true;
+
+    const snap = temporalLensLoadedSnapshotForCurrentAsOf(ws);
+    const nodeSourceId = node?.sourceId || node?.file?.sourceId || '';
+    const snapSource = primaryTemporalGitHubSource(ws);
+    const candidates = temporalNodeStampCandidates(node);
+
+    const nodeSurface = node?.sourceSurface || node?.file?.sourceSurface || (typeof sourceSurfaceForEntry === 'function' ? sourceSurfaceForEntry(node?.file || node) : '');
+
+    // A loaded GitHub repo-file source snapshot already encodes file existence at
+    // the snapshot end boundary. Do not use that shortcut for adapter-observed
+    // issue/discussion material: issue and comment findings are live social
+    // observations and must still respect the Time Portal display window.
+    if (snap?.ref && snapSource?.id && nodeSourceId === snapSource.id && !temporalLensStartMs(opts) && nodeSurface !== 'issues') return true;
+
+    // No usable timestamp means this projection cannot prove the artifact sits
+    // outside the selected window. Keep it visible and surface the limitation in UI.
+    if (!candidates.length) return true;
+
+    // Artifact Created At is the strongest loaded-artifact boundary in normal
+    // projection mode. Future portal policy can expose Created vs Modified as a
+    // separate user setting; for now this is the default time-filter signal.
+    const declaredCreated = candidates.find((stamp) => stamp.kind === 'artifact-created');
+    if (declaredCreated) return temporalTimeInWindow(declaredCreated.time, opts);
+
+    const best = candidates[0];
+    return temporalTimeInWindow(best.time, opts);
+  }
+
+  function applyTemporalLensToNodes(ws, nodes) {
+    if (!Array.isArray(nodes)) return [];
+    return nodes.filter((node) => temporalLensAllowsNode(ws, node));
+  }
+
+  function applyTemporalLensToLineageNodes(ws, nodes) {
+    if (!Array.isArray(nodes)) return [];
+    if (!temporalLensActive(ws)) return nodes;
+    const out = [];
+    let descendantKept = false;
+    for (const node of nodes) {
+      const allowed = temporalLensAllowsNode(ws, node);
+      if (allowed || descendantKept) {
+        out.push(node);
+        descendantKept = true;
+      }
+    }
+    return out;
+  }
+
+  function temporalLensActive(ws) {
+    return temporalLensActiveForOptions(workspaceDisplayOptions(ws));
+  }
+
+  function temporalLensLabel(ws) {
+    return temporalLensLabelForOptions(workspaceDisplayOptions(ws));
+  }
+
+  function temporalLensSnapshotForCurrentAsOf(ws) {
+    if (!temporalLensActive(ws)) return null;
+    const target = temporalLensSnapshotTargetAsOf(ws);
+    const snap = ws?.temporalSourceSnapshot || null;
+    if (!target || !snap || snap.asOf !== target) return null;
+    return snap;
+  }
+
+  function temporalLensLoadedSnapshotForCurrentAsOf(ws) {
+    const snap = temporalLensSnapshotForCurrentAsOf(ws);
+    return snap?.ref && snap.state === 'loaded' ? snap : null;
+  }
+
+  function temporalLensModeLabel(ws) {
+    if (!temporalLensActive(ws)) return 'latest loaded view';
+    if (!temporalLensNeedsSourceSnapshotForOptions(workspaceDisplayOptions(ws))) return 'time filter to latest';
+    const snap = temporalLensSnapshotForCurrentAsOf(ws);
+    if (snap?.ref && snap.state === 'loaded') return `GitHub source snapshot @ ${shortText(snap.ref, 8)}`;
+    if (snap?.state === 'failed') return 'source snapshot unresolved';
+    if (snap?.state === 'loading') return 'source snapshot loading';
+    if (snap?.state === 'needs-ref') return 'source snapshot needs ref';
+    return 'loaded projection';
+  }
+
+  function temporalLensStatusChip(ws) {
+    if (!temporalLensActive(ws)) return '';
+    return `<span class="badge-soft temporal-lens-chip" title="Time portal mode: ${escapeAttr(temporalLensModeLabel(ws))}"><i class="fa-solid fa-clock-rotate-left"></i>Time ${escapeHtml(temporalLensLabel(ws))}</span>`;
+  }
+
+  function temporalLensNotice(ws) {
+    if (!temporalLensActive(ws)) return '';
+    const label = temporalLensLabel(ws);
+    const mode = temporalLensModeLabel(ws);
+    const snap = temporalLensSnapshotForCurrentAsOf(ws);
+    const detail = !temporalLensNeedsSourceSnapshotForOptions(workspaceDisplayOptions(ws))
+      ? 'Begin-only time filtering uses the latest loaded source state and does not require a historical source snapshot.'
+      : snap?.ref && snap.state === 'loaded'
+        ? `Source snapshot loaded from ${snap.repo || 'GitHub'} at ref ${snap.ref || ''} without GitHub API fallback.`
+        : snap?.state === 'failed'
+          ? `Source snapshot could not be resolved: ${snap.error || 'unknown error'}`
+          : snap?.state === 'needs-ref'
+            ? 'No-API snapshot mode needs a GitHub tree URL, commit URL, or commit SHA. The current list remains a loaded projection until a ref is provided.'
+            : 'Loaded projection only. End-bound source snapshots need a concrete source ref when no API fallback is allowed.';
+    return `<div class="temporal-lens-notice compact" role="status" title="${escapeAttr(detail)}"><i class="fa-solid fa-clock-rotate-left"></i><strong>Time ${escapeHtml(label)}</strong><span>${escapeHtml(mode)}</span></div>`;
+  }
+
+
+  function primaryTemporalGitHubSource(ws) {
+    if (!ws) return null;
+    ensureWorkspaceSources(ws);
+    const preferred = ws.discoverySource?.sourceId ? sourceById(ws, ws.discoverySource.sourceId) : null;
+    if (preferred?.kind === 'github' && preferred.repo) return preferred;
+    for (const source of ws.sources?.values?.() || []) {
+      if (source?.kind === 'github' && source.repo) return source;
+    }
+    return null;
+  }
+
+  function temporalLensCanLoadSourceSnapshot(ws) {
+    return Boolean(temporalLensActive(ws) && primaryTemporalGitHubSource(ws));
+  }
+
+  function gitHubCommitWebWindowUrl(repo, ref, asOf, daysBack = 45) {
+    const until = new Date(Date.parse(asOf));
+    if (!repo || !Number.isFinite(until.getTime())) return '';
+    const since = new Date(until.getTime() - Math.max(1, Number(daysBack) || 45) * 24 * 60 * 60 * 1000);
+    const datePart = (date) => date.toISOString().slice(0, 10);
+    const cleanRef = encodeURIComponent(ref || 'master');
+    const params = new URLSearchParams({ since: datePart(since), until: datePart(until) });
+    return `https://github.com/${repo}/commits/${cleanRef}/?${params.toString()}`;
+  }
+
+  function extractGitHubRepoRefInput(value, fallbackRepo = '') {
+    const raw = String(value || '').trim();
+    if (!raw) return null;
+    if (/^[0-9a-f]{7,40}$/i.test(raw)) {
+      return { repo: fallbackRepo || '', ref: raw, kind: 'sha', sourceUrl: '' };
+    }
+    try {
+      const url = new URL(raw);
+      if (url.hostname.toLowerCase() !== 'github.com') return null;
+      const parts = url.pathname.split('/').filter(Boolean);
+      if (parts.length < 4) return null;
+      const repo = `${parts[0]}/${parts[1]}`;
+      const kind = parts[2];
+      const ref = parts.slice(3).join('/');
+      if ((kind === 'tree' || kind === 'commit') && ref) {
+        return { repo, ref, kind, sourceUrl: url.href };
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function normalizeGitHubCommitCacheRef(ref = '') {
+    const value = String(ref || '').trim();
+    const match = value.match(/[0-9a-f]{7,40}/i);
+    return match ? match[0] : '';
+  }
+
+  function readGitHubCommitCache() {
+    try {
+      const data = storageReadJson(localStorage, STORAGE_KEYS.githubCommitCache, {});
+      return data && typeof data === 'object' ? data : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function writeGitHubCommitCache(cache) {
+    try { storageWriteJson(localStorage, STORAGE_KEYS.githubCommitCache, cache || {}); } catch (_) {}
+  }
+
+  function rememberGitHubCommitCandidate(candidate = {}) {
+    const repo = String(candidate.repo || '').trim();
+    const ref = normalizeGitHubCommitCacheRef(candidate.ref || candidate.sha || candidate.commitSha || '');
+    const timeText = String(candidate.committedAt || candidate.time || candidate.asOf || '').trim();
+    const time = Date.parse(timeText);
+    if (!repo || !ref || !Number.isFinite(time)) return false;
+    const cache = readGitHubCommitCache();
+    const list = Array.isArray(cache[repo]) ? cache[repo] : [];
+    const entry = {
+      repo,
+      ref,
+      sourceRef: String(candidate.sourceRef || candidate.baseRef || '').trim(),
+      committedAt: new Date(time).toISOString(),
+      observedAt: new Date().toISOString(),
+      resolver: String(candidate.resolver || 'adapter-observed-commit-cache'),
+      confidence: String(candidate.confidence || (candidate.committedAt ? 'source-dated-cache' : 'portal-observed-time')),
+      sourceUrl: String(candidate.sourceUrl || candidate.commitUrl || candidate.treeUrl || '').trim(),
+      note: String(candidate.note || '').trim()
+    };
+    const filtered = list.filter((item) => normalizeGitHubCommitCacheRef(item?.ref || '') !== ref);
+    filtered.push(entry);
+    filtered.sort((a, b) => Date.parse(b.committedAt || 0) - Date.parse(a.committedAt || 0));
+    cache[repo] = filtered.slice(0, 160);
+    writeGitHubCommitCache(cache);
+    return true;
+  }
+
+  function resolveGitHubCommitFromLocalCache(repo, sourceRef, asOf) {
+    const cutoff = Date.parse(asOf);
+    if (!repo || !Number.isFinite(cutoff)) return null;
+    const list = Array.isArray(readGitHubCommitCache()[repo]) ? readGitHubCommitCache()[repo] : [];
+    const eligible = list
+      .map((item) => Object.assign({}, item, { time: Date.parse(item?.committedAt || '') }))
+      .filter((item) => item.ref && Number.isFinite(item.time) && item.time <= cutoff)
+      .sort((a, b) => {
+        const aSame = sourceRef && itemSourceRefMatches(a.sourceRef, sourceRef) ? 1 : 0;
+        const bSame = sourceRef && itemSourceRefMatches(b.sourceRef, sourceRef) ? 1 : 0;
+        if (aSame !== bSame) return bSame - aSame;
+        return b.time - a.time;
+      });
+    const hit = eligible[0];
+    if (!hit) return null;
+    return {
+      repo,
+      ref: hit.ref,
+      sourceRef: hit.sourceRef || sourceRef || '',
+      committedAt: hit.committedAt || '',
+      commitUrl: hit.sourceUrl && /\/commit\//i.test(hit.sourceUrl) ? hit.sourceUrl : `https://github.com/${repo}/commit/${hit.ref}`,
+      treeUrl: hit.sourceUrl && /\/tree\//i.test(hit.sourceUrl) ? hit.sourceUrl : `https://github.com/${repo}/tree/${hit.ref}`,
+      resolver: 'github-local-commit-cache',
+      confidence: hit.confidence || 'portal-observed-time',
+      note: hit.note || 'Resolved from locally cached GitHub adapter commit observations.'
+    };
+  }
+
+  function itemSourceRefMatches(a = '', b = '') {
+    const left = String(a || '').trim();
+    const right = String(b || '').trim();
+    return !left || !right || left === right || normalizeGitHubCommitCacheRef(left) === normalizeGitHubCommitCacheRef(right);
+  }
+
+  function parseGitHubCommitWebPage(repo, html, asOf) {
+    const cutoff = Date.parse(asOf);
+    const commits = [];
+    const seen = new Set();
+    const addCommit = (sha, meta = {}) => {
+      const ref = String(sha || '').trim();
+      if (!/^[0-9a-f]{7,40}$/i.test(ref) || seen.has(ref)) return;
+      seen.add(ref);
+      const committedAt = String(meta.committedAt || '').trim();
+      commits.push({
+        repo,
+        ref,
+        sourceRef: meta.sourceRef || '',
+        committedAt,
+        message: meta.message || '',
+        commitUrl: meta.commitUrl || `https://github.com/${repo}/commit/${ref}`,
+        treeUrl: meta.treeUrl || `https://github.com/${repo}/tree/${ref}`,
+        resolver: 'github-web-commits-page',
+        confidence: committedAt ? 'source-web-dated' : 'source-web-order'
+      });
+    };
+
+    try {
+      const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+      const anchors = Array.from(doc.querySelectorAll('a[href]'));
+      for (const a of anchors) {
+        const href = a.getAttribute('href') || '';
+        const match = href.match(new RegExp(`(?:^|/)${repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/commit/([0-9a-f]{7,40})(?:$|[?#/])`, 'i')) || href.match(/\/commit\/([0-9a-f]{7,40})(?:$|[?#/])/i);
+        if (!match) continue;
+        let box = a;
+        for (let i = 0; i < 6 && box && !box.querySelector?.('relative-time,time-ago,time[datetime]'); i++) box = box.parentElement;
+        const timeEl = box?.querySelector?.('relative-time[datetime],time-ago[datetime],time[datetime]');
+        const titleEl = box?.querySelector?.('a.Link--primary, a[data-pjax], .commit-title, h4, h3');
+        const hrefAbs = (() => { try { return new URL(href, `https://github.com/${repo}/`).href; } catch (_) { return `https://github.com/${repo}/commit/${match[1]}`; } })();
+        addCommit(match[1], {
+          committedAt: timeEl?.getAttribute?.('datetime') || '',
+          message: cleanWhitespace(titleEl?.textContent || a.textContent || ''),
+          commitUrl: hrefAbs,
+          treeUrl: `https://github.com/${repo}/tree/${match[1]}`
+        });
+      }
+    } catch (_) {
+      // Fall through to href regex parsing when DOMParser is unavailable or markup is unusual.
+    }
+
+    if (!commits.length) {
+      const re = /href=["']([^"']*\/commit\/([0-9a-f]{7,40})[^"']*)["']/gi;
+      let m;
+      while ((m = re.exec(String(html || '')))) {
+        addCommit(m[2], { commitUrl: new URL(m[1], `https://github.com/${repo}/`).href });
+      }
+    }
+
+    if (!Number.isFinite(cutoff)) return commits[0] || null;
+    const dated = commits.filter((commit) => Number.isFinite(Date.parse(commit.committedAt)) && Date.parse(commit.committedAt) <= cutoff);
+    return dated[0] || commits[0] || null;
+  }
+
+  async function resolveGitHubRepoStateViaWebCommits(repo, sourceRef, asOf, options = {}) {
+    const windows = options.windows || [45, 180, 730, 3650];
+    let lastError = null;
+    for (const days of windows) {
+      const url = gitHubCommitWebWindowUrl(repo, sourceRef, asOf, days);
+      try {
+        const html = await adapterFetchText(url, {
+          adapter: 'github-web',
+          label: 'GitHub commits web page',
+          rateLimitKey: `github-web:${repo}`,
+          hardRefresh: Boolean(options.hardRefresh),
+          headers: { Accept: 'text/html,application/xhtml+xml' }
+        });
+        const commit = parseGitHubCommitWebPage(repo, html, asOf);
+        if (commit?.ref) {
+          commit.sourceRef = sourceRef;
+          commit.resolverUrl = url;
+          commit.windowDays = days;
+          commit.resolver = commit.resolver || 'github-web-commits-page';
+          rememberGitHubCommitCandidate(commit);
+          return commit;
+        }
+      } catch (error) {
+        lastError = error;
+        break;
+      }
+    }
+    if (lastError) throw lastError;
+    return null;
+  }
+
+  function gitHubCommitRestUntilUrl(repo, ref, asOf) {
+    if (!repo || !asOf) return '';
+    const params = new URLSearchParams({
+      sha: ref || 'master',
+      until: new Date(Date.parse(asOf)).toISOString(),
+      per_page: '1'
+    });
+    return `https://api.github.com/repos/${repo}/commits?${params.toString()}`;
+  }
+
+  async function resolveGitHubRepoStateViaCommitApi(repo, sourceRef, asOf, options = {}) {
+    const url = gitHubCommitRestUntilUrl(repo, sourceRef, asOf);
+    if (!url) return null;
+    const commits = await fetchJson(url, {
+      adapter: 'github-rest',
+      label: 'GitHub commit resolver',
+      // The commit resolver is a single user-invoked temporal lookup. Keep its
+      // local guard separate from broad issue/comment/tree discovery so an old
+      // issue-discovery rate-limit marker does not make source snapshots appear
+      // impossible before this one bounded request has actually been tried.
+      rateLimitKey: options.rateLimitKey || `github-rest:commit-resolver:${repo}`,
+      hardRefresh: Boolean(options.hardRefresh)
+    });
+    const latest = Array.isArray(commits) ? commits[0] : null;
+    const ref = latest?.sha || '';
+    if (!ref) return null;
+    const committedAt = latest?.commit?.committer?.date || latest?.commit?.author?.date || '';
+    return {
+      repo,
+      ref,
+      sourceRef,
+      committedAt,
+      message: latest?.commit?.message ? String(latest.commit.message).split('\n')[0] : '',
+      commitUrl: latest?.html_url || `https://github.com/${repo}/commit/${ref}`,
+      treeUrl: `https://github.com/${repo}/tree/${ref}`,
+      resolver: 'github-rest-commit-until',
+      resolverUrl: url,
+      confidence: 'source-api-dated'
+    };
+  }
+
+  async function resolveGitHubRepoStateAtOrBeforeDate(repo, ref, asOf, options = {}) {
+    const until = new Date(Date.parse(asOf));
+    if (!repo || !Number.isFinite(until.getTime())) return null;
+    const sourceRef = ref || 'master';
+    const cachedCommit = resolveGitHubCommitFromLocalCache(repo, sourceRef, asOf);
+    if (cachedCommit?.ref) return cachedCommit;
+    const errors = [];
+
+    try {
+      const webCommit = await resolveGitHubRepoStateViaWebCommits(repo, sourceRef, asOf, options);
+      if (webCommit?.ref) return webCommit;
+    } catch (error) {
+      errors.push(`web: ${error.message}`);
+    }
+
+    // Browser reads of github.com HTML are often blocked by CORS even though a
+    // human can navigate the same page. GitHub REST/API lookup is intentionally
+    // not a silent fallback; it only runs for an explicit user-invoked capability.
+    if (options.allowApiFallback === true) {
+      try {
+        const apiCommit = await resolveGitHubRepoStateViaCommitApi(repo, sourceRef, asOf, options);
+        if (apiCommit?.ref) {
+          if (errors.length) apiCommit.warnings = errors;
+          return apiCommit;
+        }
+      } catch (error) {
+        errors.push(`api: ${error.message}`);
+      }
+    }
+
+    if (errors.length) {
+      const err = new Error(`Could not resolve GitHub source snapshot (${errors.join('; ')}).`);
+      err.resolverErrors = errors;
+      throw err;
+    }
+    return null;
+  }
+
+  async function fetchGitHubCommitBeforeAsOf(repo, ref, asOf, options = {}) {
+    return resolveGitHubRepoStateAtOrBeforeDate(repo, ref, asOf, options);
+  }
+
+  function removeRepoFilesForSource(ws, sourceId) {
+    if (!ws?.files || !sourceId) return 0;
+    let removed = 0;
+    for (const [key, file] of Array.from(ws.files.entries())) {
+      if (file?.sourceId !== sourceId) continue;
+      if ((file.sourceSurface || '') && file.sourceSurface !== 'repoFiles') continue;
+      ws.files.delete(key);
+      removed += 1;
+    }
+    return removed;
+  }
+
+  function collectSourceSnapshotSeedPaths(ws, sourceId, rootPaths) {
+    const effectiveRoots = (Array.isArray(rootPaths) && rootPaths.length ? rootPaths : ['.topics']).map(normalizeRepoPath).filter(Boolean);
+    const seen = new Set();
+    const add = (value) => {
+      const path = normalizeRepoPath(value || '');
+      if (!path || seen.has(path)) return;
+      if (!pathLooksUsefulLineageArtifact(path)) return;
+      if (!effectiveRoots.some((root) => !root || path === root || path.startsWith(`${root}/`))) return;
+      seen.add(path);
+    };
+    for (const file of ws?.files?.values?.() || []) {
+      if (sourceId && file?.sourceId && file.sourceId !== sourceId) continue;
+      add(file?.path);
+    }
+    for (const node of ws?.nodes || []) {
+      if (sourceId && node?.sourceId && node.sourceId !== sourceId) continue;
+      add(node?.path);
+    }
+    if (String(ws?.repo || '').toLowerCase() === 'tiinex/docs' || String(primaryTemporalGitHubSource(ws)?.repo || '').toLowerCase() === 'tiinex/docs') {
+      for (const path of TIINEX_DOCS_SCHEMA_FRESHNESS_PATHS || []) add(path);
+    }
+    return Array.from(seen).sort((a, b) => a.localeCompare(b));
+  }
+
+  function temporalLatestRestoreTarget(ws, snapshot = null) {
+    const source = primaryTemporalGitHubSource(ws);
+    if (!source?.repo) return null;
+    const snap = snapshot || ws?.temporalSourceSnapshot || null;
+    const ref = snap?.sourceRef || source.sourceRef || (ws.discoverySource?.ref && !isCommitRef(ws.discoverySource.ref) ? ws.discoverySource.ref : '') || 'master';
+    const rootPaths = Array.isArray(snap?.rootPaths) && snap.rootPaths.length
+      ? snap.rootPaths
+      : (Array.isArray(source.rootPaths) && source.rootPaths.length ? source.rootPaths : (ws.discoverySource?.rootPaths || ['.topics']));
+    return { source, repo: source.repo, ref, rootPaths };
+  }
+
+  async function restoreTemporalSourceLatestState(ws, snapshot = null, options = {}) {
+    const target = temporalLatestRestoreTarget(ws, snapshot);
+    if (!ws || !target?.source?.repo) return false;
+    try {
+      ws.loading = true;
+      ws.temporalSourceSnapshot = null;
+      removeRepoFilesForSource(ws, target.source.id);
+      target.source.ref = target.ref;
+      target.source.label = gitHubSourceLabel(target.repo, target.ref);
+      ws.logs.push(`Time portal cleared: restoring ${target.repo}@${target.ref} / ${rootPathsLabel(target.rootPaths)}.`);
+      await discoverGitHubRepoIntoWorkspace(ws, {
+        repo: target.repo,
+        ref: target.ref,
+        rootPaths: target.rootPaths,
+        source: target.source,
+        refreshExisting: true,
+        hardRefresh: Boolean(options.hardRefresh),
+        preferStatic: true,
+        noApi: true
+      });
+      if (options.toast !== false) toast(`Restored latest source view for ${target.repo}@${shortText(target.ref, 8)}.`, 'ok');
+      return true;
+    } catch (error) {
+      toast(`Could not restore latest source view: ${error.message}`, 'warn');
+      ws.logs.push(`Time portal latest restore failed: ${error.message}`);
+      return false;
+    } finally {
+      ws.loading = false;
+      computeWorkspaceIndex(ws);
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      render();
+    }
+  }
+
+  function scheduleTemporalLatestRestoreAfterApply(ws, snapshot = null) {
+    if (!ws || !snapshot?.ref) return;
+    setTimeout(() => {
+      const current = getWorkspace(ws.id);
+      if (!current || temporalLensActive(current)) return;
+      restoreTemporalSourceLatestState(current, snapshot, { hardRefresh: true });
+    }, 0);
+  }
+
+  async function loadTemporalSourceSnapshot(ws, options = {}) {
+    if (!ws || !temporalLensActive(ws)) return;
+    const opts = workspaceDisplayOptions(ws);
+    const source = primaryTemporalGitHubSource(ws);
+    if (!source?.repo) {
+      toast('No GitHub source is available for a source snapshot.', 'warn');
+      return;
+    }
+    const baseRef = source.ref && !isCommitRef(source.ref) ? source.ref : (ws.discoverySource?.ref && !isCommitRef(ws.discoverySource.ref) ? ws.discoverySource.ref : '');
+    const manualTarget = extractGitHubRepoRefInput(options.refInput || '', source.repo);
+    if (options.refInput && !manualTarget?.ref) {
+      toast('Paste a GitHub tree URL, commit URL, or commit SHA.', 'warn');
+      return;
+    }
+    if (manualTarget?.repo && manualTarget.repo !== source.repo) {
+      toast(`Snapshot target belongs to ${manualTarget.repo}; this workspace source is ${source.repo}.`, 'warn');
+      return;
+    }
+    if (!manualTarget?.ref) {
+      markTemporalSnapshotNeedsRef(ws);
+      if (!options.autoApply) toast('No-API source snapshots need a GitHub tree URL, commit URL, or commit SHA.', 'warn');
+      return;
+    }
+    try {
+      ws.loading = true;
+      ws.temporalSourceSnapshot = {
+        asOf: temporalLensSnapshotTargetAsOf(opts),
+        repo: source.repo,
+        ref: '',
+        sourceRef: baseRef || '',
+        state: 'loading',
+        loadedAt: '',
+        error: ''
+      };
+      render();
+      const commit = options.cachedCommit?.ref ? options.cachedCommit : {
+        repo: source.repo,
+        ref: manualTarget.ref,
+        sourceRef: baseRef || '',
+        committedAt: '',
+        resolver: manualTarget.kind === 'tree' ? 'github-web-tree-url' : manualTarget.kind === 'commit' ? 'github-web-commit-url' : 'manual-sha',
+        resolverUrl: manualTarget.sourceUrl || ''
+      };
+      if (!commit?.ref) {
+        toast(`No GitHub commit found for ${temporalLensLabel(ws)}. Paste a tree URL or commit SHA as a fallback.`, 'warn');
+        return;
+      }
+      const rootPaths = Array.isArray(source.rootPaths) && source.rootPaths.length ? source.rootPaths : (ws.discoverySource?.rootPaths || ['.topics']);
+      const seedPaths = collectSourceSnapshotSeedPaths(ws, source.id, rootPaths);
+      removeRepoFilesForSource(ws, source.id);
+      source.ref = commit.ref;
+      source.label = gitHubSourceLabel(source.repo, commit.ref);
+      ws.temporalSourceSnapshot = {
+        asOf: temporalLensSnapshotTargetAsOf(opts),
+        repo: source.repo,
+        ref: commit.ref,
+        sourceRef: baseRef || '',
+        committedAt: commit.committedAt || '',
+        loadedAt: new Date().toISOString(),
+        rootPaths,
+        resolver: commit.resolver || 'github-web-commits-page',
+        resolverUrl: commit.resolverUrl || '',
+        confidence: commit.confidence || (manualTarget?.ref ? 'user-supplied-source-ref' : ''),
+        warnings: commit.warnings || [],
+        state: 'loaded'
+      };
+      rememberGitHubCommitCandidate({
+        repo: source.repo,
+        ref: commit.ref,
+        sourceRef: baseRef || '',
+        committedAt: commit.committedAt || '',
+        asOf: temporalLensSnapshotTargetAsOf(opts),
+        resolver: commit.resolver || ws.temporalSourceSnapshot.resolver,
+        confidence: commit.confidence || (commit.committedAt ? 'source-dated-cache' : 'portal-observed-time'),
+        sourceUrl: commit.treeUrl || commit.commitUrl || commit.resolverUrl || ''
+      });
+      ws.logs.push(`Temporal source snapshot: ${source.repo}@${commit.ref} for ${temporalLensLabel(ws)} via ${ws.temporalSourceSnapshot.resolver}.`);
+      await discoverGitHubRepoIntoWorkspace(ws, {
+        repo: source.repo,
+        ref: commit.ref,
+        rootPaths,
+        source,
+        refreshExisting: true,
+        hardRefresh: true,
+        preferStatic: true,
+        noApi: true,
+        seedPaths
+      });
+      toast(`Loaded GitHub snapshot ${shortText(commit.ref, 8)} for ${temporalLensLabel(ws)}.`, 'ok');
+      return true;
+    } catch (error) {
+      ws.temporalSourceSnapshot = {
+        asOf: temporalLensSnapshotTargetAsOf(opts),
+        repo: source.repo,
+        ref: '',
+        sourceRef: baseRef || '',
+        state: 'failed',
+        loadedAt: new Date().toISOString(),
+        error: error.message || String(error || 'unknown error')
+      };
+      toast(`Could not load source snapshot: ${error.message}`, 'warn');
+      ws.logs.push(`Temporal source snapshot failed: ${error.message}`);
+      return false;
+    } finally {
+      ws.loading = false;
+      computeWorkspaceIndex(ws);
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      render();
+    }
   }
 
   function artifactDisplayKind(node) {
     const path = String(node?.path || '');
-    if (/\.workspace\.md$/i.test(path)) return 'workspace';
-    if (/\.schema\.md$/i.test(path)) return 'schema';
-    if (/\.validator\.md$/i.test(path)) return 'validator';
-    if (/\.trace\.md$/i.test(path)) return 'trace';
+    const pathKind = tiinexArtifactKindForPath(path);
+    if (pathKind) return pathKind;
     const schema = schemaKey(node?.currentSchemaText || node?.currentSchema || '');
     if (schema === 'workspace') return 'workspace';
     if (/validation\.method|validator/i.test(String(node?.currentSchemaText || node?.currentSchema || path || ''))) return 'validator';
+    if (/digital\.adapter|adapter/i.test(String(node?.currentSchemaText || node?.currentSchema || path || ''))) return 'adapter';
+    if (/digital\.origin|natural\.origin|origin/i.test(String(node?.currentSchemaText || node?.currentSchema || path || ''))) return 'origin';
+    if (/interface/i.test(String(node?.currentSchemaText || node?.currentSchema || path || ''))) return 'interface';
+    if (/tool/i.test(String(node?.currentSchemaText || node?.currentSchema || path || ''))) return 'tool';
     if (/schema/i.test(String(node?.currentSchemaText || node?.currentSchema || ''))) return 'schema';
     return 'trace';
   }
 
   function displayOptionAllowsNode(ws, node) {
     const opts = workspaceDisplayOptions(ws);
-    const kind = artifactDisplayKind(node);
-    if (kind === 'workspace') return opts.showWorkspace;
-    if (kind === 'schema') return opts.showSchema;
-    if (kind === 'validator') return opts.showValidator;
-    return opts.showTrace;
+    const filters = normalizeArtifactDisplayFilterList(opts.artifactKindFilters || opts.artifactKindFilter);
+    if (filters.length && !filters.includes(artifactDisplayKind(node))) return false;
+    if (opts.mismatchesOnly && effectiveIntegrityStatus(node) !== 'mismatch') return false;
+    return true;
   }
 
   function filteredDiscoveryNodes(ws) {
-    const filter = typeof normalizeDiscoveryFilterForWorkspace === 'function'
-      ? normalizeDiscoveryFilterForWorkspace(ws)
-      : (ws.discoveryFilterSchema || ws.filterSchema || 'all');
+    const filters = typeof normalizeDiscoveryFilterListForWorkspace === 'function'
+      ? normalizeDiscoveryFilterListForWorkspace(ws)
+      : normalizeDiscoveryFilterListForWorkspaceFallback(ws);
     const query = ws.discoverySearch || '';
     const opts = typeof workspaceDisplayOptions === 'function'
       ? workspaceDisplayOptions(ws)
       : { leavesOnly: true };
 
-    let base = opts.leavesOnly ? ((ws.leaves && ws.leaves.length) ? ws.leaves : ws.nodes) : ws.nodes;
+    let base = opts.leavesOnly
+      ? (typeof workingLeafNodes === 'function' ? workingLeafNodes(ws) : ((ws.leaves && ws.leaves.length) ? ws.leaves : ws.nodes))
+      : ws.nodes;
+    if (filters.includes('draft')) {
+      const seen = new Set(base.map((node) => node.id || node.path));
+      for (const node of ws.nodes || []) {
+        if (!node.isGenerated) continue;
+        const key = node.id || node.path;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        base = base.concat([node]);
+      }
+    }
     if (typeof displayOptionAllowsNode === 'function') {
       base = base.filter((node) => displayOptionAllowsNode(ws, node));
     }
+    if (typeof applyTemporalLensToNodes === 'function') {
+      base = applyTemporalLensToNodes(ws, base);
+    }
 
-    if (filter === 'draft') {
-      base = (ws.nodes || []).filter((node) => node.isGenerated && (!displayOptionAllowsNode || displayOptionAllowsNode(ws, node)));
-    } else if (filter !== 'all') {
-      base = base.filter((node) => schemaKey(node.currentSchemaText || node.currentSchema) === filter);
+    if (filters.length) {
+      base = base.filter((node) => {
+        if (filters.includes('draft') && node.isGenerated) return true;
+        const schemaText = node.currentSchemaText || node.currentSchema || '';
+        return filters.some((filter) => typeof schemaMatchesDiscoveryFilterValue === 'function'
+          ? schemaMatchesDiscoveryFilterValue(schemaText, filter)
+          : (typeof schemaFilterAliases === 'function' ? schemaFilterAliases(schemaText) : new Set([schemaKey(schemaText)])).has(filter));
+      });
     }
 
     if (normalizeSearchText(query)) {
@@ -10329,17 +18297,110 @@ ${bodySections}
     return base;
   }
 
+  function normalizeDiscoveryFilterListForWorkspaceFallback(ws) {
+    const value = ws?.discoveryFilterSchema || ws?.filterSchema || 'all';
+    if (!value || value === 'all') return [];
+    return [value];
+  }
+
   function displayOptionsActiveCount(ws) {
     const opts = workspaceDisplayOptions(ws);
     let count = 0;
     if (opts.leavesOnly) count += 1;
-    if (!opts.showTrace) count += 1;
-    if (!opts.showSchema) count += 1;
-    if (!opts.showValidator) count += 1;
-    if (!opts.showWorkspace) count += 1;
+    if (typeof normalizeDiscoveryFilterListForWorkspace === 'function' && normalizeDiscoveryFilterListForWorkspace(ws).length) count += 1;
+    if (normalizeArtifactDisplayFilterList(opts.artifactKindFilters || opts.artifactKindFilter).length) count += 1;
     if (opts.showAssets) count += 1;
+    if (opts.mismatchesOnly) count += 1;
+    if (temporalLensActive(ws)) count += 1;
     return count;
   }
+
+  function openTemporalSourceRefModal(ws, options = {}) {
+    if (!ws || !temporalLensActive(ws)) return false;
+    const source = primaryTemporalGitHubSource(ws);
+    if (!source?.repo) return false;
+    app.modal = {
+      type: 'temporal-source-ref',
+      wsId: ws.id,
+      reason: options.reason || '',
+      value: '',
+      error: ''
+    };
+    if (typeof setRouteState === 'function') setRouteState('replace');
+    render();
+    return true;
+  }
+
+  function renderTemporalSourceRefModal(modal) {
+    const ws = getWorkspace(modal?.wsId || '');
+    if (!ws) return '';
+    const source = primaryTemporalGitHubSource(ws);
+    const commitsUrl = temporalLensGitHubCommitsPageUrl(ws);
+    const label = temporalLensLabel(ws);
+    const error = modal?.error ? `<div class="portal-resolver-error"><i class="fa-solid fa-triangle-exclamation"></i>${escapeHtml(modal.error)}</div>` : '';
+    return `
+      <div class="modal-backdrop-custom focus-modal portal-resolver-backdrop" role="dialog" aria-modal="true" aria-labelledby="portal-resolver-title">
+        <div class="modal-panel portal-resolver-panel">
+          <div class="modal-header-lite portal-resolver-head">
+            <div>
+              <p class="kicker">Time portal</p>
+              <h2 class="modal-title-lite" id="portal-resolver-title">Resolve source snapshot</h2>
+              <p class="text-secondary mb-0">${escapeHtml(source?.repo || 'GitHub source')} as of ${escapeHtml(label)} needs a concrete Git ref.</p>
+            </div>
+            <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+          <div class="portal-resolver-body">
+            <p>No GitHub API will be used. Open GitHub's commits page, choose “Browse repository at this point”, then paste the tree URL, commit URL, or SHA here.</p>
+            <div class="portal-resolver-actions">
+              <button type="button" class="tv-btn small" data-action="open-temporal-commits-page" data-ws="${escapeAttr(ws.id)}" ${commitsUrl ? '' : 'disabled'}><i class="fa-solid fa-arrow-up-right-from-square"></i>Open commits page</button>
+              <span class="badge-soft muted-chip"><i class="fa-solid fa-ban"></i>No API</span>
+            </div>
+            <label class="portal-ref-input-wrap">
+              <span>Tree URL / commit URL / SHA</span>
+              <input type="text" data-temporal-ref-resolver data-ws="${escapeAttr(ws.id)}" value="${escapeAttr(modal?.value || '')}" placeholder="https://github.com/${escapeAttr(source?.repo || 'owner/repo')}/tree/<sha> or 541269c" autofocus>
+            </label>
+            ${error}
+            <small>When the value validates, the dialog closes and the source snapshot loads directly.</small>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  async function applyTemporalRefResolverInput(target) {
+    const ws = typeof eventTargetWorkspace === 'function' ? eventTargetWorkspace(target) : getWorkspace(target?.dataset?.ws || '');
+    if (!ws || app.modal?.type !== 'temporal-source-ref' || app.modal.wsId !== ws.id) return false;
+    const value = String(target?.value || '').trim();
+    app.modal.value = value;
+    app.modal.error = '';
+    if (!value) return true;
+    const source = primaryTemporalGitHubSource(ws);
+    const parsed = extractGitHubRepoRefInput(value, source?.repo || '');
+    if (!parsed?.ref) return true;
+    if (parsed.repo && source?.repo && parsed.repo !== source.repo) {
+      app.modal.error = `This ref belongs to ${parsed.repo}, but the active source is ${source.repo}.`;
+      render();
+      return true;
+    }
+    app.modal.loading = true;
+    const ok = await loadTemporalSourceSnapshot(ws, { refInput: value, autoApply: true });
+    if (ok) {
+      app.modal = null;
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      render();
+      return true;
+    }
+    if (app.modal?.type === 'temporal-source-ref') {
+      app.modal.loading = false;
+      app.modal.error = ws.temporalSourceSnapshot?.error || 'Could not load this source snapshot.';
+      render();
+    }
+    return true;
+  }
+
+  registerRenderModalWrapper(function renderModalWithPortalResolver(modal, next) {
+    if (modal?.type === 'temporal-source-ref') return renderTemporalSourceRefModal(modal);
+    return next(modal);
+  });
 
   registerRenderModalWrapper(function renderModalWithDisplayOptions(modal, next) {
     if (modal?.type === 'display-options') return renderDisplayOptionsModal(modal);
@@ -10460,7 +18521,7 @@ ${bodySections}
 
     return `
       <section class="workspace workspace-foundation workspace-shell workspace-drop-target ${active ? 'active' : ''}" data-ws="${escapeAttr(ws.id)}">
-        <div class="workspace-strip workspace-shell-strip">
+        <div class="workspace-strip workspace-shell-strip" translate="no">
           <div class="workspace-identity" title="${escapeAttr(ws.sourceNote || ws.label || '')}">
             <h2 class="workspace-title">${escapeHtml(displayLabel)} ${workspaceRefBadge(ws)} ${localName} ${active ? '<span class="badge-soft active-chip"><i class="fa-solid fa-circle-dot"></i>active</span>' : ''}</h2>
           </div>
@@ -10470,6 +18531,7 @@ ${bodySections}
             <span class="stat-pill" title="Leaf candidates"><i class="fa-solid fa-seedling"></i>${ws.leaves.length}</span>
             <span class="stat-pill" title="Drafts"><i class="fa-solid fa-pen-nib"></i>${generatedCount}</span>
             <button class="tv-btn small subtle display-options-action ${displayCount ? 'active' : ''}" data-action="open-display-options" data-ws="${escapeAttr(ws.id)}" title="${escapeAttr(displayTitle)}" aria-label="Display options"><i class="fa-solid fa-sliders"></i>${displayCount ? `<small>${displayCount}</small>` : ''}</button>
+            <button class="tv-btn small subtle workspace-share-action" data-action="open-share-modal" data-scope="workspace" data-ws="${escapeAttr(ws.id)}" title="Review share eligibility for this workspace" aria-label="Share workspace"><i class="fa-solid fa-share-nodes"></i></button>
             ${renderPolicyBadge(ws)}
             <button class="tv-btn small" data-action="save-workspace" data-ws="${escapeAttr(ws.id)}" ${generatedCount || (ws.assets && ws.assets.size) ? '' : 'disabled'} title="Save workspace bundle"><i class="fa-solid fa-download"></i></button>
             <button class="tv-btn small primary workspace-add-btn icon-only" data-action="open-source-modal" data-ws="${escapeAttr(ws.id)}" title="Add material, source, or local root node to this workspace" aria-label="Add material, source, or local root node to this workspace"><i class="fa-solid fa-plus"></i></button>
@@ -10490,8 +18552,128 @@ ${bodySections}
     if (action === 'open-display-options') {
       event.preventDefault();
       event.stopPropagation();
-      app.modal = { type: 'display-options', wsId: event.currentTarget.dataset.ws || '' };
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      app.modal = {
+        type: 'display-options',
+        wsId: event.currentTarget.dataset.ws || '',
+        temporalDraft: ws ? normalizeTemporalLensOptionsShape(workspaceDisplayOptions(ws)) : null
+      };
       render();
+      return;
+    }
+    if (action === 'remove-discovery-filter') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      removeDiscoveryFilter(ws, event.currentTarget.dataset.filter || '');
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      render();
+      return;
+    }
+    if (action === 'clear-discovery-filters') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      setDiscoveryFilterList(ws, []);
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      render();
+      return;
+    }
+    if (action === 'remove-artifact-display-filter') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      const key = event.currentTarget.dataset.filter || '';
+      const opts = workspaceDisplayOptions(ws);
+      opts.artifactKindFilters = normalizeArtifactDisplayFilterList(opts.artifactKindFilters).filter((item) => item !== key);
+      opts.artifactKindFilter = opts.artifactKindFilters[0] || 'all';
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      render();
+      return;
+    }
+    if (action === 'clear-artifact-display-filters') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      const opts = workspaceDisplayOptions(ws);
+      opts.artifactKindFilters = [];
+      opts.artifactKindFilter = 'all';
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      render();
+      return;
+    }
+    if (action === 'set-temporal-lens-now') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      if (app.modal?.type === 'display-options' && app.modal.wsId === ws.id) {
+        app.modal.temporalDraft = normalizeTemporalLensOptionsShape({ temporalMode: 'as-of', temporalStart: '', temporalEnd: dateToLocalMinuteValue(new Date()) });
+        render();
+        return;
+      }
+      const opts = workspaceDisplayOptions(ws);
+      opts.temporalMode = 'as-of';
+      opts.temporalStart = '';
+      opts.temporalEnd = dateToLocalMinuteValue(new Date());
+      opts.temporalAsOf = opts.temporalEnd;
+      ws.temporalSourceSnapshot = null;
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      scheduleTemporalSnapshotLoadAfterApply(ws);
+      render();
+      return;
+    }
+    if (action === 'clear-temporal-lens') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      if (app.modal?.type === 'display-options' && app.modal.wsId === ws.id) {
+        app.modal.temporalDraft = normalizeTemporalLensOptionsShape({ temporalMode: 'latest', temporalStart: '', temporalEnd: '', temporalAsOf: '' });
+        render();
+        return;
+      }
+      const opts = workspaceDisplayOptions(ws);
+      const beforeSnapshot = ws.temporalSourceSnapshot || null;
+      opts.temporalMode = 'latest';
+      opts.temporalStart = '';
+      opts.temporalEnd = '';
+      opts.temporalAsOf = '';
+      ws.temporalSourceSnapshot = null;
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      if (beforeSnapshot?.ref) scheduleTemporalLatestRestoreAfterApply(ws, beforeSnapshot);
+      render();
+      return;
+    }
+    if (action === 'load-temporal-source-snapshot') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      await loadTemporalSourceSnapshot(ws);
+      return;
+    }
+    if (action === 'load-temporal-source-snapshot-ref') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      const input = Array.from(document.querySelectorAll('[data-temporal-snapshot-ref]')).find((el) => el.dataset.ws === ws.id);
+      await loadTemporalSourceSnapshot(ws, { refInput: input?.value || '' });
+      return;
+    }
+    if (action === 'open-temporal-commits-page') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      const url = temporalLensGitHubCommitsPageUrl(ws);
+      if (!url) return toast('No GitHub commits page is available for this temporal lens.', 'warn');
+      window.open(url, '_blank', 'noopener,noreferrer');
       return;
     }
     if (action === 'toggle-display-option') {
@@ -10520,6 +18702,7 @@ ${bodySections}
 
 
   function countWorkspaceSources(ws) {
+    if (!ws) return 0;
     if (typeof sourceCount === 'function') return sourceCount(ws);
     ensureWorkspaceSources(ws);
     return Array.from(ws.sources?.values?.() || []).filter((source) =>
@@ -10539,6 +18722,9 @@ ${bodySections}
   }
 
   function discoverySchemaOptions(ws) {
+    if (typeof workspaceAvailableDiscoveryFilters === 'function') {
+      return workspaceAvailableDiscoveryFilters(ws);
+    }
     const seen = new Map();
     const add = (key, label) => {
       if (!key || seen.has(key)) return;
@@ -10555,16 +18741,160 @@ ${bodySections}
     return Array.from(seen.entries()).map(([key, label]) => [key, label]);
   }
 
-  function renderDiscoveryFilterSelect(ws) {
-    const value = ws.discoveryFilterSchema || ws.filterSchema || 'all';
-    const options = discoverySchemaOptions(ws);
-    return `<label class="filter-select-wrap display-options-filter" title="Discovery filter">
-      <span>Filter</span>
-      <select data-discovery-filter-select data-ws="${escapeAttr(ws.id)}">
-        ${options.map(([key, label]) => `<option value="${escapeAttr(key)}" ${value === key ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}
-      </select>
-    </label>`;
+  function renderFilterChip(label, action, wsId, key, title = '') {
+    return `<button type="button" class="display-filter-chip" data-action="${escapeAttr(action)}" data-ws="${escapeAttr(wsId)}" data-filter="${escapeAttr(key)}" title="${escapeAttr(title || `Remove ${label}`)}"><span>${escapeHtml(label)}</span><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>`;
   }
+
+  function renderFilterAllChip(label = 'All') {
+    return `<span class="display-filter-chip display-filter-chip-all"><span>${escapeHtml(label)}</span></span>`;
+  }
+
+  function schemaFilterTreeInfo(key, label = '') {
+    const exact = typeof canonicalSchemaFilterKey === 'function' ? canonicalSchemaFilterKey(key) : '';
+    const fallbackLabel = label || (typeof discoveryFilterLabel === 'function' ? discoveryFilterLabel(key) : String(key || ''));
+    const path = exact && typeof TIINEX_SCHEMA_PATH_INDEX === 'object' && TIINEX_SCHEMA_PATH_INDEX
+      ? TIINEX_SCHEMA_PATH_INDEX[exact]
+      : '';
+    if (path) {
+      const rel = String(path).replace(TIINEX_SCHEMA_REPO_PATH_PREFIX, '');
+      const parts = rel.split('/').filter(Boolean);
+      const file = parts.pop() || '';
+      const dirs = parts.length ? parts : (exact === 'tiinex.root.v1' ? ['root'] : ['schemas']);
+      return {
+        key,
+        label: fallbackLabel,
+        group: dirs[0] || 'schemas',
+        depth: Math.max(0, dirs.length - 1),
+        treePath: `${dirs.join('/')}/${file || exact}`,
+        sourcePath: path
+      };
+    }
+    return {
+      key,
+      label: fallbackLabel,
+      group: key === 'draft' ? 'drafts' : 'loaded',
+      depth: 0,
+      treePath: `zz-${key === 'draft' ? 'drafts' : 'loaded'}/${fallbackLabel}`,
+      sourcePath: ''
+    };
+  }
+
+  function schemaFilterTreeGroupLabel(group) {
+    const clean = String(group || 'schemas').trim();
+    if (clean === 'root') return 'root';
+    if (clean === 'loaded') return 'loaded / workspace-only';
+    if (clean === 'drafts') return 'drafts';
+    return clean.split(/[._-]+/).filter(Boolean).join(' / ');
+  }
+
+  function schemaFilterTreeOptionLabel(info) {
+    const depth = Math.max(0, Number(info?.depth || 0));
+    const indent = '&nbsp;'.repeat(depth * 3);
+    const branch = depth ? '↳ ' : '';
+    return `${indent}${branch}${escapeHtml(info?.label || '')}`;
+  }
+
+  function renderSchemaTreeOptionGroups(options) {
+    const groups = new Map();
+    for (const [key, label] of options) {
+      const info = schemaFilterTreeInfo(key, label);
+      if (!groups.has(info.group)) groups.set(info.group, []);
+      groups.get(info.group).push(info);
+    }
+    return Array.from(groups.entries())
+      .sort((a, b) => schemaFilterTreeGroupLabel(a[0]).localeCompare(schemaFilterTreeGroupLabel(b[0])))
+      .map(([group, items]) => {
+        const body = items
+          .sort((a, b) => String(a.treePath || '').localeCompare(String(b.treePath || '')))
+          .map((info) => `<option value="${escapeAttr(info.key)}" title="${escapeAttr(info.sourcePath || info.label)}">${schemaFilterTreeOptionLabel(info)}</option>`)
+          .join('');
+        return `<optgroup label="${escapeAttr(schemaFilterTreeGroupLabel(group))}">${body}</optgroup>`;
+      })
+      .join('');
+  }
+
+  function renderDiscoveryFilterSelect(ws) {
+    const selected = typeof normalizeDiscoveryFilterListForWorkspace === 'function' ? normalizeDiscoveryFilterListForWorkspace(ws) : [];
+    const selectedSet = new Set(selected);
+    const schemaOptions = discoverySchemaOptions(ws);
+    const options = schemaOptions.filter(([key]) => key !== 'all' && !selectedSet.has(key));
+    const labels = new Map(schemaOptions);
+    const chips = selected.length
+      ? selected.map((key) => renderFilterChip(labels.get(key) || discoveryFilterLabel(key), 'remove-discovery-filter', ws.id, key, `Remove ${labels.get(key) || key} filter`)).join('')
+      : renderFilterAllChip('All schemas');
+    return `<div class="display-filter-picker compact" title="Discovery schema filter">
+      <label class="filter-select-wrap display-options-filter add-filter-select" title="Add schema filter from schema tree">
+        <span>Schema</span>
+        <select class="schema-tree-select" data-add-discovery-filter data-ws="${escapeAttr(ws.id)}" ${options.length ? '' : 'disabled'}>
+          <option value="">${options.length ? 'Choose from schema tree…' : 'All selected'}</option>
+          ${renderSchemaTreeOptionGroups(options)}
+        </select>
+      </label>
+      <div class="display-filter-chip-row">
+        ${chips}
+        ${selected.length ? `<button type="button" class="display-filter-clear" data-action="clear-discovery-filters" data-ws="${escapeAttr(ws.id)}">Clear</button>` : ''}
+      </div>
+    </div>`;
+  }
+
+  function temporalLensGitHubCommitsPageUrl(ws) {
+    if (!temporalLensActive(ws)) return '';
+    const source = primaryTemporalGitHubSource(ws);
+    if (!source?.repo) return '';
+    const baseRef = source.ref && !isCommitRef(source.ref) ? source.ref : (ws.discoverySource?.ref && !isCommitRef(ws.discoverySource.ref) ? ws.discoverySource.ref : 'master');
+    const opts = workspaceDisplayOptions(ws);
+    return gitHubCommitWebWindowUrl(source.repo, baseRef || 'master', temporalLensSnapshotTargetAsOf(opts), 365);
+  }
+
+  function renderArtifactDisplayFilterSelect(ws, opts) {
+    const selected = normalizeArtifactDisplayFilterList(opts.artifactKindFilters || opts.artifactKindFilter);
+    const selectedSet = new Set(selected);
+    const registry = tiinexMarkdownArtifactRegistry();
+    const labels = new Map(registry.map((entry) => [entry.kind, entry.label]));
+    const options = registry.filter((entry) => !selectedSet.has(entry.kind));
+    const chips = selected.length
+      ? selected.map((key) => renderFilterChip(labels.get(key) || key, 'remove-artifact-display-filter', ws.id, key, `Remove ${labels.get(key) || key} artifact filter`)).join('')
+      : renderFilterAllChip('All Tiinex artifacts');
+    return `<div class="display-filter-picker compact" title="Artifact category filter">
+      <label class="filter-select-wrap display-options-filter add-filter-select" title="Add artifact category filter">
+        <span>Artifact</span>
+        <select data-add-artifact-display-filter data-ws="${escapeAttr(ws.id)}" ${options.length ? '' : 'disabled'}>
+          <option value="">${options.length ? 'Choose…' : 'All selected'}</option>
+          ${options.map((entry) => `<option value="${escapeAttr(entry.kind)}" title="${escapeAttr(`${entry.suffix} · ${entry.description}`)}">${escapeHtml(entry.label)}</option>`).join('')}
+        </select>
+      </label>
+      <div class="display-filter-chip-row">
+        ${chips}
+        ${selected.length ? `<button type="button" class="display-filter-clear" data-action="clear-artifact-display-filters" data-ws="${escapeAttr(ws.id)}">Clear</button>` : ''}
+      </div>
+    </div>`;
+  }
+
+  function renderTemporalLensControls(ws, opts) {
+    opts = displayOptionsModalTemporalDraft(ws, opts);
+    const active = temporalLensActiveForOptions(opts);
+    const nowValue = dateToLocalMinuteValue(new Date());
+    const beginValue = opts.temporalStart || '';
+    const endValue = opts.temporalEnd || '';
+    const pending = displayOptionsHasPendingTemporalChange(ws);
+    return `<div class="temporal-lens-control" title="Time portal">
+      <div class="temporal-lens-grid temporal-range-grid">
+        <label class="temporal-input-wrap temporal-range-input" title="Start of the time filter. Leave empty for no lower bound.">
+          <span>Begin</span>
+          <input type="datetime-local" data-temporal-lens-begin data-ws="${escapeAttr(ws.id)}" value="${escapeAttr(beginValue)}" placeholder="${escapeAttr(nowValue)}">
+        </label>
+        <label class="temporal-input-wrap temporal-range-input" title="End of the time filter. Leave empty to use latest/current state.">
+          <span>End</span>
+          <input type="datetime-local" data-temporal-lens-end data-ws="${escapeAttr(ws.id)}" value="${escapeAttr(endValue)}" placeholder="latest">
+        </label>
+        <button type="button" class="tv-btn tiny subtle" data-action="set-temporal-lens-now" data-ws="${escapeAttr(ws.id)}" title="Set End to the current local minute"><i class="fa-solid fa-clock"></i>Now</button>
+        <button type="button" class="tv-btn tiny subtle" data-action="clear-temporal-lens" data-ws="${escapeAttr(ws.id)}" ${active ? '' : 'disabled'} title="Return to latest loaded view"><i class="fa-solid fa-rotate-left"></i>Clear</button>
+      </div>
+      <small>${pending ? 'Pending. ' : ''}Empty = latest. Begin filters latest; End can request source snapshot resolution.</small>
+    </div>`;
+  }
+
+
 
   function renderDisplayOptionsModal(modal) {
     const ws = getWorkspace(modal.wsId);
@@ -10594,23 +18924,25 @@ ${bodySections}
             <div>
               <p class="kicker">Display</p>
               <h2 class="modal-title-lite" id="display-options-title">Display options</h2>
-              <p class="text-secondary mb-0">Choose which workspace artifacts discovery should show.</p>
+              <p class="text-secondary mb-0">Filter this workspace view.</p>
             </div>
             <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
           </div>
           <div class="display-options-body">
-            <div class="display-options-section-label">Discovery filter</div>
-            <div class="display-options-filter-card">
+            <div class="display-options-section-label">Filters</div>
+            <div class="display-options-filter-card compact-filter-card">
               ${renderDiscoveryFilterSelect(ws)}
-              <small>Filter by the artifact types currently loaded in this workspace.</small>
             </div>
-            ${row('leavesOnly', 'Leaves only', 'Show only leaf candidates in discovery. Turn off to include parents and intermediate nodes.', opts.leavesOnly)}
-            <div class="display-options-section-label">Artifact suffixes</div>
-            ${row('showTrace', 'Show .trace.md', 'Regular trace lineage artifacts.', opts.showTrace)}
-            ${row('showSchema', 'Show .schema.md', 'Schema lineage artifacts and format rules.', opts.showSchema)}
-            ${row('showValidator', 'Show .validator.md', 'Validation method definitions used by integrity entries.', opts.showValidator)}
-            ${row('showWorkspace', 'Show .workspace.md', 'Workspace entrypoints as lineage artifacts.', opts.showWorkspace)}
-            ${row('showAssets', 'Show assets', 'Imported non-lineage files such as images, PDFs, zip files, and supporting material.', opts.showAssets)}
+            <div class="display-options-filter-card compact-filter-card">
+              ${renderArtifactDisplayFilterSelect(ws, opts)}
+            </div>
+            ${row('leavesOnly', 'Leaves only', 'Show only leaf candidates.', opts.leavesOnly)}
+            ${row('mismatchesOnly', 'Mismatches only', 'Show only checksum mismatch problem areas.', opts.mismatchesOnly)}
+            ${row('showAssets', 'Show assets', 'Include non-lineage supporting material.', opts.showAssets)}
+            <div class="display-options-section-label">Time portal</div>
+            <div class="display-options-filter-card temporal-lens-card">
+              ${renderTemporalLensControls(ws, opts)}
+            </div>
             <div class="display-options-section-label">Link sharing</div>
             ${appRow('wizardDraftHashState', 'Save wizard draft in URL hash', 'Stores bounded wizard text in the client-side #fragment so copied links can reopen the draft. Turn off to keep links to dialog context only.', wizardRouteDraftHashEnabled())}
           </div>
@@ -10627,24 +18959,114 @@ ${bodySections}
   }
 
   const TIINEX_DOCS_SCHEMA_FRESHNESS_PATHS = Object.freeze([
-    '.topics/.schemas/tiinex.discovery.v1.schema.md',
-    '.topics/.schemas/tiinex.discovery.follow.v1.schema.md',
-    '.topics/.schemas/tiinex.discovery.finding.v1.schema.md',
-    '.topics/.schemas/tiinex.discovery.research.v1.schema.md',
-    '.topics/.schemas/tiinex.discovery.expedition.v1.schema.md',
-    '.topics/.schemas/tiinex.discovery.monitoring.v1.schema.md',
-    '.topics/.schemas/tiinex.discovery.surveillance.v1.schema.md',
-    '.topics/.schemas/tiinex.resource.v1.schema.md',
-    '.topics/.schemas/tiinex.resource.need.v1.schema.md',
-    '.topics/.schemas/tiinex.resource.contribution.v1.schema.md',
-    '.topics/.schemas/tiinex.resource.contribution.receipt.v1.schema.md',
-    '.topics/.schemas/tiinex.resource.allocation.v1.schema.md',
-    '.topics/.schemas/tiinex.resource.allocation.usage.v1.schema.md',
-    '.topics/.schemas/tiinex.resource.budget.v1.schema.md',
-    '.topics/.schemas/tiinex.instrument.v1.schema.md',
-    '.topics/.schemas/tiinex.instrument.financial.v1.schema.md',
-    '.topics/.schemas/tiinex.instrument.consent.v1.schema.md',
-    '.topics/.validators/sha256-base64url-c14n-v2.validator.md'
+    ".topics/.schemas/access/tiinex.access.v1.schema.md",
+    ".topics/.schemas/adapter/digital/tiinex.digital.adapter.v1.schema.md",
+    ".topics/.schemas/adapter/tiinex.adapter.v1.schema.md",
+    ".topics/.schemas/annotation/artifact/adapter/tiinex.adapter.annotation.v1.schema.md",
+    ".topics/.schemas/annotation/artifact/semantic/tiinex.semantic.annotation.v1.schema.md",
+    ".topics/.schemas/annotation/artifact/spatial/projection/tiinex.projection.annotation.v1.schema.md",
+    ".topics/.schemas/annotation/artifact/spatial/tiinex.spatial.annotation.v1.schema.md",
+    ".topics/.schemas/annotation/artifact/style/tiinex.style.annotation.v1.schema.md",
+    ".topics/.schemas/annotation/artifact/temporal/tiinex.temporal.annotation.v1.schema.md",
+    ".topics/.schemas/annotation/artifact/tiinex.artifact.annotation.v1.schema.md",
+    ".topics/.schemas/annotation/artifact/validation/tiinex.validation.annotation.v1.schema.md",
+    ".topics/.schemas/annotation/tiinex.annotation.v1.schema.md",
+    ".topics/.schemas/attestation/tiinex.attestation.v1.schema.md",
+    ".topics/.schemas/coordination/availability/tiinex.availability.v1.schema.md",
+    ".topics/.schemas/coordination/invitation/tiinex.invitation.v1.schema.md",
+    ".topics/.schemas/coordination/milestone/tiinex.milestone.v1.schema.md",
+    ".topics/.schemas/coordination/project/tiinex.project.v1.schema.md",
+    ".topics/.schemas/coordination/schedule/tiinex.schedule.v1.schema.md",
+    ".topics/.schemas/core/decision/tiinex.decision.v1.schema.md",
+    ".topics/.schemas/core/evidence/tiinex.evidence.v1.schema.md",
+    ".topics/.schemas/core/feedback/tiinex.feedback.v1.schema.md",
+    ".topics/.schemas/core/interpretation/tiinex.interpretation.v1.schema.md",
+    ".topics/.schemas/core/pointer/tiinex.pointer.v1.schema.md",
+    ".topics/.schemas/core/preservation/tiinex.preservation.v1.schema.md",
+    ".topics/.schemas/core/signal/tiinex.signal.v1.schema.md",
+    ".topics/.schemas/core/task/tiinex.task.v1.schema.md",
+    ".topics/.schemas/core/topic/tiinex.topic.v1.schema.md",
+    ".topics/.schemas/discovery/breakthrough/tiinex.discovery.breakthrough.v1.schema.md",
+    ".topics/.schemas/discovery/expedition/tiinex.discovery.expedition.v1.schema.md",
+    ".topics/.schemas/discovery/finding/tiinex.discovery.finding.v1.schema.md",
+    ".topics/.schemas/discovery/follow/tiinex.discovery.follow.v1.schema.md",
+    ".topics/.schemas/discovery/monitoring/tiinex.discovery.monitoring.v1.schema.md",
+    ".topics/.schemas/discovery/research/tiinex.discovery.research.v1.schema.md",
+    ".topics/.schemas/discovery/surveillance/tiinex.discovery.surveillance.v1.schema.md",
+    ".topics/.schemas/discovery/tiinex.discovery.v1.schema.md",
+    ".topics/.schemas/event/deadline/tiinex.event.deadline.v1.schema.md",
+    ".topics/.schemas/event/incident/tiinex.event.incident.v1.schema.md",
+    ".topics/.schemas/event/meeting/tiinex.event.meeting.v1.schema.md",
+    ".topics/.schemas/event/session/tiinex.event.session.v1.schema.md",
+    ".topics/.schemas/event/tiinex.event.v1.schema.md",
+    ".topics/.schemas/event/window/tiinex.event.window.v1.schema.md",
+    ".topics/.schemas/external/payload/tiinex.external.payload.v1.schema.md",
+    ".topics/.schemas/instrument/consent/tiinex.instrument.consent.v1.schema.md",
+    ".topics/.schemas/instrument/financial/tiinex.instrument.financial.v1.schema.md",
+    ".topics/.schemas/instrument/tiinex.instrument.v1.schema.md",
+    ".topics/.schemas/interaction/unit/tiinex.interaction.unit.v1.schema.md",
+    ".topics/.schemas/interface/tiinex.interface.v1.schema.md",
+    ".topics/.schemas/knowledge/claim/tiinex.claim.v1.schema.md",
+    ".topics/.schemas/knowledge/condition/tiinex.condition.v1.schema.md",
+    ".topics/.schemas/knowledge/derivation/tiinex.derivation.v1.schema.md",
+    ".topics/.schemas/knowledge/question/tiinex.question.v1.schema.md",
+    ".topics/.schemas/lineage/upgrade/deferral/tiinex.lineage.upgrade.deferral.v1.schema.md",
+    ".topics/.schemas/origin/digital/tiinex.digital.origin.v1.schema.md",
+    ".topics/.schemas/origin/natural/tiinex.natural.origin.v1.schema.md",
+    ".topics/.schemas/origin/tiinex.origin.v1.schema.md",
+    ".topics/.schemas/party/group/tiinex.party.group.v1.schema.md",
+    ".topics/.schemas/party/organization/tiinex.party.organization.v1.schema.md",
+    ".topics/.schemas/party/person/tiinex.party.person.v1.schema.md",
+    ".topics/.schemas/party/role/tiinex.party.role.v1.schema.md",
+    ".topics/.schemas/party/tiinex.party.v1.schema.md",
+    ".topics/.schemas/portal/tiinex.portal.v1.schema.md",
+    ".topics/.schemas/portal/time/tiinex.portal.time.v1.schema.md",
+    ".topics/.schemas/presentation/surface/tiinex.presentation.surface.v1.schema.md",
+    ".topics/.schemas/privacy/boundary/tiinex.privacy.boundary.v1.schema.md",
+    ".topics/.schemas/reduction/redaction/tiinex.redaction.v1.schema.md",
+    ".topics/.schemas/reduction/tiinex.reduction.v1.schema.md",
+    ".topics/.schemas/relation/tiinex.relation.v1.schema.md",
+    ".topics/.schemas/resource/allocation/tiinex.resource.allocation.v1.schema.md",
+    ".topics/.schemas/resource/allocation/usage/tiinex.resource.allocation.usage.v1.schema.md",
+    ".topics/.schemas/resource/budget/tiinex.resource.budget.v1.schema.md",
+    ".topics/.schemas/resource/contribution/receipt/tiinex.resource.contribution.receipt.v1.schema.md",
+    ".topics/.schemas/resource/contribution/tiinex.resource.contribution.v1.schema.md",
+    ".topics/.schemas/resource/need/tiinex.resource.need.v1.schema.md",
+    ".topics/.schemas/resource/tiinex.resource.v1.schema.md",
+    ".topics/.schemas/runtime/ai/tiinex.ai.runtime.v1.schema.md",
+    ".topics/.schemas/runtime/machine/tiinex.machine.runtime.v1.schema.md",
+    ".topics/.schemas/runtime/tiinex.runtime.v1.schema.md",
+    ".topics/.schemas/schema/contract/example/tiinex.schema.example.v1.schema.md",
+    ".topics/.schemas/schema/contract/field/tiinex.schema.field.v1.schema.md",
+    ".topics/.schemas/schema/contract/generation/tiinex.schema.generation.v1.schema.md",
+    ".topics/.schemas/schema/contract/inheritance/tiinex.schema.inheritance.v1.schema.md",
+    ".topics/.schemas/schema/contract/relation/tiinex.schema.relation.v1.schema.md",
+    ".topics/.schemas/schema/contract/rule/tiinex.schema.rule.v1.schema.md",
+    ".topics/.schemas/schema/contract/section/tiinex.schema.section.v1.schema.md",
+    ".topics/.schemas/schema/contract/tiinex.schema.contract.v1.schema.md",
+    ".topics/.schemas/schema/contract/value/tiinex.schema.value.v1.schema.md",
+    ".topics/.schemas/schema/family/tiinex.schema.family.v1.schema.md",
+    ".topics/.schemas/schema/module/tiinex.schema.module.v1.schema.md",
+    ".topics/.schemas/source/tiinex.source.v1.schema.md",
+    ".topics/.schemas/tiinex.root.v1.schema.md",
+    ".topics/.schemas/tool/tiinex.tool.v1.schema.md",
+    ".topics/.schemas/transition/artifact/tiinex.artifact.transition.v1.schema.md",
+    ".topics/.schemas/transition/tiinex.transition.v1.schema.md",
+    ".topics/.schemas/traversal/runtime/quantum/tiinex.quantum.traversal.runtime.v1.schema.md",
+    ".topics/.schemas/traversal/runtime/tiinex.traversal.runtime.v1.schema.md",
+    ".topics/.schemas/validation/finding/tiinex.validation.finding.v1.schema.md",
+    ".topics/.schemas/validation/method/tiinex.validation.method.v1.schema.md",
+    ".topics/.schemas/validation/report/tiinex.validation.report.v1.schema.md",
+    ".topics/.validators/sha256-base64url-c14n-v2.validator.md",
+    ".topics/.adapters/tiinex.v1.adapter.md",
+    ".topics/.adapters/tiinex.digital.v1.adapter.md",
+    ".topics/.adapters/github.issue.discovery.v1.adapter.md",
+    ".topics/.adapters/github.discussion.discovery.v1.adapter.md",
+    ".topics/.origins/tiinex.v1.origin.md",
+    ".topics/.origins/tiinex.digital.v1.origin.md",
+    ".topics/.origins/tiinex.natural.v1.origin.md",
+    ".topics/.tools/lineage.navigation.v1.tool.md",
+    ".topics/.interfaces/tiinex.v1.interface.md"
   ]);
 
   function rootPathIncludesPath(roots, path) {
@@ -10673,6 +19095,45 @@ ${bodySections}
     return { paths: list, added };
   }
 
+  function discoverGitHubTracePathsViaSeedPaths(repo, ref, rootPaths, seedPaths = [], note = '') {
+    const resolvedRef = ref || 'master';
+    const effectiveRoots = (rootPaths && rootPaths.length ? rootPaths : ['.topics']).map(normalizeRepoPath).filter(Boolean);
+    const seen = new Set();
+    let allPaths = (Array.isArray(seedPaths) ? seedPaths : [])
+      .map(normalizeRepoPath)
+      .filter((path) => path && pathLooksUsefulLineageArtifact(path))
+      .filter((path) => effectiveRoots.some((root) => !root || path === root || path.startsWith(`${root}/`)))
+      .filter((path) => {
+        if (seen.has(path)) return false;
+        seen.add(path);
+        return true;
+      });
+    allPaths = normalizeDiscoveredTiinexDocsArtifactPaths(repo, allPaths);
+    const supplement = supplementKnownTiinexDocsSchemaPaths(repo, resolvedRef, effectiveRoots, allPaths);
+    allPaths = supplement.paths;
+    const traceOnly = allPaths.filter((path) => /\.trace\.md$/i.test(path));
+    return {
+      repo,
+      ref: resolvedRef,
+      rootPath: effectiveRoots[0] || '',
+      rootPaths: effectiveRoots,
+      truncated: false,
+      tracePaths: allPaths,
+      artifactPathsByKind: pathsByTiinexArtifactKind(allPaths),
+      schemaPaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'schema'),
+      validatorPaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'validator'),
+      workspacePaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'workspace'),
+      adapterPaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'adapter'),
+      originPaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'origin'),
+      toolPaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'tool'),
+      interfacePaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'interface'),
+      numericLeafGuess: traceOnly.filter((path) => maybeLeafByNumericName(path, traceOnly)),
+      discoverySource: 'seed-paths',
+      note: note || 'Known source snapshot ref loaded through seeded path manifest; missing raw files are skipped during fetch.',
+      freshnessSupplemented: supplement.added
+    };
+  }
+
   async function discoverGitHubTracePathsViaJsdelivr(repo, ref, rootPaths, options = {}) {
     const resolvedRef = ref || 'master';
     const bust = options.hardRefresh ? `?tiinexHardRefresh=${Date.now()}` : '';
@@ -10683,8 +19144,8 @@ ${bodySections}
     let allPaths = files
       .map((file) => normalizeJsdelivrFlatPath(file.name || file.path || ''))
       .filter((path) => pathLooksUsefulLineageArtifact(path))
-      .filter((path) => effectiveRoots.some((root) => !root || path === root || path.startsWith(`${root}/`)))
-      .sort((a, b) => a.localeCompare(b));
+      .filter((path) => effectiveRoots.some((root) => !root || path === root || path.startsWith(`${root}/`)));
+    allPaths = normalizeDiscoveredTiinexDocsArtifactPaths(repo, allPaths);
     const supplement = supplementKnownTiinexDocsSchemaPaths(repo, resolvedRef, effectiveRoots, allPaths);
     allPaths = supplement.paths;
     const traceOnly = allPaths.filter((path) => /\.trace\.md$/i.test(path));
@@ -10696,9 +19157,14 @@ ${bodySections}
       rootPaths: effectiveRoots,
       truncated: false,
       tracePaths: allPaths,
-      schemaPaths: allPaths.filter((path) => /\.schema\.md$/i.test(path)),
-      validatorPaths: allPaths.filter((path) => /\.validator\.md$/i.test(path)),
-      workspacePaths: allPaths.filter((path) => /\.workspace\.md$/i.test(path)),
+      artifactPathsByKind: pathsByTiinexArtifactKind(allPaths),
+      schemaPaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'schema'),
+      validatorPaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'validator'),
+      workspacePaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'workspace'),
+      adapterPaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'adapter'),
+      originPaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'origin'),
+      toolPaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'tool'),
+      interfacePaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'interface'),
       numericLeafGuess: traceOnly.filter((path) => maybeLeafByNumericName(path, traceOnly)),
       discoverySource: 'jsdelivr-flat',
       freshnessSupplemented: supplement.added
@@ -10709,16 +19175,94 @@ ${bodySections}
     const resolvedRef = ref || 'master';
     const roots = Array.isArray(rootPath) ? rootPath.map(normalizeRepoPath).filter(Boolean) : parseRootPaths(rootPath);
     const effectiveRoots = roots.length ? roots : ['.topics'];
+    if (options.preferStatic) {
+      try {
+        const fallback = await discoverGitHubTracePathsViaJsdelivr(repo, resolvedRef, effectiveRoots, options);
+        fallback.note = options.noApi
+          ? 'Static flat source snapshot used without GitHub API.'
+          : 'Static flat source snapshot used before GitHub tree API.';
+        fallback.discoverySource = 'jsdelivr-flat-preferred';
+        return fallback;
+      } catch (staticError) {
+        if (options.noApi) {
+          if (Array.isArray(options.seedPaths) && options.seedPaths.length) {
+            return discoverGitHubTracePathsViaSeedPaths(
+              repo,
+              resolvedRef,
+              effectiveRoots,
+              options.seedPaths,
+              `Static flat source snapshot failed: ${staticError.message}; no GitHub API fallback used; seeded path manifest used.`
+            );
+          }
+          return {
+            repo,
+            ref: resolvedRef,
+            rootPath: effectiveRoots[0] || '',
+            rootPaths: effectiveRoots,
+            truncated: false,
+            tracePaths: [],
+            artifactPathsByKind: pathsByTiinexArtifactKind([]),
+            schemaPaths: [],
+            validatorPaths: [],
+            workspacePaths: [],
+            adapterPaths: [],
+            originPaths: [],
+            toolPaths: [],
+            interfacePaths: [],
+            numericLeafGuess: [],
+            discoverySource: 'no-api-unavailable',
+            note: `Static flat source snapshot failed: ${staticError.message}; no GitHub API fallback used.`
+          };
+        }
+        // Continue to the GitHub tree API only when explicitly allowed.
+      }
+    }
+    if (options.noApi) {
+      if (Array.isArray(options.seedPaths) && options.seedPaths.length) {
+        return discoverGitHubTracePathsViaSeedPaths(
+          repo,
+          resolvedRef,
+          effectiveRoots,
+          options.seedPaths,
+          'No GitHub API fallback used; seeded path manifest used.'
+        );
+      }
+      return {
+        repo,
+        ref: resolvedRef,
+        rootPath: effectiveRoots[0] || '',
+        rootPaths: effectiveRoots,
+        truncated: false,
+        tracePaths: [],
+        artifactPathsByKind: pathsByTiinexArtifactKind([]),
+        schemaPaths: [],
+        validatorPaths: [],
+        workspacePaths: [],
+        adapterPaths: [],
+        originPaths: [],
+        toolPaths: [],
+        interfacePaths: [],
+        numericLeafGuess: [],
+        discoverySource: 'no-api-unavailable',
+        note: 'No GitHub API fallback used and no static/seeded path listing was available.'
+      };
+    }
     const api = `https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(resolvedRef)}?recursive=1`;
 
     try {
-      const data = await fetchJson(api, { adapter: 'github-rest', label: 'GitHub tree API', hardRefresh: Boolean(options.hardRefresh) });
+      const data = await fetchJson(api, {
+        adapter: 'github-rest',
+        label: 'GitHub tree API',
+        hardRefresh: Boolean(options.hardRefresh),
+        rateLimitKey: options.rateLimitKey || undefined,
+        seedPaths: Array.isArray(options.seedPaths) ? options.seedPaths : []
+      });
       const tree = Array.isArray(data.tree) ? data.tree : [];
       let allPaths = tree
         .filter((item) => item && item.type === 'blob' && pathLooksUsefulLineageArtifact(item.path || ''))
         .map((item) => item.path)
-        .filter((path) => effectiveRoots.some((root) => !root || path === root || path.startsWith(`${root}/`)))
-        .sort((a, b) => a.localeCompare(b));
+        .filter((path) => effectiveRoots.some((root) => !root || path === root || path.startsWith(`${root}/`)));
+      allPaths = normalizeDiscoveredTiinexDocsArtifactPaths(repo, allPaths);
       const supplement = supplementKnownTiinexDocsSchemaPaths(repo, resolvedRef, effectiveRoots, allPaths);
       allPaths = supplement.paths;
       const traceOnly = allPaths.filter((path) => /\.trace\.md$/i.test(path));
@@ -10730,9 +19274,9 @@ ${bodySections}
         rootPaths: effectiveRoots,
         truncated: Boolean(data.truncated),
         tracePaths: allPaths,
-        schemaPaths: allPaths.filter((path) => /\.schema\.md$/i.test(path)),
-        validatorPaths: allPaths.filter((path) => /\.validator\.md$/i.test(path)),
-        workspacePaths: allPaths.filter((path) => /\.workspace\.md$/i.test(path)),
+        schemaPaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'schema'),
+        validatorPaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'validator'),
+        workspacePaths: allPaths.filter((path) => tiinexArtifactKindForPath(path) === 'workspace'),
         numericLeafGuess: traceOnly.filter((path) => maybeLeafByNumericName(path, traceOnly)),
         discoverySource: 'github-api',
         freshnessSupplemented: supplement.added
@@ -10745,6 +19289,15 @@ ${bodySections}
         fallback.note = `GitHub tree API failed; static flat fallback used: ${apiError.message}`;
         return fallback;
       } catch (fallbackError) {
+        if (Array.isArray(options.seedPaths) && options.seedPaths.length) {
+          return discoverGitHubTracePathsViaSeedPaths(
+            repo,
+            resolvedRef,
+            effectiveRoots,
+            options.seedPaths,
+            `GitHub tree discovery failed: ${apiError.message}; static flat fallback failed: ${fallbackError.message}; seeded path manifest used.`
+          );
+        }
         return {
           repo,
           ref: resolvedRef,
@@ -10752,9 +19305,14 @@ ${bodySections}
           rootPaths: effectiveRoots,
           truncated: false,
           tracePaths: [],
+          artifactPathsByKind: pathsByTiinexArtifactKind([]),
           schemaPaths: [],
           validatorPaths: [],
           workspacePaths: [],
+          adapterPaths: [],
+          originPaths: [],
+          toolPaths: [],
+          interfacePaths: [],
           numericLeafGuess: [],
           note: `GitHub tree discovery failed: ${apiError.message}; fallback failed: ${fallbackError.message}`
         };
@@ -10804,11 +19362,19 @@ ${bodySections}
       file.gitCommitSortStatus = status;
       file.gitCommitSortCheckedAt = new Date().toISOString();
     }
+    rememberGitHubCommitCandidate({
+      repo: node.repo || file?.repo || '',
+      ref: sha,
+      sourceRef: node.ref || file?.ref || '',
+      committedAt,
+      resolver: 'github-file-commit-sort',
+      confidence: 'source-api-dated'
+    });
   }
 
   function scheduleGitCommitSortEnrichment(ws) {
     if (!ws || ws.gitCommitSortEnrichmentInFlight) return;
-    const limit = Math.max(0, Number(app.settings.repoCommitDateSortFetchLimit || 80));
+    const limit = Math.max(0, Number(app.settings.repoCommitDateSortFetchLimit || 0));
     if (!limit) return;
     const seen = new Set();
     const candidates = [];
@@ -10894,16 +19460,16 @@ ${bodySections}
       .filter((source) => {
         const count = sourceDisplayCount(ws, source);
         if (source.kind === 'draft') return Boolean(ws.generated?.length || count);
-        if (source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue') return true;
+        if (source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue' || source.kind === 'github-discussion' || source.kind === 'github-discussion') return true;
         return count > 0;
       });
-    if (!sources.length) return '';
-    return `<div class="workspace-source-strip" aria-label="Workspace sources">
+    if (!sources.length) return '<div class="workspace-source-strip source-strip-stable source-strip-empty" aria-hidden="true"></div>';
+    return `<div class="workspace-source-strip source-strip-stable" aria-label="Workspace sources">
       ${sources.map((source) => {
-        const icon = source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue' ? 'fa-brands fa-github'
+        const icon = source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue' || source.kind === 'github-discussion' || source.kind === 'github-discussion' ? 'fa-brands fa-github'
           : (source.kind === 'draft' ? 'fa-solid fa-pen-nib' : (source.kind === 'local' ? 'fa-solid fa-folder-open' : 'fa-solid fa-link'));
         const count = sourceDisplayCount(ws, source);
-        const editable = source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue';
+        const editable = source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue' || source.kind === 'github-discussion' || source.kind === 'github-discussion';
         const action = editable ? ` data-action="edit-source" data-ws="${escapeAttr(ws.id)}" data-source="${escapeAttr(source.id)}" role="button" tabindex="0"` : '';
         return `<span class="workspace-source-pill ${sourceBadgeClass(source)}"${action} title="${escapeAttr(source.origin || source.label || source.id)}">
           <i class="${icon}"></i>
@@ -10915,6 +19481,119 @@ ${bodySections}
     </div>`;
   }
 
+
+  function localDeletionComparableValues(value) {
+    return new Set([
+      value?.id,
+      value?.storageKey,
+      value?.path,
+      value?.file?.storageKey,
+      value?.file?.path,
+      value?.shadowSourceNodeId,
+      value?.file?.shadowSourceNodeId,
+      value?.shadowSourceStorageKey,
+      value?.file?.shadowSourceStorageKey,
+      value?.shadowSourceKey,
+      value?.file?.shadowSourceKey,
+      value?.shadowSourceId && value?.shadowSourcePath ? `${value.shadowSourceId}::${normalizeAssetPath(value.shadowSourcePath)}` : '',
+      value?.file?.shadowSourceId && value?.file?.shadowSourcePath ? `${value.file.shadowSourceId}::${normalizeAssetPath(value.file.shadowSourcePath)}` : '',
+      value?.localDraftOf,
+      value?.file?.localDraftOf,
+      value?.sourceId && value?.path ? sourceFileKey(value.sourceId, value.path, Boolean(value.isGenerated)) : '',
+      value?.file?.sourceId && value?.file?.path ? sourceFileKey(value.file.sourceId, value.file.path, Boolean(value.file.isGenerated)) : ''
+    ].map((item) => String(item || '').trim()).filter(Boolean));
+  }
+
+  function localFileMatchesNodeForDeletion(file, node) {
+    if (!file || !node) return false;
+    const fileIsLocal = isLocalWorkspaceFile(null, file) || String(file.sourceId || '').toLowerCase() === 'local' || String(file.sourceKind || '').toLowerCase() === 'local';
+    if (!fileIsLocal && !file.localEditDraft && !file.localDraftOf) return false;
+    const nodeValues = localDeletionComparableValues(node);
+    const fileValues = localDeletionComparableValues(file);
+    for (const value of fileValues) {
+      if (nodeValues.has(value)) return true;
+    }
+    if (sameImportedPath(file.path, node.path) && (file.sourceId === node.sourceId || file.sourceId === 'local' || node.sourceId === 'local')) return true;
+    if (file.localDraftOf && (file.localDraftOf === node.localDraftOf || file.localDraftOf === node.file?.localDraftOf)) return true;
+    if (file.shadowSourceKey && (file.shadowSourceKey === node.shadowSourceKey || file.shadowSourceKey === node.file?.shadowSourceKey)) return true;
+    return false;
+  }
+
+  function removeNodeCandidateMatches(ws, node, key, file, removal) {
+    if (!node || !file) return false;
+    if (file === node.file) return true;
+    if (removal?.keys?.includes?.(key)) return true;
+    if (file.storageKey && removal?.keys?.includes?.(file.storageKey)) return true;
+    if (removal?.localShadowDraft) {
+      return localFileMatchesNodeForDeletion(file, node);
+    }
+    if (sameImportedPath(file.path, node.path) && (!node.sourceId || file.sourceId === node.sourceId || file.sourceId === 'local' || node.sourceId === 'local')) return true;
+    return localFileMatchesNodeForDeletion(file, node);
+  }
+
+  function localShadowDiscardVisibleOriginal(ws, original) {
+    if (!ws || !original) return original || null;
+    if (typeof isResolvedFindingWrapperNode !== 'function' || !isResolvedFindingWrapperNode(ws, original)) return original;
+    const resolved = typeof resolvedArtifactsForFinding === 'function' ? resolvedArtifactsForFinding(ws, original) : [];
+    return resolved.find((candidate) => candidate && !nodeIsLocalEditableMaterial(ws, candidate)) || original;
+  }
+
+
+  function removeLocalDraftFromPersistedSnapshot(ws, node) {
+    const id = app.localState?.currentId || '';
+    if (!id) return { touched: false, removed: 0 };
+    const snapshot = localStateStoredSnapshot(id);
+    if (!snapshot || !Array.isArray(snapshot.workspaces)) return { touched: false, removed: 0 };
+    let removed = 0;
+    const nextWorkspaces = snapshot.workspaces.map((saved) => {
+      if (!workspaceMatchesLocalStateSnapshot(ws, saved)) return saved;
+      const files = Array.isArray(saved.files) ? saved.files.filter((file) => {
+        const keep = !localFileMatchesNodeForDeletion(file, node);
+        if (!keep) removed += 1;
+        return keep;
+      }) : [];
+      const assets = Array.isArray(saved.assets) ? saved.assets.filter((asset) => {
+        const keep = !localFileMatchesNodeForDeletion(asset, node);
+        if (!keep) removed += 1;
+        return keep;
+      }) : [];
+      return Object.assign({}, saved, { files, assets });
+    }).filter((saved) => (saved.files?.length || saved.assets?.length));
+    if (!removed) return { touched: false, removed: 0 };
+    const nextSnapshot = Object.assign({}, snapshot, {
+      updatedAt: new Date().toISOString(),
+      workspaces: nextWorkspaces
+    });
+    const key = localStateDataKey(id);
+    if (nextWorkspaces.length) {
+      const json = storageWriteJson(localStorage, key, nextSnapshot);
+      upsertLocalStateRegistry({
+        id,
+        displayName: app.localState.currentDisplayName || nextSnapshot.displayName || 'Local workspace',
+        workspaceCount: nextWorkspaces.length,
+        bytes: localStateJsonSize(json),
+        updatedAt: nextSnapshot.updatedAt
+      });
+    } else {
+      localStorage.removeItem(key);
+      removeLocalStateRegistryEntry(id);
+      app.localState.currentId = '';
+      app.localState.currentDisplayName = '';
+      rememberCurrentLocalStateId('');
+    }
+    return { touched: true, removed };
+  }
+
+  function persistLocalDiscardImmediately(ws, node) {
+    let persistedRemoval = { touched: false, removed: 0 };
+    try { persistedRemoval = removeLocalDraftFromPersistedSnapshot(ws, node); } catch (error) { reportRuntimeError('Could not remove local draft from persisted snapshot', error); }
+    // Discard must not auto-create a fresh local-state profile while deleting
+    // the final local draft; otherwise an old/residual local entry can be
+    // resurrected immediately after the runtime delete.
+    if (typeof saveLocalStateNow === 'function') saveLocalStateNow({ allowEmptyLocalStateDelete: true, noAutoConnect: true });
+    return persistedRemoval;
+  }
+
   function removeNodeFromWorkspace(wsId, nodeId) {
     const ws = getWorkspace(wsId);
     const node = ws?.nodeById?.get?.(nodeId);
@@ -10924,20 +19603,37 @@ ${bodySections}
       return;
     }
 
+    const wasSelected = ws.selectedNodeId === node.id;
+    const originalBeforeRemove = typeof originalNodeForLocalShadowDraft === 'function'
+      ? originalNodeForLocalShadowDraft(ws, node)
+      : null;
+    const originalBeforeRemoveId = originalBeforeRemove?.id || '';
+    const originalBeforeRemovePath = originalBeforeRemove?.path || '';
+
+    const localShadowDraftRemoval = typeof nodeIsLocalShadowDraft === 'function' && nodeIsLocalShadowDraft(ws, node);
     const childCount = node.children?.length || 0;
-    const message = childCount
-      ? `Remove local node "${node.title}"?\n\nIt has ${childCount} child node(s) in this workspace. This removes the imported file and its preserved local asset copy from the current workspace; it does not rewrite descendants.`
-      : `Remove local node "${node.title}"?\n\nThis removes the imported file and its preserved local asset copy from the current workspace.`;
+    const message = localShadowDraftRemoval
+      ? `Discard local draft "${node.title}"?
+
+This removes only the local draft from this workspace. The original source artifact is preserved and should take its place again.`
+      : childCount
+        ? `Remove local node "${node.title}"?
+
+It has ${childCount} child node(s) in this workspace. This removes the imported file and its preserved local asset copy from the current workspace; it does not rewrite descendants.`
+        : `Remove local node "${node.title}"?
+
+This removes the imported file and its preserved local asset copy from the current workspace.`;
     if (!window.confirm(message)) return;
 
     const keys = [
       node.storageKey,
       node.file?.storageKey,
-      node.file?.path,
       sourceFileKey(node.sourceId || '', node.path, Boolean(node.isGenerated)),
       sourceFileKey(node.sourceId || '', node.path, false),
-      node.path
+      localShadowDraftRemoval ? '' : node.file?.path,
+      localShadowDraftRemoval ? '' : node.path
     ].filter(Boolean);
+    const removal = { localShadowDraft: localShadowDraftRemoval, keys };
 
     let removedFiles = 0;
     keys.forEach((key) => {
@@ -10945,11 +19641,7 @@ ${bodySections}
     });
 
     for (const [key, file] of Array.from(ws.files || [])) {
-      if (
-        file === node.file ||
-        (sameImportedPath(file.path, node.path) && (!node.sourceId || file.sourceId === node.sourceId)) ||
-        (file.storageKey && keys.includes(file.storageKey))
-      ) {
+      if (removeNodeCandidateMatches(ws, node, key, file, removal)) {
         ws.files.delete(key);
         removedFiles += 1;
       }
@@ -10965,14 +19657,30 @@ ${bodySections}
     if (ws.selectedNodeId === node.id) ws.selectedNodeId = null;
     if (typeof clearFetchedParentForRemovedLocalBoundary === 'function') clearFetchedParentForRemovedLocalBoundary(ws, node);
     if (typeof pruneOrphanLineageAssets === 'function') pruneOrphanLineageAssets(ws);
+    const persistedRemoval = persistLocalDiscardImmediately(ws, node);
     computeWorkspaceIndex(ws);
-    if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
+    const shouldAnchorAfterDiscard = wasSelected
+      || Boolean(originalBeforeRemoveId || originalBeforeRemovePath)
+      || Boolean(node.localEditDraft || node.localDraftOf || node.shadowSourceNodeId || node.shadowSourceStorageKey || node.shadowSourceKey);
+    if (shouldAnchorAfterDiscard) {
+      const originalAfterRemove = localShadowDiscardVisibleOriginal(ws, (originalBeforeRemoveId && ws.nodeById?.get?.(originalBeforeRemoveId))
+        || (originalBeforeRemovePath ? Array.from(ws.nodeById?.values?.() || []).find((candidate) => sameImportedPath(candidate.path || '', originalBeforeRemovePath)) : null));
+      if (originalAfterRemove?.id) {
+        ws.selectedNodeId = originalAfterRemove.id;
+        if (typeof lockLineageView === 'function') lockLineageView(ws, originalAfterRemove, 'discard-local-draft-original');
+      } else if (wasSelected) {
+        ws.selectedNodeId = null;
+        if (typeof clearLineageViewLock === 'function') clearLineageViewLock('discard-local-draft-no-original');
+      }
+    }
+    if (typeof saveLocalStateNow === 'function') saveLocalStateNow({ allowEmptyLocalStateDelete: true, noAutoConnect: true });
     if (typeof setRouteState === 'function') setRouteState('replace');
     else if (typeof updateUrlState === 'function') updateUrlState();
     render();
 
     const total = removedFiles + removedAssets;
-    toast(total ? 'Removed local node and preserved import residue.' : 'Node was not found in workspace files/assets.', total ? 'ok' : 'warn');
+    const persistedNote = persistedRemoval?.removed ? ` · ${persistedRemoval.removed} persisted entr${persistedRemoval.removed === 1 ? 'y' : 'ies'} cleared` : '';
+    toast(total ? `Discarded local draft${persistedNote}; original source preserved.` : 'Local draft was not found in workspace files/assets.', total ? 'ok' : 'warn');
   }
 
 
@@ -11026,6 +19734,110 @@ ${bodySections}
   }
 
 
+
+  function applyMismatchFilterToLineageNodes(ws, nodes) {
+    if (!workspaceDisplayOptions(ws).mismatchesOnly) return nodes;
+    if (!Array.isArray(nodes)) return [];
+    const out = [];
+    let descendantKept = false;
+    for (const node of nodes) {
+      const isMismatch = effectiveIntegrityStatus(node) === 'mismatch';
+      if (isMismatch || descendantKept) {
+        out.push(node);
+        descendantKept = true;
+      }
+    }
+    return out;
+  }
+
+  function lineageAuditCounts(nodes) {
+    const counts = { total: 0, ok: 0, mismatch: 0, open: 0, pending: 0 };
+    for (const node of nodes || []) {
+      counts.total += 1;
+      const status = effectiveIntegrityStatus(node);
+      if (status === 'byte-integrity-verified') counts.ok += 1;
+      else if (status === 'mismatch') counts.mismatch += 1;
+      else if (status === 'missing' || status === 'draft-pending' || status === 'malformed' || status === 'malformed-claim') counts.open += 1;
+      else counts.pending += 1;
+    }
+    return counts;
+  }
+
+  function renderLineageAuditSummary(ws, selected, nodes) {
+    if (!selected || !ws?.lineageAudit || (ws.lineageAudit.selectedId && ws.lineageAudit.selectedId !== selected.id)) return '';
+    const audit = ws.lineageAudit;
+    const counts = audit.counts || lineageAuditCounts(nodes || []);
+    const running = audit.state === 'running';
+    const parts = [
+      `${counts.ok || 0} OK`,
+      `${counts.mismatch || 0} mismatch${counts.mismatch === 1 ? '' : 'es'}`,
+      `${counts.open || 0} open`,
+      `${counts.pending || 0} pending`
+    ];
+    const loaded = audit.loadedBoundaries ? ` · ${audit.loadedBoundaries} parent${audit.loadedBoundaries === 1 ? '' : 's'} loaded` : '';
+    const title = running ? 'Lineage audit running' : 'Lineage audit complete';
+    return `<div class="lineage-audit-summary ${counts.mismatch ? 'has-mismatch' : ''} ${running ? 'running' : ''}" role="status">
+      <i class="fa-solid ${running ? 'fa-spinner fa-spin' : (counts.mismatch ? 'fa-triangle-exclamation' : 'fa-shield-halved')}"></i>
+      <strong>${escapeHtml(title)}</strong>
+      <span>${escapeHtml(parts.join(' · ') + loaded)}</span>
+    </div>`;
+  }
+
+  async function runLineageAudit(ws, selected) {
+    if (!ws || !selected) return false;
+    ws.selectedNodeId = selected.id;
+    lockLineageView(ws, selected, 'lineage-audit');
+    if (typeof setRouteState === 'function') setRouteState('replace');
+    ws.lineageAudit = { selectedId: selected.id, state: 'running', startedAt: new Date().toISOString(), loadedBoundaries: 0, counts: lineageAuditCounts(lineageTraversal(selected).nodes || []) };
+    render();
+    let loadedBoundaries = 0;
+    let current = ws.nodeById.get(selected.id) || selected;
+    try {
+      for (let i = 0; i < 24; i += 1) {
+        const boundary = firstOpenLineageBoundary(ws, current);
+        if (!boundary) break;
+        const ok = await fetchParentTrace(ws, boundary.last, boundary.candidate);
+        if (!ok) break;
+        loadedBoundaries += 1;
+        computeWorkspaceIndex(ws);
+        current = ws.nodeById.get(selected.id) || current;
+      }
+      const traversal = lineageTraversal(current);
+      const nodes = traversal?.nodes || [];
+      for (const node of nodes) {
+        const result = await verifyNodeIntegrity(node, ws);
+        node.integrityStatus = result.status;
+        node.integrityStatusLabel = result.label;
+        ws.integrityCache = ws.integrityCache || {};
+        const cacheValue = { status: result.status, label: result.label };
+        if (node.storageKey) ws.integrityCache[node.storageKey] = cacheValue;
+        if (node.path) ws.integrityCache[node.path] = cacheValue;
+      }
+      ws.lineageAudit = {
+        selectedId: selected.id,
+        state: 'complete',
+        completedAt: new Date().toISOString(),
+        loadedBoundaries,
+        counts: lineageAuditCounts(nodes)
+      };
+      toast(`Lineage audit complete: ${ws.lineageAudit.counts.ok} OK, ${ws.lineageAudit.counts.mismatch} mismatches.`, ws.lineageAudit.counts.mismatch ? 'warn' : 'ok');
+      return true;
+    } catch (error) {
+      ws.lineageAudit = Object.assign(ws.lineageAudit || {}, { selectedId: selected.id, state: 'failed', error: error.message || String(error || 'unknown error'), loadedBoundaries });
+      toast(`Lineage audit failed: ${ws.lineageAudit.error}`, 'warn');
+      return false;
+    } finally {
+      computeWorkspaceIndex(ws);
+      const restored = ws.nodeById?.get?.(selected.id) || Array.from(ws.nodeById?.values?.() || []).find((node) => node.path === selected.path);
+      if (restored) {
+        ws.selectedNodeId = restored.id;
+        lockLineageView(ws, restored, 'lineage-audit-complete');
+        if (typeof setRouteState === 'function') setRouteState('replace');
+      }
+      render();
+    }
+  }
+
   // --- Discovery feed rendering ---
 
   function renderWorkspaceFeed(ws, selected) {
@@ -11034,7 +19846,8 @@ ${bodySections}
     const windowState = selected ? ensureLineageWindow(ws, selected.id) : null;
     const lineageQuery = ws.lineageSearch || '';
     const searchActive = selected && normalizeSearchText(lineageQuery);
-    const allNodes = traversal ? traversal.nodes : filteredDiscoveryNodes(ws);
+    const rawNodes = traversal ? traversal.nodes : filteredDiscoveryNodes(ws);
+    const allNodes = traversal ? applyMismatchFilterToLineageNodes(ws, applyTemporalLensToLineageNodes(ws, rawNodes)) : rawNodes;
     const visibleCount = traversal ? (searchActive ? allNodes.length : Math.min(allNodes.length, windowState.visibleCount)) : allNodes.length;
     if (selected && traversal && !searchActive) scheduleLineageParentPrefetch(ws, selected, traversal, windowState.visibleCount);
     const nodes = traversal ? allNodes.slice(0, visibleCount) : allNodes;
@@ -11042,19 +19855,21 @@ ${bodySections}
     const showOriginCard = traversal?.nonLineageOrigin && visibleCount >= traversal.nodes.length && !searchActive;
     const openBoundary = selected ? firstOpenLineageBoundary(ws, selected) : null;
 
+    const emptyText = temporalLensActive(ws) ? 'No nodes match this temporal view.' : 'No nodes match this view.';
     const bodyHtml = mode === 'discovery' && discoveryView === 'tree'
       ? renderDiscoveryTree(ws, nodes)
-      : (nodes.length ? renderLineageNodeList(ws, nodes, mode, searchActive, lineageQuery) : '<div class="empty-state">No nodes match this view.</div>');
+      : (nodes.length ? renderLineageNodeList(ws, nodes, mode, searchActive, lineageQuery) : `<div class="empty-state">${escapeHtml(emptyText)}</div>`);
 
     const html = `
       <div class="feed-toolbar feed-toolbar-foundation feed-toolbar-shell feed-toolbar-layout ${mode}">
         <div class="feed-mode${selected ? ' mobile-lineage-actions' : ' view-toggle'}">
           <span class="kicker-inline">${mode === 'lineage' ? 'Lineage mode' : 'Discovery mode'}</span>
           ${selected ? `<button class="tv-btn tiny subtle back-button" data-action="clear-selection" data-ws="${escapeAttr(ws.id)}" title="Back to discovery"><i class="fa-solid fa-arrow-left"></i>Back</button>` : renderDiscoveryViewToggle(ws)}
-          ${selected ? `<button class="tv-btn tiny subtle audit-lineage-btn ${openBoundary ? 'open' : ''}" data-action="audit-lineage" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(selected.id)}" title="${openBoundary ? 'Load the next fetchable parent boundary' : 'No open fetchable parent boundary'}"><i class="fa-solid fa-shield-halved"></i>Audit</button>` : ''}
         </div>
         ${mode === 'lineage' ? `
-          <div class="lineage-search-wrap">
+          <div class="lineage-search-wrap lineage-action-tools">
+            <button class="tree-all-toggle audit-lineage-btn ${openBoundary ? 'open' : ''} ${ws.lineageAudit?.state === 'running' ? 'running' : ''}" data-action="audit-lineage" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(selected.id)}" title="Audit loaded lineage and fetch open parent boundaries" aria-label="Audit loaded lineage"><i class="fa-solid fa-shield-halved"></i></button>
+            ${displayOptionsToolbarButton(ws)}
             ${renderSearchInput(ws, 'lineage')}
           </div>` : `
           <div class="discovery-tools discovery-tools-foundation discovery-tools-layout display-filter-in-dialog tree-toolbar-tools">
@@ -11062,8 +19877,10 @@ ${bodySections}
             ${renderSearchInput(ws, 'discovery')}
           </div>`}
       </div>
+      ${temporalLensNotice(ws)}
+      ${mode === 'lineage' ? renderLineageAuditSummary(ws, selected, allNodes) : ''}
       <div class="post-feed ${mode} ${mode === 'discovery' ? `view-${discoveryView}` : ''}" data-ws="${escapeAttr(ws.id)}" data-selected="${selected ? escapeAttr(selected.id) : ''}">
-        ${mode === 'lineage' ? renderLineageSearchLegend(ws, traversal, allNodes, lineageQuery) : ''}
+        ${mode === 'lineage' ? renderLineageSearchLegend(ws, traversal, allNodes, lineageQuery) : renderDiscoverySearchLegend(ws, nodes, ws.discoverySearch || '')}
         ${bodyHtml}
         ${showOriginCard ? renderNonLineageOriginCard(ws, traversal.nonLineageOrigin) : ''}
         ${traversal ? renderLineageTraversalFooter(ws, selected, traversal, visibleCount) : ''}
@@ -11370,6 +20187,10 @@ ${bodySections}
 
     const state = parentFetchState(ws, last);
     if (state?.status === 'loading' || state?.status === 'loaded') return;
+    if (state?.status === 'failed') {
+      const failedAt = Date.parse(state.finishedAt || '') || 0;
+      if (failedAt && Date.now() - failedAt < 5 * 60 * 1000) return;
+    }
 
     const key = autoParentFetchKey(ws, last, candidate);
     app.autoParentFetches = app.autoParentFetches || new Set();
@@ -11501,7 +20322,7 @@ ${integrityFooter()}`;
   }
 
 
-  function upsertWorkspaceTextFile(ws, path, text, sourceId = 'local') {
+  function upsertWorkspaceTextFile(ws, path, text, sourceId = 'local', meta = {}) {
     ensureWorkspaceSources(ws);
     const source = ws.sources.get(sourceId) || localSource(ws);
     const cleanPath = canonicalWorkspacePath(path || '');
@@ -11516,6 +20337,17 @@ ${integrityFooter()}`;
       sourceId: source.id,
       sourceKind: source.kind,
       sourceLabel: source.label,
+      sourceOrigin: meta.sourceOrigin || '',
+      shadowSourceNodeId: meta.shadowSourceNodeId || '',
+      shadowSourceStorageKey: meta.shadowSourceStorageKey || '',
+      shadowSourceTitle: meta.shadowSourceTitle || '',
+      shadowSourceSchema: meta.shadowSourceSchema || '',
+      shadowSourceKey: meta.shadowSourceKey || '',
+      shadowSourceId: meta.shadowSourceId || '',
+      shadowSourcePath: meta.shadowSourcePath || '',
+      shadowSourceOrigin: meta.shadowSourceOrigin || '',
+      localDraftOf: meta.localDraftOf || '',
+      localEditDraft: Boolean(meta.localEditDraft),
       storageKey,
       isGenerated: false
     };
@@ -11524,11 +20356,65 @@ ${integrityFooter()}`;
     return file;
   }
 
+  function nodeIsLocalEditableMaterial(ws, node) {
+    if (!ws || !node) return false;
+    if (node.isGenerated) return true;
+    const file = node.file || {};
+    return Boolean(node.sourceKind === 'local' || node.sourceId === 'local' || file.sourceKind === 'local' || file.sourceId === 'local');
+  }
+
+  function sourceOriginUrlForNode(node) {
+    return node?.shadowSourceOrigin || node?.recoveredFromUrl || node?.browseUrl || node?.rawUrl || node?.sourceOrigin || node?.file?.browseUrl || node?.file?.rawUrl || node?.file?.sourceOrigin || '';
+  }
+
+  function sourceShadowKeyForNode(node) {
+    return node?.storageKey || node?.file?.storageKey || sourceFileKey(node?.sourceId || node?.file?.sourceId || '', node?.path || node?.file?.path || '', Boolean(node?.isGenerated || node?.file?.isGenerated));
+  }
+
+  function selectSavedLocalNode(ws, node, reason = 'local-save') {
+    if (!ws || !node?.id) return false;
+    app.activeWorkspaceId = ws.id;
+    try { focusWorkspaceWindow(ws.id); } catch (_) {}
+    ws.selectedNodeId = node.id;
+    ws.pendingSelectedRoute = null;
+    try { suppressCachedLens(reason, 1200); } catch (_) {}
+    try { lockLineageView(ws, node, reason); } catch (_) {}
+    return true;
+  }
+
   async function saveNodeEdit(ws, node, text) {
     const path = node.path || node.file?.path || 'edited.trace.md';
-    const sourceId = node.sourceId || node.file?.sourceId || 'local';
+    const directLocalEdit = nodeIsLocalEditableMaterial(ws, node);
+    const sourceId = directLocalEdit ? (node.sourceId || node.file?.sourceId || 'local') : 'local';
+    const sourceOrigin = !directLocalEdit ? sourceOriginUrlForNode(node) : (node.file?.sourceOrigin || node.sourceOrigin || node.shadowSourceOrigin || '');
+    const existingShadowMeta = {
+      sourceOrigin: node.file?.sourceOrigin || node.sourceOrigin || '',
+      shadowSourceNodeId: node.shadowSourceNodeId || node.file?.shadowSourceNodeId || '',
+      shadowSourceStorageKey: node.shadowSourceStorageKey || node.file?.shadowSourceStorageKey || '',
+      shadowSourceTitle: node.shadowSourceTitle || node.file?.shadowSourceTitle || '',
+      shadowSourceSchema: node.shadowSourceSchema || node.file?.shadowSourceSchema || '',
+      shadowSourceKey: node.shadowSourceKey || node.file?.shadowSourceKey || '',
+      shadowSourceId: node.shadowSourceId || node.file?.shadowSourceId || '',
+      shadowSourcePath: node.shadowSourcePath || node.file?.shadowSourcePath || '',
+      shadowSourceOrigin: node.shadowSourceOrigin || node.file?.shadowSourceOrigin || '',
+      localDraftOf: node.localDraftOf || node.file?.localDraftOf || '',
+      localEditDraft: Boolean(node.localEditDraft || node.file?.localEditDraft || node.shadowSourceKey || node.file?.shadowSourceKey || node.localDraftOf || node.file?.localDraftOf)
+    };
+    const meta = !directLocalEdit ? {
+      sourceOrigin,
+      shadowSourceNodeId: node.id || '',
+      shadowSourceStorageKey: node.storageKey || node.file?.storageKey || sourceShadowKeyForNode(node),
+      shadowSourceTitle: node.title || '',
+      shadowSourceSchema: node.currentSchema || node.schema || node.file?.currentSchema || '',
+      shadowSourceKey: sourceShadowKeyForNode(node),
+      shadowSourceId: node.sourceId || node.file?.sourceId || '',
+      shadowSourcePath: node.path || node.file?.path || '',
+      shadowSourceOrigin: sourceOrigin,
+      localDraftOf: sourceOrigin || sourceShadowKeyForNode(node),
+      localEditDraft: true
+    } : existingShadowMeta;
     const finalizedText = await finalizeSavedLocalIntegrity(ws, path, text, { existingNode: node });
-    const file = upsertWorkspaceTextFile(ws, path, finalizedText, sourceId);
+    const file = upsertWorkspaceTextFile(ws, path, finalizedText, sourceId, meta);
     // Replace preserved markdown asset too so export/preview sees the edited text.
     const assetKey = sourceFileKey(sourceId, path, false);
     ws.assets = ws.assets || new Map();
@@ -11537,13 +20423,27 @@ ${integrityFooter()}`;
       sourceId,
       sourceKind: file.sourceKind,
       sourceLabel: file.sourceLabel,
+      sourceOrigin: file.sourceOrigin || '',
+      shadowSourceNodeId: file.shadowSourceNodeId || '',
+      shadowSourceStorageKey: file.shadowSourceStorageKey || '',
+      shadowSourceTitle: file.shadowSourceTitle || '',
+      shadowSourceSchema: file.shadowSourceSchema || '',
+      shadowSourceKey: file.shadowSourceKey || '',
+      shadowSourceId: file.shadowSourceId || '',
+      shadowSourcePath: file.shadowSourcePath || '',
+      shadowSourceOrigin: file.shadowSourceOrigin || '',
+      localDraftOf: file.localDraftOf || '',
+      localEditDraft: Boolean(file.localEditDraft),
       text: finalizedText,
       mime: 'text/markdown',
       kind: 'text'
     });
     computeWorkspaceIndex(ws);
-    const edited = Array.from(ws.nodeById?.values?.() || []).find((candidate) => sameImportedPath(candidate.path, path));
-    if (edited) ws.selectedNodeId = edited.id;
+    const edited = Array.from(ws.nodeById?.values?.() || []).find((candidate) =>
+      candidate.sourceId === sourceId && sameImportedPath(candidate.path, path)
+    ) || Array.from(ws.nodeById?.values?.() || []).find((candidate) => sameImportedPath(candidate.path, path));
+    if (edited) selectSavedLocalNode(ws, edited, 'local-edit-save');
+    return edited || null;
   }
 
   function validateNewArtifactPath(path, kind) {
@@ -11558,13 +20458,24 @@ ${integrityFooter()}`;
   registerActionHandler(async function editAddAction(event, next) {
     const action = event.currentTarget?.dataset?.action || '';
 
+    if (action === 'toggle-original-shadow') {
+      event.preventDefault();
+      event.stopPropagation();
+      const key = event.currentTarget.dataset.key || '';
+      if (!key) return;
+      app.openOriginalShadows = app.openOriginalShadows || {};
+      app.openOriginalShadows[key] = !app.openOriginalShadows[key];
+      render();
+      return;
+    }
+
     if (action === 'open-node-edit') {
       event.preventDefault();
       event.stopPropagation();
       const ws = getWorkspace(event.currentTarget.dataset.ws || '');
       const node = ws?.nodeById?.get?.(event.currentTarget.dataset.node || '');
       if (!ws || !node) return toast('No editable node selected.', 'warn');
-      if (!canEditNode(ws, node)) return toast('Only local/uploaded workspace nodes can be edited in this pass.', 'warn');
+      if (!canEditNode(ws, node)) return toast('This artifact cannot be edited yet.', 'warn');
       app.modal = { type: 'edit-node', wsId: ws.id, nodeId: node.id, text: node.rawMarkdown || node.file?.text || '' };
       render();
       return;
@@ -11579,6 +20490,7 @@ ${integrityFooter()}`;
       await saveNodeEdit(ws, node, app.modal?.text || '');
       app.modal = null;
       if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
+      if (typeof saveLocalStateNow === 'function') saveLocalStateNow();
       if (typeof setRouteState === 'function') setRouteState('replace');
       render();
       toast('Saved local markdown edit.', 'ok');
@@ -11609,10 +20521,12 @@ ${integrityFooter()}`;
       const finalizedText = await finalizeSavedLocalIntegrity(ws, path, text, { parentNodeId: app.modal?.parentNodeId || app.modal?.continuationOf || '' });
       upsertWorkspaceTextFile(ws, path, finalizedText, 'local');
       computeWorkspaceIndex(ws);
-      const node = Array.from(ws.nodeById?.values?.() || []).find((candidate) => sameImportedPath(candidate.path, path));
-      if (node) ws.selectedNodeId = node.id;
+      const node = Array.from(ws.nodeById?.values?.() || []).find((candidate) => candidate.sourceId === 'local' && sameImportedPath(candidate.path, path))
+        || Array.from(ws.nodeById?.values?.() || []).find((candidate) => sameImportedPath(candidate.path, path));
+      if (node) selectSavedLocalNode(ws, node, 'local-artifact-save');
       app.modal = null;
       if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
+      if (typeof saveLocalStateNow === 'function') saveLocalStateNow();
       if (typeof setRouteState === 'function') setRouteState('replace');
       render();
       toast('Added local markdown artifact.', 'ok');
@@ -11651,12 +20565,12 @@ ${integrityFooter()}`;
 
   function canEditNode(ws, node) {
     if (!ws || !node) return false;
-    // Edit is a local authoring fallback. Remote/committed GitHub material should not
-    // expose raw edit unless an explicit future advanced-edit mode is enabled.
     if (node.isGenerated) return true;
-    if (node.sourceKind === 'local' || node.sourceId === 'local') return true;
-    if (node.file?.sourceKind === 'local' || node.file?.sourceId === 'local') return true;
-    return false;
+    if (nodeIsLocalEditableMaterial(ws, node)) return true;
+    // Imported/source-backed artifacts are editable as local drafts. The source
+    // material remains unchanged until an adapter-specific export/update flow is
+    // completed and refreshed back into the workspace.
+    return Boolean(node.rawMarkdown || node.file?.text || node.file?.content);
   }
 
   function markdownPreviewInline(text) {
@@ -11671,19 +20585,37 @@ ${integrityFooter()}`;
     const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
     const html = [];
     let inCode = false;
-    let listOpen = false;
+    const listStack = [];
 
-    const closeList = () => {
-      if (listOpen) {
-        html.push('</ul>');
-        listOpen = false;
+    const closeListsTo = (targetDepth = 0) => {
+      while (listStack.length > targetDepth) {
+        html.push(listStack.pop() === 'ol' ? '</ol>' : '</ul>');
+      }
+    };
+
+    const closeAllLists = () => closeListsTo(0);
+
+    const listDepthForIndent = (indent = '') => Math.floor(String(indent || '').replace(/\t/g, '  ').length / 2);
+
+    const ensureListDepth = (depth, tag) => {
+      while (listStack.length < depth + 1) {
+        html.push(tag === 'ol' ? '<ol>' : '<ul>');
+        listStack.push(tag === 'ol' ? 'ol' : 'ul');
+      }
+      while (listStack.length > depth + 1) {
+        html.push(listStack.pop() === 'ol' ? '</ol>' : '</ul>');
+      }
+      if (listStack[listStack.length - 1] !== tag) {
+        html.push(listStack.pop() === 'ol' ? '</ol>' : '</ul>');
+        html.push(tag === 'ol' ? '<ol>' : '<ul>');
+        listStack.push(tag === 'ol' ? 'ol' : 'ul');
       }
     };
 
     for (const raw of lines) {
       const line = raw.trimEnd();
       if (/^```/.test(line.trim())) {
-        closeList();
+        closeAllLists();
         if (!inCode) {
           html.push('<pre><code>');
           inCode = true;
@@ -11698,46 +20630,52 @@ ${integrityFooter()}`;
         continue;
       }
       if (!line.trim()) {
-        closeList();
+        closeAllLists();
         html.push('<br>');
         continue;
       }
 
       const heading = line.match(/^(#{1,6})\s+(.*)$/);
       if (heading) {
-        closeList();
+        closeAllLists();
         const level = Math.min(6, heading[1].length);
         html.push(`<h${level}>${markdownPreviewInline(heading[2])}</h${level}>`);
         continue;
       }
 
       if (/^---+$/.test(line.trim())) {
-        closeList();
+        closeAllLists();
         html.push('<hr>');
         continue;
       }
 
-      const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+      const bullet = line.match(/^(\s*)[-*]\s+(.*)$/);
       if (bullet) {
-        if (!listOpen) {
-          html.push('<ul>');
-          listOpen = true;
-        }
-        html.push(`<li>${markdownPreviewInline(bullet[1])}</li>`);
+        const depth = listDepthForIndent(bullet[1]);
+        ensureListDepth(depth, 'ul');
+        html.push(`<li>${markdownPreviewInline(bullet[2])}</li>`);
+        continue;
+      }
+
+      const ordered = line.match(/^(\s*)\d+[.)]\s+(.*)$/);
+      if (ordered) {
+        const depth = listDepthForIndent(ordered[1]);
+        ensureListDepth(depth, 'ol');
+        html.push(`<li>${markdownPreviewInline(ordered[2])}</li>`);
         continue;
       }
 
       const quote = line.match(/^>\s?(.*)$/);
       if (quote) {
-        closeList();
+        closeAllLists();
         html.push(`<blockquote>${markdownPreviewInline(quote[1])}</blockquote>`);
         continue;
       }
 
-      closeList();
+      closeAllLists();
       html.push(`<p>${markdownPreviewInline(line)}</p>`);
     }
-    closeList();
+    closeAllLists();
     if (inCode) html.push('</code></pre>');
     return html.join('\n');
   }
@@ -12272,6 +21210,25 @@ ${integrityFooter()}`;
     return `[${safeLabel}](${href || safeLabel})`;
   }
 
+  function githubSocialOriginLabelForUrl(url = '') {
+    const spec = parseGitHubSocialTargetSpec(url);
+    if (!spec) {
+      if (/github\.com\/[^/]+\/[^/]+\/(?:blob|tree)\//i.test(String(url || ''))) return 'github git file';
+      if (/raw\.githubusercontent\.com\//i.test(String(url || ''))) return 'github raw file';
+      return '';
+    }
+    if (spec.kind === 'issue') return spec.commentAnchor ? 'github issue comment' : 'github issue';
+    if (spec.kind === 'discussion') return spec.commentAnchor ? 'github discussion comment' : 'github discussion';
+    return 'github';
+  }
+
+  function externalFirstHrefForNode(node, childPath = '') {
+    const external = node?.recoveredFromUrl || node?.browseUrl || node?.rawUrl || node?.sourceOrigin || '';
+    if (githubSocialOriginLabelForUrl(external)) return external;
+    const rel = node ? relativePathFromTo(childPath, node.path || '') : '';
+    return rel || external || node?.path || '';
+  }
+
   function parentContinuityBlock(node, childPath) {
     if (!node) return '';
     const trace = parentTraceReferenceForPath(node, childPath);
@@ -12279,9 +21236,12 @@ ${integrityFooter()}`;
     const created = node.createdAt || node.created || '';
     const rel = relativePathFromTo(childPath, node.path || '');
     const originLines = [];
-    if (rel) originLines.push(`    - [relative](${rel})`);
-    if (node.browseUrl) originLines.push(`    - [browse + git](${node.browseUrl})`);
-    else if (node.rawUrl) originLines.push(`    - [raw](${node.rawUrl})`);
+    if (rel) originLines.push(`    - relative: ${rel}`);
+    const external = node.recoveredFromUrl || node.browseUrl || node.rawUrl || node.sourceOrigin || '';
+    if (external) {
+      const label = githubSocialOriginLabelForUrl(external) || (/raw\.githubusercontent\.com\//i.test(external) ? 'github raw file' : 'origin');
+      originLines.push(`    - [${label}](${external})`);
+    }
     return `- Parent
   - Parent Schema: ${schema}
 ${created ? `  - Created At: ${created}\n` : ''}  - Trace: ${trace}
@@ -12402,12 +21362,17 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
       || null;
   }
 
+  function routeSourceWantsLineage(source) {
+    return Boolean(source && (source.mode === 'lineage' || source.selectedNodeId || source.selectedPath || source.selectedTitle));
+  }
+
   function applySelectedRouteState(ws, source) {
     if (!ws || !source) return;
-    const wantsLineage = source.mode === 'lineage' || Boolean(source.selectedNodeId || source.selectedPath || source.selectedTitle);
+    const wantsLineage = routeSourceWantsLineage(source);
     const selected = resolveRouteSelectedNode(ws, source);
     if (selected) {
       ws.selectedNodeId = selected.id;
+      ws.pendingSelectedRoute = null;
       return;
     }
     if (wantsLineage) {
@@ -12423,6 +21388,9 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     }
     ws.selectedNodeId = null;
     ws.pendingSelectedRoute = null;
+    clearLineageViewLockForWorkspace(ws, 'explicit-discovery-route');
+    suppressCachedLens('explicit-discovery-route', 6500);
+    routeOwnerRecord('route:apply-discovery-selection', { workspace: routeOwnerWorkspaceSummary(ws) });
   }
 
   function resolvePendingSelectedRoutes() {
@@ -12581,6 +21549,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
 
   function closeActiveModalRoute(options = {}) {
     const modal = app.modal;
+    if (modal) applyDisplayOptionsModalDraft(modal);
     if (modal) markDialogRouteSessionClosed(modal);
     app.modal = null;
     app.pendingRouteModal = null;
@@ -12589,12 +21558,14 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     if (options.render !== false) render();
   }
 
-  function routeNodeDescriptor(node) {
+  function routeNodeDescriptor(node, ws = null) {
     if (!node) return null;
     return {
       selectedNodeId: node.id || '',
       selectedPath: node.path || '',
-      selectedTitle: node.title || ''
+      selectedTitle: node.title || '',
+      wsId: ws?.id || '',
+      wsIndex: ws ? workspaceRouteIndex(ws.id) : undefined
     };
   }
 
@@ -12617,7 +21588,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     if ((modal.type === 'detail' || modal.type === 'markdown') && ws) {
       const node = ws.nodeById?.get?.(modal.nodeId || '');
       if (!node) return null;
-      return { type: modal.type, sessionId: dialogRouteSessionId(modal, modal.type), wsIndex, node: routeNodeDescriptor(node) };
+      return { type: modal.type, sessionId: dialogRouteSessionId(modal, modal.type), wsIndex, node: routeNodeDescriptor(node, ws) };
     }
 
     if (modal.type === 'artifact-wizard' && ws) {
@@ -12629,8 +21600,9 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
         mode: modal.mode || 'new',
         schemaId: modal.schemaId || 'tiinex.topic.v1',
         wizardStep: wizardStep(modal),
-        parent: routeNodeDescriptor(wizardNodeById(ws, modal.parentNodeId)),
-        referenced: routeNodeDescriptor(wizardNodeById(ws, modal.referencedNodeId)),
+        parent: routeNodeDescriptor(wizardNodeById(ws, modal.parentNodeId), ws),
+        referenced: routeNodeDescriptor(wizardNodeById(workspaceById(modal.referencedWsId || '') || ws, modal.referencedNodeId), workspaceById(modal.referencedWsId || '') || ws),
+        useAsBasis: routeNodeDescriptor(wizardNodeById(workspaceById(modal.useAsBasisWsId || modal.referencedWsId || '') || ws, modal.useAsBasisNodeId || modal.referencedNodeId), workspaceById(modal.useAsBasisWsId || modal.referencedWsId || '') || ws),
         title: includeDraftState ? (modal.title || '') : '',
         summary: includeDraftState ? (modal.summary || '') : '',
         folderPath: includeDraftState ? (modal.folderPath || '') : '',
@@ -12669,9 +21641,13 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
 
     if (routeModal.type === 'artifact-wizard') {
       const parent = resolveRouteNodeDescriptor(ws, routeModal.parent);
-      const referenced = resolveRouteNodeDescriptor(ws, routeModal.referenced);
+      const referencedWs = app.workspaces[Math.max(0, Number(routeModal.referenced?.wsIndex ?? -1))] || workspaceById(routeModal.referenced?.wsId || '') || ws;
+      const basisWs = app.workspaces[Math.max(0, Number(routeModal.useAsBasis?.wsIndex ?? -1))] || workspaceById(routeModal.useAsBasis?.wsId || '') || referencedWs || ws;
+      const referenced = resolveRouteNodeDescriptor(referencedWs, routeModal.referenced);
+      const useAsBasis = resolveRouteNodeDescriptor(basisWs, routeModal.useAsBasis);
       if (routeModal.parent && !parent) return;
       if (routeModal.referenced && !referenced) return;
+      if (routeModal.useAsBasis && !useAsBasis) return;
       const schemaId = schemaOptionById(routeModal.schemaId || 'tiinex.topic.v1').id;
       const option = schemaOptionById(schemaId);
       app.modal = applyWizardRouteDraft({
@@ -12681,6 +21657,9 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
         mode: routeModal.mode || 'new',
         parentNodeId: parent?.id || '',
         referencedNodeId: referenced?.id || '',
+        referencedWsId: referencedWs?.id || ws.id,
+        useAsBasisNodeId: useAsBasis?.id || '',
+        useAsBasisWsId: basisWs?.id || referencedWs?.id || ws.id,
         schemaId,
         title: routeModal.title || '',
         summary: routeModal.summary || '',
@@ -12710,6 +21689,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
           mode: selected.mode,
           discoveryView: ws.discoveryView || 'feed',
           discoveryFilterSchema: ws.discoveryFilterSchema || ws.filterSchema || 'all',
+          discoveryFilterSchemas: typeof normalizeDiscoveryFilterListForWorkspace === 'function' ? normalizeDiscoveryFilterListForWorkspace(ws) : [],
           discoverySearch: ws.discoverySearch || '',
           lineageSearch: ws.lineageSearch || ''
         };
@@ -12726,8 +21706,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
       const ws = app.workspaces[index];
       if (!ws) return;
       ws.discoveryView = source.discoveryView || ws.discoveryView || 'feed';
-      ws.discoveryFilterSchema = source.discoveryFilterSchema || source.filterSchema || ws.discoveryFilterSchema || 'all';
-      ws.filterSchema = ws.discoveryFilterSchema;
+      setDiscoveryFilterList(ws, source.discoveryFilterSchemas || source.discoveryFilterSchema || source.filterSchema || ws.discoveryFilterSchemas || ws.discoveryFilterSchema || 'all');
       ws.discoverySearch = source.discoverySearch || '';
       ws.lineageSearch = source.lineageSearch || '';
       applySelectedRouteState(ws, source);
@@ -12760,6 +21739,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
           mode: selected.mode,
           layoutMode: ws.layoutMode || 'expanded',
           discoveryFilterSchema: ws.discoveryFilterSchema || ws.filterSchema || 'all',
+          discoveryFilterSchemas: typeof normalizeDiscoveryFilterListForWorkspace === 'function' ? normalizeDiscoveryFilterListForWorkspace(ws) : [],
           discoverySearch: ws.discoverySearch || '',
           lineageSearch: ws.lineageSearch || '',
           expandedPaths: ws.nodes.filter((node) => node.expanded).map((node) => node.path)
@@ -12772,8 +21752,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     if (!ws || !source) return;
     ws.layoutMode = source.layoutMode || 'expanded';
     ws.discoveryView = source.discoveryView || ws.discoveryView || 'feed';
-    ws.discoveryFilterSchema = source.discoveryFilterSchema || source.filterSchema || 'all';
-    ws.filterSchema = ws.discoveryFilterSchema;
+    setDiscoveryFilterList(ws, source.discoveryFilterSchemas || source.discoveryFilterSchema || source.filterSchema || 'all');
     ws.discoverySearch = source.discoverySearch || '';
     ws.lineageSearch = source.lineageSearch || '';
     const expanded = new Set(source.expandedPaths || []);
@@ -12838,7 +21817,16 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     'runtime-family',
     'reduction-disclosure-privacy',
     'traversal-runtime',
-    'packaging-recovery'
+    'packaging-recovery',
+    'annotation-family',
+    'knowledge-family',
+    'schema-contract',
+    'schema-support',
+    'transition-family',
+    'source-access-origin',
+    'party-family',
+    'event-family',
+    'interaction-presentation'
   ]);
 
   const SCHEMA_CREATE_POLICY_MANUAL_CREATABILITY = Object.freeze([
@@ -12954,7 +21942,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
       if (!SCHEMA_CREATE_POLICY_UI_SURFACES.includes(def.uiSurface)) throw new Error(`Schema create policy ${id} has unsupported UI surface: ${def.uiSurface}`);
       if (!def.schemaPath || typeof def.schemaPath !== 'string') throw new Error(`Schema create policy ${id} must declare schemaPath`);
       if (!def.schemaPermalink || typeof def.schemaPermalink !== 'string') throw new Error(`Schema create policy ${id} must declare schemaPermalink`);
-      if (!def.schemaPermalink.startsWith(TIINEX_SCHEMA_PERMALINK_BASE)) throw new Error(`Schema create policy ${id} must use the pinned Tiinex docs schema permalink base`);
+      if (!def.schemaPermalink.startsWith(TIINEX_SCHEMA_PERMALINK_BASE)) throw new Error(`Schema create policy ${id} must use the Tiinex docs schema permalink base`);
       if (def.parentSchema !== null && typeof def.parentSchema !== 'string') throw new Error(`Schema create policy ${id} parentSchema must be a string or null`);
       if (def.dependsOn !== undefined && !Array.isArray(def.dependsOn)) throw new Error(`Schema create policy ${id} dependsOn must be an array when present`);
     }
@@ -12966,11 +21954,11 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
   }
 
   function schemaFilePath(id) {
-    return `.topics/.schemas/${String(id || '').trim()}.schema.md`;
+    return tiinexSchemaPathForId(id);
   }
 
   function schemaPermalink(id) {
-    return `${TIINEX_SCHEMA_PERMALINK_BASE}${String(id || '').trim()}.schema.md`;
+    return tiinexSchemaPermalinkForId(id);
   }
 
   function schemaPolicyEntry(id, label, family, parentSchema, role, manuallyCreatable, creatableAsContinuation, creatableAsReference, uiSurface, rationale, dependsOn) {
@@ -13029,8 +22017,73 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     'tiinex.broken.v1': schemaPolicyEntry('tiinex.broken.v1', 'Broken', 'packaging-recovery', 'tiinex.root.v1', 'Broken or degraded artifact support surface.', 'advanced', 'advanced', 'advanced', 'advanced-candidate', 'Broken artifacts should surface recovery state rather than act as ordinary content.')
   }, SCHEMA_CREATE_POLICY_ORDER);
 
+  function humanLabelFromSchemaId(id) {
+    const clean = String(id || '').replace(/^tiinex\./, '').replace(/\.v\d+$/, '');
+    return clean.split('.').filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ') || id || 'Schema';
+  }
+
+  function schemaFamilyFromPathForPolicy(path) {
+    const clean = normalizeRepoPath(path || '').replace(TIINEX_SCHEMA_REPO_PATH_PREFIX, '');
+    const first = clean.split('/').filter(Boolean)[0] || '';
+    const map = {
+      access: 'source-access-origin',
+      adapter: 'source-access-origin',
+      annotation: 'annotation-family',
+      attestation: 'reduction-disclosure-privacy',
+      coordination: 'event-family',
+      core: 'core-artifact',
+      discovery: 'discovery-family',
+      event: 'event-family',
+      external: 'reduction-disclosure-privacy',
+      instrument: 'instrument-family',
+      interaction: 'interaction-presentation',
+      interface: 'source-access-origin',
+      knowledge: 'knowledge-family',
+      lineage: 'core-artifact',
+      origin: 'source-access-origin',
+      party: 'party-family',
+      portal: 'source-access-origin',
+      presentation: 'interaction-presentation',
+      privacy: 'reduction-disclosure-privacy',
+      reduction: 'reduction-disclosure-privacy',
+      relation: 'relation-validation-governance',
+      resource: 'resource-family',
+      runtime: 'runtime-family',
+      schema: 'schema-support',
+      source: 'source-access-origin',
+      tool: 'source-access-origin',
+      transition: 'transition-family',
+      traversal: 'traversal-runtime',
+      validation: 'relation-validation-governance'
+    };
+    if (clean.startsWith('schema/contract/')) return 'schema-contract';
+    return map[first] || 'schema-support';
+  }
+
+  function derivedSchemaCreatePolicy(id) {
+    const clean = String(id || '').trim();
+    if (!clean || !TIINEX_SCHEMA_PATH_INDEX[clean]) return null;
+    const path = tiinexSchemaPathForId(clean);
+    const family = schemaFamilyFromPathForPolicy(path);
+    return Object.freeze({
+      id: clean,
+      label: humanLabelFromSchemaId(clean),
+      family,
+      schemaPath: path,
+      schemaPermalink: tiinexSchemaPermalinkForId(clean),
+      parentSchema: null,
+      role: 'Known Tiinex schema discovered from the markdown schema catalog; directory placement is a navigation hint, not semantic authority.',
+      manuallyCreatable: family === 'annotation-family' || family === 'transition-family' ? 'advanced' : 'no',
+      creatableAsContinuation: 'advanced',
+      creatableAsReference: 'advanced',
+      uiSurface: family === 'annotation-family' || family === 'transition-family' ? 'advanced-candidate' : 'context-only',
+      rationale: 'Derived policy fallback from the loaded schema path index so tooling can recognize the schema without hardcoding a second identity layer.'
+    });
+  }
+
   function schemaCreatePolicy(id) {
-    return SCHEMA_CREATE_POLICY_REGISTRY[String(id || '').trim()] || null;
+    const clean = String(id || '').trim();
+    return SCHEMA_CREATE_POLICY_REGISTRY[clean] || derivedSchemaCreatePolicy(clean);
   }
 
   function policyAllowsOrdinaryWizardSchema(id) {
@@ -13642,6 +22695,15 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
         button: 'Review markdown'
       };
     }
+    if (mode === 'use-as') {
+      return {
+        kicker: 'Use as',
+        title: 'Create from finding',
+        lead: 'Choose how to interpret this discovery finding. The original finding remains unchanged.',
+        icon: 'fa-wand-magic-sparkles',
+        button: 'Review markdown'
+      };
+    }
     return {
       kicker: 'Add',
       title: 'Create Tiinex artifact',
@@ -13655,19 +22717,60 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
     return id ? ws?.nodeById?.get?.(id) || null : null;
   }
 
+  function wizardWorkspaceByIdOrCurrent(ws, wsId = '') {
+    return workspaceById(wsId || '') || ws || null;
+  }
+
+  function wizardRelatedWorkspace(ws, modal, wsIdKey, fallbackWsIdKey = '') {
+    return wizardWorkspaceByIdOrCurrent(ws, modal?.[wsIdKey] || (fallbackWsIdKey ? modal?.[fallbackWsIdKey] : '') || '');
+  }
+
+  function wizardRelatedNode(ws, modal, nodeIdKey, wsIdKey, fallbackNodeIdKey = '', fallbackWsIdKey = '') {
+    const relatedWs = wizardRelatedWorkspace(ws, modal, wsIdKey, fallbackWsIdKey);
+    const nodeId = modal?.[nodeIdKey] || (fallbackNodeIdKey ? modal?.[fallbackNodeIdKey] : '') || '';
+    return wizardNodeById(relatedWs, nodeId);
+  }
+
+  function wizardCrossWorkspaceNote(currentWs, targetWs) {
+    if (!currentWs || !targetWs || currentWs.id === targetWs.id) return '';
+    return ` · ${workspaceDisplayLabel(targetWs)}`;
+  }
+
+  function wizardHrefForRelatedNode(fromWs, fromPath, targetWs, node) {
+    if (!node) return '';
+    if (fromWs && targetWs && fromWs.id === targetWs.id) return externalFirstHrefForNode(node, fromPath) || relativePathFromTo(fromPath, node.path || '') || node.path || '';
+    const external = node.recoveredFromUrl || node.browseUrl || node.rawUrl || node.sourceOrigin || '';
+    return external || node.path || '';
+  }
+
+  function wizardCrossWorkspaceBoundaryLine(label, targetWs, currentWs) {
+    if (!targetWs || !currentWs || targetWs.id === currentWs.id) return '';
+    return `- ${label} Workspace: ${workspaceDisplayLabel(targetWs)}
+`;
+  }
+
   function wizardHeaderContext(ws, modal) {
     const mode = modal?.mode || 'new';
     const parent = wizardNodeById(ws, modal?.parentNodeId);
-    const referenced = wizardNodeById(ws, modal?.referencedNodeId);
+    const referencedWs = wizardRelatedWorkspace(ws, modal, 'referencedWsId');
+    const basisWs = wizardRelatedWorkspace(ws, modal, 'useAsBasisWsId', 'referencedWsId');
+    const referenced = wizardRelatedNode(ws, modal, 'referencedNodeId', 'referencedWsId');
+    const useAsBasis = wizardRelatedNode(ws, modal, 'useAsBasisNodeId', 'useAsBasisWsId', 'referencedNodeId', 'referencedWsId') || parent;
     const parts = [];
 
     if (mode === 'continue' && parent) {
       parts.push(['fa-code-branch', 'Child of', parent.title || parent.path]);
+    } else if (mode === 'use-as') {
+      if (useAsBasis) parts.push(['fa-magnifying-glass-location', 'Finding basis', `${useAsBasis.title || useAsBasis.path}${wizardCrossWorkspaceNote(ws, basisWs)}`]);
+      if (parent && (!useAsBasis || parent.id !== useAsBasis.id)) parts.push(['fa-diagram-project', 'Parent', parent.title || parent.path]);
     } else if (mode === 'reference') {
-      if (referenced) parts.push(['fa-link', 'Reference target', referenced.title || referenced.path]);
+      if (referenced) parts.push(['fa-link', 'Reference target', `${referenced.title || referenced.path}${wizardCrossWorkspaceNote(ws, referencedWs)}`]);
       if (parent) parts.push(['fa-diagram-project', 'Parent', parent.title || parent.path]);
     } else if (mode === 'edit' && modal?.path) {
       parts.push(['fa-pen-to-square', 'Editing', modal.path]);
+    }
+    if (modal?.temporalLens?.asOf) {
+      parts.push(['fa-clock-rotate-left', 'Temporal lens', `${modal.temporalLens.asOf.replace('T', ' ')} · ${modal.temporalLens.mode || 'projection'}`]);
     }
 
     if (!parts.length) return '';
@@ -13678,9 +22781,11 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
 
   function defaultWizardTitle(ws, modal, option) {
     const parent = wizardNodeById(ws, modal?.parentNodeId);
-    const referenced = wizardNodeById(ws, modal?.referencedNodeId);
+    const referenced = wizardRelatedNode(ws, modal, 'referencedNodeId', 'referencedWsId');
+    const useAsBasis = wizardRelatedNode(ws, modal, 'useAsBasisNodeId', 'useAsBasisWsId', 'referencedNodeId', 'referencedWsId') || parent;
     if (modal?.title) return modal.title;
     if (modal?.mode === 'continue' && parent) return `${parent.title || 'Selected artifact'} continuation`;
+    if (modal?.mode === 'use-as' && useAsBasis) return `${option.label} from ${useAsBasis.title || 'discovery finding'}`;
     if (modal?.mode === 'reference' && referenced) return `${referenced.title || 'Selected artifact'} reference`;
     return `New ${option.label}`;
   }
@@ -13689,6 +22794,7 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
     if (modal?.summary) return modal.summary;
     const label = String(option?.label || 'artifact').toLowerCase();
     if (modal?.mode === 'continue') return `Continuation ${label} created in Tiinex Viewer.`;
+    if (modal?.mode === 'use-as') return `Interprets a discovery finding as ${label}; the original finding remains unchanged.`;
     if (modal?.mode === 'reference') return `Reference ${label} created in Tiinex Viewer.`;
     return `${option?.label || 'Tiinex'} artifact created in Tiinex Viewer.`;
   }
@@ -13735,6 +22841,45 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
       </div>
     </div>`;
   }
+  function renderUseAsPickerModal(modal) {
+    const ws = getWorkspace(modal.wsId);
+    const node = ws?.nodeById?.get?.(modal.nodeId || '');
+    if (!ws || !node) return '';
+    const labels = discoveryFindingUseAsCandidateLabels(node);
+    const cards = labels.map((label) => {
+      const schemaId = schemaIdForUseAsCandidate(label);
+      const supported = Boolean(schemaId && policyAllowsOrdinaryWizardSchema(schemaId));
+      const option = schemaId ? schemaOptionById(schemaId) : null;
+      const icon = option?.icon || 'fa-circle-dot';
+      const title = option?.label || label;
+      const body = supported
+        ? 'Create a new artifact that explicitly interprets this finding.'
+        : 'Not available in the ordinary wizard yet.';
+      return `<button type="button" class="use-as-choice transition-action ${supported ? '' : 'disabled'}" ${supported ? `data-action="use-finding-as" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" data-schema="${escapeAttr(schemaId)}" data-transition-kind="use-as" data-transition-schema="tiinex.artifact.transition.v1"` : 'disabled'} title="${escapeAttr(`${body} · ${transitionActionTitle('use-as')}`)}"><i class="fa-solid ${escapeAttr(icon)}"></i><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(body)}</small></span></button>`;
+    }).join('');
+    return `<div class="modal-backdrop-custom focus-modal use-as-picker-backdrop" role="dialog" aria-modal="true" aria-labelledby="use-as-picker-title">
+      <div class="modal-panel use-as-picker-panel">
+        <div class="modal-header-lite sticky-modal-head">
+          <div>
+            <p class="kicker">Use as</p>
+            <h2 class="modal-title-lite" id="use-as-picker-title"><i class="fa-solid fa-wand-magic-sparkles"></i>Use finding as…</h2>
+            <p class="text-secondary mb-0">Choose an interpretation. The original discovery finding remains unchanged.</p>
+            <div class="use-as-context-chip"><i class="fa-solid fa-magnifying-glass-location"></i><strong>Finding basis</strong><span>${escapeHtml(node.title || 'Discovery finding')}</span></div>
+          </div>
+          <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="use-as-picker-body">
+          ${cards || '<p class="preview-note">No ordinary use-as targets are available for this finding.</p>'}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  registerRenderModalWrapper(function renderModalWithUseAsPicker(modal, next) {
+    if (modal?.type === 'use-as-picker') return renderUseAsPickerModal(modal);
+    return next(modal);
+  });
+
   registerRenderModalWrapper(function renderModalWithArtifactWizard(modal, next) {
     if (modal?.type === 'artifact-wizard') return renderArtifactWizardModal(modal);
     return next(modal);
@@ -13753,10 +22898,14 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
       mode: options.mode || 'new',
       parentNodeId: options.parentNodeId || '',
       referencedNodeId: options.referencedNodeId || '',
+      referencedWsId: options.referencedWsId || options.referencedWorkspaceId || '',
+      useAsBasisNodeId: options.useAsBasisNodeId || '',
+      useAsBasisWsId: options.useAsBasisWsId || options.useAsBasisWorkspaceId || options.referencedWsId || '',
       schemaId,
       title: options.title || '',
       summary: options.summary || '',
       body: typeof options.body === 'string' ? options.body : option.body,
+      temporalLens: options.temporalLens || (temporalLensActive(ws) ? { begin: workspaceDisplayOptions(ws).temporalStart || '', end: workspaceDisplayOptions(ws).temporalEnd || '', mode: temporalLensModeLabel(ws) } : null),
       wizardStep: normalizeWizardRouteStep(options.wizardStep),
       folderPath: options.folderPath ? normalizedFolderPath(options.folderPath) : ''
     };
@@ -13770,7 +22919,7 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
 
     if (modal?.mode === 'edit' && modal.path) return canonicalWorkspacePath(modal.path);
 
-    if (modal?.mode === 'continue' && modal.parentNodeId && kind === 'trace') {
+    if ((modal?.mode === 'continue' || modal?.mode === 'use-as') && modal.parentNodeId && kind === 'trace') {
       const parent = wizardNodeById(ws, modal.parentNodeId);
       if (parent) return nextSiblingTracePath(parent, ws);
     }
@@ -13789,26 +22938,71 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
     return uniqueWizardRootPath(ws, modal, selected, title);
   }
 
-  function enterReferenceParentPicker(ws, referencedNode) {
+  function enterParentPlacementPicker(ws, options = {}) {
+    if (!ws) return;
     app.modal = null;
     app.parentPicker = {
-      wsId: ws.id,
-      referencedNodeId: referencedNode.id,
+      wsId: options.wsId || ws.id,
+      originWsId: ws.id,
+      mode: options.mode || 'reference',
+      referencedNodeId: options.referencedNodeId || '',
+      referencedWsId: options.referencedWsId || ws.id,
+      useAsBasisNodeId: options.useAsBasisNodeId || '',
+      useAsBasisWsId: options.useAsBasisWsId || options.referencedWsId || ws.id,
+      schemaId: options.schemaId || '',
+      title: options.title || '',
+      summary: options.summary || '',
       startedAt: Date.now()
     };
     render();
-    toast('Select a parent for the reference leaf.', 'ok');
+    toast(options.toast || 'Select where the new leaf belongs.', 'ok');
+  }
+
+  function enterReferenceParentPicker(ws, referencedNode) {
+    enterParentPlacementPicker(ws, {
+      mode: 'reference',
+      referencedNodeId: referencedNode?.id || '',
+      referencedWsId: ws.id,
+      toast: 'Select a parent for the reference leaf.'
+    });
+  }
+
+  function enterUseAsParentPicker(ws, basisNode, schemaId) {
+    const option = schemaOptionById(schemaId || 'tiinex.topic.v1');
+    enterParentPlacementPicker(ws, {
+      mode: 'use-as',
+      referencedNodeId: basisNode?.id || '',
+      referencedWsId: ws.id,
+      useAsBasisNodeId: basisNode?.id || '',
+      useAsBasisWsId: ws.id,
+      schemaId,
+      title: `${option.label} from ${basisNode?.title || 'discovery finding'}`,
+      summary: `Interprets a discovery finding as ${String(option.label || 'artifact').toLowerCase()}; the original finding remains unchanged.`,
+      toast: 'Select where the use-as artifact belongs.'
+    });
   }
 
   function parentPickerActiveFor(ws) {
-    return Boolean(app.parentPicker && (!ws || app.parentPicker.wsId === ws.id));
+    return Boolean(app.parentPicker);
   }
 
   function renderParentPickerBanner(ws) {
     if (!parentPickerActiveFor(ws)) return '';
-    const referenced = wizardNodeById(ws, app.parentPicker.referencedNodeId);
+    const picker = app.parentPicker || {};
+    const mode = picker.mode || 'reference';
+    const referencedWs = workspaceById(picker.referencedWsId || picker.wsId || picker.originWsId || '') || ws;
+    const basisWs = workspaceById(picker.useAsBasisWsId || picker.referencedWsId || picker.wsId || picker.originWsId || '') || referencedWs || ws;
+    const referenced = wizardNodeById(referencedWs, picker.referencedNodeId);
+    const basis = wizardNodeById(basisWs, picker.useAsBasisNodeId || picker.referencedNodeId);
+    const isUseAs = mode === 'use-as';
+    const icon = isUseAs ? 'fa-wand-magic-sparkles' : 'fa-link';
+    const title = isUseAs ? 'Select parent for use-as artifact' : 'Select parent for reference';
+    const targetLabel = isUseAs ? 'Finding basis' : 'Reference target';
+    const targetWs = isUseAs ? basisWs : referencedWs;
+    const target = isUseAs ? basis : referenced;
+    const originLabel = targetWs && targetWs.id !== ws.id ? ` · from ${workspaceDisplayLabel(targetWs)}` : '';
     return `<div class="parent-picker-banner">
-      <div><strong><i class="fa-solid fa-link"></i>Select parent for reference</strong><p>Reference target: ${escapeHtml(referenced?.title || referenced?.path || 'selected artifact')}. Choose where the new leaf belongs.</p></div>
+      <div><strong><i class="fa-solid ${icon}"></i>${escapeHtml(title)}</strong><p>${escapeHtml(targetLabel)}: ${escapeHtml(target?.title || target?.path || 'selected artifact')}${escapeHtml(originLabel)}. Choose any visible artifact in any workspace as the destination parent/anchor; using the same artifact is allowed for transition semantics.</p></div>
       <button class="tv-btn tiny subtle" data-action="cancel-parent-picker" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-xmark"></i>Cancel</button>
     </div>`;
   }
@@ -13818,12 +23012,13 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
     return html.replace('<div class="post-feed', `${renderParentPickerBanner(ws)}<div class="post-feed`);
   });
   function parentPickerSelectActionItem(ws, node) {
+    const mode = app.parentPicker?.mode || 'reference';
     return {
       label: 'Select as parent',
       icon: 'fa-solid fa-location-crosshairs',
       className: 'select-parent-action constructive',
-      dataset: { action: 'select-reference-parent', ws: ws?.id || '', node: node?.id || '' },
-      title: 'Select as parent for reference leaf'
+      dataset: { action: 'select-parent-placement', ws: ws?.id || '', node: node?.id || '' },
+      title: mode === 'use-as' ? 'Select as parent/target for use-as transition' : 'Select as parent/target for reference transition'
     };
   }
 
@@ -13871,13 +23066,39 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
         path: artifact.path,
         title: artifact.title,
         text: artifact.text,
-        continuationOf: previous.mode === 'continue' ? previous.parentNodeId : '',
+        continuationOf: (previous.mode === 'continue' || previous.mode === 'use-as') ? previous.parentNodeId : '',
         referenceOf: previous.mode === 'reference' ? previous.referencedNodeId : '',
+        referenceWsId: previous.referencedWsId || '',
+        useAsBasisNodeId: previous.useAsBasisNodeId || '',
+        useAsBasisWsId: previous.useAsBasisWsId || '',
         parentNodeId: previous.parentNodeId || '',
         schemaId: previous.schemaId || '',
         editorMode: 'rich'
       };
       render();
+      return;
+    }
+
+    if (action === 'open-use-as-picker') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      const node = ws?.nodeById?.get?.(event.currentTarget.dataset.node || '');
+      if (!ws || !node) return toast('No discovery finding selected.', 'warn');
+      app.modal = { type: 'use-as-picker', wsId: ws.id, nodeId: node.id };
+      render();
+      return;
+    }
+
+    if (action === 'use-finding-as') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      const node = ws?.nodeById?.get?.(event.currentTarget.dataset.node || '');
+      const schemaId = schemaIdFromCreate(event.currentTarget.dataset.schema || '', '');
+      if (!ws || !node) return toast('No discovery finding selected.', 'warn');
+      if (!schemaId || !policyAllowsOrdinaryWizardSchema(schemaId)) return toast('That use-as target is not available in the ordinary wizard yet.', 'warn');
+      enterUseAsParentPicker(ws, node, schemaId);
       return;
     }
 
@@ -13899,21 +23120,47 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
       return;
     }
 
-    if (action === 'select-reference-parent') {
+    if (action === 'select-parent-placement' || action === 'select-reference-parent') {
       event.preventDefault();
       event.stopPropagation();
       const ws = getWorkspace(event.currentTarget.dataset.ws || '');
       const parent = ws?.nodeById?.get?.(event.currentTarget.dataset.node || '');
-      const referenced = wizardNodeById(ws, app.parentPicker?.referencedNodeId);
-      if (!ws || !parent || !referenced) return toast('Could not resolve reference parent.', 'warn');
-      const same = parent.id === referenced.id;
+      const picker = app.parentPicker || {};
+      const mode = picker.mode || 'reference';
+      const referencedWs = workspaceById(picker.referencedWsId || picker.wsId || picker.originWsId || '') || ws;
+      const basisWs = workspaceById(picker.useAsBasisWsId || picker.referencedWsId || picker.wsId || picker.originWsId || '') || referencedWs || ws;
+      const referenced = wizardNodeById(referencedWs, picker.referencedNodeId);
+      const basis = wizardNodeById(basisWs, picker.useAsBasisNodeId || picker.referencedNodeId);
+      if (!ws || !parent) return toast('Could not resolve selected parent.', 'warn');
+      if (mode === 'use-as') {
+        if (!basis) return toast('Could not resolve use-as basis.', 'warn');
+        const schemaId = schemaIdFromCreate(picker.schemaId || '', '');
+        if (!schemaId || !policyAllowsOrdinaryWizardSchema(schemaId)) return toast('That use-as target is not available in the ordinary wizard yet.', 'warn');
+        const option = schemaOptionById(schemaId);
+        app.parentPicker = null;
+        openArtifactWizard(ws, {
+          mode: 'use-as',
+          parentNodeId: parent.id,
+          referencedNodeId: basis.id,
+          referencedWsId: basisWs.id,
+          useAsBasisNodeId: basis.id,
+          useAsBasisWsId: basisWs.id,
+          schemaId,
+          wizardStep: 'describe',
+          title: picker.title || `${option.label} from ${basis.title || 'discovery finding'}`,
+          summary: picker.summary || `Interprets a discovery finding as ${String(option.label || 'artifact').toLowerCase()}; the original finding remains unchanged.`
+        });
+        return;
+      }
+      if (!referenced) return toast('Could not resolve reference target.', 'warn');
       app.parentPicker = null;
       openArtifactWizard(ws, {
-        mode: same ? 'continue' : 'reference',
+        mode: 'reference',
         parentNodeId: parent.id,
-        referencedNodeId: same ? '' : referenced.id,
-        schemaId: same ? (parent.currentSchemaText || parent.currentSchema || 'tiinex.topic.v1') : 'tiinex.evidence.v1',
-        title: same ? `${parent.title || 'Selected artifact'} continuation` : `${referenced.title || 'Selected artifact'} reference`
+        referencedNodeId: referenced.id,
+        referencedWsId: referencedWs.id,
+        schemaId: 'tiinex.evidence.v1',
+        title: `${referenced.title || 'Selected artifact'} reference`
       });
       return;
     }
@@ -14068,8 +23315,8 @@ ${paragraph(f.notes, 'What the next reader should know.')}`,
     return schemaReferenceForPath('tiinex.root.v1', artifactPath);
   }
 
-  function currentBlockForPath(schemaValue, summary, artifactPath, why = '') {
-    const created = rootTimestamp();
+  function currentBlockForPath(schemaValue, summary, artifactPath, why = '', options = {}) {
+    const created = String(options?.createdAt || '').trim() || rootTimestamp();
     const schemaId = schemaIdFromText(schemaValue, 'tiinex.topic.v1');
     const schema = schemaReferenceForPath(schemaId, artifactPath);
     return `- Current
@@ -14108,13 +23355,150 @@ ${why ? `  - Why: ${why}\n` : ''}${summary ? `  - Summary: ${summary}\n` : ''}`;
     return def.generatesSchemaId || def.id;
   }
 
+  function transitionBoundaryBody(ws, modal, path, option) {
+    const mode = modal?.mode || '';
+    const kind = mode === 'continue' ? 'continue' : (mode === 'reference' ? 'reference' : (mode === 'use-as' ? 'use-as' : ''));
+    const contract = artifactTransitionContract(kind);
+    if (!contract) return '';
+    const sourceWs = kind === 'reference'
+      ? wizardRelatedWorkspace(ws, modal, 'referencedWsId')
+      : (kind === 'use-as' ? wizardRelatedWorkspace(ws, modal, 'useAsBasisWsId', 'referencedWsId') : ws);
+    const source = kind === 'reference'
+      ? wizardRelatedNode(ws, modal, 'referencedNodeId', 'referencedWsId')
+      : (kind === 'use-as' ? wizardRelatedNode(ws, modal, 'useAsBasisNodeId', 'useAsBasisWsId', 'referencedNodeId', 'referencedWsId') : wizardNodeById(ws, modal?.parentNodeId));
+    const sourceHref = source ? wizardHrefForRelatedNode(ws, path, sourceWs, source) : '';
+    const sourceLabel = source ? `${source.title || displayFileName(source.path || 'source artifact')}${wizardCrossWorkspaceNote(ws, sourceWs)}` : 'source artifact';
+    const resultSchema = wizardSchemaId(option || schemaOptionById(modal?.schemaId || 'tiinex.topic.v1'));
+    const handle = `${kind || 'transition'}-${slugify(sourceLabel || 'source').slice(0, 42) || 'source'}`;
+    return `
+## Transition Boundary
+
+- Transition Schema: [${contract.schema}](${tiinexSchemaPermalinkForId(contract.schema)})
+- Transition Kind: ${contract.kind}
+- Transition Label: ${contract.label}
+- Transition Role: ${contract.role}
+${source ? `${wizardCrossWorkspaceBoundaryLine('Source', sourceWs, ws)}- Source Artifact: ${linkForPath(sourceLabel, sourceHref)}
+` : ''}- Result Schema: ${resultSchema}
+- Mutation Policy: ${contract.sourceMutation}
+- Durable Identity: assigned by Continuity Integrity fingerprint after checksum/finalization, not by a sequential transition id
+- Provisional Handle: ${handle}
+- Interpretation Limit: ${contract.limit}
+`;
+  }
+
+
+
+
   function relationReferenceBody(ws, modal, path) {
-    const referenced = wizardNodeById(ws, modal.referencedNodeId);
+    const referencedWs = wizardRelatedWorkspace(ws, modal, 'referencedWsId');
+    const referenced = wizardRelatedNode(ws, modal, 'referencedNodeId', 'referencedWsId');
     if (!referenced) return '';
-    const targetRel = relativePathFromTo(path, referenced.path || '');
-    const href = targetRel || referenced.browseUrl || referenced.rawUrl || referenced.path || '';
-    const label = displayFileName(referenced.path || 'reference target');
-    return `\n## Linked Artifacts\n\n- Referenced artifact: ${linkForPath(label, href)}\n`;
+    const href = wizardHrefForRelatedNode(ws, path, referencedWs, referenced);
+    const label = `${referenced.title || displayFileName(referenced.path || 'reference target')}${wizardCrossWorkspaceNote(ws, referencedWs)}`;
+    return `
+## Linked Artifacts
+
+${wizardCrossWorkspaceBoundaryLine('Referenced Artifact', referencedWs, ws)}- Referenced artifact: ${linkForPath(label, href)}
+`;
+  }
+
+  function useAsBasisBody(ws, modal, path, option) {
+    if (modal?.mode !== 'use-as') return '';
+    const basisWs = wizardRelatedWorkspace(ws, modal, 'useAsBasisWsId', 'referencedWsId');
+    const basis = wizardRelatedNode(ws, modal, 'useAsBasisNodeId', 'useAsBasisWsId', 'referencedNodeId', 'referencedWsId') || wizardNodeById(ws, modal?.parentNodeId);
+    if (!basis) return '';
+    const href = wizardHrefForRelatedNode(ws, path, basisWs, basis);
+    const label = `${basis.title || displayFileName(basis.path || 'discovery finding')}${wizardCrossWorkspaceNote(ws, basisWs)}`;
+    const schemaId = wizardSchemaId(option || schemaOptionById(modal?.schemaId || 'tiinex.topic.v1'));
+    return `
+## Discovery Finding Basis
+
+${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source finding: ${linkForPath(label, href)}
+- Use As: ${schemaId}
+- Interpretation: This artifact explicitly interprets the source discovery finding as this schema. The original finding remains unchanged and should not be treated as ${schemaId} by itself.
+`;
+  }
+
+  function wizardRelationAttachmentForEvidence(ws, modal, path, option) {
+    const schemaId = wizardSchemaId(option || schemaOptionById(modal?.schemaId || 'tiinex.topic.v1'));
+    if (schemaId !== 'tiinex.evidence.v1') return null;
+    const mode = modal?.mode || '';
+    const relation = mode === 'reference' ? 'reference' : (mode === 'use-as' ? 'use-as' : '');
+    if (!relation) return null;
+    const relatedWs = relation === 'reference'
+      ? wizardRelatedWorkspace(ws, modal, 'referencedWsId')
+      : wizardRelatedWorkspace(ws, modal, 'useAsBasisWsId', 'referencedWsId');
+    const related = relation === 'reference'
+      ? wizardRelatedNode(ws, modal, 'referencedNodeId', 'referencedWsId')
+      : (wizardRelatedNode(ws, modal, 'useAsBasisNodeId', 'useAsBasisWsId', 'referencedNodeId', 'referencedWsId') || wizardNodeById(ws, modal?.parentNodeId));
+    if (!related) return null;
+    const href = wizardHrefForRelatedNode(ws, path || modal?.path || '.topics/evidence.trace.md', relatedWs, related);
+    const label = `${related.title || displayFileName(related.path || 'related artifact')}${wizardCrossWorkspaceNote(ws, relatedWs)}`;
+    return {
+      id: `relation-${relation}-${relatedWs?.id || 'ws'}-${related.id || related.path || 'node'}`.replace(/[^a-zA-Z0-9_.:-]+/g, '-').slice(0, 128),
+      kind: 'relation',
+      relationship: relation,
+      url: href || related.sourceUrl || '',
+      label,
+      representation: relation === 'use-as' ? 'Tiinex use-as basis artifact' : 'Tiinex referenced artifact',
+      notes: relation === 'use-as'
+        ? 'This evidence artifact is created from a use-as transition. The source artifact remains unchanged.'
+        : 'This evidence artifact was created as a reference leaf. The referenced artifact remains unchanged.',
+      limits: 'Tiinex relation attachment; preserves a pointer, not proof by itself.',
+      locked: true
+    };
+  }
+
+  function ensureEvidenceRelationAttachment(ws, modal, option, title) {
+    if (!modal || modal.type !== 'artifact-wizard') return;
+    const schemaId = wizardSchemaId(option || schemaOptionById(modal.schemaId || 'tiinex.topic.v1'));
+    if (schemaId !== 'tiinex.evidence.v1') return;
+    const path = wizardPathFor(ws, modal, option || schemaOptionById(schemaId), title || defaultWizardTitle(ws, modal, option || schemaOptionById(schemaId)));
+    const relationAttachment = wizardRelationAttachmentForEvidence(ws, modal, path, option);
+    if (!relationAttachment) return;
+    const attachments = evidenceAttachments(modal);
+    const existing = attachments.find((item) => item.id === relationAttachment.id || (item.kind === 'relation' && item.relationship === relationAttachment.relationship && item.url === relationAttachment.url));
+    if (existing) {
+      Object.assign(existing, relationAttachment, { notes: existing.notes || relationAttachment.notes, limits: existing.limits || relationAttachment.limits });
+      return;
+    }
+    attachments.unshift(relationAttachment);
+  }
+
+  function markdownLinkAttachmentsFromText(text = '') {
+    const attachments = [];
+    const seen = new Set();
+    const sectionCandidates = ['Linked Artifacts', 'Discovery Finding Basis', 'Provenance', 'Evidence Material'];
+    const sections = sectionMap(text || '');
+    const chunks = sectionCandidates.map((name) => sections[name.toLowerCase()] || '').filter(Boolean);
+    if (!chunks.length) chunks.push(String(text || ''));
+    for (const chunk of chunks) {
+      for (const match of String(chunk).matchAll(/(?:^|\n)\s*-\s*(?:[^:\n]+:\s*)?\[([^\]]+)\]\(([^)]+)\)/g)) {
+        const label = shareClean(match[1] || 'Linked artifact');
+        const url = shareClean(match[2] || '');
+        if (!url) continue;
+        const key = `${label}|${url}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const relation = /source finding|use as|discovery finding basis/i.test(chunk) ? 'use-as' : (/referenced artifact|linked artifacts/i.test(chunk) ? 'reference' : 'source');
+        attachments.push({
+          id: `existing-${relation}-${String(seen.size)}`,
+          kind: relation === 'source' ? 'url' : 'relation',
+          relationship: relation,
+          url,
+          label,
+          representation: relation === 'source' ? 'web/source link' : 'Tiinex linked artifact',
+          notes: relation === 'source' ? '' : 'Recovered from existing Tiinex relation section during schema-aware edit.',
+          limits: relation === 'source' ? '' : 'Recovered pointer; not proof by itself.',
+          locked: relation !== 'source'
+        });
+      }
+    }
+    return attachments;
+  }
+
+  function evidenceAttachmentsFromNode(node) {
+    return markdownLinkAttachmentsFromText(node?.body || node?.rawMarkdown || node?.file?.text || '');
   }
 
 
@@ -14206,6 +23590,19 @@ ${why ? `  - Why: ${why}\n` : ''}${summary ? `  - Summary: ${summary}\n` : ''}`;
     return bodyFromForm(schemaId, wizardFormState(modal), context);
   }
 
+  function wizardTemporalLensBody(modal) {
+    const lens = modal?.temporalLens || null;
+    if (!lens?.asOf) return '';
+    return `
+
+## Temporal Lens
+
+- View As Of: ${lens.asOf.replace('T', ' ')}
+- Lens Mode: ${lens.mode || 'artifact/observed-time projection'}
+- Creation Boundary: this artifact was created in the present from a historical view lens; the source artifact itself was not rewritten.
+`;
+  }
+
   function wizardTemplate(ws, modal) {
     const option = schemaOptionById(modal.schemaId || 'tiinex.topic.v1');
     const schema = wizardSchemaId(option);
@@ -14215,7 +23612,10 @@ ${why ? `  - Why: ${why}\n` : ''}${summary ? `  - Summary: ${summary}\n` : ''}`;
     const body = wizardBodyForModal(modal, option, { modal, path });
     const parent = wizardNodeById(ws, modal.parentNodeId);
     const parentBlock = parent ? parentContinuityBlock(parent, path) : '';
+    const transitionBlock = transitionBoundaryBody(ws, modal, path, option);
     const referenceBlock = modal.mode === 'reference' ? relationReferenceBody(ws, modal, path) : '';
+    const useAsBlock = modal.mode === 'use-as' ? useAsBasisBody(ws, modal, path, option) : '';
+    const why = modal.mode === 'use-as' ? `Explicitly interprets a discovery finding as ${schema}; the source finding remains unchanged.` : '';
     return {
       kind: wizardKindForSchema(option.id),
       path,
@@ -14224,12 +23624,12 @@ ${why ? `  - Why: ${why}\n` : ''}${summary ? `  - Summary: ${summary}\n` : ''}`;
       text: `# Continuity Context
 
 - Envelope Schema: ${envelopeSchemaReference(path)}
-${parentBlock}${currentBlockForPath(schema, summary, path)}
+${parentBlock}${currentBlockForPath(schema, summary, path, why)}
 ---
 
 # ${title}
 
-${body}${referenceBlock}
+${body}${transitionBlock}${useAsBlock}${referenceBlock}${wizardTemporalLensBody(modal)}
 
 ---
 
@@ -14276,7 +23676,7 @@ ${integrityFooterForPath(parent, path)}`,
   }
 
   function evidenceAttachmentHref(artifactPath, attachment) {
-    if (attachment.kind === 'url') return attachment.url || '';
+    if (attachment.kind === 'url' || attachment.kind === 'relation') return attachment.url || '';
     const path = attachment.path || evidenceAttachmentPath(artifactPath, attachment);
     return relativePathFromTo(artifactPath, path) || path;
   }
@@ -14295,6 +23695,20 @@ ${integrityFooterForPath(parent, path)}`,
 
 
 
+  function evidenceCameraChoiceOpen(modal = app.modal) {
+    return Boolean(modal && modal.evidenceCameraChoiceOpen);
+  }
+
+  function renderEvidenceCameraChoice(modal) {
+    if (!evidenceCameraChoiceOpen(modal)) return '';
+    return `<div class="evidence-camera-choice polished" role="group" aria-label="Choose evidence camera or image source">
+      <button type="button" class="tv-btn tiny subtle evidence-camera-option" data-action="evidence-pick-camera" data-facing="environment" title="Use the rear camera when the browser/device supports it"><i class="fa-solid fa-camera"></i>Back camera</button>
+      <button type="button" class="tv-btn tiny subtle evidence-camera-option" data-action="evidence-pick-camera" data-facing="user" title="Use the front camera when the browser/device supports it"><i class="fa-solid fa-user-camera"></i>Front camera</button>
+      <button type="button" class="tv-btn tiny subtle evidence-camera-option" data-action="evidence-pick-camera" data-facing="gallery" title="Choose an existing image if camera capture is unavailable"><i class="fa-solid fa-images"></i>Image / gallery</button>
+      <button type="button" class="tv-btn tiny subtle evidence-camera-option" data-action="evidence-close-camera-choice" aria-label="Close camera choices"><i class="fa-solid fa-xmark"></i></button>
+    </div>`;
+  }
+
   function renderEvidenceAttachmentCollector(modal) {
     const attachments = evidenceAttachments(modal);
     const count = attachments.length;
@@ -14302,21 +23716,27 @@ ${integrityFooterForPath(parent, path)}`,
       <div class="evidence-collector-head compact polished">
         <div>
           <strong>Attachments ${count ? `<span class="evidence-count">${count}</span>` : ''}</strong>
-          <p>Drop files here or add URLs.</p>
+          <p>Drop files, add URLs, or capture camera evidence.</p>
         </div>
         <div class="evidence-collector-actions polished">
+          <button type="button" class="tv-btn tiny subtle evidence-camera-trigger" data-action="evidence-open-camera-choice" title="Capture or choose a photo"><i class="fa-solid fa-camera"></i>Camera</button>
           <button type="button" class="tv-btn tiny subtle" data-action="evidence-add-url"><i class="fa-solid fa-link"></i>URL</button>
           <button type="button" class="tv-btn tiny subtle" data-action="evidence-pick-file"><i class="fa-solid fa-file-arrow-up"></i>File</button>
           <input class="visually-hidden evidence-file-input" type="file" multiple data-evidence-file-input="1" aria-hidden="true" tabindex="-1">
+          <input class="visually-hidden evidence-camera-input evidence-camera-input-environment" type="file" accept="image/*" capture="environment" data-evidence-camera-input="environment" aria-hidden="true" tabindex="-1">
+          <input class="visually-hidden evidence-camera-input evidence-camera-input-user" type="file" accept="image/*" capture="user" data-evidence-camera-input="user" aria-hidden="true" tabindex="-1">
+          <input class="visually-hidden evidence-camera-input evidence-camera-input-gallery" type="file" accept="image/*" data-evidence-camera-input="gallery" aria-hidden="true" tabindex="-1">
         </div>
       </div>
-      ${count ? `<div class="evidence-attachment-grid compact polished">${attachments.map(renderEvidenceAttachmentCard).join('')}</div>` : `<div class="evidence-empty-drop compact polished"><i class="fa-solid fa-cloud-arrow-up"></i><strong>Drop files</strong><span>or add URL/file</span></div>`}
+      ${renderEvidenceCameraChoice(modal)}
+      ${count ? `<div class="evidence-attachment-grid compact polished">${attachments.map(renderEvidenceAttachmentCard).join('')}</div>` : `<div class="evidence-empty-drop compact polished"><i class="fa-solid fa-cloud-arrow-up"></i><strong>Drop files or capture camera</strong><span>add URL/file/photo</span></div>`}
     </section>`;
   }
 
   function renderEvidenceWizardDescribeStep(ws, modal, selected, title, summary, body) {
     const schemaId = wizardSchemaId(selected);
     ensureWizardFormDefaults(modal, selected);
+    ensureEvidenceRelationAttachment(ws, modal, selected, title);
     const state = wizardFormState(modal);
     return `<section class="wizard-step wizard-step-page wizard-describe-step schema-aware-describe evidence-describe compact polished">
       <div class="wizard-step-head compact polished"><span>2</span><div><strong>Collect evidence</strong><p>State the claim, then attach the material.</p></div></div>
@@ -14352,18 +23772,42 @@ ${integrityFooterForPath(parent, path)}`,
     });
   }
 
-  function addEvidenceFileAttachment(file) {
+  function cameraFacingLabel(facing = '') {
+    const key = String(facing || '').toLowerCase();
+    if (key === 'environment') return 'back camera';
+    if (key === 'user') return 'front camera';
+    return 'camera';
+  }
+
+  function evidenceCameraFileName(file, facing = '') {
+    const original = String(file?.name || '').trim();
+    if (original && !/^image\.?\w*$/i.test(original)) return original;
+    const ext = attachmentFileExtension(original) || shortMime(file?.type || 'image/jpeg', original).toLowerCase() || 'jpg';
+    const suffix = cameraFacingLabel(facing).replace(/\s+/g, '-');
+    return `camera-${suffix}-${new Date().toISOString().replace(/[:.]/g, '-')}.${String(ext || 'jpg').toLowerCase()}`;
+  }
+
+  function addEvidenceFileAttachment(file, options = {}) {
     if (!file) return;
+    const source = options.source || 'file';
+    const facing = options.cameraFacing || '';
+    const name = source === 'camera' ? evidenceCameraFileName(file, facing) : (file.name || 'attachment');
+    const representation = source === 'camera'
+      ? `${cameraFacingLabel(facing)} photo`
+      : (file.type?.startsWith('image/') ? 'image file' : 'file');
     const attachment = {
       id: evidenceAttachmentId(),
       kind: 'file',
-      name: file.name || 'attachment',
-      label: file.name || 'attachment',
-      representation: file.type?.startsWith('image/') ? 'image file' : 'file',
-      notes: '',
-      limits: '',
+      name,
+      label: name,
+      representation,
+      notes: source === 'camera' ? `Captured from ${cameraFacingLabel(facing)} on this device.` : '',
+      limits: source === 'camera' ? 'Camera capture is preserved as provided by the browser/device; it is evidence material, not proof by itself.' : '',
       size: file.size || 0,
       type: file.type || '',
+      source,
+      cameraFacing: facing,
+      capturedAt: source === 'camera' ? new Date().toISOString() : '',
       file
     };
     evidenceAttachments().push(attachment);
@@ -14378,7 +23822,9 @@ ${integrityFooterForPath(parent, path)}`,
       storeWorkspaceAsset(ws, path, attachment.file, {
         type: attachment.type || attachment.file.type || '',
         size: attachment.size || attachment.file.size || 0,
-        source: 'evidence-attachment'
+        source: attachment.source === 'camera' ? 'evidence-camera-capture' : 'evidence-attachment',
+        cameraFacing: attachment.cameraFacing || '',
+        capturedAt: attachment.capturedAt || ''
       });
     }
   }
@@ -14400,6 +23846,41 @@ ${integrityFooterForPath(parent, path)}`,
       event.stopPropagation();
       const input = document.querySelector('.evidence-file-input');
       if (input) input.click();
+      return;
+    }
+
+    if (action === 'evidence-open-camera-choice') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'artifact-wizard') return;
+      app.modal.evidenceCameraChoiceOpen = !app.modal.evidenceCameraChoiceOpen;
+      render();
+      return;
+    }
+
+    if (action === 'evidence-close-camera-choice') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (app.modal) app.modal.evidenceCameraChoiceOpen = false;
+      render();
+      return;
+    }
+
+    if (action === 'evidence-pick-camera') {
+      event.preventDefault();
+      event.stopPropagation();
+      const facing = event.currentTarget.dataset.facing || 'environment';
+      const selector = facing === 'user'
+        ? '.evidence-camera-input-user'
+        : facing === 'gallery'
+          ? '.evidence-camera-input-gallery'
+          : '.evidence-camera-input-environment';
+      const input = document.querySelector(selector) || document.querySelector('.evidence-file-input');
+      if (input) {
+        input.click();
+      } else {
+        toast('Camera capture is not available in this browser. Use File to attach an image instead.', 'warn');
+      }
       return;
     }
 
@@ -14459,8 +23940,17 @@ ${integrityFooterForPath(parent, path)}`,
       return;
     }
     if (event.target?.dataset?.evidenceFileInput === '1' && app.modal?.type === 'artifact-wizard') {
-      Array.from(event.target.files || []).forEach(addEvidenceFileAttachment);
+      Array.from(event.target.files || []).forEach((file) => addEvidenceFileAttachment(file, { source: 'file' }));
       event.target.value = '';
+      render();
+      return;
+    }
+    const cameraFacing = event.target?.dataset?.evidenceCameraInput || '';
+    if (cameraFacing && app.modal?.type === 'artifact-wizard') {
+      const source = cameraFacing === 'gallery' ? 'file' : 'camera';
+      Array.from(event.target.files || []).forEach((file) => addEvidenceFileAttachment(file, { source, cameraFacing }));
+      event.target.value = '';
+      app.modal.evidenceCameraChoiceOpen = false;
       render();
     }
   }
@@ -14480,7 +23970,7 @@ ${integrityFooterForPath(parent, path)}`,
   function addEvidenceDroppedFiles(files) {
     const list = Array.from(files || []).filter(Boolean);
     if (!list.length || !evidenceWizardActive()) return false;
-    list.forEach(addEvidenceFileAttachment);
+    list.forEach((file) => addEvidenceFileAttachment(file, { source: 'file' }));
     render();
     toast(`${list.length} evidence attachment${list.length === 1 ? '' : 's'} added.`, 'ok');
     return true;
@@ -14562,6 +24052,8 @@ ${integrityFooterForPath(parent, path)}`,
   function attachmentMetaMarkdown(attachment) {
     const lines = [];
     if (attachment.kind === 'file') {
+      if (attachment.source === 'camera') lines.push(`  - Capture Source: ${cameraFacingLabel(attachment.cameraFacing || '')}`);
+      if (attachment.capturedAt) lines.push(`  - Captured At: ${attachment.capturedAt}`);
       if (attachment.type) lines.push(`  - Media Type: ${attachment.type}`);
       const size = humanSize(attachment.size);
       if (size) lines.push(`  - Size: ${size}`);
@@ -14569,6 +24061,7 @@ ${integrityFooterForPath(parent, path)}`,
     }
     return lines.join('\n');
   }
+
 
   function readImageMetadata(attachment) {
     if (!attachment?.file || !String(attachment.type || '').startsWith('image/')) return;
@@ -14657,13 +24150,14 @@ ${integrityFooterForPath(parent, path)}`,
   function renderEvidenceAttachmentCard(attachment) {
     const id = attachment.id || '';
     const isUrl = attachment.kind === 'url';
-    const icon = isUrl ? 'fa-link' : 'fa-file-arrow-up';
-    const kindLabel = isUrl ? 'URL' : 'File';
+    const isRelation = attachment.kind === 'relation';
+    const icon = isRelation ? 'fa-diagram-project' : (isUrl ? 'fa-link' : 'fa-file-arrow-up');
+    const kindLabel = isRelation ? (attachment.relationship === 'use-as' ? 'Use-as relation' : 'Reference relation') : (isUrl ? 'URL' : 'File');
     const label = evidenceAttachmentLabel(attachment);
     const expanded = Boolean(attachment.expanded);
     const chips = attachmentMetaChips(attachment);
 
-    return `<article class="evidence-attachment-card simplified meta truthy preview" data-attachment-id="${escapeAttr(id)}">
+    return `<article class="evidence-attachment-card simplified meta truthy preview" data-attachment-id="${escapeAttr(id)}" data-camera-source="${attachment.source === 'camera' ? '1' : '0'}">
       <div class="evidence-attachment-top simplified meta">
         ${evidenceAttachmentThumb(attachment, icon)}
         <div>
@@ -14671,11 +24165,11 @@ ${integrityFooterForPath(parent, path)}`,
           <small>${escapeHtml(kindLabel)}</small>
           ${chips.length ? `<div class="evidence-meta-chips">${chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('')}</div>` : ''}
         </div>
-        <button type="button" class="tv-btn tiny subtle evidence-remove-attachment" data-action="evidence-remove-attachment" data-attachment-id="${escapeAttr(id)}" title="Remove attachment" aria-label="Remove attachment"><i class="fa-solid fa-xmark"></i></button>
+        ${attachment.locked ? '<span class="evidence-relation-lock" title="Transition relation"><i class="fa-solid fa-lock"></i></span>' : `<button type="button" class="tv-btn tiny subtle evidence-remove-attachment" data-action="evidence-remove-attachment" data-attachment-id="${escapeAttr(id)}" title="Remove attachment" aria-label="Remove attachment"><i class="fa-solid fa-xmark"></i></button>`}
       </div>
 
       <div class="evidence-simple-fields">
-        ${isUrl ? `<label class="field-label">URL<input class="form-control tv-input" data-evidence-attachment-field="url" data-attachment-id="${escapeAttr(id)}" value="${escapeAttr(attachment.url || '')}" placeholder="https://..."></label>` : ''}
+        ${isRelation ? `<label class="field-label">Relation target<input class="form-control tv-input" readonly value="${escapeAttr(attachment.url || '')}"></label>` : (isUrl ? `<label class="field-label">URL<input class="form-control tv-input" data-evidence-attachment-field="url" data-attachment-id="${escapeAttr(id)}" value="${escapeAttr(attachment.url || '')}" placeholder="https://..."></label>` : '')}
         <label class="field-label evidence-wide">Notes<textarea class="form-control tv-textarea evidence-mini-textarea simplified" data-evidence-attachment-field="notes" data-attachment-id="${escapeAttr(id)}" placeholder="What should this evidence preserve or show?">${escapeHtml(attachment.notes || '')}</textarea></label>
       </div>
 
@@ -14772,6 +24266,7 @@ ${integrityFooterForPath(parent, path)}`,
     const mode = modal?.mode || 'new';
     if (mode === 'edit') return 'Save local edit';
     if (mode === 'continue') return 'Create continuation';
+    if (mode === 'use-as') return 'Create use-as artifact';
     if (mode === 'reference') return 'Create reference';
     return 'Create artifact';
   }
@@ -14808,14 +24303,16 @@ ${integrityFooterForPath(parent, path)}`,
     const finalizedText = await finalizeCreatedArtifactIntegrity(ws, artifact, modal);
     upsertWorkspaceTextFile(ws, path, finalizedText, 'local');
     computeWorkspaceIndex(ws);
-    const node = Array.from(ws.nodeById?.values?.() || []).find((candidate) => sameImportedPath(candidate.path, path));
-    if (node) ws.selectedNodeId = node.id;
+    const node = Array.from(ws.nodeById?.values?.() || []).find((candidate) => candidate.sourceId === 'local' && sameImportedPath(candidate.path, path))
+      || Array.from(ws.nodeById?.values?.() || []).find((candidate) => sameImportedPath(candidate.path, path));
+    if (node) selectSavedLocalNode(ws, node, 'artifact-wizard-save');
 
     markDialogRouteSessionClosed(modal);
     app.modal = null;
     app.pendingRouteModal = null;
     clearTimeout(app.wizardRouteDraftTimer);
     if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
+    if (typeof saveLocalStateNow === 'function') saveLocalStateNow();
     if (typeof setRouteState === 'function') setRouteState('replace');
     render();
     toast(`${wizardDirectButtonText(modal)} added.`, 'ok');
@@ -14888,13 +24385,14 @@ ${integrityFooterForPath(parent, path)}`,
       path: node.path || node.file?.path || '',
       parentNodeId: node.parentNode?.id || '',
       wizardStep: 'describe',
-      formFields: formStateFromNode(node)
+      formFields: formStateFromNode(node),
+      evidenceAttachments: schemaId === 'tiinex.evidence.v1' ? evidenceAttachmentsFromNode(node) : []
     };
     updateUrlState({ replace: false });
     render();
   }
 
-  function saveSchemaAwareEditWizard(ws, modal) {
+  async function saveSchemaAwareEditWizard(ws, modal) {
     const node = ws?.nodeById?.get?.(modal.editNodeId || '');
     if (!ws || !node) {
       toast('No editable node selected.', 'warn');
@@ -14905,12 +24403,13 @@ ${integrityFooterForPath(parent, path)}`,
       const stash = { evidenceAttachments: artifact.evidenceAttachments };
       storeEvidenceAttachmentFiles(ws, stash, artifact.path || node.path || '');
     }
-    saveNodeEdit(ws, node, artifact.text);
+    await saveNodeEdit(ws, node, artifact.text);
     markDialogRouteSessionClosed(modal);
     app.modal = null;
     app.pendingRouteModal = null;
     clearTimeout(app.wizardRouteDraftTimer);
     if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
+    if (typeof saveLocalStateNow === 'function') saveLocalStateNow();
     if (typeof setRouteState === 'function') setRouteState('replace');
     render();
     toast('Saved local schema edit.', 'ok');
@@ -14934,7 +24433,7 @@ ${integrityFooterForPath(parent, path)}`,
       event.preventDefault();
       event.stopPropagation();
       const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
-      saveSchemaAwareEditWizard(ws, app.modal);
+      await saveSchemaAwareEditWizard(ws, app.modal);
       return;
     }
 
@@ -15128,13 +24627,145 @@ ${integrityFooterForPath(parent, path)}`,
     return sources;
   }
 
+  const EXPORT_SCOPE_SESSION_KEY = 'tiinex.export.scope.mode';
+  const EXPORT_SOURCE_IDS_SESSION_KEY = 'tiinex.export.scope.sourceIds';
+
+  function normalizeExportScopeMode(value) {
+    const mode = String(value || '').toLowerCase();
+    return mode === 'sources' || mode === 'all' || mode === 'local' ? mode : 'local';
+  }
+
+  function readExportScopeModePreference() {
+    try { return normalizeExportScopeMode(sessionStorage.getItem(EXPORT_SCOPE_SESSION_KEY) || 'local'); } catch (_) { return 'local'; }
+  }
+
+  function readExportSourceIdPreference() {
+    try {
+      const value = sessionStorage.getItem(EXPORT_SOURCE_IDS_SESSION_KEY) || '';
+      return value.split(',').map((item) => item.trim()).filter(Boolean);
+    } catch (_) { return []; }
+  }
+
+  function rememberExportScopePreference(modal) {
+    if (!modal || modal.type !== 'export-workspace') return;
+    try { sessionStorage.setItem(EXPORT_SCOPE_SESSION_KEY, normalizeExportScopeMode(modal.mode)); } catch (_) {}
+    try {
+      const ids = Array.isArray(modal.sourceIds) ? modal.sourceIds.filter(Boolean) : [];
+      sessionStorage.setItem(EXPORT_SOURCE_IDS_SESSION_KEY, ids.join(','));
+    } catch (_) {}
+  }
+
+  function exportSourceIsLocal(source) {
+    const kind = String(source?.kind || '').toLowerCase();
+    const id = String(source?.id || '').toLowerCase();
+    const adapter = String(source?.adapter?.id || source?.adapter || '').toLowerCase();
+    return id === 'local' || kind === 'local' || kind === 'upload' || kind === 'pasted' || adapter === 'local-browser-workspace';
+  }
+
+  function addExportHintSource(hints, ws, sourceId) {
+    if (!hints || !sourceId) return;
+    const source = sourceById?.(ws, sourceId) || null;
+    if (source && exportSourceIsLocal(source)) return;
+    if (!hints.sourceIds.includes(sourceId)) hints.sourceIds.push(sourceId);
+  }
+
+  function exportGitHubHintFromSpec(hints, spec, reason = '') {
+    if (!hints || !spec) return;
+    hints.deliveryTarget = 'github-draft';
+    hints.githubSurface = spec.kind === 'discussion' ? 'discussion' : 'issue';
+    const target = spec.discussionUrl || spec.issueUrl || spec.targetUrl || '';
+    const permalink = spec.commentAnchor && target ? `${target}#${spec.commentAnchor}` : target;
+    if (spec.kind === 'issue' && target && !hints.githubIssueUrl) hints.githubIssueUrl = target;
+    if (permalink && !hints.githubTargetUrl) hints.githubTargetUrl = permalink;
+    if (spec.repo && !hints.githubRepo) hints.githubRepo = spec.repo;
+    if (reason && !hints.reason) hints.reason = reason;
+  }
+
+  function scanExportHintText(hints, text, reason = '') {
+    const value = String(text || '');
+    if (!value) return;
+    const direct = parseGitHubSocialTargetSpec(value);
+    if (direct) exportGitHubHintFromSpec(hints, direct, reason);
+    const urls = [];
+    if (typeof githubUrlsFromText === 'function') {
+      urls.push(...githubUrlsFromText(value, 'issue'));
+      urls.push(...githubUrlsFromText(value, 'discussion'));
+    }
+    urls.forEach((url) => {
+      const spec = parseGitHubSocialTargetSpec(url);
+      if (spec) exportGitHubHintFromSpec(hints, spec, reason);
+    });
+  }
+
+  function scanExportHintNode(hints, ws, node, reason = 'selected lineage') {
+    if (!node) return;
+    addExportHintSource(hints, ws, node.sourceId || '');
+    const spec = typeof gitHubSocialTargetSpecFromNode === 'function' ? gitHubSocialTargetSpecFromNode(node) : null;
+    if (spec) exportGitHubHintFromSpec(hints, spec, reason);
+    scanExportHintText(hints, node.browseUrl, `${reason} source URL`);
+    scanExportHintText(hints, node.rawUrl, `${reason} raw URL`);
+    scanExportHintText(hints, node.sourceOrigin, `${reason} source origin`);
+    scanExportHintText(hints, node.recoveredFromUrl, `${reason} recovered origin`);
+    scanExportHintText(hints, node.parentOriginBrowse, `${reason} parent origin`);
+    scanExportHintText(hints, node.originUrl, `${reason} origin`);
+    scanExportHintText(hints, node.rawMarkdown || node.body || '', `${reason} markdown`);
+  }
+
+  function exportAdapterHintsForWorkspace(ws) {
+    const hints = { deliveryTarget: 'download', githubSurface: 'issue', githubIssueUrl: '', githubTargetUrl: '', githubRepo: '', sourceIds: [], reason: '' };
+    if (!ws) return hints;
+
+    let cursor = typeof selectedNode === 'function' ? selectedNode(ws) : null;
+    let depth = 0;
+    while (cursor && depth < 12) {
+      scanExportHintNode(hints, ws, cursor, depth ? 'parent lineage' : 'selected artifact');
+      cursor = cursor.parentNode || null;
+      depth += 1;
+    }
+
+    const sources = exportSourceEntries(ws);
+    sources.forEach((source) => {
+      if (exportSourceIsLocal(source)) return;
+      if (!hints.sourceIds.includes(source.id)) hints.sourceIds.push(source.id);
+      const kind = String(source.kind || '').toLowerCase();
+      const adapter = String(source.adapter?.id || source.adapter || '').toLowerCase();
+      if ((kind.includes('github') || adapter.includes('github') || source.repo) && hints.deliveryTarget === 'download') {
+        hints.deliveryTarget = 'github-draft';
+        hints.githubSurface = 'issue';
+        if (source.repo && !hints.githubRepo) hints.githubRepo = source.repo;
+        if (!hints.reason) hints.reason = 'workspace GitHub source';
+      }
+      scanExportHintText(hints, source.origin || source.url || source.issueUrl || '', 'workspace source');
+      (source.issueUrls || []).forEach((url) => scanExportHintText(hints, url, 'workspace source issue URL'));
+    });
+
+    return hints;
+  }
+
+  function defaultExportSourceIds(ws, mode, hints) {
+    if (mode !== 'sources') return [];
+    const available = new Set(exportSourceEntries(ws).map((source) => source.id).filter(Boolean));
+    const preferred = readExportSourceIdPreference().filter((id) => available.has(id));
+    if (preferred.length) return preferred;
+    const hinted = (hints?.sourceIds || []).filter((id) => available.has(id));
+    if (hinted.length) return hinted;
+    return exportSourceEntries(ws).filter((source) => !exportSourceIsLocal(source)).slice(0, 1).map((source) => source.id).filter(Boolean);
+  }
+
   function defaultExportModal(wsId) {
+    const ws = getWorkspace(wsId);
+    const hints = exportAdapterHintsForWorkspace(ws);
+    const mode = readExportScopeModePreference();
     return {
       type: 'export-workspace',
       wsId,
-      mode: 'all',
+      mode,
       includeAssets: true,
-      sourceIds: [],
+      sourceIds: defaultExportSourceIds(ws, mode, hints),
+      deliveryTarget: hints.deliveryTarget || 'download',
+      githubSurface: hints.githubSurface || 'issue',
+      githubIssueUrl: hints.githubIssueUrl || '',
+      githubTargetUrl: hints.githubTargetUrl || '',
       exportPassword: ''
     };
   }
@@ -15202,9 +24833,9 @@ ${integrityFooterForPath(parent, path)}`,
         </div>
         <div class="export-body">
           <div class="export-mode-grid">
-            ${renderExportModeButton(modal, 'all', 'All', 'fa-layer-group', 'Export every loaded file.')}
             ${renderExportModeButton(modal, 'local', 'Local', 'fa-pen-to-square', 'Export local edits and created artifacts.')}
-            ${renderExportModeButton(modal, 'sources', 'Sources', 'fa-code-merge', 'Pick one or more sources.')}
+            ${renderExportModeButton(modal, 'sources', 'Source', 'fa-code-merge', 'Pick one or more source surfaces.')}
+            ${renderExportModeButton(modal, 'all', 'All', 'fa-layer-group', 'Export every loaded file.')}
           </div>
 
           ${modal.mode === 'sources' ? `<section class="export-section">
@@ -15268,11 +24899,13 @@ ${integrityFooterForPath(parent, path)}`,
       event.preventDefault();
       event.stopPropagation();
       if (!app.modal || app.modal.type !== 'export-workspace') return;
-      app.modal.mode = event.currentTarget.dataset.mode || 'all';
+      app.modal.mode = normalizeExportScopeMode(event.currentTarget.dataset.mode || 'local');
       if (app.modal.mode === 'sources' && !(app.modal.sourceIds || []).length) {
         const ws = getWorkspace(app.modal.wsId);
-        app.modal.sourceIds = exportSourceEntries(ws).slice(0, 1).map((source) => source.id);
+        const hints = exportAdapterHintsForWorkspace(ws);
+        app.modal.sourceIds = defaultExportSourceIds(ws, 'sources', hints);
       }
+      rememberExportScopePreference(app.modal);
       render();
       return;
     }
@@ -15285,6 +24918,7 @@ ${integrityFooterForPath(parent, path)}`,
       if (event.currentTarget.checked) selected.add(id);
       else selected.delete(id);
       app.modal.sourceIds = Array.from(selected);
+      rememberExportScopePreference(app.modal);
       render();
       return;
     }
@@ -15293,6 +24927,31 @@ ${integrityFooterForPath(parent, path)}`,
       event.stopPropagation();
       if (!app.modal || app.modal.type !== 'export-workspace') return;
       app.modal.includeAssets = Boolean(event.currentTarget.checked);
+      render();
+      return;
+    }
+
+    if (action === 'export-set-delivery') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      app.modal.deliveryTarget = event.currentTarget.dataset.delivery || 'download';
+      render();
+      return;
+    }
+
+    if (action === 'github-export-set-surface') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      const surface = String(event.currentTarget.dataset.surface || 'issue').toLowerCase();
+      if (surface === 'discussion') {
+        app.modal.githubSurface = 'issue';
+        toast('GitHub discussion export is disabled until the discussion adapter is built.', 'warn');
+        render();
+        return;
+      }
+      app.modal.githubSurface = surface === 'git' ? surface : 'issue';
       render();
       return;
     }
@@ -15455,6 +25114,7 @@ ${integrityFooterForPath(parent, path)}`,
 
   function exportDeliveryLabel(target) {
     if (target === 'copy') return 'Copy';
+    if (target === 'github-draft') return 'GitHub';
     if (target === 'github-issue') return 'GitHub issue';
     return 'Download';
   }
@@ -15481,9 +25141,9 @@ ${integrityFooterForPath(parent, path)}`,
         selectedSources: Array.from(modal?.sourceIds || [])
       },
       archive: { format: archiveFormat, label: exportArchiveLabel(archiveFormat), passwordMode, passwordLabel: exportPasswordLabel(passwordMode) },
-      delivery: { target: 'download', label: exportDeliveryLabel('download'), clientSide: true, telemetry: 'none' },
+      delivery: { target: modal?.deliveryTarget || 'download', label: exportDeliveryLabel(modal?.deliveryTarget || 'download'), clientSide: true, telemetry: 'none' },
       connectorContract: {
-        target: 'download',
+        target: modal?.deliveryTarget || 'download',
         clientSide: true,
         telemetry: 'none',
         originAdapters: exportSourceEntries(ws).map((source) => originAdapterSummary(source.kind || 'local'))
@@ -16067,6 +25727,7 @@ ${integrityFooterForPath(parent, path)}`,
     }
     if (action === 'export-run' && app.modal?.type === 'export-workspace') {
       event.preventDefault(); event.stopPropagation();
+      if ((app.modal.deliveryTarget || 'download') === 'github-draft') return toast('Use the GitHub adapter copy/open actions in this export dialog.', 'warn');
       const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
       if (!ws) return toast('No workspace selected.', 'warn');
       try { await exportWorkspaceArchive(ws, app.modal); }
@@ -16183,6 +25844,52 @@ ${integrityFooterForPath(parent, path)}`,
     </section>`;
   };
 
+  function renderExportDeliveryButton(modal, target, label, icon, help) {
+    const active = (modal.deliveryTarget || 'download') === target;
+    return `<button type="button" class="export-choice-pill ${active ? 'active' : ''}" data-action="export-set-delivery" data-delivery="${escapeAttr(target)}"><strong><i class="fa-solid ${escapeAttr(icon)}"></i> ${escapeHtml(label)}</strong><small>${escapeHtml(help)}</small></button>`;
+  }
+
+  function renderExportDeliveryChoices(modal) {
+    return `<section class="export-section export-delivery">
+      <h3>Delivery</h3>
+      <div class="export-choice-row">
+        ${renderExportDeliveryButton(modal, 'download', 'Download archive', 'fa-download', 'Local client-side package.')}
+        ${renderExportDeliveryButton(modal, 'github-draft', 'GitHub', 'fa-brands fa-github', 'Prepare Issue/Discussion markdown without API write.')}
+      </div>
+      <p class="export-encryption-note">${(modal.deliveryTarget || 'download') === 'github-draft'
+        ? 'GitHub draft mode prepares copy-ready outbound material from the current export selection. Tiinex does not post to GitHub.'
+        : 'Download mode creates a client-side archive from the selected workspace files.'}</p>
+    </section>`;
+  }
+
+  function renderGithubOutboundExportSections(modal) {
+    const ws = getWorkspace(modal?.wsId || '');
+    if (!ws) return '';
+    const drafts = githubOutboundDraftsForModal(modal);
+    const issueUrl = drafts.issueSpec?.issueUrl || modal.githubIssueUrl || '';
+    return `<section class="export-section github-outbound-section">
+      <h3><i class="fa-brands fa-github"></i>GitHub outbound adapter</h3>
+      <p class="muted">Outbound draft ≠ published artifact. GitHub issue/comment/discussion ≠ Tiinex canonical storage. Copy-ready body ≠ posted material.</p>
+      <label class="field-label">Existing issue URL for comment draft<input class="form-control tv-input" data-field="githubIssueUrl" type="url" value="${escapeAttr(issueUrl)}" placeholder="https://github.com/${escapeAttr(drafts.repo || 'owner/repo')}/issues/123"></label>
+    </section>
+    ${renderGithubOutboundDraftPanel('New GitHub issue draft', 'fa-brands fa-github', drafts.issue, 'issue', 'Creates a GitHub new-issue web-form draft from the current export selection. Review in GitHub before submitting.')}
+    ${renderGithubOutboundDraftPanel('Existing issue comment draft', 'fa-regular fa-comment-dots', drafts.comment, 'comment', drafts.comment.url ? 'Copy this body and paste it into the existing issue comment box.' : 'Paste an existing issue URL above to enable the open-issue shortcut.')}
+    ${renderGithubOutboundDraftPanel('New GitHub discussion draft', 'fa-regular fa-comments', drafts.discussion, 'discussion', 'Opens GitHub Discussions web UI when available. Category handling may still require manual GitHub UI selection.')}`;
+  }
+
+  registerRenderExportModalWrapper(function renderExportModalWithDeliveryChoices(modal, next) {
+    let html = next(modal);
+    html = html.replace('<section class="export-summary">', `${renderExportDeliveryChoices(modal)}
+          <section class="export-summary">`);
+    if ((modal.deliveryTarget || 'download') === 'github-draft') {
+      html = html.replace(/<section class="export-section export-format">[\s\S]*?<\/section>\s*<section class="export-section export-password">[\s\S]*?<\/section>\s*/g, '');
+      html = html.replace('<section class="export-summary">', `${renderGithubOutboundExportSections(modal)}
+          <section class="export-summary">`);
+      html = html.replace(/<button class="tv-btn primary" data-action="export-run"[\s\S]*?<\/button>\s*/g, '');
+    }
+    return html;
+  });
+
   registerRenderExportModalWrapper(function renderExportModalWithHeaderPolish(modal, next) {
     const html = next(modal);
     return html
@@ -16191,7 +25898,2031 @@ ${integrityFooterForPath(parent, path)}`,
   });
 
 
+  // --- Export adapter capability surface ---
+  // Export is an adapter-capability choice first, not a late delivery afterthought.
+  // Download archives can carry files/assets/password modes; GitHubs can
+  // only prepare markdown text for an explicit user-mediated GitHub publish action.
 
+  function exportCapabilityTarget(modal) {
+    return modal?.deliveryTarget || 'download';
+  }
+
+  function renderExportCapabilityButton(modal, target, label, icon, help, capability) {
+    const active = exportCapabilityTarget(modal) === target;
+    return `<button type="button" class="export-capability-card ${active ? 'active' : ''}" data-action="export-set-delivery" data-delivery="${escapeAttr(target)}">
+      <span class="export-capability-icon"><i class="fa-solid ${escapeAttr(icon)}"></i></span>
+      <strong>${escapeHtml(label)}</strong>
+      <small>${escapeHtml(help)}</small>
+      <em>${escapeHtml(capability)}</em>
+    </button>`;
+  }
+
+  function renderExportCapabilitySurface(modal) {
+    return `<section class="export-capability-section">
+      <h3>Export adapter</h3>
+      <div class="export-capability-grid">
+        ${renderExportCapabilityButton(modal, 'download', 'Download archive', 'fa-download', 'Client-side package with markdown/files and optional assets.', 'Supports files · assets · password modes')}
+        ${renderExportCapabilityButton(modal, 'github-draft', 'GitHub', 'fa-brands fa-github', 'Export to GitHub surfaces without API write.', 'Supports Issues · Discussions · markdown text · no files')}
+      </div>
+    </section>`;
+  }
+
+  function renderExportSelectionSurface(modal, sources, sourceRows) {
+    return `<section class="export-section export-selection-section">
+      <h3>Selection</h3>
+      <div class="export-mode-grid compact-export-grid">
+        ${renderExportModeButton(modal, 'local', 'Local', 'fa-pen-to-square', 'Export local edits and created artifacts.')}
+        ${renderExportModeButton(modal, 'sources', 'Source', 'fa-code-merge', 'Pick one or more source surfaces.')}
+        ${renderExportModeButton(modal, 'all', 'All', 'fa-layer-group', 'Export every loaded file.')}
+      </div>
+      ${modal.mode === 'sources' ? `<div class="export-source-list export-source-list-inline">${sourceRows || '<p class="muted">No sources available.</p>'}</div>` : ''}
+    </section>`;
+  }
+
+  function renderDownloadArchiveCapabilitySections(modal) {
+    if (!modal.archiveFormat) modal.archiveFormat = 'zip';
+    if (!modal.passwordMode) modal.passwordMode = 'none';
+    return `<section class="export-section compact">
+      <label class="export-toggle-row">
+        <input type="checkbox" data-action="export-toggle-assets" ${modal.includeAssets ? 'checked' : ''}>
+        <span><strong>Assets</strong><small>Include preserved images, evidence files, and local attachments when available.</small></span>
+      </label>
+    </section>
+    ${renderExportChoices(modal)}`;
+  }
+
+  function githubDraftOpenLink(url, body) {
+    const safe = safeUrl(url || '') || '';
+    if (!safe) return '';
+    const openedPrefilled = body && body.length < 4200;
+    return `<a class="tv-btn subtle" href="${escapeAttr(safe)}" target="_blank" rel="noopener noreferrer"><i class="fa-brands fa-github"></i>${openedPrefilled ? 'Open prefilled GitHub draft' : 'Open GitHub form'}</a>`;
+  }
+
+  function renderGithubOutboundDraftPanelCompact(label, icon, draft, copyKey, note = '', open = false) {
+    const body = draft?.body || '';
+    const url = safeUrl(draft?.url || '') || '';
+    return `<details class="github-draft-details" ${open ? 'open' : ''}>
+      <summary>
+        <span><i class="${escapeAttr(icon)}"></i>${escapeHtml(label)}</span>
+        <small>${escapeHtml(note || 'Prepared markdown body; user publishes manually in GitHub.')}</small>
+      </summary>
+      <div class="github-draft-panel-body">
+        <div class="field-grid two">
+          <label>Title<input type="text" value="${escapeAttr(draft?.title || '')}" readonly></label>
+          <label>Boundary<input type="text" value="prepared outbound draft" readonly></label>
+        </div>
+        <pre class="source-block export-result-pre github-draft-pre"><code>${escapeHtml(body)}</code></pre>
+        <div class="modal-footer-actions export-actions inline-actions compact-inline-actions">
+          <button class="tv-btn primary" data-action="copy-github-outbound-body" data-draft="${escapeAttr(copyKey)}"><i class="fa-regular fa-copy"></i>Copy body</button>
+          ${githubDraftOpenLink(url, body)}
+        </div>
+        ${body.length >= 4200 ? '<p class="muted">Body is large, so the GitHub form is opened without a body query. Copy the body first and paste it into GitHub.</p>' : ''}
+      </div>
+    </details>`;
+  }
+
+  function githubOutboundSurface(modal) {
+    const raw = String(modal?.githubSurface || 'issue').toLowerCase();
+    // Discussion export is modelled as a future adapter capability, but it is
+    // not available yet. Route stale/old modal state back to issue so the UI
+    // cannot create a misleading discussion draft path.
+    return raw === 'git' ? raw : 'issue';
+  }
+
+  function renderGithubSurfaceButton(modal, surface, label, icon, help, capability = '', disabled = false) {
+    const active = !disabled && githubOutboundSurface(modal) === surface;
+    const attrs = disabled ? ' disabled aria-disabled="true" title="Unavailable in this adapter mode"' : ` data-action="github-export-set-surface" data-surface="${escapeAttr(surface)}"`;
+    return `<button type="button" class="export-capability-card github-surface-card ${active ? 'active' : ''} ${disabled ? 'disabled unavailable' : ''}"${attrs}>
+      <span class="export-capability-icon"><i class="fa-solid ${escapeAttr(icon)}"></i></span>
+      <strong>${escapeHtml(label)}</strong>
+      <small>${escapeHtml(help)}</small>
+      ${capability ? `<em>${escapeHtml(capability)}</em>` : ''}
+    </button>`;
+  }
+
+  function renderGithubCompactOptionButton(active, disabled, action, dataAttr, value, label, icon, help, capability = '') {
+    const attrs = disabled ? ' disabled aria-disabled="true" title="Unavailable in this adapter mode"' : ` data-action="${escapeAttr(action)}" ${dataAttr}="${escapeAttr(value)}"`;
+    return `<button type="button" class="github-compact-option ${active && !disabled ? 'active' : ''} ${disabled ? 'disabled unavailable' : ''}"${attrs}>
+      <span class="github-compact-icon"><i class="fa-solid ${escapeAttr(icon)}"></i></span>
+      <span class="github-compact-copy"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(help)}</small>${capability ? `<em>${escapeHtml(capability)}</em>` : ''}</span>
+    </button>`;
+  }
+
+  function renderGithubSurfacePicker(modal) {
+    return `<section class="export-section github-surface-section">
+      <h3>GitHub surface</h3>
+      <div class="export-capability-grid github-surface-grid">
+        ${renderGithubSurfaceButton(modal, 'git', 'Git repository', 'fa-code-branch', 'Repository push/commit export is not available in this no-auth browser adapter yet.', 'future git-capability', true)}
+        ${renderGithubSurfaceButton(modal, 'issue', 'Issue tracker', 'fa-circle-dot', 'Create a new issue draft or prepare an existing issue comment.', 'markdown body text')}
+        ${renderGithubSurfaceButton(modal, 'discussion', 'Discussion board', 'fa-comments', 'Discussion adapter not built yet.', 'coming later', true)}
+      </div>
+      <p class="export-encryption-note">GitHub adapter output is text-only in this browser mode. Files/assets are referenced in markdown, not uploaded.</p>
+    </section>`;
+  }
+
+  function renderGithubOutboundExportSectionsResponsive(modal) {
+    const ws = getWorkspace(modal?.wsId || '');
+    if (!ws) return '';
+    const drafts = githubOutboundDraftsForModal(modal);
+    const issueUrl = drafts.issueSpec?.issueUrl || modal.githubIssueUrl || '';
+    const plan = buildExportPlan(ws, modal);
+    const surface = githubOutboundSurface(modal);
+    const issuePanels = `<label class="field-label">Existing issue URL for comment draft<input class="form-control tv-input" data-field="githubIssueUrl" type="url" value="${escapeAttr(issueUrl)}" placeholder="https://github.com/${escapeAttr(drafts.repo || 'owner/repo')}/issues/123"></label>
+      ${renderGithubOutboundDraftPanelCompact('New GitHub issue draft', 'fa-brands fa-github', drafts.issue, 'issue', 'One combined markdown body from the current export selection.', true)}
+      ${renderGithubOutboundDraftPanelCompact('Existing issue comment draft', 'fa-regular fa-comment-dots', drafts.comment, 'comment', drafts.comment.url ? 'Copy this body and paste it into the existing issue comment box.' : 'Paste an existing issue URL above to enable the open-issue shortcut.')}`;
+    const discussionPanels = `${renderGithubOutboundDraftPanelCompact('New GitHub discussion draft', 'fa-regular fa-comments', drafts.discussion, 'discussion', 'Discussion category selection may still happen in GitHub UI.', true)}`;
+    const gitPanel = `<div class="export-adapter-boundary"><p class="muted"><strong>Git repository export is intentionally unavailable here.</strong> This client-side no-auth adapter cannot push commits or create branches. Use Download archive for files, or Issue/Discussion for GitHub web-surface publication drafts.</p></div>`;
+    return `<section class="export-section github-outbound-section export-adapter-boundary">
+      <h3><i class="fa-brands fa-github"></i>GitHub adapter capability</h3>
+      <p class="muted">This adapter prepares markdown text for GitHub web surfaces. It does not upload files, post comments, create issues, call GitHub write APIs, request tokens, or mutate loaded sources.</p>
+      <div class="export-capability-kv">
+        <span><strong>Selected markdown</strong><small>${plan.counts.files} artifact/file entr${plan.counts.files === 1 ? 'y' : 'ies'}</small></span>
+        <span><strong>Assets</strong><small>${plan.counts.assets ? `${plan.counts.assets} referenced/mentioned, not attached` : 'not attached'}</small></span>
+        <span><strong>Publishing</strong><small>explicit user action in GitHub</small></span>
+      </div>
+    </section>
+    ${renderGithubSurfacePicker(modal)}
+    <section class="export-section github-outbound-drafts-section">
+      <h3>${surface === 'discussion' ? 'Prepared discussion draft' : surface === 'git' ? 'Git repository export' : 'Prepared issue drafts'}</h3>
+      ${surface === 'discussion' ? discussionPanels : surface === 'git' ? gitPanel : issuePanels}
+    </section>`;
+  }
+
+  function renderExportSummarySurface(plan) {
+    const github = plan.delivery?.target === 'github-draft';
+    return `<section class="export-summary ${github ? 'github-summary' : ''}">
+      <div><strong>${plan.counts.files}</strong><span>${github ? 'markdown body entries' : 'markdown/file entries'}</span></div>
+      <div><strong>${plan.counts.assets}</strong><span>${github ? 'asset refs, not attached' : 'asset entries'}</span></div>
+      <div><strong>${github ? 'Markdown' : escapeHtml(exportArchiveLabel(plan.archive.format))}</strong><span>${github ? 'copy/open draft body' : escapeHtml(exportPasswordLabel(plan.archive.passwordMode))}</span></div>
+      <div><strong>${escapeHtml(exportDeliveryLabel(plan.delivery.target))}</strong><span>client-side · no telemetry</span></div>
+    </section>`;
+  }
+
+  registerRenderExportModalWrapper(function renderExportModalWithAdapterCapabilitySurface(modal, next) {
+    const ws = getWorkspace(modal.wsId);
+    if (!ws) return '';
+    const plan = buildExportPlan(ws, modal);
+    const sources = exportSourceEntries(ws);
+    const selected = new Set(modal.sourceIds || []);
+    const sourceRows = sources.map((source) => {
+      const count = Array.from(ws.files?.values?.() || []).filter((file) => fileSourceId(file) === source.id).length;
+      return `<label class="export-source-row">
+        <input type="checkbox" data-action="export-toggle-source" data-source="${escapeAttr(source.id)}" ${selected.has(source.id) ? 'checked' : ''}>
+        <span>
+          <strong>${escapeHtml(source.label || source.id)}</strong>
+          <small>${escapeHtml(source.kind || 'source')} · ${count} file${count === 1 ? '' : 's'}${source.repo ? ` · ${source.repo}${source.ref ? '@' + source.ref : ''}` : ''}</small>
+        </span>
+      </label>`;
+    }).join('');
+    const github = exportCapabilityTarget(modal) === 'github-draft';
+    const title = github ? 'Export to GitHub' : 'Export workspace archive';
+    const subtitle = github
+      ? 'Choose a GitHub surface and prepare copy-ready markdown from selected workspace artifacts. No API write.'
+      : 'Create a client-side package from this workspace without mutating loaded sources or sending telemetry.';
+    return `<div class="modal-backdrop-custom focus-modal export-backdrop" role="dialog" aria-modal="true" aria-labelledby="export-title">
+      <div class="modal-panel export-panel export-adapter-panel">
+        <div class="modal-header-lite export-head compact-export-head">
+          <div>
+            <p class="kicker">Export adapter</p>
+            <h2 class="modal-title-lite export-title" id="export-title"><span class="export-title-icon"><i class="fa-solid ${github ? 'fa-arrow-up-right-from-square' : 'fa-file-zipper'}"></i></span><span>${escapeHtml(title)}</span></h2>
+            <p class="text-secondary mb-0">${escapeHtml(subtitle)}</p>
+          </div>
+          <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="export-body export-adapter-body">
+          ${renderExportCapabilitySurface(modal)}
+          ${renderExportSelectionSurface(modal, sources, sourceRows)}
+          ${github ? renderGithubOutboundExportSectionsResponsive(modal) : renderDownloadArchiveCapabilitySections(modal)}
+          ${renderExportSummarySurface(plan)}
+        </div>
+        <div class="modal-footer-actions export-actions export-adapter-actions">
+          ${github
+            ? `<button class="tv-btn primary" data-action="copy-github-outbound-body" data-draft="${githubOutboundSurface(modal) === 'discussion' ? 'discussion' : 'issue'}" ${plan.counts.files && githubOutboundSurface(modal) !== 'git' ? '' : 'disabled'}><i class="fa-regular fa-copy"></i>${githubOutboundSurface(modal) === 'discussion' ? 'Copy discussion draft' : 'Copy issue draft'}</button>`
+            : `<button class="tv-btn primary" data-action="export-run" data-ws="${escapeAttr(ws.id)}" ${plan.counts.entries ? '' : 'disabled'}><i class="fa-solid fa-download"></i>Export archive</button>`}
+          <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+  });
+
+
+
+
+  // --- Staged export adapter flow ---
+
+  function exportSetupStage(modal) {
+    return modal?.exportStage === 'execute' ? 'execute' : 'setup';
+  }
+
+  function githubExportAccessMode(modal) {
+    const raw = String(modal?.githubAccessMode || 'manual').toLowerCase();
+    return raw === 'web' || raw === 'api' ? raw : 'manual';
+  }
+
+  function renderExportStagePill(active, label) {
+    return `<span class="export-step-pill ${active ? 'active' : ''}">${escapeHtml(label)}</span>`;
+  }
+
+  function renderExportStepRail(modal) {
+    const setup = exportSetupStage(modal) === 'setup';
+    return `<div class="export-step-rail" aria-label="Export steps">
+      ${renderExportStagePill(setup, '1 · Configure')}
+      ${renderExportStagePill(!setup, '2 · Execute')}
+    </div>`;
+  }
+
+  function exportAdapterLabel(modal) {
+    return exportCapabilityTarget(modal) === 'github-draft' ? 'GitHub' : 'Download';
+  }
+
+  function renderCompactExportCapabilitySurface(modal) {
+    return `<section class="export-section export-setup-section">
+      <h3>Adapter</h3>
+      <div class="export-capability-grid compact-capability-grid">
+        ${renderExportCapabilityButton(modal, 'download', 'Download', 'fa-download', 'Client-side archive package.', 'Files · assets · password modes')}
+        ${renderExportCapabilityButton(modal, 'github-draft', 'GitHub', 'fa-brands fa-github', 'Prepare markdown for GitHub surfaces.', 'Issue · Discussion · text only')}
+      </div>
+    </section>`;
+  }
+
+  function renderCompactExportSelectionSurface(modal, ws, sources, sourceRows) {
+    return `<section class="export-section export-setup-section">
+      <h3>Scope</h3>
+      <div class="export-mode-grid compact-mode-grid">
+        ${renderExportModeButton(modal, 'local', 'Local', 'fa-pen-to-square', 'Local edits and created artifacts.')}
+        ${renderExportModeButton(modal, 'sources', 'Source', 'fa-code-merge', 'One or more source surfaces.')}
+        ${renderExportModeButton(modal, 'all', 'All', 'fa-layer-group', 'Every loaded artifact/file.')}
+      </div>
+      ${modal.mode === 'sources' ? `<div class="export-source-list compact-source-list">${sourceRows}</div>` : ''}
+    </section>`;
+  }
+
+  function renderDownloadSetupOptions(modal) {
+    const needsPassword = exportPasswordMode(modal) !== 'none';
+    return `<section class="export-section export-setup-section">
+      <h3>Download options</h3>
+      <div class="export-choice-grid compact-choice-grid">
+        ${renderArchiveButton(modal, 'zip', 'zip', 'Common default.')}
+        ${renderArchiveButton(modal, 'tar', 'tar', 'Plain archive.')}
+        ${renderArchiveButton(modal, 'tgz', 'tar.gz', 'Compressed tar.')}
+      </div>
+      <div class="export-choice-grid compact-choice-grid">
+        ${renderPasswordButton(modal, 'none', 'No password', 'Plain archive.')}
+        ${renderPasswordButton(modal, 'tiinex', 'AES-GCM', 'PBKDF2 + AES-GCM package.')}
+        ${renderPasswordButton(modal, 'zip', 'ZIP password', 'Visible names; encrypted contents.')}
+      </div>
+      ${needsPassword ? `<label class="field-label compact-password-field">Password<input class="form-control tv-input" type="password" autocomplete="new-password" data-field="exportPassword" data-export-password value="${escapeAttr(modal.exportPassword || '')}" placeholder="Password for this export"></label>` : ''}
+    </section>`;
+  }
+
+  function renderExportAccessButton(modal, mode, label, icon, help, capability = '', disabled = false) {
+    const active = !disabled && githubExportAccessMode(modal) === mode;
+    const attrs = disabled ? ' disabled aria-disabled="true" title="Unavailable in this adapter mode"' : ` data-action="export-set-github-access" data-access="${escapeAttr(mode)}"`;
+    return `<button type="button" class="export-capability-card export-access-card ${active ? 'active' : ''} ${disabled ? 'disabled unavailable' : ''}"${attrs}>
+      <span class="export-capability-icon"><i class="fa-solid ${escapeAttr(icon)}"></i></span>
+      <strong>${escapeHtml(label)}</strong>
+      <small>${escapeHtml(help)}</small>
+      ${capability ? `<em>${escapeHtml(capability)}</em>` : ''}
+    </button>`;
+  }
+
+  function renderGithubSetupOptions(modal) {
+    const surface = githubOutboundSurface(modal);
+    return `<section class="export-section export-setup-section github-setup-options github-setup-compact">
+      <div class="github-compact-row single-capability-row">
+        <div class="github-compact-group">
+          <h3>GitHub surface</h3>
+          <div class="github-compact-option-grid github-surface-grid">
+            ${renderGithubCompactOptionButton(surface === 'git', true, 'github-export-set-surface', 'data-surface', 'git', 'Git repository', 'fa-code-branch', 'Future', 'requires authenticated git adapter')}
+            ${renderGithubCompactOptionButton(surface === 'issue', false, 'github-export-set-surface', 'data-surface', 'issue', 'Issue tracker', 'fa-circle-dot', 'guided issue/comment routine', 'copy · open · verify')}
+            ${renderGithubCompactOptionButton(false, true, 'github-export-set-surface', 'data-surface', 'discussion', 'Discussion board', 'fa-comments', 'Coming later', 'disabled')}
+          </div>
+        </div>
+      </div>
+      <p class="export-encryption-note github-compact-note">GitHub browser export is a guided web-surface routine: Tiinex prepares one markdown artifact at a time, opens the relevant GitHub surface, then asks for the published URL before continuing. Grey options are not implemented in this no-auth browser adapter.</p>
+    </section>`;
+  }
+
+  function renderStagedExportSummary(plan, modal) {
+    const github = exportCapabilityTarget(modal) === 'github-draft';
+    return `<section class="export-summary compact-export-summary ${github ? 'github-summary' : ''}">
+      <div><strong>${escapeHtml(exportAdapterLabel(modal))}</strong><span>adapter</span></div>
+      <div><strong>${plan.counts.files}</strong><span>${github ? 'markdown entries' : 'file entries'}</span></div>
+      <div><strong>${plan.counts.assets}</strong><span>${github ? 'asset refs' : 'asset entries'}</span></div>
+      <div><strong>${github ? githubOutboundSurface(modal) : escapeHtml(exportArchiveLabel(plan.archive.format))}</strong><span>${github ? githubExportAccessMode(modal) : escapeHtml(exportPasswordLabel(plan.archive.passwordMode))}</span></div>
+    </section>`;
+  }
+
+  function renderExportSetupStage(modal, ws, plan, sources, sourceRows) {
+    const github = exportCapabilityTarget(modal) === 'github-draft';
+    return `<div class="export-body export-adapter-body export-wizard-body" data-scroll-restore="export-workspace-setup-body">
+      ${renderExportStepRail(modal)}
+      ${renderCompactExportCapabilitySurface(modal)}
+      ${renderCompactExportSelectionSurface(modal, ws, sources, sourceRows)}
+      ${github ? renderGithubSetupOptions(modal) : renderDownloadSetupOptions(modal)}
+      ${renderStagedExportSummary(plan, modal)}
+      <p class="export-flow-note">Configure the adapter first. The next step shows the exact action to perform; loaded source artifacts stay unchanged.</p>
+    </div>`;
+  }
+
+  function githubExportItemKey(item, index = 0) {
+    return normalizeAssetPath(item?.path || item?.name || `github-export-item-${index + 1}`);
+  }
+
+  function githubExportItemsForModal(modal, plan) {
+    return (plan?.files || []).map((file, index) => ({
+      index,
+      key: githubExportItemKey(file, index),
+      file
+    }));
+  }
+
+  function githubExportCurrentIndex(modal, items) {
+    const max = Math.max(0, (items?.length || 1) - 1);
+    const n = Math.max(0, Math.min(max, Number(modal?.githubExportIndex || 0)));
+    if (modal) modal.githubExportIndex = n;
+    return n;
+  }
+
+  function githubExportCheckState(modal, key) {
+    modal.githubExportChecks = modal.githubExportChecks || {};
+    modal.githubExportChecks[key] = modal.githubExportChecks[key] || { copied: false, opened: false, verified: false, publishedUrl: '' };
+    return modal.githubExportChecks[key];
+  }
+
+  function githubResetVerificationState(state, scope = 'target-change') {
+    if (!state) return state;
+    state.verified = false;
+    state.verifiedSignature = '';
+    state.verifiedAt = '';
+    state.error = '';
+    state.warning = '';
+    state.resolvedTitle = '';
+    state.resolvedState = '';
+    state.resolvedRepo = '';
+    state.resolvedNumber = '';
+    state.verificationMeaning = '';
+    if (scope !== 'keep-published') state.publishedUrl = '';
+    return state;
+  }
+
+  function githubResetRoutineState(state, scope = 'target-change') {
+    if (!state) return state;
+    state.copied = false;
+    state.opened = false;
+    state.copiedSignature = '';
+    state.openedSignature = '';
+    return githubResetVerificationState(state, scope);
+  }
+
+  function githubExportDraftSignature(draft) {
+    return hashFast([draft?.body || '', draft?.targetMode || '', draft?.targetUrl || '', draft?.resultSurface || ''].join('\n---tiinex-github-draft---\n'));
+  }
+
+  function githubExportOpenSignature(draft) {
+    return hashFast([draft?.url || '', draft?.targetMode || '', draft?.targetUrl || ''].join('\n'));
+  }
+
+  function normalizeGitHubUrlForComparison(url) {
+    const raw = String(url || '').trim();
+    if (!raw) return '';
+    const spec = parseGitHubSocialTargetSpec(raw);
+    if (spec) {
+      const target = spec.targetUrl || spec.issueUrl || spec.discussionUrl || '';
+      const anchor = spec.commentAnchor ? `#${spec.commentAnchor.toLowerCase()}` : '';
+      return `${target}${anchor}`.toLowerCase();
+    }
+    try {
+      const parsed = new URL(raw);
+      parsed.hash = parsed.hash || '';
+      parsed.search = '';
+      parsed.protocol = parsed.protocol.toLowerCase();
+      parsed.hostname = parsed.hostname.toLowerCase();
+      return parsed.href.replace(/\/+$/, '').toLowerCase();
+    } catch (_) {
+      return raw.replace(/\s+/g, '').replace(/\/+$/, '').toLowerCase();
+    }
+  }
+
+  function githubPublishedResultUrlFromSpec(spec, rawUrl = '') {
+    if (!spec) return String(rawUrl || '').trim();
+    const base = spec.targetUrl || spec.issueUrl || spec.discussionUrl || String(rawUrl || '').trim();
+    const anchor = spec.commentAnchor ? `#${spec.commentAnchor}` : '';
+    return `${base}${anchor}`;
+  }
+
+  function githubOpenUrlForMode(state, mode, candidates = []) {
+    if (mode === 'reuse-known') {
+      const target = state?.targetUrl || candidates?.[0]?.url || '';
+      const candidate = (candidates || []).find((item) =>
+        normalizeGitHubUrlForComparison(item?.url || '') === normalizeGitHubUrlForComparison(target)
+        || normalizeGitHubUrlForComparison(item?.permalinkUrl || '') === normalizeGitHubUrlForComparison(target)
+      ) || candidates?.[0] || null;
+      return candidate?.permalinkUrl || candidate?.url || target || '';
+    }
+    if (mode === 'create-comment') {
+      const candidate = githubFirstIssueCandidate(candidates, true);
+      return candidate?.permalinkUrl || state?.targetUrl || candidate?.url || '';
+    }
+    if (mode === 'paste-existing') return state?.targetUrl || '';
+    return '';
+  }
+
+  function githubExportVerifySignature(surface, mode, url) {
+    return hashFast([surface || '', mode || '', normalizeGitHubUrlForComparison(url || '')].join('\n'));
+  }
+
+  function githubExportKnownTargetCandidate(candidates, url) {
+    const normalized = normalizeGitHubUrlForComparison(url || '');
+    if (!normalized) return null;
+    return (candidates || []).find((candidate) => {
+      const candidateUrl = candidate?.permalinkUrl || candidate?.url || '';
+      const targetUrl = candidate?.url || '';
+      return normalizeGitHubUrlForComparison(candidateUrl) === normalized
+        || normalizeGitHubUrlForComparison(targetUrl) === normalized;
+    }) || null;
+  }
+
+  function githubMarkKnownTargetAccepted(state, surface, mode, url, candidate = null) {
+    if (!state || !url) return state;
+    const spec = surface === 'discussion' ? parseGitHubDiscussionSpec(url) : parseGitHubIssueSpec(url);
+    if (!spec) return state;
+    state.targetUrl = state.targetUrl || spec.targetUrl || spec.issueUrl || spec.discussionUrl || url;
+    state.resolvedTitle = candidate?.label || spec.targetLabel || (surface === 'discussion' ? `GitHub Discussion #${spec.number}` : `GitHub Issue #${spec.number}`);
+    state.resolvedState = candidate ? 'known source target' : 'URL shape accepted';
+    state.resolvedRepo = spec.repo || '';
+    state.resolvedNumber = spec.number || '';
+    state.error = '';
+    state.verificationMeaning = '';
+    return state;
+  }
+
+  function githubEnsureKnownTargetAccepted(modal, item, draft, surface, state) {
+    if (!state || !draft) return state;
+    const candidates = draft.candidates || githubExportTargetCandidates(getWorkspace(modal?.wsId || ''), item, surface);
+    const mode = draft.targetMode || githubExportEffectiveTargetMode(modal, item, surface, candidates);
+    if (mode !== 'reuse-known') return state;
+    const targetUrl = githubTargetUrlForMode(state, mode, candidates);
+    const candidate = githubExportKnownTargetCandidate(candidates, targetUrl) || candidates[0] || null;
+    const url = candidate?.url || targetUrl;
+    if (!url) return state;
+    const signature = githubExportVerifySignature(surface, mode, url);
+    if (state.verified && state.verifiedSignature === signature) return state;
+    return githubMarkKnownTargetAccepted(state, surface, mode, url, candidate);
+  }
+
+  function githubExportStateReady(state, draft, surface) {
+    if (!state || !draft) return false;
+    if (!state.copied || !state.opened || !state.verified) return false;
+    const verifyUrl = state.publishedUrl || '';
+    if (!verifyUrl) return false;
+    return state.copiedSignature === githubExportDraftSignature(draft)
+      && state.openedSignature === githubExportOpenSignature(draft)
+      && state.verifiedSignature === githubExportVerifySignature(surface, draft.targetMode, verifyUrl);
+  }
+
+  function githubExportAllItemsReady(modal, ws, plan, surface) {
+    const items = githubExportItemsForModal(modal, plan);
+    if (!items.length) return false;
+    return items.every((item) => {
+      const draft = githubSingleArtifactDraft(ws, modal, item, surface);
+      return githubExportStateReady(githubExportCheckState(modal, item.key), draft, surface);
+    });
+  }
+
+  function githubExportNormalizeMarkdownForComparison(markdown) {
+    const text = normalizeNewlines(markdown || '');
+    try {
+      if (typeof canonicalizeTraceableContinuityChecksumSource === 'function') return canonicalizeTraceableContinuityChecksumSource(text).trim();
+    } catch (_) {}
+    return text.replace(/[ \t]+$/gm, '').trim();
+  }
+
+  function githubIssueCommentIdFromAnchor(anchor) {
+    const match = String(anchor || '').match(/^issuecomment-(\d+)$/i);
+    return match ? match[1] : '';
+  }
+
+  function githubIssueCommentIdFromUrl(url) {
+    const spec = parseGitHubIssueSpec(url || '');
+    return githubIssueCommentIdFromAnchor(spec?.commentAnchor || '');
+  }
+
+  function githubExportIsContinuationMarkdown(markdown = '') {
+    const text = normalizeNewlines(markdown || '');
+    return new RegExp('(?:^|\\n)##\\s+Transition Boundary\\s*(?:\\n|$)[\\s\\S]*?(?:^|\\n)-\\s+Transition Kind:\\s*continue\\b', 'im').test(text)
+      || new RegExp('(?:^|\\n)-\\s+Transition Kind:\\s*continue\\b', 'im').test(text);
+  }
+
+  function githubExportItemIsContinuation(ws, item) {
+    const file = item?.file || item || {};
+    const text = normalizeNewlines(file.content || file.rawMarkdown || file.body || file.text || '');
+    if (githubExportIsContinuationMarkdown(text)) return true;
+    const node = typeof githubExportFileNode === 'function' ? githubExportFileNode(ws, file) : null;
+    return githubExportIsContinuationMarkdown(node?.rawMarkdown || node?.body || node?.content || '');
+  }
+
+  function githubFirstIssueCandidate(candidates = [], preferComment = false) {
+    const list = Array.isArray(candidates) ? candidates : [];
+    if (preferComment) {
+      const comment = list.find((item) => item?.permalinkUrl && githubIssueCommentIdFromUrl(item.permalinkUrl));
+      if (comment) return comment;
+    }
+    return list.find((item) => item?.url) || list[0] || null;
+  }
+
+  function githubKnownPublicationUrlForDraft(state, draft, candidates = []) {
+    const normalizedTarget = normalizeGitHubUrlForComparison(state?.targetUrl || draft?.targetUrl || '');
+    const candidate = (candidates || []).find((item) => {
+      const permalink = item?.permalinkUrl || '';
+      if (!permalink) return false;
+      if (!normalizedTarget) return true;
+      return normalizeGitHubUrlForComparison(item?.url || '') === normalizedTarget
+        || normalizeGitHubUrlForComparison(permalink).startsWith(normalizedTarget);
+    }) || (candidates || []).find((item) => item?.permalinkUrl) || null;
+    const url = state?.publishedUrl || candidate?.permalinkUrl || draft?.openUrl || draft?.targetUrl || state?.targetUrl || '';
+    return String(url || '').trim();
+  }
+
+  function githubFirstIssueCommentUrlFromText(text = '') {
+    const match = String(text || '').match(/https:\/\/github\.com\/[^\s)\]<>"']+\/[^\s)\]<>"']+\/issues\/\d+#issuecomment-\d+/i);
+    return match ? match[0] : '';
+  }
+
+  function githubNodeIssueCommentUrl(node = {}) {
+    const fields = [
+      node.recoveredFromUrl, node.sourceOrigin, node.publishedOriginUrl,
+      node.rawUrl, node.browseUrl, node.originUrl, node.parentOriginBrowse,
+      node.file?.recoveredFromUrl, node.file?.sourceOrigin, node.file?.publishedOriginUrl,
+      node.file?.rawUrl, node.file?.browseUrl, node.rawMarkdown, node.body, node.content
+    ];
+    for (const value of fields) {
+      const url = githubFirstIssueCommentUrlFromText(value || '');
+      if (url) return url;
+    }
+    return '';
+  }
+
+  function githubContinuationParentContext(ws, file = {}) {
+    const node = githubExportFileNode(ws, file);
+    const parent = node?.parentNode || null;
+    const raw = normalizeNewlines(file?.content || file?.rawMarkdown || file?.body || node?.rawMarkdown || node?.body || '');
+    const parentUrl = githubNodeIssueCommentUrl(parent) || githubFirstIssueCommentUrlFromText(raw);
+    const parentPath = parent?.path || '';
+    const parentTitle = parent?.title || markdownTitleFromFile(parent?.file || parent || {}) || '';
+    return {
+      node,
+      parent,
+      parentUrl,
+      parentCommentId: githubIssueCommentIdFromUrl(parentUrl),
+      parentPath,
+      parentTitle
+    };
+  }
+
+  function githubContinuationParentBoundaryLines(ws, file = {}) {
+    const ctx = githubContinuationParentContext(ws, file);
+    const lines = [];
+    if (ctx.parentUrl) lines.push(`- Tiinex Parent GitHub Comment: ${ctx.parentUrl}`);
+    if (ctx.parentPath) lines.push(`- Tiinex Parent Artifact Path: ${ctx.parentPath}`);
+    if (ctx.parentTitle) lines.push(`- Tiinex Parent Artifact Title: ${ctx.parentTitle}`);
+    if (ctx.parentCommentId) lines.push(`- Tiinex Parent Comment ID: issuecomment-${ctx.parentCommentId}`);
+    if (lines.length) lines.push('- Parent Binding Meaning: use the Tiinex parent artifact above as continuation parent; the GitHub issue is only the publication container.');
+    return lines.join('\n');
+  }
+
+  function githubExportPublishedBodyMatchesDraft(publishedBody, draftBody) {
+    const published = githubExportNormalizeMarkdownForComparison(publishedBody || '');
+    const draft = githubExportNormalizeMarkdownForComparison(draftBody || '');
+    if (!published || !draft) return false;
+    if (published === draft) return true;
+    const recovered = extractEmbeddedTiinexMarkdownFromGitHubComment(publishedBody || '');
+    const draftRecovered = extractEmbeddedTiinexMarkdownFromGitHubComment(draftBody || '') || draftBody || '';
+    return Boolean(recovered && githubExportNormalizeMarkdownForComparison(recovered) === githubExportNormalizeMarkdownForComparison(draftRecovered));
+  }
+
+  async function fetchGitHubIssueCommentById(repo, commentId, options = {}) {
+    const cleanRepo = String(repo || '').trim();
+    const id = String(commentId || '').trim();
+    if (!/^[-_.A-Za-z0-9]+\/[-_.A-Za-z0-9]+$/.test(cleanRepo) || !/^\d+$/.test(id)) return null;
+    const result = await fetchGitHubJson(`https://api.github.com/repos/${cleanRepo}/issues/comments/${id}`, options);
+    return result?.data || null;
+  }
+
+  async function resolvePublishedGitHubIssueCommentUrl(spec, draft, options = {}) {
+    if (!spec) throw new Error('Expected a GitHub issue URL.');
+    const commentId = githubIssueCommentIdFromAnchor(spec.commentAnchor || '');
+    const body = draft?.body || '';
+    if (commentId) {
+      const comment = await fetchGitHubIssueCommentById(spec.repo, commentId, { hardRefresh: true, authMode: 'none' });
+      if (comment?.html_url && githubExportPublishedBodyMatchesDraft(comment.body || '', body)) return comment.html_url;
+      throw new Error('The known GitHub comment was found, but its body does not match the copied Tiinex draft yet. Update the comment on GitHub, then verify again.');
+    }
+    const thread = await fetchGitHubIssueThread(spec, { commentLimit: options.commentLimit || 100, hardRefresh: true, authMode: 'none' });
+    const match = (Array.isArray(thread.comments) ? thread.comments : []).find((comment) => githubExportPublishedBodyMatchesDraft(comment?.body || '', body));
+    if (match?.html_url) return match.html_url;
+    throw new Error('Tiinex could not find a GitHub issue comment whose body matches the copied draft. Post/update the comment, then verify again.');
+  }
+
+  function githubExportFileContentSignature(file) {
+    const content = githubExportNormalizeMarkdownForComparison(file?.content || file?.rawMarkdown || file?.body || '');
+    return content ? hashFast(content) : '';
+  }
+
+  function githubExportFileIsLocal(file) {
+    const sourceId = fileSourceId(file);
+    return sourceId === 'local' || file?.sourceKind === 'local' || file?.source === 'local' || file?.isGenerated;
+  }
+
+  function pruneLocalDuplicatesNowOwnedBySource(ws) {
+    if (!ws?.files) return 0;
+    const sourceSignatures = new Set();
+    for (const file of ws.files.values()) {
+      if (!file || githubExportFileIsLocal(file)) continue;
+      const sig = githubExportFileContentSignature(file);
+      if (sig) sourceSignatures.add(sig);
+    }
+    if (!sourceSignatures.size) return 0;
+
+    const removedPaths = new Set();
+    let removed = 0;
+    for (const [key, file] of Array.from(ws.files.entries())) {
+      if (!githubExportFileIsLocal(file)) continue;
+      const sig = githubExportFileContentSignature(file);
+      if (!sig || !sourceSignatures.has(sig)) continue;
+      ws.files.delete(key);
+      removed += 1;
+      if (file.path) removedPaths.add(canonicalWorkspacePath(file.path));
+      if (file.storageKey && ws.files.has(file.storageKey)) {
+        ws.files.delete(file.storageKey);
+        removed += 1;
+      }
+    }
+
+    if (removedPaths.size && Array.isArray(ws.generated)) {
+      ws.generated = ws.generated.filter((item) => !removedPaths.has(canonicalWorkspacePath(item.path || item.storageKey || '')));
+    }
+    if (removed && typeof pruneOrphanLineageAssets === 'function') pruneOrphanLineageAssets(ws);
+    return removed;
+  }
+
+  function recoveredArtifactSourcePaths(ws) {
+    const paths = new Set();
+    for (const file of ws?.files?.values?.() || []) {
+      if (!file?.recoveredFromPath) continue;
+      paths.add(canonicalWorkspacePath(file.recoveredFromPath));
+    }
+    return paths;
+  }
+
+  function isMeaningfulArtifactForResolvedFinding(node) {
+    if (!node) return false;
+    const schema = schemaKey(node.currentSchemaText || node.currentSchema);
+    if (!schema || schema === 'discovery.finding') return false;
+    return true;
+  }
+
+  function nodeReferencesFindingAsBasis(candidate, finding) {
+    if (!candidate || !finding) return false;
+    const findingPath = canonicalWorkspacePath(finding.path || '');
+    if (!findingPath) return false;
+    const text = normalizeNewlines(candidate.rawMarkdown || candidate.body || candidate.content || '');
+    if (!text) return false;
+    if (text.includes(findingPath)) return true;
+    const findingTitle = String(finding.title || '').trim();
+    if (findingTitle && /##\s+Discovery Finding Basis/i.test(text) && text.includes(findingTitle)) return true;
+    return false;
+  }
+
+  function resolvedArtifactsForFinding(ws, finding) {
+    if (!ws || !finding) return [];
+    const findingPath = canonicalWorkspacePath(finding.path || '');
+    const seen = new Set();
+    const out = [];
+    const add = (node) => {
+      if (!isMeaningfulArtifactForResolvedFinding(node)) return;
+      const key = node.id || node.path;
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(node);
+    };
+    for (const descendant of findingDescendantNodes(finding)) add(descendant);
+    for (const node of ws.nodes || []) {
+      if (node === finding || node.id === finding.id) continue;
+      if (node.parentPath && findingPath && canonicalWorkspacePath(node.parentPath) === findingPath) add(node);
+      if (node.recoveredFromPath && findingPath && canonicalWorkspacePath(node.recoveredFromPath) === findingPath) add(node);
+      if (nodeReferencesFindingAsBasis(node, finding)) add(node);
+    }
+    return out.sort(compareNodesDesc);
+  }
+
+  function nodeHasFindingAncestor(node) {
+    let cursor = node?.parentNode || null;
+    let depth = 0;
+    while (cursor && depth < 24) {
+      if (isDiscoveryFindingNode(cursor)) return true;
+      cursor = cursor.parentNode || null;
+      depth += 1;
+    }
+    return false;
+  }
+
+  function findingDescendantNodes(finding) {
+    const out = [];
+    const stack = Array.isArray(finding?.children) ? finding.children.slice() : [];
+    let guard = 0;
+    while (stack.length && guard < 500) {
+      const node = stack.shift();
+      guard += 1;
+      if (!node || out.includes(node)) continue;
+      out.push(node);
+      if (Array.isArray(node.children) && node.children.length) stack.push(...node.children);
+    }
+    return out;
+  }
+
+  function discoveryFindingEmbedsTypedTiinexArtifact(node) {
+    if (!node || !isDiscoveryFindingNode(node)) return false;
+    const raw = normalizeNewlines(node.rawMarkdown || node.body || node.content || '');
+    if (!raw) return false;
+    const isGithubSocialFinding = /Adapter:\s*github-(?:issue|discussion)/i.test(raw)
+      || /Source:\s*GitHub\s+(?:issue|discussion)/i.test(raw)
+      || /github issue(?: comment)?/i.test(raw)
+      || /\.topics\/github-(?:issues|discussions)\//i.test(String(node.path || ''));
+    if (!isGithubSocialFinding) return false;
+    const embedded = typeof extractEmbeddedTiinexMarkdownFromGitHubComment === 'function'
+      ? extractEmbeddedTiinexMarkdownFromGitHubComment(raw)
+      : '';
+    if (embedded) {
+      const schema = schemaKey(schemaIdFromText(embedded, '') || '');
+      if (schema && schema !== 'discovery.finding') return true;
+    }
+    // Some imported GitHub comment findings preserve the original comment body
+    // inside an Evidence Material fence. Treat that wrapper as resolved if the
+    // preserved material contains a typed Tiinex envelope, even when the wrapper
+    // itself is still discovery.finding.
+    const evidenceStart = raw.search(/^##\s+Evidence Material\s*$/im);
+    if (evidenceStart >= 0) {
+      const evidence = raw.slice(evidenceStart);
+      const fenceRe = /```(?:md|markdown)?\s*\n([\s\S]*?)\n```/gi;
+      let match;
+      while ((match = fenceRe.exec(evidence))) {
+        const candidate = normalizeNewlines(match[1] || '').trim();
+        if (!candidate) continue;
+        const directSchema = schemaKey(schemaIdFromText(candidate, '') || '');
+        if (directSchema && directSchema !== 'discovery.finding') return true;
+        const nested = typeof extractEmbeddedTiinexMarkdownFromGitHubComment === 'function'
+          ? extractEmbeddedTiinexMarkdownFromGitHubComment(candidate)
+          : '';
+        const nestedSchema = schemaKey(schemaIdFromText(nested, '') || '');
+        if (nestedSchema && nestedSchema !== 'discovery.finding') return true;
+      }
+    }
+    return false;
+  }
+
+  function findingHasMeaningfulResolvedArtifact(ws, finding) {
+    if (!ws || !finding) return false;
+    if (discoveryFindingEmbedsTypedTiinexArtifact(finding)) return true;
+    const findingPath = canonicalWorkspacePath(finding.path || '');
+    const sourcePaths = recoveredArtifactSourcePaths(ws);
+    if (findingPath && sourcePaths.has(findingPath)) return true;
+
+    // Parent/child continuity is the strongest signal. A finding that has a typed
+    // descendant has been promoted into working lineage and should stop acting as
+    // the primary default-feed card.
+    for (const descendant of findingDescendantNodes(finding)) {
+      if (isMeaningfulArtifactForResolvedFinding(descendant)) return true;
+    }
+
+    for (const node of ws.nodes || []) {
+      if (!isMeaningfulArtifactForResolvedFinding(node)) continue;
+      if (node === finding || node.id === finding.id) continue;
+      if (node.parentNode && node.parentNode.id === finding.id) return true;
+      if (nodeHasFindingAncestor(node) && findingDescendantNodes(finding).includes(node)) return true;
+      if (node.parentPath && findingPath && canonicalWorkspacePath(node.parentPath) === findingPath) return true;
+      if (node.recoveredFromPath && findingPath && canonicalWorkspacePath(node.recoveredFromPath) === findingPath) return true;
+      if (nodeReferencesFindingAsBasis(node, finding)) return true;
+    }
+    return false;
+  }
+
+  function isResolvedFindingWrapperNode(ws, node) {
+    if (!node) return false;
+    if (!isDiscoveryFindingNode(node)) return false;
+    if (node.resolvedEnvelope || node.file?.resolvedEnvelope || node.file?.resolvedFindingEnvelope || node.file?.sourceEnvelopeResolved) return true;
+    if (!ws) return false;
+    return findingHasMeaningfulResolvedArtifact(ws, node);
+  }
+
+  function isGitHubTargetOnlyFindingNode(node) {
+    if (!node || !isDiscoveryFindingNode(node)) return false;
+    const raw = normalizeNewlines(node.rawMarkdown || node.body || '');
+    if (!raw) return false;
+    const isGithubSocial = /Adapter:\s*github-(?:issue|discussion)/i.test(raw)
+      || /Source:\s*GitHub issue discussion/i.test(raw)
+      || /external-social-origin-target|external-discussion-target/i.test(raw);
+    if (!isGithubSocial) return false;
+    return /Discovery State:\s*(?:target-only|unavailable)/i.test(raw)
+      || /Live Material:\s*not imported/i.test(raw)
+      || /Finding Status:\s*(?:target-known|unavailable)/i.test(raw);
+  }
+
+
+  function isWorkingLeafNode(ws, node) {
+    if (!ws || !node) return false;
+    if (isResolvedFindingWrapperNode(ws, node)) return false;
+    // A configured GitHub issue target that could not be read is a source gap,
+    // not a working artifact. Keep it inspectable through explicit discovery
+    // filters/status, but do not let it masquerade as the latest leaf.
+    if (isGitHubTargetOnlyFindingNode(node)) return false;
+    if ((node.children || []).some((child) => child && !isResolvedFindingWrapperNode(ws, child) && !isGitHubTargetOnlyFindingNode(child))) return false;
+    // A finding with only finding-shell descendants but a typed recovered artifact
+    // is still a resolved source shell, not the latest working leaf.
+    if (isDiscoveryFindingNode(node) && findingHasMeaningfulResolvedArtifact(ws, node)) return false;
+    return true;
+  }
+
+  function workingLeafNodes(ws) {
+    if (!ws) return [];
+    return (ws.nodes || []).filter((node) => isWorkingLeafNode(ws, node)).sort(compareNodesDesc);
+  }
+
+  function refreshWorkspaceAfterGithubExport(ws, reason = 'github-export-complete') {
+    if (!ws) return { removed: 0 };
+    const removed = pruneLocalDuplicatesNowOwnedBySource(ws);
+    computeWorkspaceIndex(ws);
+    if (ws.selectedNodeId && typeof clearLineageSelectionToDiscovery === 'function') {
+      clearLineageSelectionToDiscovery(ws, reason, 'replace');
+    } else if (typeof setRouteState === 'function') {
+      setRouteState('replace');
+    }
+    if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
+    return { removed };
+  }
+
+  function githubIssueRefreshSourcesForWorkspace(ws) {
+    ensureWorkspaceSources(ws);
+    return Array.from(ws?.sources?.values?.() || []).filter((source) => {
+      if (!source || source.kind !== 'github' || !source.repo) return false;
+      const surfaces = normalizeGithubSurfaceConfig(source.enabledSurfaces || {});
+      return Boolean(surfaces.issues);
+    });
+  }
+
+  function scheduleGithubDiscoveryRefreshAfterExport(ws) {
+    if (!ws?.id || ws.githubExportRefreshInFlight) return false;
+    const sources = githubIssueRefreshSourcesForWorkspace(ws);
+    if (!sources.length) return false;
+    ws.githubExportRefreshInFlight = true;
+    window.setTimeout(async () => {
+      let loaded = 0;
+      try {
+        for (const source of sources) {
+          loaded += await discoverGitHubIssuesIntoWorkspace(ws, source, activeGitHubIssueUrls(source, source.repo || '', ws), {
+            refreshExisting: true,
+            hardRefresh: false,
+            preferCache: true,
+            cacheMaxAgeMs: 10 * 60 * 1000,
+            commentLimit: 100,
+            renderStatus: false
+          });
+        }
+        const removed = pruneLocalDuplicatesNowOwnedBySource(ws);
+        computeWorkspaceIndex(ws);
+        if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
+        render();
+        if (loaded || removed) toast(`Discovery refreshed after export${loaded ? ` · ${loaded} GitHub target${loaded === 1 ? '' : 's'}` : ''}${removed ? ` · ${removed} local duplicate${removed === 1 ? '' : 's'} removed` : ''}.`, 'ok');
+      } catch (error) {
+        ws.logs?.push?.(`Post-export GitHub discovery refresh failed: ${error.message}`);
+        toast(`GitHub export finished, but discovery refresh needs retry: ${error.message}`, 'warn');
+      } finally {
+        ws.githubExportRefreshInFlight = false;
+      }
+    }, 0);
+    return true;
+  }
+
+  function githubExportPublicationSnapshots(modal, ws) {
+    if (!modal || !ws) return [];
+    const plan = buildExportPlan(ws, modal);
+    const surface = githubOutboundSurface(modal);
+    const items = githubExportItemsForModal(modal, plan);
+    const snapshots = [];
+    for (const item of items) {
+      const state = githubExportCheckState(modal, item.key);
+      const draft = githubSingleArtifactDraft(ws, modal, item, surface);
+      if (!githubExportStateReady(state, draft, surface)) continue;
+      const url = state.publishedUrl || '';
+      if (!url || surface !== 'issue') continue;
+      const spec = parseGitHubIssueSpec(url);
+      if (!spec) continue;
+      const publishedUrl = githubPublishedResultUrlFromSpec(spec, url);
+      if (item.file) {
+        item.file.sourceOrigin = item.file.sourceOrigin || publishedUrl || spec.issueUrl;
+        item.file.publishedOriginUrl = publishedUrl || spec.issueUrl;
+        item.file.publishedOriginKind = draft.targetMode === 'create-new' ? 'github-issue' : (draft.targetMode === 'create-comment' ? 'github-issue-comment-continuation' : 'github-issue-comment-update');
+        item.file.publishedOriginObservedAt = new Date().toISOString();
+      }
+      snapshots.push({
+        spec,
+        itemKey: item.key,
+        path: item.file?.path || item.file?.name || '',
+        title: draft.title || markdownTitleFromFile(item.file),
+        body: draft.body || '',
+        targetMode: draft.targetMode || 'create-new',
+        targetUrl: publishedUrl || spec.issueUrl,
+        repo: draft.repo || spec.repo,
+        createdAt: new Date().toISOString(),
+        selectedLocal: Boolean(item.file && githubExportFileIsLocal(item.file)),
+        localFileKey: item.key,
+        localStorageKey: item.file?.storageKey || '',
+        localPath: item.file?.path || item.file?.name || '',
+        localSourceId: item.file?.sourceId || 'local',
+        localSourceKind: item.file?.sourceKind || '',
+        localIsGenerated: Boolean(item.file?.isGenerated),
+        localContentSignature: githubExportFileContentSignature(item.file || {})
+      });
+    }
+    return snapshots;
+  }
+
+  function mergeGithubExportSnapshotIntoCachedThread(snapshot) {
+    const spec = snapshot?.spec;
+    if (!spec || !snapshot?.body) return null;
+    const existing = cachedGitHubIssueThread(spec, { allowStale: true, maxAgeMs: 0 });
+    const now = snapshot.createdAt || new Date().toISOString();
+    let issue = existing?.issue || {
+      id: spec.issueNumber,
+      number: spec.issueNumber,
+      title: snapshot.title || `GitHub issue #${spec.issueNumber}`,
+      body: '',
+      html_url: spec.issueUrl,
+      state: 'open',
+      user: { login: '' },
+      created_at: now,
+      updated_at: now
+    };
+    let comments = Array.isArray(existing?.comments) ? existing.comments.slice() : [];
+    if (snapshot.targetMode === 'create-new' && !spec.commentAnchor) {
+      issue = Object.assign({}, issue, {
+        id: issue.id || spec.issueNumber,
+        number: spec.issueNumber,
+        title: snapshot.title || issue.title || `GitHub issue #${spec.issueNumber}`,
+        body: snapshot.body,
+        html_url: spec.issueUrl,
+        state: issue.state || 'open',
+        updated_at: now,
+        created_at: issue.created_at || now
+      });
+    } else {
+      const commentId = spec.commentAnchor ? spec.commentAnchor.replace(/^issuecomment-/i, '') : '';
+      const targetUrl = snapshot.targetUrl || githubPublishedResultUrlFromSpec(spec, snapshot.targetUrl || spec.issueUrl);
+      const existingIndex = commentId ? comments.findIndex((comment) => String(comment?.id || '') === String(commentId)) : -1;
+      if (existingIndex >= 0) {
+        comments[existingIndex] = Object.assign({}, comments[existingIndex], {
+          id: comments[existingIndex].id || commentId,
+          body: snapshot.body,
+          html_url: targetUrl,
+          updated_at: now
+        });
+      } else if (!comments.some((comment) => normalizeNewlines(comment?.body || '').trim() === normalizeNewlines(snapshot.body || '').trim())) {
+        comments.push({
+          id: commentId || `tiinex-export-${Date.now()}-${comments.length + 1}`,
+          body: snapshot.body,
+          html_url: targetUrl,
+          user: { login: '' },
+          created_at: now,
+          updated_at: now
+        });
+      }
+    }
+    return { issue, comments, truncated: Boolean(existing?.truncated), adapterMode: 'github-export-local-cache' };
+  }
+
+  function githubExportSnapshotLocalKeys(snapshot = {}) {
+    return new Set([
+      snapshot.localStorageKey,
+      snapshot.localPath,
+      snapshot.localFileKey,
+      snapshot.localSourceId && snapshot.localPath ? sourceFileKey(snapshot.localSourceId, snapshot.localPath, Boolean(snapshot.localIsGenerated)) : '',
+      snapshot.localSourceId && snapshot.localPath ? sourceFileKey(snapshot.localSourceId, snapshot.localPath, false) : '',
+      snapshot.localSourceId && snapshot.localPath ? sourceFileKey(snapshot.localSourceId, snapshot.localPath, true) : ''
+    ].map((item) => String(item || '').trim()).filter(Boolean));
+  }
+
+  function githubExportLocalFileMatchesPublishedSnapshot(file, key, snapshot = {}) {
+    if (!file || !snapshot?.selectedLocal) return false;
+    if (!githubExportFileIsLocal(file)) return false;
+    const keys = githubExportSnapshotLocalKeys(snapshot);
+    const fileKeys = new Set([
+      key,
+      file.storageKey,
+      file.path,
+      file.sourceId && file.path ? sourceFileKey(file.sourceId, file.path, Boolean(file.isGenerated)) : '',
+      file.sourceId && file.path ? sourceFileKey(file.sourceId, file.path, false) : '',
+      file.sourceId && file.path ? sourceFileKey(file.sourceId, file.path, true) : ''
+    ].map((item) => String(item || '').trim()).filter(Boolean));
+    let identityMatch = false;
+    for (const value of fileKeys) {
+      if (keys.has(value)) {
+        identityMatch = true;
+        break;
+      }
+    }
+    if (!identityMatch) return false;
+    const expectedSig = String(snapshot.localContentSignature || '').trim();
+    const actualSig = githubExportFileContentSignature(file);
+    if (expectedSig && actualSig && expectedSig !== actualSig) return false;
+    return true;
+  }
+
+  function removePublishedLocalDraftsFromPersistedSnapshot(ws, snapshots = []) {
+    const id = app.localState?.currentId || '';
+    if (!id || !snapshots.length) return { touched: false, removed: 0 };
+    const snapshotState = localStateStoredSnapshot(id);
+    if (!snapshotState || !Array.isArray(snapshotState.workspaces)) return { touched: false, removed: 0 };
+    let removed = 0;
+    const nextWorkspaces = snapshotState.workspaces.map((saved) => {
+      if (!workspaceMatchesLocalStateSnapshot(ws, saved)) return saved;
+      const keepFile = (file, key = '') => {
+        const remove = snapshots.some((snap) => githubExportLocalFileMatchesPublishedSnapshot(file, key || file?.storageKey || file?.path || '', snap));
+        if (remove) removed += 1;
+        return !remove;
+      };
+      const files = Array.isArray(saved.files) ? saved.files.filter((file) => keepFile(file)) : [];
+      const assets = Array.isArray(saved.assets) ? saved.assets.filter((asset) => keepFile(Object.assign({}, asset, { sourceId: asset?.sourceId || 'local' }))) : [];
+      return Object.assign({}, saved, { files, assets });
+    }).filter((saved) => (saved.files?.length || saved.assets?.length));
+    if (!removed) return { touched: false, removed: 0 };
+    const nextSnapshot = Object.assign({}, snapshotState, {
+      updatedAt: new Date().toISOString(),
+      workspaces: nextWorkspaces
+    });
+    const key = localStateDataKey(id);
+    if (nextWorkspaces.length) {
+      const json = storageWriteJson(localStorage, key, nextSnapshot);
+      upsertLocalStateRegistry({
+        id,
+        displayName: app.localState.currentDisplayName || nextSnapshot.displayName || 'Local workspace',
+        workspaceCount: nextWorkspaces.length,
+        bytes: localStateJsonSize(json),
+        updatedAt: nextSnapshot.updatedAt
+      });
+    } else {
+      localStorage.removeItem(key);
+      removeLocalStateRegistryEntry(id);
+      app.localState.currentId = '';
+      app.localState.currentDisplayName = '';
+      rememberCurrentLocalStateId('');
+    }
+    return { touched: true, removed };
+  }
+
+  function removePublishedLocalDraftsFromRuntime(ws, snapshots = []) {
+    if (!ws?.files || !snapshots.length) return 0;
+    let removed = 0;
+    const removedPaths = new Set();
+    for (const [key, file] of Array.from(ws.files.entries())) {
+      const match = snapshots.find((snap) => githubExportLocalFileMatchesPublishedSnapshot(file, key, snap));
+      if (!match) continue;
+      ws.files.delete(key);
+      removed += 1;
+      if (file.path) removedPaths.add(canonicalWorkspacePath(file.path));
+      try { removed += removeWorkspaceAssetMatches(ws, Object.assign({}, file, { sourceId: file.sourceId || 'local' })); } catch (_) {}
+    }
+    if (removedPaths.size && Array.isArray(ws.generated)) {
+      ws.generated = ws.generated.filter((item) => !removedPaths.has(canonicalWorkspacePath(item.path || item.storageKey || '')));
+    }
+    if (removed && typeof pruneOrphanLineageAssets === 'function') pruneOrphanLineageAssets(ws);
+    return removed;
+  }
+
+  async function bindGithubExportPublicationAnchorsNow(modal, ws) {
+    const snapshots = githubExportPublicationSnapshots(modal, ws);
+    if (!ws?.id || !snapshots.length) return { attempted: false, loaded: 0, removed: 0, persistedRemoved: 0 };
+    let loaded = 0;
+    for (const snapshot of snapshots) {
+      const thread = mergeGithubExportSnapshotIntoCachedThread(snapshot);
+      if (!thread) continue;
+      cacheGitHubIssueThread(snapshot.spec, thread, { source: 'github-export-publication-anchor', freshness: 'user-confirmed-publication-url' });
+      await loadGitHubIssueThreadSnapshotIntoWorkspace(ws, snapshot.spec, Object.assign({}, thread, { adapterMode: 'github-export-local-cache' }), {
+        commentLimit: 100,
+        toast: false,
+        includeBody: true,
+        persistConfiguredTarget: true
+      });
+      loaded += 1;
+    }
+    const removedExact = removePublishedLocalDraftsFromRuntime(ws, snapshots);
+    const removedDuplicate = pruneLocalDuplicatesNowOwnedBySource(ws);
+    const persisted = removePublishedLocalDraftsFromPersistedSnapshot(ws, snapshots);
+    computeWorkspaceIndex(ws);
+    if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
+    return { attempted: true, loaded, removed: removedExact + removedDuplicate, persistedRemoved: persisted.removed || 0 };
+  }
+
+  async function finalizeGithubExportRoutine(modal, reason = 'complete') {
+    const ws = getWorkspace(modal?.wsId || '');
+    let binding = { attempted: false, loaded: 0, removed: 0, persistedRemoved: 0 };
+    try {
+      binding = await bindGithubExportPublicationAnchorsNow(modal, ws);
+    } catch (error) {
+      ws?.logs?.push?.(`Could not bind GitHub publication URL locally: ${error.message}`);
+      toast(`Published URL was verified, but local source binding needs retry: ${error.message}`, 'warn');
+    }
+    const result = refreshWorkspaceAfterGithubExport(ws, reason);
+    const refreshScheduled = scheduleGithubDiscoveryRefreshAfterExport(ws);
+    app.modal = null;
+    const removed = Number(binding.removed || 0) + Number(result.removed || 0);
+    toast(removed
+      ? `GitHub export complete. Removed ${removed} published local draft${removed === 1 ? '' : 's'} and refreshed Discovery.`
+      : `GitHub export complete. Discovery refreshed${binding.loaded ? '; publication URL bound locally' : refreshScheduled ? '; GitHub source refresh queued' : ''}.`, 'ok');
+    render();
+  }
+
+  function isGenericContinuityTitle(value) {
+    const title = stripMarkdownInline(String(value || '')).replace(/\s+/g, ' ').trim();
+    return !title || /^(tiinex\s*:\s*)?continuity context$/i.test(title) || /^tiinex artifact$/i.test(title);
+  }
+
+  function artifactBodyMarkdownFromText(text) {
+    const raw = normalizeNewlines(text || '');
+    const bodyStart = raw.indexOf('\n---') >= 0 ? raw.indexOf('\n---') + 4 : 0;
+    const integrityIndex = raw.search(/^#\s+Continuity Integrity\s*$/m);
+    return stripTrailingBodySeparator(raw.slice(bodyStart, integrityIndex >= 0 ? integrityIndex : raw.length)).trim();
+  }
+
+  function artifactHumanTitleFromMarkdown(text) {
+    const raw = normalizeNewlines(text || '');
+    const body = artifactBodyMarkdownFromText(raw);
+    const bodyH1 = body.match(/^#\s+(.+)$/m)?.[1]?.trim() || '';
+    if (!isGenericContinuityTitle(bodyH1)) return stripMarkdownInline(bodyH1);
+    const topH1 = raw.match(/^#\s+(.+)$/m)?.[1]?.trim() || '';
+    if (!isGenericContinuityTitle(topH1)) return stripMarkdownInline(topH1);
+    return '';
+  }
+
+  function markdownTitleFromFile(file) {
+    const explicit = [file?.displayTitle, file?.title, file?.bodyTitle, file?.topHeading]
+      .map((value) => stripMarkdownInline(String(value || '')).replace(/\s+/g, ' ').trim())
+      .find((value) => value && !isGenericContinuityTitle(value));
+    if (explicit) return explicit;
+    const text = normalizeNewlines(file?.content || file?.rawMarkdown || file?.body || '');
+    const human = artifactHumanTitleFromMarkdown(text);
+    if (human) return human;
+    return displayFileName(file?.path || file?.name || '') || 'Tiinex artifact';
+  }
+
+  function githubIssueTitleSuffixForFile(file) {
+    const schema = shortSchema(file?.currentSchemaText || file?.currentSchema || tiinexSchemaIdForPath(file?.path || '') || '');
+    const clean = String(schema || '').replace(/^tiinex\./i, '').replace(/\.v\d+(?:\.\d+)?$/i, '').trim();
+    if (!clean || /^unknown$/i.test(clean)) return '';
+    return clean.replace(/[._-]+/g, ' ');
+  }
+
+  function githubSingleArtifactTitle(ws, file, surface = 'issue') {
+    const title = markdownTitleFromFile(file);
+    // GitHub already exposes labels/type/project fields around an issue. Keep the
+    // native title as the user's title rather than appending Tiinex schema/path
+    // hints such as "· topic" or, worse, filename-derived fallbacks.
+    return stripMarkdownInline(title).replace(/\s+/g, ' ').trim().slice(0, 240) || 'Tiinex artifact';
+  }
+
+  function githubExportFileNode(ws, file) {
+    if (!ws || !file) return null;
+    const path = canonicalWorkspacePath(file.path || file.name || '');
+    const raw = file.rawUrl || '';
+    const browse = file.browseUrl || '';
+    return Array.from(ws.nodeById?.values?.() || []).find((node) =>
+      (path && canonicalWorkspacePath(node.path || '') === path)
+      || (raw && node.rawUrl === raw)
+      || (browse && node.browseUrl === browse)
+    ) || null;
+  }
+
+  function githubUrlsFromText(text, surface = 'issue') {
+    const out = [];
+    const body = String(text || '');
+    const pattern = surface === 'discussion'
+      ? /https:\/\/github\.com\/[^\s)\]<>"']+\/[^\s)\]<>"']+\/discussions\/\d+(?:#[^\s)\]<>"']+)?/gi
+      : /https:\/\/github\.com\/[^\s)\]<>"']+\/[^\s)\]<>"']+\/issues\/\d+(?:#[^\s)\]<>"']+)?/gi;
+    for (const match of body.matchAll(pattern)) out.push(match[0]);
+    return out;
+  }
+
+  function addGithubTargetCandidate(list, url, reason, surface = 'issue') {
+    const spec = surface === 'discussion' ? parseGitHubDiscussionSpec(url) : parseGitHubIssueSpec(url);
+    if (!spec) return;
+    const key = spec.targetUrl || spec.issueUrl || spec.discussionUrl;
+    if (!key) return;
+    const existing = list.find((item) => item.url === key);
+    const permalink = String(url || '').includes('#') ? String(url || '') : '';
+    if (existing) {
+      if (permalink && !existing.permalinkUrl) existing.permalinkUrl = permalink;
+      return;
+    }
+    const anchorLabel = spec.commentAnchor ? ' comment permalink' : '';
+    list.push({
+      url: key,
+      permalinkUrl: permalink,
+      repo: spec.repo,
+      number: spec.number,
+      label: `${spec.targetLabel || (surface === 'discussion' ? `GitHub Discussion #${spec.number}` : `GitHub Issue #${spec.number}`)}${anchorLabel}`,
+      reason: reason || 'known target',
+      spec
+    });
+  }
+
+  function githubExportTargetCandidates(ws, item, surface = 'issue') {
+    const file = item?.file || item;
+    const node = githubExportFileNode(ws, file);
+    const candidates = [];
+    const scan = (value, reason) => {
+      if (!value) return;
+      const direct = surface === 'discussion' ? parseGitHubDiscussionSpec(value) : parseGitHubIssueSpec(value);
+      if (direct) addGithubTargetCandidate(candidates, value, reason, surface);
+      githubUrlsFromText(value, surface).forEach((url) => addGithubTargetCandidate(candidates, url, reason, surface));
+    };
+    scan(file?.browseUrl, 'artifact source URL');
+    scan(file?.rawUrl, 'artifact raw URL');
+    scan(file?.sourceUrl, 'artifact source URL');
+    scan(file?.sourceOrigin, 'artifact source origin');
+    scan(file?.recoveredFromUrl, 'recovered artifact GitHub origin');
+    scan(file?.content || file?.rawMarkdown || file?.body || '', 'artifact markdown');
+    let cursor = node;
+    let depth = 0;
+    while (cursor && depth < 8) {
+      scan(cursor.browseUrl, depth ? 'parent lineage source' : 'loaded node source');
+      scan(cursor.rawUrl, depth ? 'parent lineage raw source' : 'loaded node raw source');
+      scan(cursor.sourceOrigin, depth ? 'parent source origin' : 'loaded node source origin');
+      scan(cursor.recoveredFromUrl, depth ? 'parent recovered GitHub origin' : 'loaded recovered GitHub origin');
+      scan(cursor.parentOriginBrowse, 'parent origin');
+      scan(cursor.originUrl, 'origin');
+      scan(cursor.rawMarkdown || cursor.body || '', depth ? 'parent markdown' : 'loaded node markdown');
+      cursor = cursor.parentNode || null;
+      depth += 1;
+    }
+    return candidates;
+  }
+
+  function githubDefaultTargetMode(modal, item, surface, candidates = null) {
+    const ws = getWorkspace(modal?.wsId || '');
+    const known = candidates || githubExportTargetCandidates(ws, item, surface);
+    if (surface === 'issue' && githubExportItemIsContinuation(ws, item) && (known || []).length) return 'create-comment';
+    if ((known || []).length) return 'reuse-known';
+    return 'create-new';
+  }
+
+  function githubExportTargetState(modal, item) {
+    const state = githubExportCheckState(modal, item?.key || githubExportItemKey(item?.file || item, item?.index || 0));
+    state.targetMode = state.targetMode || '';
+    state.targetUrl = state.targetUrl || '';
+    state.resolvedTitle = state.resolvedTitle || '';
+    state.resolvedState = state.resolvedState || '';
+    state.verifiedAt = state.verifiedAt || '';
+    state.error = state.error || '';
+    state.verifyAttempted = Boolean(state.verifyAttempted);
+    return state;
+  }
+
+  function githubExportEffectiveTargetMode(modal, item, surface, candidates = null) {
+    const state = githubExportTargetState(modal, item);
+    return state.targetMode || githubDefaultTargetMode(modal, item, surface, candidates);
+  }
+
+  function githubTargetUrlForMode(state, mode, candidates) {
+    if (mode === 'reuse-known') return state.targetUrl || candidates?.[0]?.url || '';
+    if (mode === 'create-comment') return state.targetUrl || githubFirstIssueCandidate(candidates, true)?.url || '';
+    if (mode === 'paste-existing') return state.targetUrl || '';
+    return '';
+  }
+
+  function githubResultSurfaceLabel(surface, targetMode) {
+    if (surface === 'discussion') return targetMode === 'create-new' ? 'GitHub discussion' : 'GitHub discussion comment/thread continuation';
+    if (targetMode === 'create-comment') return 'GitHub issue comment continuation';
+    return targetMode === 'create-new' ? 'GitHub issue' : 'GitHub issue comment';
+  }
+
+  function githubPresentationExcerpt(value, limit = 1200) {
+    const text = stripMarkdownInline(String(value || ''))
+      .replace(/<!--[^>]*-->/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!text) return '';
+    return text.length <= limit ? text : `${text.slice(0, limit).trimEnd()}…`;
+  }
+
+  function stripGeneratedTransitionBoundaryForGithubPresentation(markdown = '') {
+    let text = normalizeNewlines(markdown || '');
+    const nextPublicSection = '(?=\n##\s+Source Markdown\s*$|\n##\s+Discovery Finding Basis\s*$|\n##\s+Linked Artifacts\s*$|\n#\s+Continuity Integrity\s*$|\n<details\b|\n---\s*$|$)';
+    text = text.replace(new RegExp(`(?:^|\n)##\s+Transition Boundary\s*\n[\s\S]*?${nextPublicSection}`, 'gim'), '\n');
+    text = text.replace(new RegExp(`(?:^|\n)##\s+Tiinex Transition Boundary\s*\n[\s\S]*?${nextPublicSection}`, 'gim'), '\n');
+    return text.replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+
+  function githubArtifactBodyDelta(file, limit = 1600) {
+    const raw = normalizeNewlines(file?.content || file?.rawMarkdown || file?.body || '');
+    const body = stripGeneratedTransitionBoundaryForGithubPresentation(artifactBodyMarkdownFromText(raw))
+      .replace(/^#\s+.+\n?/, '')
+      .replace(/^##\s+Next Artifacts\s*\n\s*-\s*$/im, '')
+      .trim();
+    if (!body) return githubPresentationExcerpt(file?.summary || file?.description || '', limit);
+    if (body.length <= limit) return body;
+    return `${body.slice(0, limit).trimEnd()}\n\n_…content shortened for GitHub preview; open the Tiinex source markdown below for the full artifact._`;
+  }
+
+  function githubPresentationSchemaLabel(schema) {
+    const short = shortSchema(schema || '').replace(/^tiinex\./i, '').replace(/\.v\d+(?:\.\d+)?$/i, '');
+    return short ? short.replace(/[._-]+/g, ' ') : 'artifact';
+  }
+
+  function currentTiinexViewerBaseUrl() {
+    return configuredPublicViewerBaseUrl();
+  }
+
+  function githubTiinexViewerSourceUrl(file, options = {}) {
+    const candidate = options.targetUrl || file?.recoveredFromUrl || file?.browseUrl || file?.rawUrl || file?.sourceOrigin || '';
+    const value = String(candidate || '').trim();
+    if (!value || /^not available$/i.test(value)) return '';
+    if (!/^https?:\/\//i.test(value)) return '';
+    return value;
+  }
+
+  function githubTiinexViewerUrl(ws, file, options = {}) {
+    const publicUrl = githubTiinexViewerSourceUrl(file, options);
+    if (!publicUrl) return '';
+    const adapter = defaultAdapterForShareTarget(publicUrl);
+    return publicViewerShareUrlForTarget(publicUrl, adapter);
+  }
+
+  function githubTiinexBridgeLine(ws, file, options = {}) {
+    const viewerUrl = githubTiinexViewerUrl(ws, file, options);
+    if (viewerUrl) return `**Open in Tiinex:** [view artifact](${viewerUrl})`;
+    return `**Open in Tiinex:** publish this GitHub item, then paste its URL back into Tiinex to bind the source.`;
+  }
+
+  function githubSingleArtifactBody(ws, modal, file, surface = 'issue', options = {}) {
+    const path = file?.path || file?.name || 'workspace artifact';
+    const title = markdownTitleFromFile(file);
+    const schema = file?.currentSchemaText || file?.currentSchema || tiinexSchemaIdForPath(path) || 'unknown';
+    const schemaLabel = githubPresentationSchemaLabel(schema);
+    const sourceUrl = file?.browseUrl || file?.rawUrl || '';
+    const targetMode = options.targetMode || 'create-new';
+    const targetUrl = options.targetUrl || '';
+    const resultSurface = options.resultSurface || githubResultSurfaceLabel(surface, targetMode);
+    const workspaceLabel = workspaceDisplayLabel(ws) || ws?.label || 'workspace';
+    const summary = githubPresentationExcerpt(file?.summary || file?.description || '', 420);
+    const delta = githubArtifactBodyDelta(file);
+    const sourceLink = sourceUrl ? ` · [source](${sourceUrl})` : '';
+    const viewerLine = githubTiinexBridgeLine(ws, file, { targetUrl, targetMode, resultSurface });
+    const targetLine = targetUrl ? `
+- Target: ${targetUrl}` : '';
+    const parentBinding = targetMode === 'create-comment' ? githubContinuationParentBoundaryLines(ws, file) : '';
+    const transitionBlock = `- Transition: continue → ${resultSurface}
+- Publication Intent: ${targetMode === 'create-comment' ? 'create-continuation-comment' : (targetMode === 'reuse-known' ? 'update-existing-comment' : targetMode)}
+- Source: ${sourceUrl ? `[${title}](${sourceUrl})` : title}
+${parentBinding ? `${parentBinding}
+` : ''}- Target: ${targetUrl || (targetMode === 'create-new' ? 'new GitHub target after user publish' : (targetMode === 'create-comment' ? 'new GitHub issue comment after user publish' : 'existing GitHub target selected by user'))}
+- Adapter: github-outbound-web-routine
+- Status: draft only until published on GitHub; loaded workspace and source artifact remain unchanged.`;
+    return `# ${title}
+
+${summary ? `${summary}\n\n` : ''}> Tiinex ${schemaLabel} · ${workspaceLabel}${sourceLink}
+> ${viewerLine}
+
+${delta ? `## Content\n\n${delta}\n\n` : ''}---
+
+<details>
+<summary>Tiinex source payload</summary>
+
+<!-- tiinex-artifact-start: presentation above is for GitHub readers; Tiinex importers recover the artifact from the Source Markdown below. -->
+
+## Tiinex Boundary
+
+${transitionBlock}
+
+## Source Markdown
+
+\`\`\`md
+${githubOutboundFileExcerpt(file, 18000)}
+\`\`\`
+
+## Publication Notes
+
+- Review this draft before publishing on GitHub.
+- Publishing on GitHub creates or mutates GitHub material, not the original Tiinex artifact.
+- The link above opens the public Tiinex viewer through a readable hash target when a public source or known GitHub target exists.
+- Paste the resulting GitHub URL back into Tiinex and verify before continuing to the next artifact.${targetLine}
+
+</details>
+`;
+  }
+
+  function githubSingleArtifactDraft(ws, modal, item, surface) {
+    const repo = githubOutboundRepoForWorkspace(ws);
+    const candidates = githubExportTargetCandidates(ws, item, surface);
+    const state = githubExportTargetState(modal, item);
+    const targetMode = githubExportEffectiveTargetMode(modal, item, surface, candidates);
+    const targetUrl = githubTargetUrlForMode(state, targetMode, candidates);
+    const openUrl = githubOpenUrlForMode(state, targetMode, candidates);
+    const resultSurface = githubResultSurfaceLabel(surface, targetMode);
+    const title = githubSingleArtifactTitle(ws, item.file, surface);
+    const body = githubSingleArtifactBody(ws, modal, item.file, surface, { targetMode, targetUrl, resultSurface });
+    let url = '';
+    if (targetMode === 'create-new') url = githubOutboundUrlForRepo(repo, surface === 'discussion' ? 'discussion' : 'issue', { title, body });
+    else url = openUrl || targetUrl || '';
+    return { title, body, repo, url, targetMode, targetUrl, openUrl, candidates, resultSurface };
+  }
+
+  function githubPublishedUrlFieldKey(item) {
+    return `githubPublishedUrl__${slugify(githubExportItemKey(item?.file || item, item?.index || 0)) || 'item'}`;
+  }
+
+  function githubRoutineStepRow(status, icon, title, instruction, controlHtml = '') {
+    const hasControl = Boolean(String(controlHtml || '').trim());
+    return `<div class="github-check-step ${escapeAttr(status || 'pending')} ${hasControl ? 'has-control' : 'no-control'}">
+      <span class="github-check-icon"><i class="fa-solid ${escapeAttr(icon || 'fa-circle')}"></i></span>
+      <div class="github-check-copy"><strong>${escapeHtml(title || '')}</strong><small>${escapeHtml(instruction || '')}</small></div>
+      <div class="github-check-control">${controlHtml || '<span class="github-check-inline-note">No user action needed.</span>'}</div>
+    </div>`;
+  }
+
+  function renderGithubTargetInlineControl(modal, item, draft, surface, state) {
+    const candidates = draft.candidates || [];
+    const mode = draft.targetMode || githubExportEffectiveTargetMode(modal, item, surface, candidates);
+    const targetUrl = githubTargetUrlForMode(state, mode, candidates);
+    const surfaceLabel = surface === 'discussion' ? 'discussion' : 'issue';
+    const ws = getWorkspace(modal?.wsId || '');
+    const isContinuation = surface === 'issue' && githubExportItemIsContinuation(ws, item);
+    const candidateOptions = candidates.slice(0, 8).map((candidate) => `<option value="${escapeAttr(candidate.url)}" ${normalizeGitHubUrlForComparison(candidate.url) === normalizeGitHubUrlForComparison(targetUrl) ? 'selected' : ''}>${escapeHtml(candidate.label)} · ${escapeHtml(candidate.reason)}</option>`).join('');
+    const contextCandidate = githubFirstIssueCandidate(candidates, true);
+    if (isContinuation && mode === 'create-comment') {
+      return `<div class="github-target-inline-control compact continuation-target">
+        <div class="github-verify-result compact-result"><i class="fa-solid fa-code-branch"></i><span>Create a new continuation comment in ${escapeHtml(contextCandidate?.label || targetUrl || 'the parent issue')}.</span></div>
+        <div class="github-check-inline-note">The parent comment is context only; Tiinex will verify the new comment by scanning the issue for the copied payload.</div>
+        ${state.verified ? `<div class="github-verify-result ok compact-result"><i class="fa-solid fa-circle-check"></i><span>${escapeHtml(state.resolvedTitle || surfaceLabel)}${state.resolvedState ? ' · ' + escapeHtml(state.resolvedState) : ''}</span></div>` : state.error ? `<div class="github-verify-result warn compact-result"><i class="fa-solid fa-triangle-exclamation"></i><span>${escapeHtml(state.error)}</span></div>` : ''}
+      </div>`;
+    }
+    const targetInput = mode !== 'create-new'
+      ? `<div class="github-target-inline-url compact-target-line">
+          ${mode === 'reuse-known' && candidates.length ? `<select class="form-control tv-input compact" data-action="github-export-select-known-target" title="Known GitHub targets from this artifact lineage">${candidateOptions}</select>` : ''}
+          ${mode === 'create-comment' ? `<div class="github-verify-result compact-result"><i class="fa-solid fa-code-branch"></i><span>Parent/reference context: ${escapeHtml(contextCandidate?.label || targetUrl || 'same GitHub issue')}</span></div>` : ''}
+          ${mode === 'paste-existing' ? `<input class="form-control tv-input compact" data-field="githubTargetUrl" type="url" value="${escapeAttr(targetUrl)}" placeholder="https://github.com/${escapeAttr(draft.repo || 'owner/repo')}/${surface === 'discussion' ? 'discussions' : 'issues'}/123">` : ''}
+        </div>`
+      : `<span class="github-target-create-note">New ${escapeHtml(surfaceLabel)} target.</span>`;
+    return `<div class="github-target-inline-control compact">
+      <div class="github-target-inline-modes">
+        <button type="button" class="github-target-pill ${mode === 'create-new' ? 'active' : ''}" data-action="github-export-set-target-mode" data-mode="create-new"><i class="fa-solid fa-plus"></i>Create new</button>
+        <button type="button" class="github-target-pill ${mode === 'create-comment' ? 'active' : ''}" data-action="github-export-set-target-mode" data-mode="create-comment" ${candidates.length && surface === 'issue' ? '' : 'disabled'}><i class="fa-solid fa-code-branch"></i>Create comment</button>
+        <button type="button" class="github-target-pill ${mode === 'reuse-known' ? 'active' : ''}" data-action="github-export-set-target-mode" data-mode="reuse-known" ${candidates.length ? '' : 'disabled'}><i class="fa-solid fa-link"></i>Update known</button>
+        <button type="button" class="github-target-pill ${mode === 'paste-existing' ? 'active' : ''}" data-action="github-export-set-target-mode" data-mode="paste-existing"><i class="fa-regular fa-paste"></i>Paste existing</button>
+      </div>
+      ${targetInput}
+      ${state.verified && mode !== 'create-new' ? `<div class="github-verify-result ok compact-result"><i class="fa-solid fa-circle-check"></i><span>${escapeHtml(state.resolvedTitle || surfaceLabel)}${state.resolvedState ? ' · ' + escapeHtml(state.resolvedState) : ''}</span></div>` : state.error && mode !== 'create-new' ? `<div class="github-verify-result warn compact-result"><i class="fa-solid fa-triangle-exclamation"></i><span>${escapeHtml(state.error)}</span></div>` : ''}
+    </div>`;
+  }
+
+  function renderGithubExportChecklist(modal, item, draft, surface, state, total) {
+    githubEnsureKnownTargetAccepted(modal, item, draft, surface, state);
+    const bodyTooLarge = (draft?.body || '').length >= 4200;
+    const targetMode = draft.targetMode || 'create-new';
+    const targetUrl = draft.targetUrl || '';
+    const targetReady = targetMode === 'create-new' || Boolean(targetUrl);
+    const existingTargetReady = targetMode !== 'create-new' && Boolean(targetUrl);
+    const targetDone = targetMode === 'create-new' || existingTargetReady;
+    const surfaceLabel = surface === 'discussion' ? 'discussion' : 'issue';
+    const openLabel = targetMode === 'create-new'
+      ? (bodyTooLarge ? `Open ${surfaceLabel} form` : `Open prefilled form`)
+      : (targetMode === 'create-comment' ? 'Open issue context' : `Open target`);
+    const knownPublicationUrl = githubKnownPublicationUrlForDraft(state, draft, draft.candidates || []);
+    const verifyInstruction = targetMode === 'create-new'
+      ? `Paste the published GitHub ${surfaceLabel} URL after publishing.`
+      : (targetMode === 'create-comment'
+        ? 'Post this as a new GitHub comment. Verify scans the issue comments for the copied body; paste the new comment permalink only if Tiinex cannot infer it.'
+        : (knownPublicationUrl && githubIssueCommentIdFromUrl(knownPublicationUrl)
+          ? 'Verify reads the known GitHub comment and checks that it matches the copied body.'
+          : 'Verify scans the issue comments for the copied body; paste a permalink only if Tiinex cannot infer it.'));
+    const publishedUrl = state.publishedUrl || app.modal?.githubPublishedUrl || '';
+    const verifyInputValue = publishedUrl || (targetMode === 'create-new' || targetMode === 'create-comment' ? '' : knownPublicationUrl);
+    const verifyPlaceholder = targetMode === 'create-new'
+      ? `https://github.com/${escapeAttr(draft.repo || 'owner/repo')}/${surface === 'discussion' ? 'discussions' : 'issues'}/123`
+      : `https://github.com/${escapeAttr(draft.repo || 'owner/repo')}/${surface === 'discussion' ? 'discussions' : 'issues'}/123#issuecomment-456`;
+    const isContinuation = surface === 'issue' && targetMode === 'create-comment' && githubExportItemIsContinuation(getWorkspace(modal?.wsId || ''), item);
+    const showVerifyInput = !isContinuation || Boolean(state.verifyAttempted || state.error);
+    const verifyControl = showVerifyInput
+      ? `<div class="github-verify-control"><input class="form-control tv-input" data-field="githubPublishedUrl" data-github-auto-verify="published" type="url" value="${escapeAttr(verifyInputValue)}" placeholder="${verifyPlaceholder}"><button class="tv-btn primary small" data-action="export-github-verify-current"><i class="fa-solid fa-shield-check"></i>Verify</button></div>`
+      : `<div class="github-verify-control compact"><button class="tv-btn primary small" data-action="export-github-verify-current"><i class="fa-solid fa-shield-check"></i>Verify</button><span class="github-check-inline-note">Scans the issue for the copied continuation. A permalink override appears only if needed.</span></div>`;
+    const resolvedLine = state.verified
+      ? `<div class="github-verify-result ok"><i class="fa-solid fa-circle-check"></i><span>${escapeHtml(state.resolvedTitle || 'GitHub target')} ${state.resolvedState ? '· ' + escapeHtml(state.resolvedState) : ''}${state.verificationMeaning ? ' · ' + escapeHtml(state.verificationMeaning) : ''}</span></div>`
+      : state.error
+        ? `<div class="github-verify-result warn"><i class="fa-solid fa-triangle-exclamation"></i><span>${escapeHtml(state.error)}</span></div>`
+        : '';
+    return `<section class="export-section github-export-routine-card compact-routine-card">
+      <div class="github-routine-head compact">
+        <div>
+          <h3>Artifact ${item.index + 1}/${total}: ${escapeHtml(markdownTitleFromFile(item.file))}</h3>
+          <p class="muted">${escapeHtml(item.file?.path || item.file?.name || '')}</p>
+        </div>
+        <span class="badge-soft ${githubExportStateReady(state, draft, surface) ? 'ok-chip' : 'muted-chip'}">${githubExportStateReady(state, draft, surface) ? 'ready' : 'needs action'}</span>
+      </div>
+      <div class="github-checklist-routine rows compact">
+        ${githubRoutineStepRow(targetDone ? 'done' : (targetReady ? 'ready' : 'pending'), targetDone ? 'fa-circle-check' : 'fa-location-dot', 'Target', targetMode === 'create-new' ? `Create new ${surfaceLabel}.` : (targetMode === 'create-comment' ? 'Create a new continuation comment in the parent issue.' : 'Choose the existing GitHub target to update.'), renderGithubTargetInlineControl(modal, item, draft, surface, state))}
+        ${githubRoutineStepRow(state.copied ? 'done' : 'ready', state.copied ? 'fa-circle-check' : 'fa-copy', 'Copy', 'Prepared markdown.', `<button class="tv-btn primary small" data-action="export-github-copy-current"><i class="fa-regular fa-copy"></i>Copy</button>`)}
+        ${githubRoutineStepRow(state.opened ? 'done' : (targetReady ? 'ready' : 'pending'), state.opened ? 'fa-circle-check' : 'fa-arrow-up-right-from-square', 'Open', targetMode === 'create-new' ? 'Publish in GitHub.' : (targetMode === 'create-comment' ? 'Open the parent issue/comment as context, then post a new comment with the copied body.' : 'Open the exact issue/comment target, then paste the copied body.'), `<button class="tv-btn primary small" data-action="export-github-open-form" ${draft?.url ? '' : 'disabled'}><i class="fa-brands fa-github"></i>${escapeHtml(openLabel)}</button>`)}
+        ${githubRoutineStepRow(state.verified ? 'done' : 'ready', state.verified ? 'fa-circle-check' : 'fa-shield-halved', 'Verify', verifyInstruction, `${verifyControl}${resolvedLine}`)}
+      </div>
+      ${bodyTooLarge ? '<p class="muted">Body is too large for a reliable GitHub URL. Open the form, then paste the copied body manually.</p>' : ''}
+      <details class="github-draft-details compact">
+        <summary><span><i class="fa-brands fa-github"></i><strong>Prepared markdown body</strong></span><small>${(draft?.body || '').length.toLocaleString()} chars</small></summary>
+        <div class="github-draft-title-row"><span>Title</span><code>${escapeHtml(draft?.title || '')}</code></div>
+        <pre class="source-block export-result-pre compact-draft-pre"><code>${escapeHtml(draft?.body || '')}</code></pre>
+      </details>
+    </section>`;
+  }
+
+  function renderGithubExportCompletion(modal, ws, plan, items) {
+    const checks = modal.githubExportChecks || {};
+    const rows = items.map((item) => {
+      const st = checks[item.key] || {};
+      return `<li><strong>${escapeHtml(markdownTitleFromFile(item.file))}</strong><small>${escapeHtml(st.publishedUrl || 'verified URL missing')}</small></li>`;
+    }).join('');
+    return `<div class="export-body export-adapter-body export-wizard-body execute-wizard-body" data-scroll-restore="export-workspace-execute-body">
+      ${renderExportStepRail(modal)}
+      <section class="export-section export-execute-card github-export-complete-card">
+        <h3>GitHub routine complete</h3>
+        <p class="muted">All selected artifacts in this routine have a verified GitHub URL or accepted target reference. Preserve these URLs if they become part of the lineage.</p>
+        <ul class="github-verified-list">${rows}</ul>
+      </section>
+      ${renderStagedExportSummary(plan, modal)}
+    </div>`;
+  }
+
+  function renderGithubExecutionStage(modal, ws, plan) {
+    const surface = githubOutboundSurface(modal);
+    const items = githubExportItemsForModal(modal, plan);
+    if (surface === 'git') {
+      return `<div class="export-body export-adapter-body export-wizard-body execute-wizard-body" data-scroll-restore="export-workspace-execute-body">
+        ${renderExportStepRail(modal)}
+        <section class="export-section export-execute-card"><h3>Git repository export</h3><p class="muted"><strong>Unavailable in this browser mode.</strong> Repository push/commit requires an authenticated git-capable adapter. Use Download for files or Issue/Discussion for text publication.</p></section>
+        ${renderStagedExportSummary(plan, modal)}
+      </div>`;
+    }
+    if (!items.length) {
+      return `<div class="export-body export-adapter-body export-wizard-body execute-wizard-body" data-scroll-restore="export-workspace-execute-body">
+        ${renderExportStepRail(modal)}
+        <section class="export-section export-execute-card"><h3>No markdown selected</h3><p class="muted">GitHub browser export publishes markdown text only. Select local artifacts or source markdown first.</p></section>
+      </div>`;
+    }
+    const verifiedCount = items.filter((item) => {
+      const draft = githubSingleArtifactDraft(ws, modal, item, surface);
+      return githubExportStateReady(githubExportCheckState(modal, item.key), draft, surface);
+    }).length;
+    if (verifiedCount >= items.length || modal.githubExportComplete) return renderGithubExportCompletion(modal, ws, plan, items);
+    const index = githubExportCurrentIndex(modal, items);
+    const item = items[index];
+    const state = githubExportCheckState(modal, item.key);
+    const draft = githubSingleArtifactDraft(ws, modal, item, surface);
+    return `<div class="export-body export-adapter-body export-wizard-body execute-wizard-body github-guided-execute-body" data-scroll-restore="export-workspace-execute-body">
+      ${renderExportStepRail(modal)}
+      <section class="export-section export-execute-card github-routine-intro">
+        <h3>Guided GitHub export</h3>
+        <p class="muted">This adapter handles one artifact at a time. Tiinex prepares markdown, opens GitHub, then verifies the published URL before moving on. Tiinex does not post or call GitHub write APIs.</p>
+        <div class="export-capability-kv compact-kv">
+          <span><strong>${index + 1}/${items.length}</strong><small>artifact step</small></span>
+          <span><strong>${escapeHtml(surface === 'discussion' ? 'discussion' : 'issue')}</strong><small>GitHub surface</small></span>
+          <span><strong>web routine</strong><small>copy · open · verify</small></span>
+        </div>
+      </section>
+      ${renderGithubExportChecklist(modal, item, draft, surface, state, items.length)}
+    </div>`;
+  }
+
+  registerFilteredDiscoveryNodesWrapper(function filteredDiscoveryNodesWithoutResolvedFindingWrappers(ws, next) {
+    const nodes = next(ws);
+    if (!Array.isArray(nodes) || !nodes.length) return nodes;
+    const filters = typeof normalizeDiscoveryFilterListForWorkspace === 'function'
+      ? normalizeDiscoveryFilterListForWorkspace(ws)
+      : normalizeDiscoveryFilterListForWorkspaceFallback(ws);
+    const explicitlyInspectingFindings = normalizeSearchText(ws?.discoverySearch || '')
+      || (filters || []).some((filter) => filter === 'discovery.finding' || filter === 'discovery');
+    if (explicitlyInspectingFindings) return nodes;
+    const opts = typeof workspaceDisplayOptions === 'function' ? workspaceDisplayOptions(ws) : { leavesOnly: true };
+    // Tree without Leaves Only is the provenance/discovery hierarchy surface. Keep
+    // shells there so the user can inspect issue -> comment -> material groups.
+    if (ws?.discoveryView === 'tree' && !opts.leavesOnly) return nodes;
+    return nodes.filter((node) => !isResolvedFindingWrapperNode(ws, node));
+  });
+
+  registerFilteredDiscoveryNodesWrapper(function filteredDiscoveryNodesWithoutTargetOnlyGaps(ws, next) {
+    const nodes = next(ws);
+    if (!Array.isArray(nodes) || !nodes.length) return nodes;
+    const filters = typeof normalizeDiscoveryFilterListForWorkspace === 'function'
+      ? normalizeDiscoveryFilterListForWorkspace(ws)
+      : normalizeDiscoveryFilterListForWorkspaceFallback(ws);
+    const explicitlyInspectingFindings = normalizeSearchText(ws?.discoverySearch || '')
+      || (filters || []).some((filter) => filter === 'discovery.finding' || filter === 'discovery');
+    if (explicitlyInspectingFindings) return nodes;
+    return nodes.filter((node) => !isGitHubTargetOnlyFindingNode(node));
+  });
+
+  function renderDownloadExecutionStage(modal, ws, plan) {
+    return `<div class="export-body export-adapter-body export-wizard-body execute-wizard-body" data-scroll-restore="export-workspace-execute-body">
+      ${renderExportStepRail(modal)}
+      <section class="export-section export-execute-card">
+        <h3>Ready to download</h3>
+        <p class="muted">This creates a client-side ${escapeHtml(exportArchiveLabel(plan.archive.format))} package. No source is mutated and no telemetry/upload is used.</p>
+        <div class="export-capability-kv compact-kv">
+          <span><strong>${plan.counts.files}</strong><small>markdown/file entries</small></span>
+          <span><strong>${plan.counts.assets}</strong><small>asset entries</small></span>
+          <span><strong>${escapeHtml(exportPasswordLabel(plan.archive.passwordMode))}</strong><small>password mode</small></span>
+        </div>
+      </section>
+      ${renderStagedExportSummary(plan, modal)}
+    </div>`;
+  }
+
+  function githubCurrentExportContext(modal) {
+    const ws = getWorkspace(modal?.wsId || '');
+    if (!ws) return { ws: null, plan: null, items: [], index: 0, item: null, state: null, surface: githubOutboundSurface(modal) };
+    const plan = buildExportPlan(ws, modal);
+    const items = githubExportItemsForModal(modal, plan);
+    const index = githubExportCurrentIndex(modal, items);
+    const item = items[index] || null;
+    const state = item ? githubExportTargetState(modal, item) : null;
+    return { ws, plan, items, index, item, state, surface: githubOutboundSurface(modal) };
+  }
+
+  async function verifyGithubExportCurrentTarget(modal) {
+    const ctx = githubCurrentExportContext(modal);
+    if (!ctx.ws || !ctx.item || !ctx.state) throw new Error('No export artifact selected.');
+    const candidates = githubExportTargetCandidates(ctx.ws, ctx.item, ctx.surface);
+    const draft = githubSingleArtifactDraft(ctx.ws, modal, ctx.item, ctx.surface);
+    const mode = githubExportEffectiveTargetMode(modal, ctx.item, ctx.surface, candidates);
+    ctx.state.verifyAttempted = true;
+    const typedPublished = String(document.querySelector('input[data-field="githubPublishedUrl"]')?.value || modal.githubPublishedUrl || '').trim();
+    const fallbackTarget = githubTargetUrlForMode(ctx.state, mode, candidates);
+    const knownPublicationUrl = githubKnownPublicationUrlForDraft(ctx.state, draft, candidates);
+    const continuationIssueUrl = mode === 'create-comment'
+      ? String((parseGitHubIssueSpec(typedPublished || '')?.issueUrl) || (parseGitHubIssueSpec(ctx.state.publishedUrl || '')?.issueUrl) || (parseGitHubIssueSpec(fallbackTarget || '')?.issueUrl) || (parseGitHubIssueSpec(draft.targetUrl || '')?.issueUrl) || '').trim()
+      : '';
+    const url = (mode === 'create-new'
+      ? typedPublished
+      : (mode === 'create-comment'
+        ? (typedPublished || ctx.state.publishedUrl || continuationIssueUrl || draft.targetUrl || fallbackTarget || '')
+        : (typedPublished || ctx.state.publishedUrl || knownPublicationUrl || ''))).trim();
+    if (!url) throw new Error(mode === 'create-new'
+      ? 'Paste the published GitHub URL before verifying.'
+      : (mode === 'create-comment'
+        ? 'Post the copied body as a new GitHub comment, then verify. Paste the new comment permalink if Tiinex cannot infer it.'
+        : 'No known GitHub comment permalink is available yet. Open/post the target or paste the comment permalink, then verify.'));
+    ctx.state.error = '';
+    ctx.state.targetMode = mode;
+    if (ctx.surface === 'issue') {
+      const spec = parseGitHubIssueSpec(url);
+      if (!spec) throw new Error('Expected a GitHub issue URL like https://github.com/owner/repo/issues/123.');
+      let publishedResultUrl = githubPublishedResultUrlFromSpec(spec, url);
+      if (mode !== 'create-new') {
+        publishedResultUrl = await resolvePublishedGitHubIssueCommentUrl(spec, draft, { commentLimit: 100 });
+      }
+      const resultSpec = parseGitHubIssueSpec(publishedResultUrl) || spec;
+      ctx.state.publishedUrl = githubPublishedResultUrlFromSpec(resultSpec, publishedResultUrl);
+      ctx.state.targetUrl = ctx.state.targetUrl || fallbackTarget || resultSpec.issueUrl || spec.issueUrl;
+      ctx.state.resolvedTitle = resultSpec.targetLabel || `Issue #${resultSpec.issueNumber || spec.issueNumber}`;
+      ctx.state.resolvedState = resultSpec.commentAnchor
+        ? (mode === 'create-new' ? 'comment permalink accepted' : (mode === 'create-comment' ? 'new continuation comment matched copied draft' : 'comment body matched copied draft'))
+        : 'issue URL accepted';
+      ctx.state.resolvedRepo = resultSpec.repo || spec.repo;
+      ctx.state.resolvedNumber = resultSpec.issueNumber || spec.issueNumber;
+      if (mode === 'create-new') {
+        try {
+          const thread = await fetchGitHubIssueThread(resultSpec, { commentLimit: 1, hardRefresh: true, authMode: 'none' });
+          ctx.state.resolvedTitle = thread.issue?.title || ctx.state.resolvedTitle;
+          ctx.state.resolvedState = thread.issue?.state || ctx.state.resolvedState;
+        } catch (error) {
+          ctx.state.resolvedState = 'URL shape accepted; live resolve unavailable';
+          ctx.state.warning = error.message || String(error);
+        }
+      }
+    } else if (ctx.surface === 'discussion') {
+      const spec = parseGitHubDiscussionSpec(url);
+      if (!spec) throw new Error('Expected a GitHub discussion URL like https://github.com/owner/repo/discussions/123.');
+      const publishedResultUrl = githubPublishedResultUrlFromSpec(spec, url);
+      ctx.state.publishedUrl = publishedResultUrl;
+      ctx.state.targetUrl = ctx.state.targetUrl || fallbackTarget || spec.discussionUrl;
+      ctx.state.resolvedTitle = spec.targetLabel || `Discussion #${spec.discussionNumber}`;
+      ctx.state.resolvedState = spec.commentAnchor ? 'comment permalink accepted' : 'discussion URL accepted';
+      ctx.state.resolvedRepo = spec.repo;
+      ctx.state.resolvedNumber = spec.discussionNumber;
+    } else {
+      throw new Error('This GitHub surface cannot be verified in the browser adapter.');
+    }
+    ctx.state.verified = true;
+    ctx.state.verifiedAt = new Date().toISOString();
+    ctx.state.verifiedSignature = githubExportVerifySignature(ctx.surface, mode, ctx.state.publishedUrl || ctx.state.targetUrl || url);
+    ctx.state.verificationMeaning = mode === 'create-new'
+      ? 'verified published GitHub target URL'
+      : (mode === 'create-comment' ? 'verified new GitHub comment matches copied Tiinex draft' : 'verified GitHub comment body matches copied Tiinex draft');
+    modal.githubPublishedUrl = '';
+    modal.githubTargetUrl = '';
+    return ctx;
+  }
+
+  async function handleGithubExportUrlFieldInput(field, value, event) {
+    if (!app.modal || app.modal.type !== 'export-workspace') return;
+    const ctx = githubCurrentExportContext(app.modal);
+    if (!ctx.item || !ctx.state) return;
+    const url = String(value || '').trim();
+    if (field === 'githubTargetUrl') {
+      const candidates = githubExportTargetCandidates(ctx.ws, ctx.item, ctx.surface);
+      const known = githubExportKnownTargetCandidate(candidates, url);
+      ctx.state.targetUrl = url;
+      if (url && !known) ctx.state.targetMode = 'paste-existing';
+      if (url && known) ctx.state.targetMode = 'reuse-known';
+      githubResetRoutineState(ctx.state, 'keep-published');
+      ctx.state.targetUrl = url;
+      app.modal.githubTargetUrl = url;
+      render();
+      return;
+    } else {
+      // The published URL is the result of the already-copied/opened draft, not a
+      // change to the draft body. Preserve Copy/Open state so tab changes and
+      // post-publication verification cannot make the routine impossible to
+      // finish.
+      githubResetVerificationState(ctx.state, 'keep-published');
+      ctx.state.publishedUrl = url;
+      app.modal.githubPublishedUrl = url;
+    }
+    const pasted = event?.inputType === 'insertFromPaste' || event?.type === 'change';
+    if (!url || !pasted) return;
+    const valid = ctx.surface === 'discussion' ? Boolean(parseGitHubDiscussionSpec(url)) : Boolean(parseGitHubIssueSpec(url));
+    if (!valid) return;
+    try {
+      await verifyGithubExportCurrentTarget(app.modal);
+      toast(ctx.surface === 'discussion' ? 'GitHub discussion URL shape verified.' : 'GitHub issue resolved.', 'ok');
+    } catch (error) {
+      const current = githubCurrentExportContext(app.modal);
+      if (current.state) {
+        current.state.verified = false;
+        current.state.error = error.message || String(error);
+      }
+      toast(`Could not verify GitHub URL: ${error.message}`, 'warn');
+    }
+    render();
+  }
+
+  registerRenderExportModalWrapper(function renderStagedExportModal(modal, next) {
+    if (!modal || modal.type !== 'export-workspace') return next(modal);
+    const ws = getWorkspace(modal.wsId);
+    if (!ws) return '';
+    const plan = buildExportPlan(ws, modal);
+    const sources = exportSourceEntries(ws);
+    const selected = new Set(modal.sourceIds || []);
+    const sourceRows = sources.map((source) => {
+      const count = Array.from(ws.files?.values?.() || []).filter((file) => fileSourceId(file) === source.id).length;
+      return `<label class="export-source-row">
+        <input type="checkbox" data-action="export-toggle-source" data-source="${escapeAttr(source.id)}" ${selected.has(source.id) ? 'checked' : ''}>
+        <span><strong>${escapeHtml(source.label || source.id)}</strong><small>${escapeHtml(source.kind || 'source')} · ${count} file${count === 1 ? '' : 's'}${source.repo ? ` · ${source.repo}${source.ref ? '@' + source.ref : ''}` : ''}</small></span>
+      </label>`;
+    }).join('');
+    const github = exportCapabilityTarget(modal) === 'github-draft';
+    const execute = exportSetupStage(modal) === 'execute';
+    const title = execute
+      ? (github ? 'Execute GitHub export' : 'Execute download export')
+      : 'Prepare workspace export';
+    const subtitle = execute
+      ? (github ? 'Follow a bounded manual routine. Tiinex prepares markdown but does not post to GitHub.' : 'Download the prepared client-side package.')
+      : 'Choose adapter, scope, and capability level before executing export.';
+    const body = execute
+      ? (github ? renderGithubExecutionStage(modal, ws, plan) : renderDownloadExecutionStage(modal, ws, plan))
+      : renderExportSetupStage(modal, ws, plan, sources, sourceRows);
+    const surface = githubOutboundSurface(modal);
+    const primaryDraft = surface === 'discussion' ? 'discussion' : 'issue';
+    const canExecute = (github ? plan.counts.files > 0 : plan.counts.entries > 0) && (!github || surface !== 'git');
+    const githubCtx = github && execute ? githubCurrentExportContext(modal) : null;
+    const githubDraft = githubCtx?.item ? githubSingleArtifactDraft(githubCtx.ws, modal, githubCtx.item, githubCtx.surface) : null;
+    const githubCanContinue = githubExportStateReady(githubCtx?.state, githubDraft, githubCtx?.surface);
+    const githubLastItem = Boolean(githubCtx?.items?.length && githubCtx.index + 1 >= githubCtx.items.length);
+    return `<div class="modal-backdrop-custom focus-modal export-backdrop" role="dialog" aria-modal="true" aria-labelledby="export-title">
+      <div class="modal-panel export-panel export-adapter-panel staged-export-panel">
+        <div class="modal-header-lite export-head compact-export-head staged-export-head">
+          <div>
+            <p class="kicker">Export adapter</p>
+            <h2 class="modal-title-lite export-title" id="export-title"><span class="export-title-icon"><i class="fa-solid ${github ? 'fa-arrow-up-right-from-square' : 'fa-file-zipper'}"></i></span><span>${escapeHtml(title)}</span></h2>
+            <p class="text-secondary mb-0">${escapeHtml(subtitle)}</p>
+          </div>
+          <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        ${body}
+        <div class="modal-footer-actions export-actions export-adapter-actions staged-export-actions">
+          ${execute ? `<button class="tv-btn subtle" data-action="export-step-back"><i class="fa-solid fa-arrow-left"></i>Back</button>` : ''}
+          ${execute
+            ? (github
+              ? `<button class="tv-btn primary" data-action="export-github-next-verified" ${canExecute && githubCanContinue ? '' : 'disabled'}>${githubLastItem ? 'Done' : 'Continue'}<i class="fa-solid fa-arrow-right"></i></button>`
+              : `<button class="tv-btn primary" data-action="export-execute-download" data-ws="${escapeAttr(ws.id)}" ${canExecute ? '' : 'disabled'}><i class="fa-solid fa-download"></i>Download now</button>`)
+            : `<button class="tv-btn primary" data-action="export-step-continue" ${canExecute ? '' : 'disabled'}>Continue<i class="fa-solid fa-arrow-right"></i></button>`}
+          <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+  });
+
+  registerActionHandler(async function stagedExportAction(event, next) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'export-step-continue') {
+      event.preventDefault(); event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      app.modal.exportStage = 'execute';
+      render();
+      return;
+    }
+    if (action === 'export-step-back') {
+      event.preventDefault(); event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      app.modal.exportStage = 'setup';
+      render();
+      return;
+    }
+    if (action === 'export-set-github-access') {
+      event.preventDefault(); event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      const mode = String(event.currentTarget.dataset.access || 'manual').toLowerCase();
+      if (mode === 'api') return toast('GitHub API write requires a future authenticated adapter.', 'warn');
+      app.modal.githubAccessMode = mode === 'web' ? 'web' : 'manual';
+      render();
+      return;
+    }
+    if (action === 'github-export-set-target-mode') {
+      event.preventDefault(); event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      const ctx = githubCurrentExportContext(app.modal);
+      if (!ctx.item || !ctx.state) return;
+      const mode = String(event.currentTarget.dataset.mode || 'create-new').toLowerCase();
+      const candidates = githubExportTargetCandidates(ctx.ws, ctx.item, ctx.surface);
+      ctx.state.targetMode = ['create-new', 'create-comment', 'reuse-known', 'paste-existing'].includes(mode) ? mode : 'create-new';
+      githubResetRoutineState(ctx.state);
+      if (ctx.state.targetMode === 'reuse-known') ctx.state.targetUrl = candidates[0]?.url || '';
+      if (ctx.state.targetMode === 'create-comment') ctx.state.targetUrl = githubFirstIssueCandidate(candidates, true)?.url || '';
+      if (ctx.state.targetMode === 'create-new') ctx.state.targetUrl = '';
+      render();
+      return;
+    }
+    if (action === 'github-export-use-target') {
+      event.preventDefault(); event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      const ctx = githubCurrentExportContext(app.modal);
+      if (!ctx.item || !ctx.state) return;
+      const url = String(event.currentTarget.dataset.url || '').trim();
+      ctx.state.targetMode = String(event.currentTarget.dataset.mode || 'reuse-known').toLowerCase();
+      githubResetRoutineState(ctx.state);
+      ctx.state.targetUrl = url;
+      app.modal.githubTargetUrl = url;
+      render();
+      return;
+    }
+    if (action === 'github-export-select-known-target') {
+      event.preventDefault(); event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      const ctx = githubCurrentExportContext(app.modal);
+      if (!ctx.item || !ctx.state) return;
+      const url = String(event.currentTarget.value || '').trim();
+      ctx.state.targetMode = 'reuse-known';
+      githubResetRoutineState(ctx.state);
+      ctx.state.targetUrl = url;
+      app.modal.githubTargetUrl = url;
+      render();
+      return;
+    }
+    if (action === 'export-github-copy-current') {
+      event.preventDefault(); event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      const ws = getWorkspace(app.modal.wsId || '');
+      if (!ws) return toast('No workspace selected.', 'warn');
+      const plan = buildExportPlan(ws, app.modal);
+      const items = githubExportItemsForModal(app.modal, plan);
+      const item = items[githubExportCurrentIndex(app.modal, items)];
+      if (!item) return toast('No export artifact selected.', 'warn');
+      const draft = githubSingleArtifactDraft(ws, app.modal, item, githubOutboundSurface(app.modal));
+      try {
+        await navigator.clipboard.writeText(draft.body || '');
+        const state = githubExportCheckState(app.modal, item.key);
+        state.copied = true;
+        state.copiedSignature = githubExportDraftSignature(draft);
+        toast('GitHub markdown body copied.', 'ok');
+        render();
+      } catch (_) {
+        toast('Could not copy GitHub body.', 'warn');
+      }
+      return;
+    }
+    if (action === 'export-github-open-form') {
+      event.preventDefault(); event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      const ws = getWorkspace(app.modal.wsId || '');
+      if (!ws) return toast('No workspace selected.', 'warn');
+      const plan = buildExportPlan(ws, app.modal);
+      const items = githubExportItemsForModal(app.modal, plan);
+      const item = items[githubExportCurrentIndex(app.modal, items)];
+      if (!item) return toast('No export artifact selected.', 'warn');
+      const draft = githubSingleArtifactDraft(ws, app.modal, item, githubOutboundSurface(app.modal));
+      if (!draft.url) return toast('No GitHub form URL is available for this export.', 'warn');
+      const state = githubExportCheckState(app.modal, item.key);
+      state.opened = true;
+      state.openedAt = new Date().toISOString();
+      state.openedSignature = githubExportOpenSignature(draft);
+      app.githubExportLastDestinationCheckAt = Date.now();
+      window.open(draft.url, '_blank', 'noopener,noreferrer');
+      render();
+      return;
+    }
+    if (action === 'export-github-verify-current') {
+      event.preventDefault(); event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      try {
+        const ctx = await verifyGithubExportCurrentTarget(app.modal);
+        toast(ctx.surface === 'discussion' ? 'GitHub discussion URL shape verified.' : 'GitHub issue resolved.', 'ok');
+        render();
+      } catch (error) {
+        const ctx = githubCurrentExportContext(app.modal);
+        if (ctx.state) {
+          ctx.state.verified = false;
+          ctx.state.error = error.message || String(error);
+        }
+        toast(`Could not verify GitHub URL: ${error.message}`, 'warn');
+        render();
+      }
+      return;
+    }
+    if (action === 'export-github-next-verified') {
+      event.preventDefault(); event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      const ctx = githubCurrentExportContext(app.modal);
+      const draft = ctx.item ? githubSingleArtifactDraft(ctx.ws, app.modal, ctx.item, ctx.surface) : null;
+      if (!ctx.item || !githubExportStateReady(ctx.state, draft, ctx.surface)) {
+        toast('Complete copy, open, and verify for the current artifact before continuing. Changing the target or body resets the checklist.', 'warn');
+        return;
+      }
+      if (ctx.index + 1 < ctx.items.length) {
+        app.modal.githubExportIndex = ctx.index + 1;
+        toast('Next artifact ready.', 'ok');
+        render();
+      } else {
+        await finalizeGithubExportRoutine(app.modal, 'github-export-done');
+      }
+      return;
+    }
+    if (action === 'export-execute-download') {
+      event.preventDefault(); event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
+      if (!ws) return toast('No workspace selected.', 'warn');
+      try { await exportWorkspaceArchive(ws, app.modal); }
+      catch (error) { toast(`Could not export: ${error.message}`, 'warn'); }
+      return;
+    }
+    return next(event);
+  });
+
+
+
+  async function maybeCheckGithubExportDestination(reason = 'focus') {
+    const modal = app.modal;
+    if (!modal || modal.type !== 'export-workspace' || exportCapabilityTarget(modal) !== 'github-draft' || exportSetupStage(modal) !== 'execute') return;
+    const now = Date.now();
+    if (now - Number(app.githubExportLastDestinationCheckAt || 0) < 5000) return;
+    app.githubExportLastDestinationCheckAt = now;
+    const ctx = githubCurrentExportContext(modal);
+    if (!ctx.ws || !ctx.item || !ctx.state) return;
+    const draft = githubSingleArtifactDraft(ctx.ws, modal, ctx.item, ctx.surface);
+    let changed = false;
+    if (!ctx.state.verified) {
+      const mode = githubExportEffectiveTargetMode(modal, ctx.item, ctx.surface, githubExportTargetCandidates(ctx.ws, ctx.item, ctx.surface));
+      const inferredUrl = (mode === 'create-new' || mode === 'create-comment') ? '' : githubKnownPublicationUrlForDraft(ctx.state, draft, draft.candidates || []);
+      const url = ctx.state.publishedUrl || modal.githubPublishedUrl || inferredUrl || '';
+      const valid = ctx.surface === 'discussion' ? Boolean(parseGitHubDiscussionSpec(url)) : Boolean(parseGitHubIssueSpec(url));
+      if (!valid) return;
+      if (!ctx.state.publishedUrl && !modal.githubPublishedUrl && inferredUrl) ctx.state.publishedUrl = inferredUrl;
+      try {
+        await verifyGithubExportCurrentTarget(modal);
+        changed = true;
+      } catch (error) {
+        ctx.state.error = error.message || String(error);
+        changed = true;
+      }
+    }
+    const plan = buildExportPlan(ctx.ws, modal);
+    if (githubExportAllItemsReady(modal, ctx.ws, plan, ctx.surface)) {
+      await finalizeGithubExportRoutine(modal, `github-export-${reason}`);
+    } else if (changed) {
+      render();
+    }
+  }
+
+  window.addEventListener('focus', () => { maybeCheckGithubExportDestination('focus'); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') maybeCheckGithubExportDestination('visibility');
+  });
 
   function workspaceAssetEntries(ws) {
     return Array.from(ws?.assets?.values?.() || [])
@@ -16256,7 +27987,7 @@ ${integrityFooterForPath(parent, path)}`,
     const previewable = kind === 'image' || kind === 'text';
     return `<article class="lineage-post asset-post" data-asset="${escapeAttr(path)}">
       <div class="post-main asset-main">
-        <div class="post-chips">
+        <div class="post-chips" translate="no">
           <span class="badge-soft muted-chip"><i class="fa-solid fa-box-archive"></i>asset</span>
           <span class="badge-soft muted-chip">${escapeHtml(kind)}</span>
           ${size ? `<span class="badge-soft muted-chip">${escapeHtml(size)}</span>` : ''}
@@ -16415,7 +28146,10 @@ ${integrityFooterForPath(parent, path)}`,
       item.ref = normalized.ref || ws.ref || '';
       item.rootPaths = normalized.rootPaths || ['.topics'];
       item.enabledSurfaces = normalizeGithubSurfaceConfig(normalized.enabledSurfaces || {});
-      item.issueUrls = normalized.issueUrls || [];
+      item.issueUrls = activeGitHubIssueUrls(normalized, normalized.repo || '', ws);
+      item.configuredIssueUrls = configuredGitHubIssueUrls(normalized, normalized.repo || '');
+      item.discoveredIssueUrls = normalized.discoveredIssueUrls || [];
+      item.issueThreadCache = githubIssueThreadCacheSubsetForUrls(item.issueUrls || []);
       item.discoveryDirective = normalized.discoveryDirective || { kind: 'implicit-workspace-inline', source: 'workspace.md', status: 'bootstrap' };
     });
     return state;
@@ -16465,6 +28199,7 @@ ${integrityFooterForPath(parent, path)}`,
     // Keep it opt-in so ordinary browsing stays a good external-source citizen.
     repoCommitDateSortFetchLimit: 0,
     repoDiscoveryBatchRenderEvery: 0,
+    repoDiscoveryProgressiveRenderEvery: 0,
     discoveryFeedInitialCount: 48,
     discoveryFeedGrowCount: 48,
     discoveryFeedAutoGrowMinPx: 240,
@@ -16479,14 +28214,12 @@ ${integrityFooterForPath(parent, path)}`,
   function discoveryWindowSignature(ws) {
     return [
       ws?.discoveryView || 'feed',
-      ws?.discoveryFilterSchema || ws?.filterSchema || 'all',
+      `schema:${(typeof normalizeDiscoveryFilterListForWorkspace === 'function' ? normalizeDiscoveryFilterListForWorkspace(ws) : []).join(',') || 'all'}`,
       ws?.discoverySearch || '',
       workspaceDisplayOptions(ws).leavesOnly ? 'leaf' : 'all',
-      workspaceDisplayOptions(ws).showTrace ? 'trace' : '',
-      workspaceDisplayOptions(ws).showSchema ? 'schema' : '',
-      workspaceDisplayOptions(ws).showValidator ? 'validator' : '',
-      workspaceDisplayOptions(ws).showWorkspace ? 'workspace' : '',
-      workspaceDisplayOptions(ws).showAssets ? 'assets' : ''
+      `artifact:${normalizeArtifactDisplayFilterList(workspaceDisplayOptions(ws).artifactKindFilters || workspaceDisplayOptions(ws).artifactKindFilter).join(',') || 'all'}`,
+      workspaceDisplayOptions(ws).showAssets ? 'assets' : '',
+      temporalLensActive(ws) ? `time:${workspaceDisplayOptions(ws).temporalStart || ''}->${workspaceDisplayOptions(ws).temporalEnd || 'latest'}` : 'latest'
     ].join('|');
   }
 
@@ -16525,7 +28258,7 @@ ${integrityFooterForPath(parent, path)}`,
     const pct = discoveryProgressPercent(ws);
     return `<div class="loading-progress" data-discovery-progress="${escapeAttr(ws.id)}" data-progress="${pct}">
       <div class="progress-head">
-        <span><i class="fa-solid fa-spinner fa-spin"></i>${escapeHtml(discoveryProgressTitle(ws))}</span>
+        <span><i class="fa-solid fa-spinner fa-spin"></i><span data-progress-title>${escapeHtml(discoveryProgressTitle(ws))}</span></span>
         <small data-progress-label>${pct}%</small>
       </div>
       <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}">
@@ -16536,7 +28269,7 @@ ${integrityFooterForPath(parent, path)}`,
   registerRenderWorkspaceFeedWrapper(function renderWorkspaceFeedWindowed(ws, selected, next) {
     if (selected || (ws.discoveryView || 'feed') !== 'feed') {
       const html = next(ws, selected);
-      if (!selected && workspaceHasActiveDiscoveryProgress(ws) && html.includes('<div class="post-feed')) {
+      if (workspaceHasActiveDiscoveryProgress(ws) && html.includes('<div class="post-feed')) {
         return html.replace('<div class="post-feed', `${loadingProgressNotice(ws)}<div class="post-feed`);
       }
       return html;
@@ -16678,6 +28411,34 @@ ${integrityFooterForPath(parent, path)}`,
     // request ratio. Discovery has several differently expensive phases; showing
     // 96-99% while integrity verification still owns many markdown requests feels
     // false, so verification now gets a meaningful part of the bar.
+    const sourceRefresh = p.sourceProgress === 'github-source-refresh';
+    const scale = (value, start, end) => Math.max(start, Math.min(end, Math.round(start + (end - start) * Math.max(0, Math.min(1, value)))));
+    const repoPhasePct = () => {
+      if (phase === 'source-refresh-start' || phase === 'source-reset-start') return 2;
+    if (phase === 'tree') return 4;
+      if (phase === 'fetch') return total ? scale(discoveryProgressRatio(done, total), 8, 46) : 8;
+      if (phase === 'index') {
+        const indexTotal = Math.max(0, Number(p.indexTotal || total || 0));
+        const indexDone = Math.max(0, Number(p.indexLoaded || 0));
+        return indexTotal ? scale(discoveryProgressRatio(indexDone, indexTotal), 46, 56) : 50;
+      }
+      if (phase === 'integrity') {
+        const integrityTotal = Math.max(0, Number(p.integrityTotal || 0));
+        const integrityDone = Math.max(0, Number(p.integrityLoaded || 0));
+        return integrityTotal ? scale(discoveryProgressRatio(integrityDone, integrityTotal), 56, 68) : 58;
+      }
+      if (phase === 'policy') return 70;
+      return 0;
+    };
+    if (sourceRefresh) {
+      if (phase === 'issues-list') return 72;
+      if (phase === 'issues') return total ? scale(discoveryProgressRatio(done, total), 74, 94) : 76;
+      if (phase === 'source-finalizing') return 98;
+      if (phase === 'source-complete') return 100;
+      const pct = repoPhasePct();
+      if (pct) return pct;
+    }
+    if (phase === 'source-refresh-start' || phase === 'source-reset-start') return 2;
     if (phase === 'tree') return 4;
     if (phase === 'fetch') {
       if (!total) return 8;
@@ -16710,11 +28471,17 @@ ${integrityFooterForPath(parent, path)}`,
     const integrityTotal = Math.max(0, Number(p.integrityTotal || 0));
     const integrityLoaded = Math.max(0, Number(p.integrityLoaded || 0));
 
-    if (phase === 'tree') return 'Discovering file list';
-    if (phase === 'fetch') return total ? `Loading markdown files ${done}/${total}` : 'Loading markdown files';
+    if (phase === 'source-refresh-start') return 'Starting source refresh';
+    if (phase === 'source-reset-start') return 'Resetting source cache';
+    if (phase === 'tree') return 'Discovering repo file list';
+    if (phase === 'fetch') return total ? `Loading repo markdown files ${done}/${total}` : 'Loading repo markdown files';
     if (phase === 'index') return indexTotal ? `Indexing workspace ${indexLoaded}/${indexTotal}` : 'Indexing workspace';
     if (phase === 'integrity') return integrityTotal ? `Verifying markdown targets ${integrityLoaded}/${integrityTotal}` : 'Verifying markdown targets';
     if (phase === 'policy') return 'Reading workspace policy';
+    if (phase === 'issues-list') return 'Discovering GitHub issue targets';
+    if (phase === 'issues') return total ? `Importing GitHub issue snapshots ${done}/${total}` : 'Importing GitHub issue snapshots';
+    if (phase === 'source-finalizing') return 'Rendering refreshed source';
+    if (phase === 'source-complete') return 'Source refresh complete';
     if (!total) return 'Loading';
     return `${done}/${total}`;
   }
@@ -16726,12 +28493,14 @@ ${integrityFooterForPath(parent, path)}`,
     const pct = discoveryProgressPercent(ws);
     const label = el.querySelector('[data-progress-label]');
     const fill = el.querySelector('[data-progress-fill]');
+    const title = el.querySelector('[data-progress-title]');
     const head = el.querySelector('.progress-head span');
     const bar = el.querySelector('[role="progressbar"]');
     el.dataset.progress = String(pct);
     if (label) label.textContent = `${pct}%`;
     if (fill) fill.style.width = `${pct}%`;
-    if (head) head.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i>${escapeHtml(discoveryProgressTitle(ws))}`;
+    if (title) title.textContent = discoveryProgressTitle(ws);
+    else if (head) head.textContent = discoveryProgressTitle(ws);
     if (bar) bar.setAttribute('aria-valuenow', String(pct));
   }
 
@@ -16742,7 +28511,7 @@ ${integrityFooterForPath(parent, path)}`,
 
   function applyDurableLensAfterProgressiveIndex(ws) {
     try {
-      const state = app.pendingDurableLensState || decodedLensState() || cachedLensState();
+      const state = app.pendingDurableLensState || (typeof routeOrAllowedCachedLensState === 'function' ? routeOrAllowedCachedLensState() : (decodedLensState() || cachedLensState()));
       const sources = state?.workspaces || state?.sources || [];
       const index = app.workspaces.indexOf(ws);
       if (index >= 0 && sources[index] && typeof applyLensSource === 'function') applyLensSource(ws, sources[index]);
@@ -16756,6 +28525,7 @@ ${integrityFooterForPath(parent, path)}`,
 
     const files = Array.from(ws.files?.values?.() || []);
     const previousSelected = ws.selectedNodeId;
+    const previousExpanded = captureExpandedNodeKeys(ws);
     const previousWindows = ws.lineageWindows || {};
     const previousIntegrity = ws.integrityCache || {};
     const previousParentFetches = ws.parentFetches || {};
@@ -16822,8 +28592,10 @@ ${integrityFooterForPath(parent, path)}`,
     ws.leaves.sort(compareNodesDesc);
     ws.nodes.sort(compareNodesDesc);
     ws.selectedNodeId = previousSelected && ws.nodeById.get(previousSelected) ? previousSelected : null;
+    restoreExpandedNodeKeys(ws, previousExpanded);
     ws.filterSchema = ws.filterSchema || 'all';
     ws.discoveryFilterSchema = ws.discoveryFilterSchema || ws.filterSchema || 'all';
+    if (typeof setDiscoveryFilterList === 'function') setDiscoveryFilterList(ws, ws.discoveryFilterSchemas || ws.discoveryFilterSchema);
     ws.layoutMode = ws.layoutMode || 'expanded';
     ws.lineageWindows = previousWindows;
     ws.integrityCache = previousIntegrity;
@@ -16834,6 +28606,196 @@ ${integrityFooterForPath(parent, path)}`,
     if (typeof scheduleGitCommitSortEnrichment === 'function') scheduleGitCommitSortEnrichment(ws);
     if (typeof resolvePendingSelectedRoutes === 'function') resolvePendingSelectedRoutes();
     applyDurableLensAfterProgressiveIndex(ws);
+  }
+
+  function gitNativeRepoDiscoveryEnabled(options = {}) {
+    if (options.gitNative === false || options.useGitNative === false || options.disableGitNative) return false;
+    if (!window.TiinexGitNativeRuntime || typeof window.TiinexGitNativeRuntime.acquireSnapshot !== 'function') return false;
+    return app.settings.repoDiscoveryPreferGitNative !== false;
+  }
+
+  async function tryDiscoverGitHubRepoViaGitNative(ws, context = {}) {
+    const bridge = window.TiinexGitNativeRuntime;
+    const repo = context.repo || '';
+    const ref = context.ref || 'master';
+    const rootPaths = Array.isArray(context.rootPaths) ? context.rootPaths : parseRootPaths(context.rootPath || '.topics');
+    const githubSource = context.githubSource || context.source || null;
+    const sessionId = context.sessionId || githubRepoDiscoverySessionId(repo, ref, rootPaths);
+    if (!gitNativeRepoDiscoveryEnabled(context.options || {})) {
+      githubRepoFetchTrace('git-native.skip', { sessionId, repo, ref, rootPaths, reason: 'not-enabled-or-runtime-unavailable' });
+      return { ok: false, skipped: true, reason: 'not-enabled-or-runtime-unavailable' };
+    }
+
+    const persistedGitNativeOptions = effectiveGitNativeDiscoveryConfig(context.options?.gitNativeOptions || {});
+    const gitNativeOptions = Object.assign({}, persistedGitNativeOptions || {}, {
+      repo,
+      ref: ref || persistedGitNativeOptions.ref || 'master',
+      rootPaths,
+      reuseExistingClone: context.options?.reuseExistingGitNativeClone !== false,
+      sampleReads: 0
+    });
+
+    let status = null;
+    try {
+      status = typeof bridge.status === 'function' ? await bridge.status(gitNativeOptions) : null;
+    } catch (error) {
+      status = { runtimeAvailable: false, error: error?.message || String(error) };
+    }
+
+    const explicitlyConfigured = Boolean(status?.runtimeAvailable || status?.cachedRuntime || status?.canLoadExplicitVendor || gitNativeOptions.enabled || gitNativeOptions.loadFromUnpkg || gitNativeOptions.loadRuntime || gitNativeOptions.loadVendor || gitNativeOptions.gitScriptUrl || gitNativeOptions.lightningFsScriptUrl);
+    if (!explicitlyConfigured) {
+      githubRepoFetchTrace('git-native.skip', { sessionId, repo, ref, rootPaths, reason: 'runtime-not-loaded-and-no-explicit-vendor-config' });
+      return { ok: false, skipped: true, reason: 'runtime-not-loaded-and-no-explicit-vendor-config' };
+    }
+
+    githubRepoFetchTrace('git-native.snapshot.start', {
+      sessionId,
+      repo,
+      ref: gitNativeOptions.ref,
+      rootPaths,
+      runtimeAvailable: Boolean(status?.runtimeAvailable),
+      cachedRuntime: Boolean(status?.cachedRuntime),
+      corsProxyConfigured: Boolean(status?.corsProxyConfigured),
+      hiddenProxy: false,
+      hiddenVendorLoad: false
+    });
+
+    let snapshot;
+    try {
+      snapshot = await bridge.acquireSnapshot(gitNativeOptions);
+    } catch (error) {
+      const reason = error?.needsExplicitCorsProxy ? 'needs-explicit-cors-proxy' : (error?.message || String(error));
+      githubRepoFetchTrace('git-native.snapshot.failed', {
+        sessionId,
+        repo,
+        ref: gitNativeOptions.ref,
+        rootPaths,
+        reason,
+        stage: error?.stage || '',
+        missing: error?.missing || []
+      });
+      ws.logs.push(`Git-native repo discovery unavailable for ${repo}: ${reason}. Falling back to bounded GitHub raw reads.`);
+      return { ok: false, skipped: true, reason };
+    }
+
+    if (!snapshot?.ok || !Array.isArray(snapshot.candidates)) {
+      const reason = snapshot?.error || 'git-native snapshot did not return candidate files';
+      githubRepoFetchTrace('git-native.snapshot.failed', { sessionId, repo, ref: gitNativeOptions.ref, rootPaths, reason, resultType: typeof snapshot });
+      ws.logs.push(`Git-native repo discovery unavailable for ${repo}: ${reason}. Falling back to bounded GitHub raw reads.`);
+      return { ok: false, skipped: true, reason };
+    }
+
+    const commit = snapshot.commit || gitNativeOptions.ref;
+    const candidates = Array.from(new Set(snapshot.candidates.map((path) => normalizeRepoPath(path)).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+    const paths = candidates.filter((path) => {
+      const rawUrl = githubRawUrl(repo, commit, path);
+      return context.options?.refreshExisting || !Array.from(ws.files.values()).some((file) => file.rawUrl === rawUrl || file.path === path);
+    });
+
+    githubRepoFetchTrace('git-native.snapshot.complete', {
+      sessionId,
+      repo,
+      ref: snapshot.ref || gitNativeOptions.ref,
+      commit,
+      rootPaths: snapshot.rootPaths || rootPaths,
+      fileCount: snapshot.fileCount || 0,
+      candidateFiles: candidates.length,
+      pathsToRead: paths.length,
+      elapsedMs: snapshot.elapsedMs || 0,
+      sourceState: snapshot.sourceState || 'git-native-local-object-store',
+      corsProxyConfigured: Boolean(snapshot.corsProxyConfigured),
+      hiddenProxy: false
+    });
+
+    const resolvedRef = ref || snapshot.ref || gitNativeOptions.ref || 'master';
+    const resolvedRootPaths = snapshot.rootPaths || rootPaths;
+    const gitNativeBoundary = sourceResolutionBoundaryFor(Object.assign({}, githubSource || {}, { sourceAccessMode: 'git-object-store', sourceResolutionKind: 'git-native-local-object-store' }), 'git-native-local-object-store');
+    ws.repo = repo;
+    ws.ref = resolvedRef;
+    ws.resolvedCommit = commit;
+    ws.sourceAccessMode = 'git-object-store';
+    ws.sourceResolutionKind = 'git-native-local-object-store';
+    ws.sourceResultBoundary = 'bounded Git object-store snapshot';
+    ws.sourceCacheBoundary = 'browser-local-git-object-store';
+    ws.discoverySource.ref = resolvedRef;
+    ws.discoverySource.resolvedCommit = commit;
+    ws.discoverySource.rootPath = resolvedRootPaths[0] || '.topics';
+    ws.discoverySource.rootPaths = resolvedRootPaths;
+    ws.discoverySource.sourceAccessMode = 'git-object-store';
+    ws.discoverySource.sourceResolutionKind = 'git-native-local-object-store';
+    ws.discoverySource.sourceBoundary = gitNativeBoundary;
+    if (githubSource) {
+      githubSource.ref = githubSource.ref || resolvedRef;
+      githubSource.resolvedCommit = commit;
+      githubSource.sourceAccessMode = 'git-object-store';
+      githubSource.sourceResolutionKind = 'git-native-local-object-store';
+      githubSource.sourceBoundary = gitNativeBoundary;
+    }
+    rememberGitNativeRepoMaterialOwner({
+      repo,
+      ref: resolvedRef,
+      requestedRef: gitNativeOptions.ref || ref || '',
+      commit,
+      resolvedCommit: commit,
+      rootPaths: resolvedRootPaths,
+      sourceId: githubSource?.id || ws.discoverySource.sourceId || '',
+      sourceResolutionKind: 'git-native-local-object-store',
+      sourceAccessMode: 'git-object-store'
+    });
+
+    ws.logs.push(`Git-native repo discovery resolved ${repo}${ref ? '@' + ref : ''} to ${commit} and found ${candidates.length} Tiinex markdown artifact file(s).`);
+    ws.discoveryProgress = { phase: 'git-read', loaded: 0, total: paths.length, failed: 0, sourceProgress: context.options?.sourceProgress || '' };
+    updateDiscoveryProgressDom(ws);
+    await progressYield(ws);
+
+    let count = 0;
+    let failed = 0;
+    const concurrency = Math.max(1, Number(app.settings.repoDiscoveryGitNativeReadConcurrency || 16));
+    const progressEvery = Math.max(1, Number(app.settings.repoDiscoveryProgressEvery || 1));
+    const runtime = await bridge.ensureRuntime(Object.assign({}, gitNativeOptions, { repo }));
+
+    await runWithConcurrency(paths, concurrency, async (path) => {
+      try {
+        const content = await bridge.readGitText(runtime, path, commit);
+        addFileToWorkspace(ws, {
+          path,
+          content,
+          rawUrl: githubRawUrl(repo, commit, path),
+          browseUrl: githubBrowseUrl(repo, commit, path),
+          repo,
+          ref: commit,
+          sourceId: githubSource.id,
+          sourceKind: githubSource.kind,
+          sourceLabel: githubSource.label,
+          sourceOrigin: githubSource.origin,
+          rootPaths: githubSource.rootPaths,
+          enabledSurfaces: githubSource.enabledSurfaces,
+          sourceAccessMode: 'git-object-store',
+          sourceResolutionKind: 'git-native-local-object-store',
+          sourceResultBoundary: 'bounded Git object-store snapshot',
+          sourceCacheBoundary: 'browser-local-git-object-store',
+          sourceSurface: 'repoFiles'
+        });
+        count += 1;
+        githubRepoFetchTrace('git-native.read.success', { sessionId, repo, commit, path, bytes: String(content || '').length });
+      } catch (error) {
+        failed += 1;
+        githubRepoFetchTrace('git-native.read.failed', { sessionId, repo, commit, path, error });
+        ws.logs.push(`Could not read Git-native artifact ${path}: ${error.message || String(error)}`);
+      }
+      const completed = count + failed;
+      ws.discoveryProgress.loaded = count;
+      ws.discoveryProgress.failed = failed;
+      ws.discoveryProgress.total = paths.length;
+      updateDiscoveryProgressDom(ws);
+      if ((completed % progressEvery) === 0) await progressYield(ws);
+    });
+
+    ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, { phase: 'git-read', loaded: count, failed, total: paths.length, sourceProgress: context.options?.sourceProgress || '' });
+    updateDiscoveryProgressDom(ws);
+    await progressYield(ws);
+
+    return { ok: true, count, failed, total: paths.length, commit, candidateFiles: candidates.length };
   }
 
   async function discoverGitHubRepoIntoWorkspace(ws, options) {
@@ -16861,19 +28823,72 @@ ${integrityFooterForPath(parent, path)}`,
     ws.repo = repo;
     if (ref) ws.ref = ref;
     const githubSource = options.source || registerGitHubSource(ws, { repo, ref, rootPaths, enabledSurfaces: { repoFiles: true, issues: true } });
-    ws.discoverySource = { kind: 'github-tree', repo, ref: ref || '', rootPath: rootPaths[0] || '.topics', rootPaths, sourceId: githubSource.id, enabledSurfaces: normalizeGithubSurfaceConfig(githubSource.enabledSurfaces || {}), issueUrls: githubSource.issueUrls || [], discoveryDirective: githubSource.discoveryDirective || null };
+    const discoveryAccessMode = sourceAccessModeForSource(githubSource, 'github');
+    githubSource.sourceAccessMode = discoveryAccessMode;
+    githubSource.sourceResolutionKind = githubSource.sourceResolutionKind || 'github-repo-discovery';
+    githubSource.sourceBoundary = githubSource.sourceBoundary || sourceResolutionBoundaryFor(githubSource, githubSource.sourceResolutionKind);
+    ws.discoverySource = { kind: 'github-tree', repo, ref: ref || '', rootPath: rootPaths[0] || '.topics', rootPaths, sourceId: githubSource.id, enabledSurfaces: normalizeGithubSurfaceConfig(githubSource.enabledSurfaces || {}), issueUrls: configuredGitHubIssueUrls(githubSource, repo || githubSource.repo || ''), discoveryDirective: githubSource.discoveryDirective || null, sourceAccessMode: discoveryAccessMode, sourceResolutionKind: githubSource.sourceResolutionKind, sourceBoundary: githubSource.sourceBoundary };
     ws.sourceNote = `GitHub repo discovery: ${repo}${ref ? '@' + ref : ''} / ${rootPathsLabel(rootPaths)}`;
-    ws.discoveryProgress = { phase: 'tree', loaded: 0, total: 0, failed: 0 };
-    ws.logs.push(`Discovering ${repo}${ref ? '@' + ref : ''} under ${rootPaths.join(', ')} via GitHub tree API.`);
+    ws.discoveryProgress = { phase: 'tree', loaded: 0, total: 0, failed: 0, sourceProgress: options.sourceProgress || '' };
+    if (isCommitRef(ref) || /^[0-9a-f]{7,40}$/i.test(String(ref || ''))) {
+      rememberGitHubCommitCandidate({
+        repo,
+        ref,
+        sourceRef: ws.temporalSourceSnapshot?.sourceRef || '',
+        asOf: ws.temporalSourceSnapshot?.asOf || '',
+        resolver: 'repo-discovery-ref',
+        confidence: ws.temporalSourceSnapshot?.asOf ? 'portal-observed-time' : 'ref-observed-no-time'
+      });
+    }
+    ws.logs.push(`Discovering ${repo}${ref ? '@' + ref : ''} under ${rootPaths.join(', ')} via ${options.noApi || options.preferStatic ? 'static/raw GitHub source paths' : 'GitHub tree discovery'}; source access mode: ${discoveryAccessMode}.`);
     render();
     await progressYield(ws);
 
     let count = 0;
     let failed = 0;
     let indexed = false;
+    const repoFetchSessionId = githubRepoDiscoverySessionId(repo, ref, rootPaths);
+    githubRepoFetchTrace('session.start', { sessionId: repoFetchSessionId, repo, ref, rootPaths, sourceId: githubSource.id, accessMode: discoveryAccessMode, hardRefresh: Boolean(options.hardRefresh), refreshExisting: Boolean(options.refreshExisting) });
 
     try {
-      const discovery = await discoverGitHubTracePaths(repo, ref, rootPaths, { hardRefresh: Boolean(options.hardRefresh) });
+      const gitNative = await tryDiscoverGitHubRepoViaGitNative(ws, {
+        repo,
+        ref: ref || 'master',
+        rootPaths,
+        githubSource,
+        sessionId: repoFetchSessionId,
+        options
+      });
+      if (gitNative.ok) {
+        count = gitNative.count || 0;
+        failed = gitNative.failed || 0;
+        ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
+          phase: 'index',
+          indexLoaded: 0,
+          indexTotal: ws.files?.size || count,
+          sourceProgress: options.sourceProgress || ws.discoveryProgress?.sourceProgress || ''
+        });
+        await computeWorkspaceIndexWithDiscoveryProgress(ws);
+        indexed = true;
+
+        ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, { phase: 'policy' });
+        updateDiscoveryProgressDom(ws);
+        await progressYield(ws);
+        await discoverWorkspacePolicy(ws);
+
+        if (!count && !failed) toast(`No new Tiinex markdown artifacts loaded from ${repo}.`, 'warn');
+        if (failed) toast(`${failed} Tiinex markdown artifact file(s) could not be read from local Git object store for ${repo}.`, 'warn');
+        return;
+      }
+
+      githubRepoFetchTrace('tree.discovery.start', { sessionId: repoFetchSessionId, repo, ref, rootPaths, hardRefresh: Boolean(options.hardRefresh), preferStatic: Boolean(options.preferStatic), noApi: Boolean(options.noApi) });
+      const discovery = await discoverGitHubTracePaths(repo, ref, rootPaths, {
+        hardRefresh: Boolean(options.hardRefresh),
+        preferStatic: Boolean(options.preferStatic),
+        rateLimitKey: options.rateLimitKey || undefined,
+        seedPaths: Array.isArray(options.seedPaths) ? options.seedPaths : [],
+        noApi: Boolean(options.noApi)
+      });
       ws.repo = repo;
       ws.ref = discovery.ref;
       ws.discoverySource.ref = discovery.ref;
@@ -16881,6 +28896,7 @@ ${integrityFooterForPath(parent, path)}`,
       ws.discoverySource.rootPaths = discovery.rootPaths;
       githubSource.ref = githubSource.ref || discovery.ref;
       githubSource.rootPaths = discovery.rootPaths;
+      githubRepoFetchTrace('tree.discovery.complete', { sessionId: repoFetchSessionId, repo, resolvedRef: discovery.ref, rootPaths: discovery.rootPaths, candidateFiles: discovery.tracePaths.length, truncated: Boolean(discovery.truncated), freshnessSupplemented: discovery.freshnessSupplemented || 0, note: discovery.note || '' });
       ws.logs.push(`Tree discovery found ${discovery.tracePaths.length} Tiinex markdown artifact file(s).`);
       if (discovery.freshnessSupplemented) {
         ws.logs.push(`Added ${discovery.freshnessSupplemented} known Tiinex schema freshness candidate(s) to avoid stale branch/CDN listings.`);
@@ -16896,13 +28912,13 @@ ${integrityFooterForPath(parent, path)}`,
         return options.refreshExisting || !Array.from(ws.files.values()).some((file) => file.rawUrl === rawUrl || file.path === path);
       });
 
-      ws.discoveryProgress = { phase: 'fetch', loaded: 0, total: paths.length, failed: 0 };
+      ws.discoveryProgress = { phase: 'fetch', loaded: 0, total: paths.length, failed: 0, sourceProgress: options.sourceProgress || '' };
       render();
       await progressYield(ws);
 
       const concurrency = Math.max(1, Number(app.settings.repoDiscoveryFetchConcurrency || 6));
       const progressEvery = Math.max(1, Number(app.settings.repoDiscoveryProgressEvery || 1));
-      const renderEvery = Math.max(1, Number(app.settings.repoDiscoveryProgressiveRenderEvery || 12));
+      const renderEvery = Math.max(0, Number(app.settings.repoDiscoveryProgressiveRenderEvery || 0));
       const renderDelay = Math.max(16, Number(app.settings.repoDiscoveryBatchRenderDelayMs || 80));
 
       async function renderPartialFetchProgress(reason) {
@@ -16915,6 +28931,7 @@ ${integrityFooterForPath(parent, path)}`,
 
       await runWithConcurrency(paths, concurrency, async (path) => {
         const rawUrl = githubRawUrl(repo, discovery.ref, path);
+        githubRepoFetchTrace('raw.request', { sessionId: repoFetchSessionId, repo, ref: discovery.ref, path, rawUrl, total: paths.length, concurrency, hardRefresh: Boolean(options.hardRefresh) });
         try {
           const content = await fetchText(rawUrl, 'GitHub raw artifact', { hardRefresh: Boolean(options.hardRefresh) });
           addFileToWorkspace(ws, {
@@ -16930,6 +28947,10 @@ ${integrityFooterForPath(parent, path)}`,
             sourceOrigin: githubSource.origin,
             rootPaths: githubSource.rootPaths,
             enabledSurfaces: githubSource.enabledSurfaces,
+            sourceAccessMode: githubSource.sourceAccessMode || 'web-surface',
+            sourceResolutionKind: 'github-raw-file',
+            sourceResultBoundary: githubSource.sourceBoundary?.sourceResultBoundary || 'bounded web/raw observation',
+            sourceCacheBoundary: githubSource.sourceBoundary?.sourceCacheBoundary || 'browser-runtime-http-cache',
             sourceSurface: 'repoFiles'
           });
           count += 1;
@@ -16937,6 +28958,7 @@ ${integrityFooterForPath(parent, path)}`,
         } catch (error) {
           failed += 1;
           ws.discoveryProgress.failed = failed;
+          githubRepoFetchTrace('raw.error-handled', { sessionId: repoFetchSessionId, repo, ref: discovery.ref, path, rawUrl, error, rateLimited: Boolean(error?.rateLimited || Number(error?.status) === 429) });
           ws.logs.push(`Could not fetch discovered artifact ${path}: ${error.message}`);
         }
 
@@ -16946,7 +28968,7 @@ ${integrityFooterForPath(parent, path)}`,
         ws.discoveryProgress.total = paths.length;
         updateDiscoveryProgressDom(ws);
 
-        if (completed && (completed % renderEvery) === 0) {
+        if (renderEvery && completed && (completed % renderEvery) === 0) {
           await renderPartialFetchProgress('repo-discovery-progressive-fetch');
         } else if ((completed % progressEvery) === 0) {
           await progressYield(ws);
@@ -16957,14 +28979,20 @@ ${integrityFooterForPath(parent, path)}`,
         phase: 'fetch',
         loaded: count,
         failed,
-        total: paths.length
+        total: paths.length,
+        sourceProgress: options.sourceProgress || ws.discoveryProgress?.sourceProgress || ''
       });
-      await renderPartialFetchProgress('repo-discovery-fetch-complete');
+      if (renderEvery) await renderPartialFetchProgress('repo-discovery-fetch-complete');
+      else {
+        updateDiscoveryProgressDom(ws);
+        await progressYield(ws);
+      }
 
       ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
         phase: 'index',
         indexLoaded: 0,
-        indexTotal: ws.files?.size || count
+        indexTotal: ws.files?.size || count,
+        sourceProgress: options.sourceProgress || ws.discoveryProgress?.sourceProgress || ''
       });
       await computeWorkspaceIndexWithDiscoveryProgress(ws);
       indexed = true;
@@ -16981,8 +29009,10 @@ ${integrityFooterForPath(parent, path)}`,
       toast(`Repo discovery failed for ${repo}: ${error.message}`, 'warn');
     } finally {
       app.repoDiscoveryInFlight.delete(key);
-      ws.loading = false;
-      ws.discoveryProgress = null;
+      if (!options.keepDiscoveryProgress) {
+        ws.loading = false;
+        ws.discoveryProgress = null;
+      }
       if (!indexed) computeWorkspaceIndex(ws);
       render();
     }
@@ -17227,7 +29257,7 @@ ${integrityFooterForPath(parent, path)}`,
 
     if (selected) {
       const toggle = renderPreviewToggle(ws);
-      html = html.replace(/(<div class="lineage-search-wrap">)\s*/m, `$1\n            ${toggle}\n            `);
+      html = html.replace(/(<button[^>]*toolbar-display-options[\s\S]*?<\/button>)\s*/m, `$1\n            ${toggle}\n            `);
       if (previewMaterialActive(ws)) {
         html = html.replace('<div class="post-feed lineage', `${renderPreviewFilterBar(ws)}<div class="post-feed lineage preview-feed`);
       }
@@ -17498,8 +29528,42 @@ ${integrityFooterForPath(parent, path)}`,
 
   function rememberLensScroll(ws, explicitEl = null) {
     if (!ws) return;
-    const el = explicitEl || activeScrollableFeed(ws);
     const selected = selectedRouteDescriptor(ws);
+    const id = CSS.escape(ws.id || '');
+    let el = explicitEl || null;
+    if (!el) {
+      const role = selected.mode === 'lineage' ? 'lineage' : 'discovery';
+      el = document.querySelector(`.post-feed.${role}[data-ws="${id}"]`) || null;
+      if (!el) {
+        const before = {
+          routeScrollTop: Number(ws.routeScrollTop || 0),
+          routeScrollMode: ws.routeScrollMode || '',
+          routeScrollSelectedPath: ws.routeScrollSelectedPath || ''
+        };
+        // During Discovery -> Lineage selection the app state changes before
+        // the Lineage DOM exists. Do not fall back to document/body scroll here;
+        // that writes a stale zero and destroys the Discovery scroll entry that
+        // browser/app Back needs.
+        if (selected.mode === 'lineage') {
+          ws.routeScrollMode = 'lineage';
+          ws.routeScrollSelectedPath = selected.selectedPath || '';
+          scrollFlightRecord('lens:remember-scroll-skip', {
+            reason: 'lineage-feed-not-rendered',
+            before,
+            after: {
+              routeScrollTop: Number(ws.routeScrollTop || 0),
+              routeScrollMode: ws.routeScrollMode || '',
+              routeScrollSelectedPath: ws.routeScrollSelectedPath || ''
+            },
+            selected,
+            workspace: scrollRestoreDebugWorkspaceState(ws)
+          });
+          routeOwnerRecord('lens:remember-scroll-skip', { reason: 'lineage-feed-not-rendered', before, after: routeOwnerWorkspaceSummary(ws) });
+          return;
+        }
+        el = activeScrollableFeed(ws);
+      }
+    }
     const before = {
       routeScrollTop: Number(ws.routeScrollTop || 0),
       routeScrollMode: ws.routeScrollMode || '',
@@ -17549,13 +29613,14 @@ ${integrityFooterForPath(parent, path)}`,
 
   function applyLensSource(ws, source) {
     if (!ws || !source) return;
+    const beforeOwner = routeOwnerWorkspaceSummary(ws);
     ws.discoveryView = source.discoveryView || ws.discoveryView || 'feed';
     ws.discoveryFilterSchema = source.discoveryFilterSchema || source.filterSchema || ws.discoveryFilterSchema || 'all';
     ws.filterSchema = ws.discoveryFilterSchema;
     ws.discoverySearch = source.discoverySearch || '';
     ws.lineageSearch = source.lineageSearch || '';
 
-    const wantsLineage = source.mode === 'lineage' || Boolean(source.selectedNodeId || source.selectedPath || source.selectedTitle);
+    const wantsLineage = typeof routeSourceWantsLineage === 'function' ? routeSourceWantsLineage(source) : (source.mode === 'lineage' || Boolean(source.selectedNodeId || source.selectedPath || source.selectedTitle));
     const selected = typeof resolveRouteSelectedNode === 'function'
       ? resolveRouteSelectedNode(ws, source)
       : ((source.selectedPath && ws.nodes?.find?.((node) => node.path === source.selectedPath)) || null);
@@ -17573,6 +29638,7 @@ ${integrityFooterForPath(parent, path)}`,
     } else {
       ws.selectedNodeId = null;
       ws.pendingSelectedRoute = null;
+      clearLineageViewLockForWorkspace(ws, 'lens-discovery-source');
     }
 
     const beforeRouteScroll = {
@@ -17594,6 +29660,13 @@ ${integrityFooterForPath(parent, path)}`,
         routeScrollSelectedPath: ws.routeScrollSelectedPath || ''
       },
       workspace: scrollRestoreDebugWorkspaceState(ws)
+    });
+    routeOwnerRecord('lens:apply-source', {
+      source: routeOwnerStateSummary({ workspaces: [source] })?.sources?.[0] || null,
+      wantsLineage,
+      selectedResolved: selected ? { id: selected.id || '', path: selected.path || '' } : null,
+      before: beforeOwner,
+      after: routeOwnerWorkspaceSummary(ws)
     });
   }
   registerApplyViewStateToWorkspaceWrapper(function applyViewStateWithDurableLens(ws, source, next) {
@@ -17634,27 +29707,23 @@ ${integrityFooterForPath(parent, path)}`,
     const state = currentLensState();
     let cacheWritten = false;
     try { sessionStorage.setItem(lensCacheKey(), JSON.stringify(state)); cacheWritten = true; } catch (_) {}
-    try {
-      const next = currentLensUrl(state);
-      const current = `${location.pathname}${location.search}${location.hash}`;
-      const willWriteHistory = next !== current;
-      if (willWriteHistory) {
-        if (kind === 'push') history.pushState(state, '', next);
-        else history.replaceState(state, '', next);
-      }
-      scrollFlightRecord('lens:persist', {
-        kind,
-        beforeUrl,
-        afterUrl: `${location.pathname}${location.search}${location.hash}`,
-        nextUrl: next,
-        cacheWritten,
-        willWriteHistory,
-        state: scrollFlightRouteStateSummary(state),
-        snapshot: scrollFlightSnapshot('lens:persist')
-      });
-    } catch (error) {
-      scrollFlightRecord('lens:persist-error', { kind, beforeUrl, message: error?.message || String(error) });
-    }
+
+    // Durable lens is a session/scroll convenience, not a route owner.
+    // Earlier versions let scroll/pagehide persistence replace the live URL with
+    // the latest lens state. That made browser Back appear broken because a
+    // stale Lineage lens could overwrite the discovery/no-route entry the user
+    // was navigating back to. Route writes now belong only to setRouteState().
+    scrollFlightRecord('lens:persist', {
+      kind,
+      beforeUrl,
+      afterUrl: `${location.pathname}${location.search}${location.hash}`,
+      nextUrl: currentLensUrl(state),
+      cacheWritten,
+      willWriteHistory: false,
+      routeOwner: 'setRouteState-only',
+      state: scrollFlightRouteStateSummary(state),
+      snapshot: scrollFlightSnapshot('lens:persist')
+    });
   }
 
   function cachedLensState() {
@@ -17670,9 +29739,20 @@ ${integrityFooterForPath(parent, path)}`,
     return staticDiskMode() ? decodeViewRouteFromHash() : decodeRouteStateFromHash();
   }
 
+  function routeOrAllowedCachedLensState() {
+    const decoded = decodedLensState();
+    if (decoded) return decoded;
+    if (cachedLensSuppressed()) return null;
+    return cachedLensState();
+  }
+
   function applyCurrentOrCachedLens() {
-    const state = decodedLensState() || cachedLensState();
-    if (!state) return false;
+    const state = routeOrAllowedCachedLensState();
+    if (!state) {
+      routeOwnerRecord('lens:apply-skip', { reason: cachedLensSuppressed() ? 'cached-suppressed' : 'no-state' });
+      return false;
+    }
+    routeOwnerRecord('lens:apply-current-or-cache', { state: routeOwnerStateSummary(state), decodedPresent: Boolean(routeOwnerDecodedState()) });
 
     if (state.kind === 'view' || staticDiskMode()) {
       const workspaces = Array.isArray(state.workspaces) ? state.workspaces : [];
@@ -17696,7 +29776,10 @@ ${integrityFooterForPath(parent, path)}`,
 
   registerComputeWorkspaceIndexWrapper(function computeWorkspaceIndexWithDurableLens(ws, next) {
     const result = next(ws);
-    const state = app.pendingDurableLensState || decodedLensState() || cachedLensState();
+    // Respect explicit no-route/back suppression. The previous implementation
+    // read cachedLensState() directly, so compute/index refresh could resurrect
+    // a stale Lineage selection immediately after browser Back cleared it.
+    const state = app.pendingDurableLensState || routeOrAllowedCachedLensState();
     const sources = state?.workspaces || state?.sources || [];
     const index = app.workspaces.indexOf(ws);
     if (index >= 0 && sources[index]) applyLensSource(ws, sources[index]);
@@ -17704,8 +29787,10 @@ ${integrityFooterForPath(parent, path)}`,
   });
   registerRenderWrapper(function renderWithDurableLens(next) {
     // Durable lens owns route selection/history only; scroll position is restored
-    // by the stored browser scroll owner below.
-    if (!app.isBootingFromUrl && !app.routing?.restoring) {
+    // by the stored browser scroll owner below. During explicit Lineage actions
+    // keep the selected lineage stable so a stale cached discovery lens cannot
+    // bounce the user out mid-audit/rerender.
+    if (!app.isBootingFromUrl && !app.routing?.restoring && !lineageViewLockActive()) {
       applyCurrentOrCachedLens();
     }
     return next();
@@ -17713,7 +29798,12 @@ ${integrityFooterForPath(parent, path)}`,
   registerSetRouteStateWrapper(function setRouteStateWithDurableLens(kind = 'push', next) {
     next(kind);
     if (!app.routing?.restoring && !app.isBootingFromUrl) {
-      try { sessionStorage.setItem(lensCacheKey(), JSON.stringify(currentLensState())); } catch (_) {}
+      try {
+        const state = currentLensState();
+        app.pendingDurableLensState = state || null;
+        if (state) sessionStorage.setItem(lensCacheKey(), JSON.stringify(state));
+        routeOwnerRecord('lens:pending-updated-from-route-write', { kind, state: routeOwnerStateSummary(state) });
+      } catch (_) {}
     }
   });
 
@@ -17767,6 +29857,7 @@ ${integrityFooterForPath(parent, path)}`,
     return TiinexViewState.discoveryScrollSignature({
       discoveryView: ws.discoveryView || 'feed',
       discoveryFilterSchema: ws.discoveryFilterSchema || ws.filterSchema || 'all',
+      discoveryFilterSchemas: typeof normalizeDiscoveryFilterListForWorkspace === 'function' ? normalizeDiscoveryFilterListForWorkspace(ws) : [],
       discoverySearch: ws.discoverySearch || '',
       previewMaterialMode: ws.previewMaterialMode,
       previewMaterialKind: typeof previewMaterialKind === 'function' ? previewMaterialKind(ws) : '',
@@ -18056,7 +30147,7 @@ ${integrityFooterForPath(parent, path)}`,
     if (!ws || !node) return html;
 
     const parentPickerActive = typeof parentPickerActiveFor === 'function' && parentPickerActiveFor(ws);
-    const parentPickerChip = `<button class="badge-soft mobile-card-select-parent-chip select-parent-action" data-action="select-reference-parent" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="Select as parent for reference leaf" aria-label="Select as parent"><i class="fa-solid fa-location-crosshairs"></i></button>`;
+    const parentPickerChip = `<button class="badge-soft mobile-card-select-parent-chip select-parent-action" data-action="select-parent-placement" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="Select as parent for reference leaf" aria-label="Select as parent"><i class="fa-solid fa-location-crosshairs"></i></button>`;
     const moreChip = `<button class="badge-soft mobile-card-more-chip" data-action="mobile-card-more" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="More actions" aria-label="More actions"><i class="fa-solid fa-ellipsis"></i></button>`;
     const actionChip = parentPickerActive ? parentPickerChip : moreChip;
 
@@ -19278,10 +31369,15 @@ window.addEventListener('popstate', () => {
       .sort((a, b) => String(b.updatedAt || b.snapshot.updatedAt || '').localeCompare(String(a.updatedAt || a.snapshot.updatedAt || '')))[0]?.id || '';
   }
 
+  function startupHasPublicHashShareTarget() {
+    return Boolean(parseHashShareTarget(location.hash || ''));
+  }
+
   function startupHasExplicitSharedState() {
     const params = new URLSearchParams(location.search || '');
     if (params.get('url')) return true;
-    return /^#(?:state|view)=/i.test(location.hash || '');
+    if (/^#(?:state|view)=/i.test(location.hash || '')) return true;
+    return startupHasPublicHashShareTarget();
   }
 
   function startupHashRouteModalState() {
@@ -19335,6 +31431,7 @@ window.addEventListener('popstate', () => {
       if (state.viewerIdentity) app.viewerIdentity = Object.assign(app.viewerIdentity || {}, state.viewerIdentity);
     } finally {
       app.localState.restoring = false;
+      flushLocalStatePostRestoreSave('restore-current-workspaces');
     }
     if (state.activeWorkspaceLabel) {
       const active = app.workspaces.find((ws) => ws.label === state.activeWorkspaceLabel);
@@ -19345,17 +31442,55 @@ window.addEventListener('popstate', () => {
     return true;
   }
 
-  function maybeRestoreLocalStateAtStartup() {
-    if (app.localState.startupRestoreAttempted || app.localState.restoring || app.isBootingFromUrl) return false;
-    app.localState.startupRestoreAttempted = true;
-    const id = currentLocalStateCandidateId();
-    if (!id) return false;
+  function workspaceHasSavedLocalFile(ws, savedFile) {
+    if (!ws || !savedFile) return false;
+    const path = canonicalWorkspacePath(savedFile.path || savedFile.name || '');
+    const sourceId = savedFile.sourceId || 'local';
+    const storageKey = savedFile.storageKey || sourceFileKey(sourceId, path, Boolean(savedFile.isGenerated));
+    if (storageKey && ws.files?.has?.(storageKey)) return true;
+    return Array.from(ws.files?.values?.() || []).some((file) => String(file.sourceId || '') === String(sourceId) && sameImportedPath(file.path || '', path));
+  }
 
-    // A refresh in file:// mode normally carries a compact view hash. That hash
-    // restores the remote/default workspace shape, while the local-state profile
-    // contains only unsaved local deltas. Do not let the view hash suppress the
-    // local-delta merge once workspaces are present.
-    if (startupHasExplicitSharedState() && (!app.workspaces.length || startupHasExplicitRouteModal())) return false;
+  function savedLocalStateStillMissing(state) {
+    if (!state || !Array.isArray(state.workspaces) || !state.workspaces.length) return false;
+    return state.workspaces.some((saved) => {
+      const localFiles = (saved.files || []).filter((file) => localStateFileIsPersistent(file));
+      if (!localFiles.length) return false;
+      const target = app.workspaces.find((ws) => workspaceMatchesLocalStateSnapshot(ws, saved));
+      if (!target) return true;
+      return localFiles.some((file) => !workspaceHasSavedLocalFile(target, file));
+    });
+  }
+
+  function maybeRestoreLocalStateAtStartup() {
+    if (app.localState.restoring || app.isBootingFromUrl) return false;
+    // Public hash targets are intentionally narrow social/share entrypoints.
+    // Do not merge the user's last local workspace into a cold-start public
+    // issue/discussion/file link; that makes the share target look like it
+    // restored the wrong lineage.
+    if (startupHasPublicHashShareTarget()) return false;
+    const id = currentLocalStateCandidateId();
+    const state = id ? localStateStoredSnapshot(id) : null;
+    const missingSavedLocal = savedLocalStateStillMissing(state);
+    if (app.localState.startupRestoreAttempted && !app.localState.startupRestoreDeferred && !missingSavedLocal) return false;
+    if (!id) {
+      app.localState.startupRestoreAttempted = true;
+      app.localState.startupRestoreDeferred = false;
+      return false;
+    }
+
+    // A refresh in file:// mode normally carries a compact view hash. The first
+    // render can happen before the shared route has rebuilt the remote/default
+    // workspace shape. Keep retrying until the workspace exists, then merge the
+    // saved local deltas instead of treating the first empty render as final.
+    if (startupHasExplicitSharedState() && (startupHasExplicitRouteModal())) return false;
+    if (startupHasExplicitSharedState() && !app.workspaces.length) {
+      app.localState.startupRestoreDeferred = true;
+      return false;
+    }
+
+    app.localState.startupRestoreAttempted = true;
+    app.localState.startupRestoreDeferred = false;
     return restoreLocalStateSnapshotSilently(id);
   }
 
@@ -19775,6 +31910,7 @@ window.addEventListener('popstate', () => {
       selectedTitle: source.selectedTitle || '',
       discoveryView: source.discoveryView || '',
       discoveryFilterSchema: source.discoveryFilterSchema || source.filterSchema || '',
+      discoveryFilterSchemas: Array.isArray(source.discoveryFilterSchemas) ? source.discoveryFilterSchemas : [],
       discoverySearch: source.discoverySearch || '',
       lineageSearch: source.lineageSearch || '',
       scrollTop: Number(source.scrollTop || source.feedScrollTop || 0) || 0,
@@ -19880,6 +32016,7 @@ window.addEventListener('popstate', () => {
       routeScrollSelectedPath: ws.routeScrollSelectedPath || '',
       discoveryView: ws.discoveryView || 'feed',
       discoveryFilterSchema: ws.discoveryFilterSchema || ws.filterSchema || 'all',
+      discoveryFilterSchemas: typeof normalizeDiscoveryFilterListForWorkspace === 'function' ? normalizeDiscoveryFilterListForWorkspace(ws) : [],
       discoverySearch: ws.discoverySearch || '',
       lineageSearch: ws.lineageSearch || '',
       discoveryVisibleCount: Number(ws.discoveryVisibleCount || 0),
@@ -20058,6 +32195,10 @@ window.addEventListener('popstate', () => {
         reason: options.reason || 'scroll'
       });
       return false;
+    }
+    if (mode === 'discovery' && top > 0) {
+      ws.discoveryRouteScrollTop = top;
+      ws.discoveryRouteScrollAt = Date.now();
     }
     const key = storedScrollKey(ws, identity);
     const stableKey = storedScrollStableKey(ws, identity);
@@ -20647,6 +32788,9 @@ window.addEventListener('popstate', () => {
       workspaces: (app.workspaces || []).map(scrollRestoreDebugWorkspaceState)
     });
     requestAnimationFrame(restoreStoredScrollForAll);
+    setTimeout(() => { try { maybeRestoreLocalStateAtStartup(); } catch (_) {} }, 120);
+    setTimeout(() => { try { maybeRestoreLocalStateAtStartup(); } catch (_) {} }, 900);
+    setTimeout(() => { try { maybeRestoreLocalStateAtStartup(); } catch (_) {} }, 2400);
     setTimeout(restoreStoredScrollForAll, 160);
     setTimeout(restoreStoredScrollForAll, 650);
     setTimeout(restoreStoredScrollForAll, 1500);
@@ -20678,6 +32822,7 @@ window.addEventListener('popstate', () => {
 window.addEventListener('popstate', (event) => {
     noteRoutePopState(event.state || history.state || null);
     const uxBackRestore = Boolean(app.routing?.pendingUxBackRestore);
+    routeOwnerRecord('history:popstate', { historyState: routeOwnerStateSummary(event.state || history.state || null), uxBackRestore, direction: app.routing?.popDirection || 0 });
     app.routing.pendingUxBackRestore = false;
     if (scrollFlightRecorderEnabled()) {
       scrollFlightRecord('history:popstate', {
@@ -20734,7 +32879,11 @@ window.addEventListener('popstate', (event) => {
     return result;
   });
 
-  loadViewerConfig()
+  installGitNativeRawFetchGate();
+
+  ensurePersistedGitNativeDiscoveryRuntime('startup-before-config')
+    .then(() => loadViewerConfig())
+    .then(() => ensurePersistedGitNativeDiscoveryRuntime('startup-before-boot'))
     .then(() => bootFromUrl())
     .then(() => { if (typeof maybeOfferLocalStateRestore === 'function') maybeOfferLocalStateRestore(); })
     .then(() => {
@@ -21147,5 +33296,949 @@ window.addEventListener('popstate', (event) => {
     }, 120);
     return result;
   });
+
+
+
+  // Share eligibility and interaction-card groundwork.
+  // Share is intentionally separated from exact URL copying: a shareable target
+  // must first answer whether the receiver can resolve the target, whether the
+  // material is draft/local-only, and which transition/card form is appropriate.
+
+  function shareClean(value = '') {
+    return String(value || '').trim();
+  }
+
+  function shareUrlIsLocalOrVolatile(value = '') {
+    const raw = shareClean(value);
+    if (!raw) return true;
+    if (/^(?:file|blob|data|about|chrome|edge|moz-extension):/i.test(raw)) return true;
+    try {
+      const url = new URL(raw, location.href);
+      const host = String(url.hostname || '').toLowerCase();
+      if (!/^https?:$/i.test(url.protocol)) return true;
+      if (!host || host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '[::1]' || host.endsWith('.local')) return true;
+      return false;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  function shareFirstUrl(values = []) {
+    for (const value of values || []) {
+      const clean = shareClean(value);
+      if (clean && /^https?:\/\//i.test(clean) && !shareUrlIsLocalOrVolatile(clean)) return clean;
+    }
+    return '';
+  }
+
+  function shareNodeSourceUrl(node = {}) {
+    return shareFirstUrl([
+      node.publishedOriginUrl,
+      node.sourceOrigin,
+      node.recoveredFromUrl,
+      node.browseUrl,
+      node.rawUrl,
+      node.file?.publishedOriginUrl,
+      node.file?.sourceOrigin,
+      node.file?.recoveredFromUrl,
+      node.file?.browseUrl,
+      node.file?.rawUrl
+    ]);
+  }
+
+  function shareWorkspacePublicTarget(ws = null) {
+    if (!ws) return null;
+    const publicTarget = ws.publicShareTarget || ws.shareTarget || null;
+    if (publicTarget?.url && !shareUrlIsLocalOrVolatile(publicTarget.url)) {
+      return { adapter: normalizeShareAdapter(publicTarget.adapter || '') || defaultAdapterForShareTarget(publicTarget.url), url: publicTarget.url, source: 'workspace-public-share-target' };
+    }
+    const identityTarget = app.viewerIdentity?.publicShareTarget || app.activePublicShareTarget || null;
+    if (identityTarget?.url && !shareUrlIsLocalOrVolatile(identityTarget.url)) {
+      return { adapter: normalizeShareAdapter(identityTarget.adapter || '') || defaultAdapterForShareTarget(identityTarget.url), url: identityTarget.url, source: 'active-public-share-target' };
+    }
+    const configUrl = shareClean(app.viewerIdentity?.configUrl || '');
+    if (configUrl && /\.workspace\.md(?:$|[?#])/i.test(configUrl) && !shareUrlIsLocalOrVolatile(configUrl)) {
+      return { adapter: 'workspace', url: configUrl, source: 'viewer-config-url' };
+    }
+    const selected = selectedNode(ws);
+    const selectedUrl = selected ? shareNodeSourceUrl(selected) : '';
+    if (selectedUrl) return { adapter: defaultAdapterForShareTarget(selectedUrl), url: selectedUrl, source: 'selected-artifact-source' };
+    const firstNode = (ws.nodes || []).find((node) => shareNodeSourceUrl(node));
+    const firstUrl = firstNode ? shareNodeSourceUrl(firstNode) : '';
+    if (firstUrl) return { adapter: defaultAdapterForShareTarget(firstUrl), url: firstUrl, source: 'first-artifact-source' };
+    return null;
+  }
+
+  function shareWorkspaceLocalOnlyCounts(ws = null) {
+    if (!ws) return { assets: 0, files: 0, generated: 0, draftNodes: 0, total: 0 };
+    const assets = Array.from(ws.assets?.values?.() || []).filter((asset) => !asset.rawUrl && asset.sourceId === 'local').length;
+    const files = Array.from(ws.files?.values?.() || []).filter((file) => !file.rawUrl && !file.browseUrl && (file.sourceId === 'local' || file.isGenerated)).length;
+    const generated = Number(ws.generated?.length || 0) || 0;
+    const draftNodes = Array.from(ws.nodes || []).filter((node) => nodeShowsAuthoringDraftState(ws, node)).length;
+    return { assets, files, generated, draftNodes, total: assets + files + generated + draftNodes };
+  }
+
+  function shareExactViewUrl() {
+    try {
+      const state = staticDiskMode() && typeof viewRouteState === 'function'
+        ? viewRouteState()
+        : (typeof routeState === 'function' ? routeState() : { v: 1, sources: [] });
+      const hash = staticDiskMode() ? `#view=${encodeJsonBase64Url(state)}` : `#state=${encodeRouteState(state)}`;
+      const url = new URL(location.href);
+      url.hash = hash;
+      return url.href;
+    } catch (_) {
+      return location.href;
+    }
+  }
+
+  function sharePublicUrlForTarget(target = null) {
+    if (!target?.url || shareUrlIsLocalOrVolatile(target.url)) return '';
+    return publicViewerShareUrlForTarget(target.url, target.adapter || defaultAdapterForShareTarget(target.url));
+  }
+
+  function shareStatusLabel(status = '') {
+    return ({
+      'public-resolvable': 'Public target link',
+      'access-bound': 'Access-bound target',
+      'draft-local': 'Draft/local only',
+      'exact-view-only': 'Exact view only',
+      unavailable: 'Unavailable'
+    })[status] || 'Share candidate';
+  }
+
+  function shareSeverityForStatus(status = '') {
+    if (status === 'public-resolvable') return 'ok';
+    if (status === 'access-bound' || status === 'exact-view-only') return 'warn';
+    if (status === 'draft-local' || status === 'unavailable') return 'danger';
+    return 'warn';
+  }
+
+  function shareAudienceForTarget(target = null) {
+    const adapter = normalizeShareAdapter(target?.adapter || '') || defaultAdapterForShareTarget(target?.url || '');
+    if (adapter === 'github.issue') return 'Anyone who can access the GitHub issue and the Tiinex viewer.';
+    if (adapter === 'github.discussion') return 'Anyone who can access the GitHub discussion and the Tiinex viewer.';
+    if (adapter === 'github.file') return 'Anyone who can access the GitHub file/ref and the Tiinex viewer.';
+    if (adapter === 'workspace') return 'Anyone who can access the workspace config and its entrypoints.';
+    if (adapter === 'web.markdown') return 'Anyone who can access the markdown source and the Tiinex viewer.';
+    if (target?.url) return 'Anyone who can access the target URL and the Tiinex viewer.';
+    return 'No resolvable external audience yet.';
+  }
+
+  function buildShareEligibility(scope = 'active', ws = null, node = null) {
+    const activeWs = ws || getActiveWorkspace?.() || null;
+    const activeNode = node || (activeWs ? selectedNode(activeWs) : null);
+    const resolvedScope = scope === 'artifact' && activeNode ? 'artifact' : (scope === 'workspace' && activeWs ? 'workspace' : 'active');
+    const localCounts = activeWs ? shareWorkspaceLocalOnlyCounts(activeWs) : shareWorkspaceLocalOnlyCounts(null);
+    const exactUrl = shareExactViewUrl();
+    const publicBase = configuredPublicViewerBaseUrl();
+    const warnings = [];
+    const nextActions = [];
+    let target = null;
+    let title = 'Current Tiinex view';
+    let summary = 'Share current viewer context.';
+    let materialState = 'view';
+
+    if (resolvedScope === 'artifact' && activeNode) {
+      const targetUrl = shareNodeSourceUrl(activeNode);
+      target = targetUrl ? { adapter: defaultAdapterForShareTarget(targetUrl), url: targetUrl, source: 'artifact-source-url' } : null;
+      title = artifactDisplayTitle(activeNode) || activeNode.title || 'Tiinex artifact';
+      summary = shortText(activeNode.summary || activeNode.why || activeNode.title || '', 220) || 'Artifact share target.';
+      materialState = nodeShowsAuthoringDraftState(activeWs, activeNode) ? 'draft-local' : (target ? 'source-backed' : 'local-only');
+    } else if (activeWs) {
+      target = shareWorkspacePublicTarget(activeWs);
+      title = workspaceDisplayLabel(activeWs) || activeWs.label || 'Tiinex workspace';
+      summary = `${activeWs.nodes?.length || 0} artifact${(activeWs.nodes?.length || 0) === 1 ? '' : 's'} · ${activeWs.leaves?.length || 0} leaf candidate${(activeWs.leaves?.length || 0) === 1 ? '' : 's'}.`;
+      materialState = localCounts.total ? 'mixed-local' : (target ? 'source-backed' : 'local-only');
+    }
+
+    const publicUrl = sharePublicUrlForTarget(target);
+    let status = 'unavailable';
+    if (materialState === 'draft-local' || materialState === 'local-only') status = 'draft-local';
+    else if (publicUrl) status = 'public-resolvable';
+    else if (target?.url) status = 'access-bound';
+    else if (exactUrl) status = 'exact-view-only';
+
+    if (!publicBase) warnings.push('No public viewer base URL is configured; public Tiinex links cannot be produced from this runtime.');
+    if (localCounts.total) warnings.push(`Workspace contains ${localCounts.total} local/draft item${localCounts.total === 1 ? '' : 's'} that a public link will not carry.`);
+    if (status === 'draft-local') warnings.push('This target is local/draft. Use exact local view, export, review package, or publish before claiming a public share.');
+    if (status === 'access-bound') warnings.push('The source URL exists, but public access cannot be proven from this browser session. Treat this as access-bound.');
+    if (!target?.url) warnings.push('No external source boundary was found for a public target link.');
+
+    if (publicUrl) nextActions.push('copy-public-target');
+    if (exactUrl) nextActions.push('copy-exact-view');
+    if (activeWs) nextActions.push('export-workspace');
+    nextActions.push('copy-interaction-card');
+
+    return {
+      schema: 'tiinex.share.eligibility.v1',
+      scope: resolvedScope,
+      status,
+      statusLabel: shareStatusLabel(status),
+      severity: shareSeverityForStatus(status),
+      title,
+      summary,
+      audience: shareAudienceForTarget(target),
+      target,
+      publicUrl,
+      exactUrl,
+      materialState,
+      localOnly: localCounts,
+      warnings,
+      nextActions,
+      generatedAt: new Date().toISOString()
+    };
+  }
+
+
+  function githubIssueParentBindingAudit() {
+    const report = githubIssueNestedContinuityReport();
+    const rows = (report.rows || []).filter((row) => /github-issues\//i.test(row.path || '') || /github\.com\//i.test(row.sourceUrl || ''));
+    const unresolvedHints = rows.filter((row) => Number(row.parentHintCount || 0) > 0 && !row.explicitParent);
+    const commentChildren = rows.filter((row) => /comment-\d+-.*-recovered-/i.test(row.path || ''));
+    return {
+      rows,
+      commentChildren,
+      unresolvedHints,
+      warningCount: (report.warnings || []).length + unresolvedHints.length,
+      warnings: (report.warnings || []).concat(unresolvedHints.map((row) => ({ path: row.path, parentPath: row.parentPath, reason: 'parent hints did not resolve explicitly', hint: row.resolutionHint || '', mode: row.resolutionMode || '' })))
+    };
+  }
+
+  function shareEligibilityForActive() {
+    const ws = getActiveWorkspace?.() || app.workspaces?.[0] || null;
+    const node = ws ? selectedNode(ws) : null;
+    return buildShareEligibility(node ? 'artifact' : 'workspace', ws, node);
+  }
+
+  function shareEligibilityForWorkspaceId(wsId = '') {
+    const ws = getWorkspace(shareClean(wsId)) || getActiveWorkspace?.() || null;
+    return buildShareEligibility('workspace', ws, null);
+  }
+
+  function shareEligibilityForArtifactId(wsId = '', nodeId = '') {
+    const ws = getWorkspace(shareClean(wsId)) || getActiveWorkspace?.() || null;
+    const node = ws?.nodeById?.get?.(shareClean(nodeId)) || selectedNode(ws) || null;
+    return buildShareEligibility('artifact', ws, node);
+  }
+
+  function shareEligibilityReport() {
+    const rows = [];
+    for (const ws of app.workspaces || []) {
+      rows.push(shareEligibilityForWorkspaceId(ws.id));
+      const selected = selectedNode(ws);
+      if (selected) rows.push(shareEligibilityForArtifactId(ws.id, selected.id));
+    }
+    const counts = rows.reduce((acc, row) => {
+      acc[row.status] = (acc[row.status] || 0) + 1;
+      return acc;
+    }, {});
+    return { schema: 'tiinex.share.eligibility.report.v1', counts, rows };
+  }
+
+  function shareDestinationLabel(item = {}) {
+    const adapter = normalizeShareAdapter(item.target?.adapter || '') || defaultAdapterForShareTarget(item.target?.url || '');
+    if (item.publicUrl) {
+      if (adapter === 'github.issue') return 'Tiinex public viewer via GitHub issue';
+      if (adapter === 'github.discussion') return 'Tiinex public viewer via GitHub discussion';
+      if (adapter === 'github.file') return 'Tiinex public viewer via GitHub file';
+      if (adapter === 'workspace') return 'Tiinex public viewer workspace';
+      if (adapter === 'web.markdown') return 'Tiinex public viewer via web markdown';
+      return 'Tiinex public viewer';
+    }
+    if (item.exactUrl) return 'Exact local/browser view';
+    return adapter || 'unresolved destination';
+  }
+
+  function shareInteractionQuestion() {
+    return 'Why do you want to share this?';
+  }
+
+  function sharePrimaryHref(item = {}, options = {}) {
+    if (options.preferExact && item.exactUrl) return item.exactUrl;
+    return item.publicUrl || item.exactUrl || item.target?.url || '';
+  }
+
+  function shareHasViewerHashOrigin(url = '') {
+    const clean = shareClean(url);
+    if (!clean) return false;
+    try {
+      const parsed = new URL(clean, location.href);
+      return Boolean(parsed.hash && parsed.hash.length > 1);
+    } catch (_) {
+      return clean.includes('#') && clean.split('#')[1].trim().length > 0;
+    }
+  }
+
+  function shareOriginBoundaryLabel(item = {}, href = '') {
+    if (item.publicUrl && href === item.publicUrl) return 'public Tiinex target';
+    if (item.exactUrl && href === item.exactUrl) return shareUrlIsLocalOrVolatile(href) ? 'personal/local exact view' : 'exact view state';
+    if (href) return 'source URL';
+    return 'missing origin';
+  }
+
+  function shareDestinationOptions() {
+    return [
+      ['generic', 'Generic card'],
+      ['guestbook', 'Guestbook / comment'],
+      ['email', 'Email'],
+      ['bookmark', 'Bookmark bar'],
+      ['html', 'Downloadable HTML card'],
+      ['redirect.html', 'Redirect HTML opener']
+    ];
+  }
+
+  function interactionCardMarkdown(eligibility = null, options = {}) {
+    const item = eligibility || shareEligibilityForActive();
+    const intent = shareClean(options.intent || 'share');
+    const reason = shareClean(options.reason || '');
+    const href = sharePrimaryHref(item, options);
+    const destination = shareClean(options.destination || shareDestinationLabel(item));
+    const originLabel = shareOriginBoundaryLabel(item, href);
+    const lines = [];
+    lines.push(`### ${item.title || 'Tiinex interaction point'}`);
+    if (item.summary) lines.push('', item.summary);
+    lines.push('', `**Question:** ${shareInteractionQuestion()}`);
+    lines.push(`**Answer:** ${reason || 'No context answer was provided yet.'}`);
+    lines.push(`**Intent:** ${intent}`);
+    if (destination) lines.push(`**Destination:** ${destination}`);
+    if (href) lines.push(`**Open:** ${href}`);
+    lines.push(`**Origin:** ${originLabel}${href && shareHasViewerHashOrigin(href) ? ' with hash target' : ''}`);
+    lines.push(`**Share status:** ${item.statusLabel || item.status}`);
+    if (item.audience) lines.push(`**Audience:** ${item.audience}`);
+    if (item.warnings?.length) {
+      lines.push('', '<details><summary>Share boundary</summary>', '');
+      item.warnings.forEach((warning) => lines.push(`- ${warning}`));
+      lines.push('', '</details>');
+    }
+    lines.push('', '_This card is a presentation/interaction point. It is not evidence, endorsement, source mutation, or proof by itself._');
+    return lines.join('\n');
+  }
+
+  function interactionCardGuestbookText(eligibility = null, options = {}) {
+    const item = eligibility || shareEligibilityForActive();
+    const reason = shareClean(options.reason || '');
+    const href = sharePrimaryHref(item, options);
+    const lines = [];
+    lines.push(item.title || 'Tiinex interaction point');
+    if (item.summary) lines.push('', item.summary);
+    lines.push('', `Question: ${shareInteractionQuestion()}`);
+    lines.push(`Answer: ${reason || 'No context answer was provided yet.'}`);
+    if (href) lines.push('', `Open: ${href}`);
+    lines.push('', `Status: ${item.statusLabel || item.status || 'share candidate'}`);
+    lines.push('Boundary: shared as a Tiinex interaction point; not proof or source mutation by itself.');
+    return lines.join('\n');
+  }
+
+  function interactionCardPreviewHtml(eligibility = null, options = {}) {
+    const item = eligibility || shareEligibilityForActive();
+    const reason = shareClean(options.reason || '');
+    const editableReason = Boolean(options.editableReason);
+    const href = sharePrimaryHref(item, options);
+    const hrefHtml = href
+      ? `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(href)}</a>`
+      : '<em>No origin link available yet.</em>';
+    const warnings = (item.warnings || []).slice(0, 4).map((warning) => `<li>${escapeHtml(warning)}</li>`).join('');
+    const reasonBody = editableReason
+      ? `<textarea data-share-reason rows="3" maxlength="480" placeholder="Give the receiver a reason to open this Tiinex context…">${escapeHtml(reason)}</textarea><small>Optional. Included in card / guestbook / HTML. Plain links stay plain.</small>`
+      : `<p>${reason ? escapeHtml(reason) : '<em>No context answer was provided yet.</em>'}</p>`;
+    return `
+      <article class="share-rendered-card ${editableReason ? 'share-rendered-card-editable' : ''}">
+        <div class="share-rendered-card-head">
+          <span class="badge-soft share-kind-chip"><i class="fa-solid fa-share-nodes"></i>Interaction card</span>
+          ${shareEligibilityStatusHtml(item)}
+        </div>
+        <h3>${escapeHtml(item.title || 'Tiinex interaction point')}</h3>
+        ${item.summary ? `<p class="share-rendered-summary">${escapeHtml(item.summary)}</p>` : ''}
+        <section class="share-rendered-question">
+          <strong>${escapeHtml(shareInteractionQuestion())}</strong>
+          ${reasonBody}
+        </section>
+        <dl class="share-rendered-meta">
+          <div><dt>Open</dt><dd>${hrefHtml}</dd></div>
+          <div><dt>Destination</dt><dd>${escapeHtml(shareDestinationLabel(item))}</dd></div>
+          <div><dt>Origin</dt><dd>${escapeHtml(shareOriginBoundaryLabel(item, href))}${href && shareHasViewerHashOrigin(href) ? ' · hash target' : ''}</dd></div>
+        </dl>
+        ${warnings ? `<details class="share-rendered-boundary"><summary>Boundary warnings</summary><ul>${warnings}</ul></details>` : ''}
+        <p class="share-rendered-limit">Presentation/interaction point. Not evidence, endorsement, source mutation, or proof by itself.</p>
+      </article>`;
+  }
+
+  function shareCardHtmlDocument(eligibility = null, options = {}) {
+    const item = eligibility || shareEligibilityForActive();
+    const reason = shareClean(options.reason || '');
+    const href = sharePrimaryHref(item, options);
+    const cardHtml = interactionCardPreviewHtml(item, { reason });
+    const markdown = interactionCardMarkdown(item, { reason });
+    const title = item.title || 'Tiinex share card';
+    const openCta = href
+      ? `<p class="share-html-cta"><a class="share-html-open" href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer">Open in Tiinex</a></p>`
+      : `<p class="share-html-note">This share card has no public origin link yet. Use the copied card text or publish/export the source first.</p>`;
+    return `<!doctype html>
+<html lang="${escapeAttr(guessArtifactLanguage(`${title}\n${item.summary || ''}\n${reason}`) || 'en')}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)} · Tiinex share card</title>
+<style>
+  :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0f0b16; color: #f6f1ff; }
+  body { margin: 0; padding: clamp(16px, 4vw, 40px); background: radial-gradient(circle at top left, rgba(150, 79, 255, .22), transparent 42%), #0f0b16; }
+  main { max-width: 760px; margin: 0 auto; }
+  article { border: 1px solid rgba(202,153,255,.35); border-radius: 24px; padding: clamp(18px, 3vw, 28px); background: linear-gradient(145deg, rgba(255,255,255,.055), rgba(140,78,255,.045)); box-shadow: 0 24px 80px rgba(0,0,0,.35); }
+  .share-html-card-shell { display: grid; gap: 22px; }
+  .share-html-embed-note { color: #d8cbed; font-size: 14px; line-height: 1.5; margin: 8px 0 0; }
+  h1, h2, h3 { margin-top: 0; }
+  a { color: #d8b8ff; overflow-wrap: anywhere; }
+  .share-rendered-card-head, .share-rendered-meta div { display:flex; gap: 10px; flex-wrap:wrap; }
+  .badge-soft, .share-status-chip { border: 1px solid rgba(202,153,255,.3); border-radius: 999px; padding: 4px 10px; font-size: 12px; color: #d9c3ff; }
+  .share-rendered-question, .share-rendered-boundary { border: 1px solid rgba(255,255,255,.12); border-radius: 16px; padding: 14px; background: rgba(255,255,255,.035); margin-top: 16px; }
+  dt { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #b6a5cc; }
+  dd { margin: 0 0 10px; }
+  .share-html-cta { margin: 24px 0 0; }
+  .share-html-open { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 18px; border-radius: 999px; color: #fff; background: linear-gradient(135deg, #7c38ff, #b36bff); text-decoration: none; font-weight: 800; box-shadow: 0 12px 36px rgba(124,56,255,.25); }
+  .share-html-note { margin: 20px 0 0; color: #d8cbed; }
+  details { margin-top: 22px; border: 1px solid rgba(255,255,255,.12); border-radius: 16px; padding: 12px 14px; background: rgba(0,0,0,.16); }
+  summary { cursor: pointer; font-weight: 800; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid rgba(255,255,255,.12); border-radius: 16px; padding: 16px; background: rgba(0,0,0,.24); }
+</style>
+</head>
+<body>
+<main>
+<div class="share-html-card-shell">
+${cardHtml}
+${openCta}
+<p class="share-html-embed-note">This file is a standalone Tiinex interaction card. You may send it, host it, or copy the visible card markup into a page. The target link remains the origin boundary.</p>
+</div>
+<details>
+<summary>Copyable markdown</summary>
+<pre>${escapeHtml(markdown)}</pre>
+</details>
+</main>
+</body>
+</html>`;
+  }
+
+  function shareRedirectHtmlDocument(eligibility = null, options = {}) {
+    const item = eligibility || shareEligibilityForActive();
+    const reason = shareClean(options.reason || '');
+    const href = sharePrimaryHref(item, options);
+    const title = item.title || 'Tiinex share target';
+    const summary = item.summary || '';
+    const safeScriptHref = JSON.stringify(href || '').replace(/</g, '\u003c');
+    const manualLink = href
+      ? `<a class="open" href="${escapeAttr(href)}">Open in Tiinex</a>`
+      : `<strong>No public or exact target URL was available when this redirect page was created.</strong>`;
+    const redirectMeta = href ? `<meta http-equiv="refresh" content="0; url=${escapeAttr(href)}">` : '';
+    const reasonHtml = reason
+      ? `<section><h2>${escapeHtml(shareInteractionQuestion())}</h2><p>${escapeHtml(reason)}</p></section>`
+      : '';
+    return `<!doctype html>
+<html lang="${escapeAttr(guessArtifactLanguage(`${title}\n${summary}\n${reason}`) || 'en')}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+${redirectMeta}
+<title>Open ${escapeHtml(title)} · Tiinex</title>
+<style>
+  :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0f0b16; color: #f6f1ff; }
+  body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at top left, rgba(150, 79, 255, .22), transparent 42%), #0f0b16; }
+  main { width: min(720px, 100%); border: 1px solid rgba(202,153,255,.35); border-radius: 24px; padding: clamp(18px, 4vw, 32px); background: rgba(255,255,255,.045); box-shadow: 0 24px 80px rgba(0,0,0,.35); }
+  .kicker { margin: 0 0 8px; color: #d9a8ff; text-transform: uppercase; letter-spacing: .16em; font-size: 12px; font-weight: 900; }
+  h1 { margin: 0; font-size: clamp(24px, 5vw, 38px); }
+  h2 { margin: 22px 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: .1em; color: #d9a8ff; }
+  p { color: #d9d1e6; line-height: 1.6; }
+  a { color: #fff; overflow-wrap: anywhere; }
+  .open { display: inline-flex; align-items: center; justify-content: center; min-height: 46px; padding: 0 20px; border-radius: 999px; color: #fff; background: linear-gradient(135deg, #7c38ff, #b36bff); text-decoration: none; font-weight: 900; box-shadow: 0 12px 36px rgba(124,56,255,.25); }
+  .url { margin-top: 18px; font-size: 13px; color: #cbbbe0; overflow-wrap: anywhere; }
+  .limit { margin-top: 22px; font-size: 13px; color: #b9aac8; }
+</style>
+<script>
+  const target = ${safeScriptHref};
+  if (target) window.location.replace(target);
+</script>
+</head>
+<body>
+<main>
+  <p class="kicker">Open in Tiinex</p>
+  <h1>${escapeHtml(title)}</h1>
+  ${summary ? `<p>${escapeHtml(summary)}</p>` : ''}
+  ${reasonHtml}
+  <p>${manualLink}</p>
+  ${href ? `<p class="url">Target: ${escapeHtml(href)}</p>` : ''}
+  <p class="limit">This redirect file is a lightweight opener. It points to a Tiinex target; it is not evidence, endorsement, source mutation, or proof by itself.</p>
+</main>
+</body>
+</html>`;
+  }
+
+  function shareRedirectHtmlFilename(item = {}) {
+    const slug = (typeof slugifyTitle === 'function' ? slugifyTitle(item.title || 'tiinex-open') : slugify(item.title || 'tiinex-open')) || 'tiinex-open';
+    return `${slug.slice(0, 72)}-tiinex-open.html`;
+  }
+
+  function shareSignalRecord(eligibility = null, options = {}) {
+    const item = eligibility || shareEligibilityForActive();
+    const intent = shareClean(options.intent || 'share');
+    const reason = shareClean(options.reason || '');
+    return {
+      schema: 'tiinex.share.signal.v1',
+      kind: intent,
+      question: shareInteractionQuestion(),
+      answer: reason,
+      destination: shareDestinationLabel(item),
+      title: item.title || '',
+      summary: item.summary || '',
+      status: item.status || '',
+      target: item.target || null,
+      publicUrl: item.publicUrl || '',
+      exactUrl: item.exactUrl || '',
+      audience: item.audience || '',
+      warnings: item.warnings || [],
+      createdAt: new Date().toISOString(),
+      interpretationLimit: 'Signal points at a Tiinex target. It is not evidence, endorsement, source mutation, or proof unless a separate artifact says so.'
+    };
+  }
+
+  function shareCounterObservationReport() {
+    const rows = [];
+    for (const ws of app.workspaces || []) {
+      for (const node of ws.nodes || []) {
+        const counters = {};
+        const candidates = [
+          ['like', node.likes ?? node.likeCount ?? node.reactions?.['+1'] ?? node.reactions?.like],
+          ['share', node.shares ?? node.shareCount],
+          ['comment', node.comments ?? node.commentCount],
+          ['reaction', node.reactionCount ?? node.reactions?.total_count]
+        ];
+        for (const [kind, value] of candidates) {
+          const number = Number(value);
+          if (Number.isFinite(number) && number > 0) counters[kind] = number;
+        }
+        if (Object.keys(counters).length) {
+          rows.push({ workspace: workspaceDisplayLabel(ws) || ws.label || ws.id, path: node.path || '', title: artifactDisplayTitle(node) || node.title || '', counters });
+        }
+      }
+    }
+    const totals = rows.reduce((acc, row) => {
+      Object.entries(row.counters || {}).forEach(([kind, value]) => { acc[kind] = (acc[kind] || 0) + Number(value || 0); });
+      return acc;
+    }, {});
+    return { schema: 'tiinex.share.counter.observation.report.v1', note: 'Observed counters only. Absence of a counter is not evidence that no signal exists.', totals, rows };
+  }
+
+  function shareEligibilityStatusHtml(item = {}) {
+    const severity = item.severity || shareSeverityForStatus(item.status || '');
+    return `<span class="badge-soft share-status-chip share-status-${escapeAttr(severity)}"><i class="fa-solid ${severity === 'ok' ? 'fa-circle-check' : severity === 'danger' ? 'fa-triangle-exclamation' : 'fa-circle-info'}"></i>${escapeHtml(item.statusLabel || item.status || 'Share candidate')}</span>`;
+  }
+
+  function renderShareEligibilityModal(modal = {}) {
+    const scope = modal.scope || 'active';
+    const item = scope === 'artifact'
+      ? shareEligibilityForArtifactId(modal.wsId || '', modal.nodeId || '')
+      : scope === 'workspace'
+        ? shareEligibilityForWorkspaceId(modal.wsId || '')
+        : shareEligibilityForActive();
+    const reason = shareClean(modal.shareReason || '');
+    const warnings = (item.warnings || []).map((warning) => `<li>${escapeHtml(warning)}</li>`).join('');
+    const targetLine = item.target?.url
+      ? `<code>${escapeHtml(item.target.adapter || defaultAdapterForShareTarget(item.target.url))}|${escapeHtml(item.target.url)}</code>`
+      : '<em>No external target found yet.</em>';
+    const publicDisabled = item.publicUrl ? '' : ' disabled';
+    const originHref = sharePrimaryHref(item);
+    const originNotice = originHref && shareHasViewerHashOrigin(originHref)
+      ? 'Has hash origin.'
+      : (originHref ? 'Source URL only.' : 'Missing origin. Publish, export, or use a local exact-view/bookmark flow before treating it as shareable.');
+    return `
+      <div class="modal-backdrop-custom share-eligibility-backdrop" role="dialog" aria-modal="true" aria-labelledby="share-eligibility-title">
+        <div class="modal-panel share-eligibility-panel public-share-panel">
+          <div class="modal-header-lite share-eligibility-head" translate="no">
+            <div>
+              <p class="kicker">Share</p>
+              <h2 class="modal-title-lite" id="share-eligibility-title">${escapeHtml(item.title || 'Share')}</h2>
+              <div class="share-eligibility-status-row">${shareEligibilityStatusHtml(item)}<span class="badge-soft share-origin-chip"><i class="fa-solid fa-hashtag"></i>${escapeHtml(originNotice)}</span></div>
+            </div>
+            <button class="tv-btn small subtle share-modal-close" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+          <div class="share-eligibility-body artifact-prose-renderer" ${artifactProseAttrs({ summary: item.summary || '', title: item.title || '' })}>
+            <div class="share-card-preview" translate="no" data-share-card-preview-html>${interactionCardPreviewHtml(item, { reason, editableReason: true })}</div>
+            <details class="share-boundary-details" ${item.severity === 'danger' ? 'open' : ''} translate="no">
+              <summary>Share boundary and target</summary>
+              <div class="share-eligibility-grid">
+                <div><strong>Scope</strong><span>${escapeHtml(item.scope || 'active')}</span></div>
+                <div><strong>Material</strong><span>${escapeHtml(item.materialState || 'unknown')}</span></div>
+                <div><strong>Audience</strong><span>${escapeHtml(item.audience || '')}</span></div>
+                <div><strong>Target</strong><span>${targetLine}</span></div>
+              </div>
+              ${warnings ? `<div class="share-warning-box"><strong>Boundary</strong><ul>${warnings}</ul></div>` : ''}
+            </details>
+          </div>
+          <div class="modal-footer-actions share-eligibility-actions share-action-grid" translate="no">
+            <button class="tv-btn subtle" data-action="copy-share-card" data-scope="${escapeAttr(item.scope || '')}" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}" title="Copy the rendered reasoned interaction card as Markdown"><i class="fa-regular fa-note-sticky"></i><span>Card</span></button>
+            <button class="tv-btn subtle" data-action="copy-share-guestbook" data-scope="${escapeAttr(item.scope || '')}" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}" title="Copy text suitable for a comment, guestbook, or simple destination"><i class="fa-regular fa-comment-dots"></i><span>Comment</span></button>
+            <button class="tv-btn subtle" data-action="copy-share-public" data-scope="${escapeAttr(item.scope || '')}" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}"${publicDisabled} title="Copy only the plain public Tiinex link"><i class="fa-solid fa-link"></i><span>Link</span></button>
+            <button class="tv-btn subtle" data-action="download-share-html" data-scope="${escapeAttr(item.scope || '')}" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}" title="Download a standalone HTML presentation card"><i class="fa-regular fa-file-code"></i><span>Card HTML</span></button>
+            <button class="tv-btn subtle" data-action="download-share-redirect-html" data-scope="${escapeAttr(item.scope || '')}" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}" title="Download a tiny redirect/open-in-browser HTML file"><i class="fa-solid fa-arrow-up-right-from-square"></i><span>Open HTML</span></button>
+            <button class="tv-btn subtle" data-action="prepare-share-bookmark" data-scope="${escapeAttr(item.scope || '')}" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}" title="Prepare an exact-view URL for the browser bookmark bar"><i class="fa-regular fa-bookmark"></i><span>Bookmark</span></button>
+            <button class="tv-btn subtle" data-action="native-share-card" data-scope="${escapeAttr(item.scope || '')}" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}" title="Use the browser/system share sheet when available"><i class="fa-solid fa-arrow-up-from-bracket"></i><span>Native</span></button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function shareEligibilityForEvent(event) {
+    const scope = event.currentTarget?.dataset?.scope || 'active';
+    const wsId = event.currentTarget?.dataset?.ws || '';
+    const nodeId = event.currentTarget?.dataset?.node || '';
+    if (scope === 'artifact') return shareEligibilityForArtifactId(wsId, nodeId);
+    if (scope === 'workspace') return shareEligibilityForWorkspaceId(wsId);
+    return shareEligibilityForActive();
+  }
+
+  function renderShareActionResultModal(modal = {}) {
+    const title = modal.title || 'Share step';
+    const message = modal.message || '';
+    const steps = (modal.steps || []).map((step) => `<li>${escapeHtml(step)}</li>`).join('');
+    const manualText = shareClean(modal.manualText || '');
+    const targetUrl = shareClean(modal.targetUrl || '');
+    const primary = modal.primaryLabel || 'Done';
+    const secondary = modal.secondaryLabel || '';
+    return `
+      <div class="modal-backdrop-custom share-result-backdrop" role="dialog" aria-modal="true" aria-labelledby="share-result-title">
+        <div class="modal-panel share-result-panel">
+          <div class="modal-header-lite" translate="no">
+            <div>
+              <p class="kicker">Share</p>
+              <h2 class="modal-title-lite" id="share-result-title">${escapeHtml(title)}</h2>
+            </div>
+            <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+          <div class="share-result-body">
+            ${message ? `<p>${escapeHtml(message)}</p>` : ''}
+            ${targetUrl ? `<p class="share-result-url"><a href="${escapeAttr(targetUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(targetUrl)}</a></p>` : ''}
+            ${steps ? `<ol>${steps}</ol>` : ''}
+            ${manualText ? `<label class="share-manual-copy"><span>Copy manually if needed</span><textarea readonly rows="8">${escapeHtml(manualText)}</textarea></label>` : ''}
+          </div>
+          <div class="modal-footer-actions share-result-actions" translate="no">
+            ${manualText ? `<button class="tv-btn subtle" data-action="copy-share-manual-text"><i class="fa-regular fa-copy"></i><span>Copy text</span></button>` : ''}
+            ${secondary ? `<button class="tv-btn subtle" data-action="close-modal"><span>${escapeHtml(secondary)}</span></button>` : ''}
+            <button class="tv-btn subtle" data-action="close-modal"><span>${escapeHtml(primary)}</span></button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function showShareActionResult(modal = {}) {
+    app.modal = Object.assign({ type: 'share-action-result' }, modal || {});
+    render();
+  }
+
+  async function copyShareText(text = '', okMessage = 'Copied share text.', warnMessage = 'Could not copy automatically.', options = {}) {
+    const clean = shareClean(text);
+    if (!clean) {
+      toast('Nothing shareable is available for this target yet.', 'warn');
+      return false;
+    }
+    try {
+      await navigator.clipboard?.writeText(clean);
+      if (options.toast !== false) toast(okMessage, 'ok');
+      return true;
+    } catch (_) {
+      if (options.fallbackModal) {
+        showShareActionResult({
+          title: options.fallbackTitle || 'Copy manually',
+          message: warnMessage,
+          manualText: clean,
+          primaryLabel: 'Done'
+        });
+      } else {
+        toast(warnMessage, 'warn');
+      }
+      return false;
+    }
+  }
+
+  function shareReasonFromPanel(target) {
+    return target?.closest?.('.share-eligibility-panel')?.querySelector?.('[data-share-reason]')?.value || app.modal?.shareReason || '';
+  }
+
+  function syncShareCardPreviewFromInput(input) {
+    const panel = input?.closest?.('.share-eligibility-panel');
+    if (!panel) return false;
+    const reason = input.value || '';
+    if (app.modal?.type === 'share-eligibility') app.modal.shareReason = reason;
+    const mirror = panel.querySelector('[data-share-reason-mirror]');
+    if (mirror) mirror.textContent = reason || 'No context answer was provided yet.';
+    return true;
+  }
+
+  function shareHtmlFilename(item = {}) {
+    const slug = (typeof slugifyTitle === 'function' ? slugifyTitle(item.title || 'tiinex-share') : slugify(item.title || 'tiinex-share')) || 'tiinex-share';
+    return `${slug.slice(0, 72)}-tiinex-share.html`;
+  }
+
+  function downloadShareHtmlCard(item = {}, reason = '') {
+    const html = shareCardHtmlDocument(item, { reason });
+    const filename = shareHtmlFilename(item);
+    downloadText(filename, html, 'text/html;charset=utf-8');
+    showShareActionResult({
+      title: 'HTML share card downloaded',
+      message: `Saved ${filename}. This file is a standalone presentation card with an Open in Tiinex button and a collapsed markdown fallback.`,
+      targetUrl: sharePrimaryHref(item),
+      steps: [
+        'Open the downloaded HTML file to preview it.',
+        'Send it, upload it, or copy the card markup where a standalone share card makes sense.',
+        'Use the Open in Tiinex button inside the file to return to the target.'
+      ],
+      primaryLabel: 'Done'
+    });
+  }
+
+  function downloadShareRedirectHtml(item = {}, reason = '') {
+    const href = sharePrimaryHref(item);
+    const html = shareRedirectHtmlDocument(item, { reason });
+    const filename = shareRedirectHtmlFilename(item);
+    downloadText(filename, html, 'text/html;charset=utf-8');
+    showShareActionResult({
+      title: 'Open HTML redirect downloaded',
+      message: `Saved ${filename}. This is a lightweight redirect/opener like the local Open in Browser launchers.`,
+      targetUrl: href,
+      steps: [
+        'Open the downloaded HTML file to verify that it jumps to the Tiinex target.',
+        'Use it where you want a small clickable opener instead of a full presentation card.',
+        'If the target is local/exact-view only, keep the file in the same personal context unless you publish/export the origin first.'
+      ],
+      primaryLabel: 'Done'
+    });
+  }
+
+  function prepareBookmarkExactView(item = {}) {
+    const exact = item.exactUrl || shareExactViewUrl();
+    if (!exact || !shareHasViewerHashOrigin(exact)) return toast('No exact view hash is available for bookmarking yet.', 'warn');
+    try {
+      history.pushState(Object.assign({}, history.state || {}, { tiinexBookmarkPrepared: true }), '', exact);
+      document.title = `Tiinex · ${item.title || 'continuity moment'}`;
+      showShareActionResult({
+        title: 'Bookmark URL prepared',
+        message: 'The address bar now points at this exact Tiinex continuity moment.',
+        targetUrl: exact,
+        steps: [
+          'Press Ctrl+D / Cmd+D to save it as a browser bookmark.',
+          'Or drag the address from the address bar to your bookmark bar.',
+          'Use Back after returning to jump back to the newer viewer state.'
+        ],
+        primaryLabel: 'I saved it',
+        secondaryLabel: 'Close'
+      });
+    } catch (_) {
+      copyShareText(exact, 'Copied exact view. Press Ctrl+D after opening it.', 'Could not prepare bookmark automatically.', { fallbackModal: true, fallbackTitle: 'Bookmark manually' });
+    }
+  }
+
+  async function nativeShareCard(item = {}, reason = '') {
+    const url = item.publicUrl || item.exactUrl || '';
+    const text = interactionCardGuestbookText(item, { reason });
+    if (!navigator.share) return copyShareText(text, 'System share is unavailable, copied guestbook text instead.', 'System share unavailable and clipboard copy failed.');
+    try {
+      await navigator.share({ title: item.title || 'Tiinex share', text, url: url || undefined });
+      toast('Opened system share sheet.', 'ok');
+    } catch (error) {
+      if (error?.name !== 'AbortError') toast('System share was not completed.', 'warn');
+    }
+  }
+
+  function shareReadinessReport() {
+    const active = shareEligibilityForActive();
+    const href = sharePrimaryHref(active);
+    return {
+      schema: 'tiinex.share.public.readiness.v1',
+      active,
+      hasHashOrigin: shareHasViewerHashOrigin(href),
+      availableActions: {
+        copyLinkOnly: Boolean(active.publicUrl),
+        copyReasonedCard: true,
+        copyGuestbookText: true,
+        downloadHtmlCard: true,
+        downloadRedirectHtml: Boolean(active.publicUrl || active.exactUrl),
+        bookmarkExactView: Boolean(active.exactUrl),
+        systemShare: typeof navigator !== 'undefined' && Boolean(navigator.share)
+      },
+      note: 'Plain public links require a resolvable source target after the viewer hash. Draft/local material should use exact view, HTML card, export, review, or publish flow with explicit boundary.'
+    };
+  }
+
+  function shareCompactnessReport() {
+    return {
+      schema: 'tiinex.share.compactness.report.v1',
+      reasonInputLocation: 'inside rendered interaction card',
+      duplicateReasonInput: false,
+      actionLabels: ['Card', 'Comment', 'Link', 'Card HTML', 'Open HTML', 'Bookmark', 'Native'],
+      mobileActionLayout: 'grid auto-fit with two-column fallback',
+      boundaryDefault: 'collapsed unless dangerous',
+      note: 'Share actions remain destination-neutral while keeping public link, card, guestbook, HTML, bookmark, and native share as separate flows.'
+    };
+  }
+
+  function shareActionHandoffReport() {
+    return {
+      schema: 'tiinex.share.action.handoff.report.v1',
+      copyActionsCloseDialog: true,
+      clipboardFallback: 'manual copy panel',
+      manualDestinations: {
+        html: 'download standalone presentation card',
+        redirectHtml: 'download lightweight Open in Browser style redirect file',
+        bookmark: 'prepare exact-view URL, then user saves browser bookmark'
+      },
+      automaticPolling: false,
+      actionButtonStyle: 'same visual treatment for all share destinations',
+      htmlCardShape: 'rendered share card with Open in Tiinex CTA and collapsed markdown fallback',
+      redirectHtmlShape: 'minimal Open in Browser style HTML redirect/opener with manual link fallback',
+      note: 'Manual verification is intentionally user-driven; the viewer does not poll destination servers after share actions.'
+    };
+  }
+
+  function sharePolishReadinessReport() {
+    return {
+      schema: 'tiinex.share.polish.readiness.v1',
+      mobileDialog: 'single-column header, compact scroll body, 2-column action grid at phone widths',
+      closeButton: 'fixed circular icon button inside share modal header',
+      guestbookContext: 'question and answer are copied together',
+      htmlVariants: ['presentation card', 'redirect/open-in-browser HTML'],
+      serverPolling: false
+    };
+  }
+
+  function evidenceRelationAttachmentReport() {
+    const rows = [];
+    for (const ws of app.workspaces || []) {
+      for (const node of ws.nodes || []) {
+        const schemaId = schemaIdForNode(node);
+        if (schemaId !== 'tiinex.evidence.v1') continue;
+        const links = evidenceAttachmentsFromNode(node).filter((item) => item.kind === 'relation');
+        if (links.length) rows.push({ workspace: workspaceDisplayLabel(ws) || ws.id, path: node.path || '', title: node.title || '', relationCount: links.length, relations: links.map((item) => ({ relationship: item.relationship, label: item.label, url: item.url })) });
+      }
+    }
+    return { schema: 'tiinex.evidence.relation.attachment.report.v1', rows, warningCount: 0 };
+  }
+
+
+  function evidenceCameraCaptureReport() {
+    const activeAttachments = evidenceAttachments(app.modal || {}).filter((item) => item.source === 'camera');
+    return {
+      schema: 'tiinex.evidence.camera.capture.report.v1',
+      active: evidenceWizardActive(),
+      nativeCaptureInputs: 3,
+      facingModes: ['environment', 'user', 'gallery'],
+      alwaysVisibleAction: true,
+      gracefulFallback: 'camera button remains visible on desktop; browser falls back to image picker when native capture is unavailable',
+      implementation: 'native file input accept=image/* with capture hints; no camera stream kept open',
+      manualPermissionFlow: 'browser/device mediated',
+      serverPolling: false,
+      capturedInCurrentWizard: activeAttachments.length,
+      attachments: activeAttachments.map((item) => ({ label: item.label || item.name || '', facing: item.cameraFacing || '', type: item.type || '', size: item.size || 0, capturedAt: item.capturedAt || '' }))
+    };
+  }
+
+  registerRenderModalWrapper(function renderModalWithShareEligibility(modal, next) {
+    if (modal?.type === 'share-eligibility') return renderShareEligibilityModal(modal);
+    if (modal?.type === 'share-action-result') return renderShareActionResultModal(modal);
+    return next(modal);
+  });
+
+  async function copyShareAndClose(text = '', okMessage = 'Copied share text.', warnMessage = 'Could not copy automatically.', fallbackTitle = 'Copy manually') {
+    const copied = await copyShareText(text, okMessage, warnMessage, { toast: false, fallbackModal: true, fallbackTitle });
+    if (copied) {
+      app.modal = null;
+      render();
+      toast(okMessage, 'ok');
+    }
+    return copied;
+  }
+
+  registerActionHandler(function shareEligibilityActions(event, next) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'open-share-modal') {
+      event.preventDefault();
+      event.stopPropagation();
+      app.modal = {
+        type: 'share-eligibility',
+        scope: event.currentTarget.dataset.scope || 'active',
+        wsId: event.currentTarget.dataset.ws || '',
+        nodeId: event.currentTarget.dataset.node || '',
+        shareReason: ''
+      };
+      render();
+      return;
+    }
+    if (action === 'copy-share-manual-text') {
+      event.preventDefault();
+      event.stopPropagation();
+      return copyShareText(app.modal?.manualText || '', 'Copied share text.', 'Could not copy automatically.');
+    }
+    if (action === 'copy-share-public') {
+      event.preventDefault();
+      event.stopPropagation();
+      const item = shareEligibilityForEvent(event);
+      return copyShareAndClose(item.publicUrl || '', 'Copied public Tiinex link.', 'Could not copy automatically. Copy the public link manually.', 'Copy link manually');
+    }
+    if (action === 'copy-share-exact') {
+      event.preventDefault();
+      event.stopPropagation();
+      const item = shareEligibilityForEvent(event);
+      return copyShareAndClose(item.exactUrl || shareExactViewUrl(), 'Copied exact view link.', 'Could not copy automatically. Copy the address bar URL.', 'Copy exact view manually');
+    }
+    if (action === 'copy-share-card') {
+      event.preventDefault();
+      event.stopPropagation();
+      const item = shareEligibilityForEvent(event);
+      const reason = shareReasonFromPanel(event.currentTarget);
+      return copyShareAndClose(interactionCardMarkdown(item, { intent: 'share', reason }), 'Copied reasoned interaction card.', 'Could not copy card automatically.', 'Copy card manually');
+    }
+    if (action === 'copy-share-guestbook') {
+      event.preventDefault();
+      event.stopPropagation();
+      const item = shareEligibilityForEvent(event);
+      const reason = shareReasonFromPanel(event.currentTarget);
+      return copyShareAndClose(interactionCardGuestbookText(item, { reason }), 'Copied comment/guestbook text.', 'Could not copy comment text automatically.', 'Copy comment manually');
+    }
+    if (action === 'download-share-html') {
+      event.preventDefault();
+      event.stopPropagation();
+      const item = shareEligibilityForEvent(event);
+      const reason = shareReasonFromPanel(event.currentTarget);
+      return downloadShareHtmlCard(item, reason);
+    }
+    if (action === 'download-share-redirect-html') {
+      event.preventDefault();
+      event.stopPropagation();
+      const item = shareEligibilityForEvent(event);
+      const reason = shareReasonFromPanel(event.currentTarget);
+      return downloadShareRedirectHtml(item, reason);
+    }
+    if (action === 'prepare-share-bookmark') {
+      event.preventDefault();
+      event.stopPropagation();
+      const item = shareEligibilityForEvent(event);
+      return prepareBookmarkExactView(item);
+    }
+    if (action === 'native-share-card') {
+      event.preventDefault();
+      event.stopPropagation();
+      const item = shareEligibilityForEvent(event);
+      const reason = shareReasonFromPanel(event.currentTarget);
+      app.modal = null;
+      render();
+      return nativeShareCard(item, reason);
+    }
+    return next(event);
+  });
+
+  if (!app.shareReasonLivePreviewBound) {
+    window.addEventListener('input', (event) => {
+      if (event.target?.matches?.('[data-share-reason]')) syncShareCardPreviewFromInput(event.target);
+    }, true);
+    app.shareReasonLivePreviewBound = true;
+  }
+
+
 
 })();
