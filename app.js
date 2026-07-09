@@ -112,9 +112,9 @@
   };
 
   const TIINEX_APP_BUILD = Object.freeze({
-    release: '336',
-    codename: 'human-first-workspace-topology',
-    packageName: 'tiinex-site-336-clean-repo',
+    release: '339',
+    codename: 'workspace-drop-content-boundary',
+    packageName: 'tiinex-site-339-clean-repo',
     builtFor: 'Tiinex/site source repo',
     publicBuildOutputExcluded: true
   });
@@ -122,6 +122,7 @@
   app.routeLoadPresentation = app.routeLoadPresentation || { sessions: [], active: null, renderEvents: [], contentClears: 0 };
   app.lifecycleResponsiveness = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
   app.githubExportBinding = app.githubExportBinding || { snapshots: [], issueBodyBindings: 0, commentBindings: 0, removedLocalDrafts: 0 };
+  app.workspaceOpenMerge = app.workspaceOpenMerge || { events: [], last: null, duplicateExports: 0, mergeImports: 0, openImports: 0 };
 
   function tiinexBuildIdentity() {
     return Object.assign({}, TIINEX_APP_BUILD, {
@@ -136,6 +137,7 @@
     app.routeLoadPresentation = app.routeLoadPresentation || { sessions: [], active: null, renderEvents: [], contentClears: 0 };
   app.lifecycleResponsiveness = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
   app.githubExportBinding = app.githubExportBinding || { snapshots: [], issueBodyBindings: 0, commentBindings: 0, removedLocalDrafts: 0 };
+  app.workspaceOpenMerge = app.workspaceOpenMerge || { events: [], last: null, duplicateExports: 0, mergeImports: 0, openImports: 0 };
     app.routeLoadPresentation.sessions = Array.isArray(app.routeLoadPresentation.sessions) ? app.routeLoadPresentation.sessions : [];
     app.routeLoadPresentation.renderEvents = Array.isArray(app.routeLoadPresentation.renderEvents) ? app.routeLoadPresentation.renderEvents : [];
     return app.routeLoadPresentation;
@@ -946,6 +948,38 @@
     };
   }
 
+  function workspaceOpenBoundaryReport() {
+    return {
+      schema: 'tiinex.workspace-open-boundary.report.v1',
+      policy: '.workspace.md opens workspace state instead of becoming a leaf; Open may close non-draft workspaces while preserving browser-local drafts; Merge upserts workspace/source config without closing workspaces; exported workspace files do not embed draft payloads',
+      lastOpen: app.workspaceOpenBoundary || null,
+      lastMerge: app.workspaceOpenMerge?.last || null,
+      workspaceCount: Array.isArray(app.workspaces) ? app.workspaces.length : 0,
+      draftWorkspaceCount: typeof localStateSerializableWorkspaces === 'function' ? localStateSerializableWorkspaces().length : 0,
+      workspaces: (app.workspaces || []).map((ws) => ({
+        label: workspaceDisplayLabel(ws),
+        localDraftPayload: workspaceHasUnpublishedDrafts(ws),
+        repo: ws.repo || '',
+        ref: ws.ref || '',
+        sourceCount: ws.sources?.size || 0,
+        nodes: ws.nodes?.length || 0
+      }))
+    };
+  }
+
+  function workspaceOpenMergeReport() {
+    const state = app.workspaceOpenMerge || { events: [], last: null, duplicateExports: 0, mergeImports: 0, openImports: 0 };
+    return {
+      schema: 'tiinex.workspace-open-merge.report.v1',
+      policy: 'Open replaces only non-draft workspaces; Merge keeps current workspaces and upserts matching workspace/source config; Duplicate workspace export marks the file as duplicate-import so it opens as a separate workspace while local drafts remain browser-local',
+      openImports: Number(state.openImports || 0),
+      mergeImports: Number(state.mergeImports || 0),
+      duplicateExports: Number(state.duplicateExports || 0),
+      last: state.last || null,
+      events: Array.isArray(state.events) ? state.events.slice(-20) : []
+    };
+  }
+
   window.TiinexDiagnostics = Object.assign(window.TiinexDiagnostics || {}, {
     buildIdentityReport: () => buildIdentityReport(),
     githubIssueImportTrace: () => githubIssueImportTraceEnsure().slice(),
@@ -995,6 +1029,8 @@
     previewMaterialFilterReadinessReport: () => previewMaterialFilterReadinessReport(),
     workspaceSourceConfigReadinessReport: () => workspaceSourceConfigReadinessReport(),
     workspaceExportTopologyReport: () => workspaceExportTopologyReport(),
+    workspaceOpenBoundaryReport: () => workspaceOpenBoundaryReport(),
+    workspaceOpenMergeReport: () => workspaceOpenMergeReport(),
     shareSignalPreviewForActive: (reason = '', intent = 'share') => shareSignalRecord(shareEligibilityForActive(), { intent, reason }),
     shareCounterObservationReport: () => shareCounterObservationReport(),
     crossWorkspaceRelationPickerReport: () => crossWorkspaceRelationPickerReport(),
@@ -5250,6 +5286,8 @@
     if (action === 'toggle-node-expand') { toggleNodeExpand(wsId, nodeId); setRouteState('replace'); return; }
     if (action === 'open-detail-modal') { app.modal = { type: 'detail', wsId, nodeId }; updateUrlState({ replace: true }); render(); return; }
     if (action === 'open-markdown-modal') { app.modal = { type: 'markdown', wsId, nodeId }; updateUrlState({ replace: true }); render(); return; }
+    if (action === 'open-workspace-artifact') { await openWorkspaceNode(getWorkspace(wsId), getWorkspace(wsId)?.nodeById?.get?.(nodeId)); return; }
+    if (action === 'merge-workspace-artifact') { await mergeWorkspaceNode(getWorkspace(wsId), getWorkspace(wsId)?.nodeById?.get?.(nodeId)); return; }
     if (action === 'open-create') {
       openArtifactCreateIntent({ mode: event.currentTarget.dataset.mode, wsId, nodeId, schemaId: event.currentTarget.dataset.schemaId || event.currentTarget.dataset.schema || '' });
       return;
@@ -8092,14 +8130,21 @@
     const sources = Array.isArray(state?.sources) ? state.sources : [];
     if (!sources.length) return 0;
 
+    const importMode = workspaceImportMode(state, options);
     let opened = 0;
     let firstWs = null;
     for (const source of sources) {
       if (!source || ((source.kind !== 'github-tree' && source.kind !== 'github') && !(source.urls || []).length)) continue;
 
-      let ws = findWorkspaceForConfigSource(source);
+      let ws = importMode === 'duplicate' ? null : findWorkspaceForConfigSource(source);
+      let matchedByLabel = false;
+      if (!ws && importMode === 'merge') {
+        ws = findWorkspaceForIncomingMergeSource(source);
+        matchedByLabel = Boolean(ws);
+        if (ws && !workspaceHasUnpublishedDrafts(ws)) resetNonDraftWorkspaceForIncomingConfig(ws, 'workspace merge by label');
+      }
       if (!ws) {
-        ws = createWorkspace(source.label || 'Config workspace', 'Loaded from .workspace.md workspace state.');
+        ws = createWorkspace(source.label || 'Config workspace', importMode === 'duplicate' ? 'Duplicated from .workspace.md workspace state.' : 'Loaded from .workspace.md workspace state.');
         opened += 1;
         if (source.kind === 'github-tree' || source.kind === 'github') {
           await loadGitHubStateSourceIntoWorkspace(ws, source);
@@ -8107,7 +8152,7 @@
           await loadUrlsIntoWorkspace(ws, source.urls || []);
         }
       } else if (source.kind === 'github-tree' || source.kind === 'github') {
-        await loadGitHubStateSourceIntoWorkspace(ws, source, { refreshExisting: true });
+        await loadGitHubStateSourceIntoWorkspace(ws, source, { refreshExisting: true, allowSurfaceDisable: matchedByLabel });
       }
       if (!firstWs) firstWs = ws;
       if (typeof applyViewStateToWorkspace === 'function') applyViewStateToWorkspace(ws, source);
@@ -8189,12 +8234,14 @@
     state.activeWorkspaceLabel = getActiveWorkspace()?.label || '';
     const localWorkspaces = typeof localStateSerializableWorkspaces === 'function' ? localStateSerializableWorkspaces() : [];
     if (localWorkspaces.length) {
-      state.localWorkspaces = localWorkspaces;
       state.localState = {
         displayName: app.localState?.currentDisplayName || '',
         activeWorkspaceLabel: state.activeWorkspaceLabel,
         workspaceOffset: Number(app.workspaceOffset || 0) || 0,
-        workspaceCount: localWorkspaces.length
+        workspaceCount: localWorkspaces.length,
+        embeddedPayload: false,
+        storage: 'browser localStorage',
+        note: 'Draft/local workspace material is intentionally not embedded in .workspace.md exports. It remains local until published, deleted, or the workspace is manually closed.'
       };
     }
     return state;
@@ -11025,7 +11072,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
     if (!appendWs && configFiles.length && !parsedRepo && !urls.length && !nonConfigFiles.length) {
       app.modal = null;
-      await openWorkspaceFiles(configFiles, { applyWorkspaceState: true });
+      await openWorkspaceFiles(configFiles, { applyWorkspaceState: true, replaceNonDraftWorkspaces: true });
       render();
       return;
     }
@@ -11085,7 +11132,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (typeof focusWorkspaceWindow === 'function') focusWorkspaceWindow(ws.id);
     render();
 
-    if (configFiles.length) await openWorkspaceFiles(configFiles, { applyWorkspaceState: true });
+    if (configFiles.length) await openWorkspaceFiles(configFiles, { applyWorkspaceState: true, replaceNonDraftWorkspaces: true });
 
     if (githubSource && enabledSurfaces.repoFiles && typeof discoverGitHubRepoIntoWorkspace === 'function') {
       await discoverGitHubRepoIntoWorkspace(ws, {
@@ -12792,9 +12839,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const descriptors = app.workspaces.map((ws, index) => workspaceExportDescriptor(ws, index, state.sources));
     return {
       schema: 'tiinex.workspace-export-topology.report.v1',
-      policy: 'human-first workspace exports summarize workspaces before technical caches; local browser material is embedded in Workspace State and restored to its owning workspace by label/topology rather than absorbed by the active GitHub workspace',
+      policy: 'human-first workspace exports summarize workspaces before technical caches; browser-local drafts are not embedded in .workspace.md exports and must remain in local storage until published/deleted/manual close; opening a workspace file closes only non-draft workspaces and preserves draft-bearing workspaces by label/topology',
       workspaceCount: app.workspaces.length,
-      localWorkspaceCount: (state.localWorkspaces || []).length,
+      localWorkspaceCount: typeof localStateSerializableWorkspaces === 'function' ? localStateSerializableWorkspaces().length : 0,
+      embeddedLocalWorkspaceCount: (state.localWorkspaces || []).length,
       sourceCount: (state.sources || []).length,
       descriptors: descriptors.map((item) => ({
         label: item.label,
@@ -12802,7 +12850,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         sourceKind: item.sourceKind,
         localOnlyItems: item.localOnlyItems,
         selectedPath: item.selectedPath,
-        issueCacheMovedToAppendix: Boolean(item.source?.issueThreadCache && Object.keys(item.source.issueThreadCache).length)
+        issueCacheMovedToAppendix: Boolean(item.source?.issueThreadCache && Object.keys(item.source.issueThreadCache).length),
+        localPayloadEmbedded: false
       }))
     };
   }
@@ -12880,6 +12929,16 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     }
     if (action === 'replace-import' || action === 'import-as-sibling' || action === 'cancel-import') {
       return handleImportConflictAction(action);
+    }
+    if (action === 'open-workspace-artifact') {
+      event.preventDefault();
+      event.stopPropagation();
+      return openWorkspaceNode(getWorkspace(event.currentTarget.dataset.ws || ''), getWorkspace(event.currentTarget.dataset.ws || '')?.nodeById?.get?.(event.currentTarget.dataset.node || ''));
+    }
+    if (action === 'merge-workspace-artifact') {
+      event.preventDefault();
+      event.stopPropagation();
+      return mergeWorkspaceNode(getWorkspace(event.currentTarget.dataset.ws || ''), getWorkspace(event.currentTarget.dataset.ws || '')?.nodeById?.get?.(event.currentTarget.dataset.node || ''));
     }
     if (action === 'remove-local-node') {
       return removeNodeFromWorkspace(event.currentTarget.dataset.ws, event.currentTarget.dataset.node);
@@ -13261,9 +13320,161 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
 
 
+  function isWorkspaceFilename(value) {
+    const name = String(value || '').trim().toLowerCase();
+    if (!name) return false;
+    if (name.endsWith('.workspace.md')) return true;
+    // Desktop browsers append duplicate counters before the final extension,
+    // for example `tiinex-viewer.workspace (4).md`. Treat those as the same
+    // workspace entrypoint instead of importing them as ordinary local leaves.
+    return /\.workspace(?:\s*\(\d+\))?\.md$/iu.test(name);
+  }
+
+  function looksLikeWorkspaceMarkdown(markdown) {
+    const text = normalizeMarkdown(markdown || '');
+    if (!text.trim()) return false;
+    if (/Current Schema:\s*(?:\[[^\]]*\]\([^)]*\)|[^\n]*)tiinex\.workspace\.v1/iu.test(text)) return true;
+    if (/Current Schema:\s*tiinex\.workspace\.v1/iu.test(text)) return true;
+    if (/^#\s+Tiinex Viewer\s*$/imu.test(text) && /^##\s+Workspace Entrypoints\s*$/imu.test(text)) return true;
+    if (/^##\s+Workspace State\s*$/imu.test(text) && /tiinex\.workspace\.machineState\.v1/iu.test(text)) return true;
+    if (/^##\s+Workspaces\s*$/imu.test(text) && /^##\s+Workspace Entrypoints\s*$/imu.test(text)) return true;
+    return false;
+  }
+
   function isWorkspaceFile(file) {
-    const name = String(file?.name || file?.path || '').toLowerCase();
-    return name.endsWith('.workspace.md');
+    return isWorkspaceFilename(file?.name || file?.path || '');
+  }
+
+  async function partitionWorkspaceDroppedFiles(files) {
+    const workspaceFiles = [];
+    const materialFiles = [];
+    for (const file of Array.from(files || [])) {
+      if (isWorkspaceFile(file)) {
+        workspaceFiles.push(file);
+        continue;
+      }
+      const name = String(file?.name || file?.path || '');
+      const mayBeMarkdown = /\.md$/iu.test(name) || String(file?.type || '').includes('markdown') || String(file?.type || '').includes('text');
+      let text = '';
+      if (mayBeMarkdown && typeof file?.text === 'function') {
+        try { text = await file.text(); } catch (_) { text = ''; }
+      }
+      if (looksLikeWorkspaceMarkdown(text)) {
+        try { Object.defineProperty(file, '__tiinexWorkspaceText', { value: text, configurable: true }); } catch (_) { file.__tiinexWorkspaceText = text; }
+        workspaceFiles.push(file);
+      } else {
+        materialFiles.push(file);
+      }
+    }
+    return { workspaceFiles, materialFiles };
+  }
+
+  function isWorkspaceNode(node) {
+    const path = String(node?.path || node?.file?.path || node?.rawUrl || node?.browseUrl || '').toLowerCase();
+    const schema = String(node?.currentSchemaText || node?.currentSchema || node?.file?.currentSchema || '').toLowerCase();
+    return path.endsWith('.workspace.md') || schema.includes('tiinex.workspace.v1');
+  }
+
+  function workspaceNodeMarkdown(ws, node) {
+    const file = node?.file || ws?.files?.get?.(node?.storageKey || '');
+    return String(node?.raw || node?.markdown || node?.content || file?.content || file?.text || '');
+  }
+
+  function workspaceNodeConfigUrl(ws, node) {
+    const file = node?.file || ws?.files?.get?.(node?.storageKey || '');
+    return String(node?.rawUrl || node?.browseUrl || file?.rawUrl || file?.browseUrl || node?.path || file?.path || 'workspace.md');
+  }
+
+  function workspaceHasUnpublishedDrafts(ws) {
+    return Boolean(ws && typeof workspaceHasLocalStateContent === 'function' && workspaceHasLocalStateContent(ws));
+  }
+
+  function workspaceOpenMergeRecord(kind, details = {}) {
+    app.workspaceOpenMerge = app.workspaceOpenMerge || { events: [], last: null, duplicateExports: 0, mergeImports: 0, openImports: 0 };
+    if (kind === 'merge') app.workspaceOpenMerge.mergeImports += 1;
+    else if (kind === 'duplicate-export') app.workspaceOpenMerge.duplicateExports += 1;
+    else if (kind === 'open') app.workspaceOpenMerge.openImports += 1;
+    const event = Object.assign({ at: new Date().toISOString(), kind }, details || {});
+    app.workspaceOpenMerge.last = event;
+    app.workspaceOpenMerge.events.push(event);
+    if (app.workspaceOpenMerge.events.length > 80) app.workspaceOpenMerge.events.splice(0, app.workspaceOpenMerge.events.length - 80);
+    return event;
+  }
+
+  function workspaceDuplicateLabel(label) {
+    const clean = String(label || 'Workspace').trim() || 'Workspace';
+    return /\bcopy\b/i.test(clean) ? clean : `${clean} copy`;
+  }
+
+  function workspaceImportMode(state, options = {}) {
+    const raw = String(options.workspaceOpenMode || state?.workspaceImportMode || state?.importMode || '').trim().toLowerCase();
+    if (raw === 'merge' || raw === 'duplicate') return raw;
+    return 'open';
+  }
+
+  function findWorkspaceForIncomingMergeSource(source) {
+    const label = String(source?.label || '').trim();
+    if (!label) return null;
+    return (app.workspaces || []).find((ws) => String(ws.label || '').trim() === label) || null;
+  }
+
+  function resetNonDraftWorkspaceForIncomingConfig(ws, reason = 'workspace-merge-incoming-config') {
+    if (!ws || workspaceHasUnpublishedDrafts(ws)) return false;
+    ws.files = new Map();
+    ws.assets = new Map();
+    ws.sources = new Map();
+    ws.sourceOrder = [];
+    ws.nodes = [];
+    ws.nodeById = new Map();
+    ws.nodeByPath = new Map();
+    ws.leaves = [];
+    ws.selectedNodeId = null;
+    ws.discoveryProgress = null;
+    ws.loading = false;
+    ws.logs = ws.logs || [];
+    ws.logs.push(`Workspace config replaced by ${reason}.`);
+    return true;
+  }
+
+  function workspaceOpenReplaceGuard(options = {}) {
+    const before = Array.isArray(app.workspaces) ? app.workspaces.slice() : [];
+    const kept = before.filter(workspaceHasUnpublishedDrafts);
+    const closed = before.filter((ws) => !workspaceHasUnpublishedDrafts(ws));
+    if (options.replaceNonDraftWorkspaces === false) return { before: before.length, kept: before.length, closed: 0 };
+    app.workspaces = kept;
+    app.workspaceOffset = Math.min(Number(app.workspaceOffset || 0), Math.max(0, app.workspaces.length - 1));
+    if (app.activeWorkspaceId && !app.workspaces.some((ws) => ws.id === app.activeWorkspaceId)) app.activeWorkspaceId = app.workspaces[0]?.id || null;
+    if (closed.length && typeof clearLineageViewLock === 'function') clearLineageViewLock('workspace-file-open-close-non-draft-workspaces');
+    app.workspaceOpenBoundary = {
+      at: new Date().toISOString(),
+      reason: options.openedFromWorkspaceNode || options.reason || 'workspace-file-open',
+      before: before.length,
+      keptDraftWorkspaces: kept.length,
+      closedNonDraftWorkspaces: closed.length,
+      keptLabels: kept.map(workspaceDisplayLabel),
+      closedLabels: closed.map(workspaceDisplayLabel)
+    };
+    return { before: before.length, kept: kept.length, closed: closed.length };
+  }
+
+  async function openWorkspaceNode(ws, node, options = {}) {
+    if (!ws || !node) return;
+    const markdown = workspaceNodeMarkdown(ws, node);
+    if (!markdown.trim()) {
+      toast('Workspace card has no readable markdown payload.', 'warn');
+      return;
+    }
+    const merge = options.workspaceOpenMode === 'merge';
+    await openViewerConfigMarkdown(markdown, workspaceNodeConfigUrl(ws, node), {
+      applyWorkspaceState: true,
+      replaceNonDraftWorkspaces: !merge,
+      workspaceOpenMode: merge ? 'merge' : 'open',
+      openedFromWorkspaceNode: node.path || node.title || 'workspace card'
+    });
+  }
+
+  async function mergeWorkspaceNode(ws, node) {
+    return openWorkspaceNode(ws, node, { workspaceOpenMode: 'merge' });
   }
 
   function parseConfigDiscovery(markdown) {
@@ -13292,10 +13503,13 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   }
 
   async function openWorkspaceFiles(files, options = {}) {
-    const workspaces = Array.from(files || []).filter(isWorkspaceFile);
+    const workspaces = Array.from(files || []);
+    if (!workspaces.length) return 0;
+    const mode = options.workspaceOpenMode === 'merge' ? 'merge' : 'open';
+    if (options.replaceNonDraftWorkspaces !== false && mode !== 'merge') workspaceOpenReplaceGuard(options);
     for (const file of workspaces) {
-      const text = await file.text();
-      await openViewerConfigMarkdown(text, intakeRelativePath?.(file) || file.name || 'dropped.workspace.md', options);
+      const text = String(file.__tiinexWorkspaceText || (await file.text()));
+      await openViewerConfigMarkdown(text, intakeRelativePath?.(file) || file.name || 'dropped.workspace.md', Object.assign({}, options, { workspaceOpenMode: mode, replaceNonDraftWorkspaces: false }));
     }
     return workspaces.length;
   }
@@ -13304,15 +13518,19 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const url = configUrl || 'dropped.workspace.md';
     const parsed = parseViewerConfigMarkdown(markdown, url);
     parsed.configUrl = url;
+    const mode = workspaceImportMode(parsed.viewerState || {}, options);
 
-    await applyParsedViewerConfig(parsed, url, Object.assign({ applyWorkspaceState: true }, options));
+    if (options.replaceNonDraftWorkspaces !== false && mode !== 'merge') workspaceOpenReplaceGuard(options);
+
+    await applyParsedViewerConfig(parsed, url, Object.assign({ applyWorkspaceState: true, workspaceOpenMode: mode }, options));
 
     const name = configDisplayName(parsed);
     const state = viewerStatePresence(parsed);
+    workspaceOpenMergeRecord(mode, { configUrl: url, displayName: name, state, workspaceCount: app.workspaces?.length || 0 });
     if (parsed.viewerStateError) {
       toast(`Applied workspace: ${name}. Workspace state could not be parsed.`, 'warn');
     } else if (state === 'sources') {
-      toast(`Opened workspace: ${name}. Workspace entrypoints applied.`, 'ok');
+      toast(`${mode === 'merge' ? 'Merged' : mode === 'duplicate' ? 'Opened duplicate' : 'Opened'} workspace: ${name}. Workspace entrypoints applied.`, 'ok');
     } else if (state === 'empty') {
       toast(`Applied workspace: ${name}. Workspace state has no shareable workspaces.`, 'warn');
     } else {
@@ -13322,11 +13540,26 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     render();
   }
 
-  async function buildCurrentLensConfigMarkdown() {
+  async function buildCurrentLensConfigMarkdown(options = {}) {
     const cfg = app.viewerIdentity || {};
+    const duplicateWorkspace = Boolean(options.duplicateWorkspace);
     const state = viewerStateForExport();
-    const displayName = cfg.displayName || cfg.heading || 'Current Tiinex View';
-    const descriptors = app.workspaces.map((ws, index) => workspaceExportDescriptor(ws, index, state.sources));
+    const baseDisplayName = cfg.displayName || cfg.heading || 'Current Tiinex View';
+    const displayName = duplicateWorkspace ? workspaceDuplicateLabel(baseDisplayName) : baseDisplayName;
+    if (duplicateWorkspace) {
+      state.workspaceImportMode = 'duplicate';
+      state.duplicateOf = baseDisplayName;
+      state.activeWorkspaceLabel = workspaceDuplicateLabel(state.activeWorkspaceLabel || baseDisplayName);
+      state.sources = (state.sources || []).map((source, index) => Object.assign({}, source, {
+        label: workspaceDuplicateLabel(source.label || app.workspaces[index]?.label || `Workspace ${index + 1}`),
+        duplicateOfLabel: source.label || app.workspaces[index]?.label || ''
+      }));
+    }
+    const baseDescriptors = app.workspaces.map((ws, index) => workspaceExportDescriptor(ws, index, state.sources));
+    const descriptors = duplicateWorkspace ? baseDescriptors.map((item, index) => Object.assign({}, item, {
+      label: workspaceDuplicateLabel(item.label),
+      source: item.source ? Object.assign({}, item.source, { label: workspaceDuplicateLabel(item.source.label || item.label) }) : item.source
+    })) : baseDescriptors;
     const omitted = descriptors.filter((item) => !item.shareable || item.localOnlyItems);
     const subtitles = uniqueNonEmpty((viewerSubtitlePool?.() || []).map(subtitleForExport));
     const css = String(cfg.customCss || '').trim();
@@ -13353,7 +13586,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
     const bodySections = [
       sectionBlock('Viewer Identity', identityLines),
-      sectionBlock('What this workspace opens', `This file is a human-readable entrypoint for ${descriptors.length} workspace${descriptors.length === 1 ? '' : 's'}. Technical restore state and source caches are kept in the appendix so a reader can understand the workspace before encountering machine payloads.`),
+      sectionBlock('What this workspace opens', `This file is a human-readable entrypoint for ${descriptors.length} workspace${descriptors.length === 1 ? '' : 's'}. Technical restore state and source caches are kept in the appendix so a reader can understand the workspace before encountering machine payloads. Browser-local drafts are not embedded; they stay in local storage until published, deleted, or manually closed.`),
       sectionBlock('Workspaces', workspaceSummary),
       sectionBlock('Empty Stage', emptyStageLines),
       sectionBlock('Workspace Discovery', discovery),
@@ -15847,11 +16080,18 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
       items.push(readOnly({ label: 'Source', icon: 'fa-brands fa-github', className: 'anchor source-action', href: safeUrl(node.browseUrl) || node.browseUrl, title: 'Open original source location' }));
     }
 
-    if (typeof canEditNode === 'function' && canEditNode(ws, node)) {
+    if (isWorkspaceNode(node)) {
+      items.push(
+        { label: 'Open', icon: 'fa-solid fa-layer-group', className: 'constructive workspace-open-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'open-workspace-artifact' }, base), title: 'Open this .workspace.md entrypoint as the current workspace set; non-draft workspaces may close' },
+        { label: 'Merge', icon: 'fa-solid fa-code-merge', className: 'constructive workspace-merge-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'merge-workspace-artifact' }, base), title: 'Merge this .workspace.md into the current workspace set without closing existing workspaces' }
+      );
+    }
+
+    if (!isWorkspaceNode(node) && typeof canEditNode === 'function' && canEditNode(ws, node)) {
       items.push({ label: 'Edit', icon: 'fa-solid fa-pen-to-square', iconOnly: true, className: 'constructive edit-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'open-node-edit' }, base), title: 'Edit this artifact' });
     }
 
-    items.push(
+    if (!isWorkspaceNode(node)) items.push(
       { label: 'Continue', icon: 'fa-solid fa-code-branch', className: 'mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'continue' }, base, transitionDataset('continue')), disabled: node.hasModernEnvelope === false, title: transitionActionTitle('continue', 'Create a continuation leaf from this trace') },
       { label: 'Reference', icon: 'fa-solid fa-link', className: 'gold mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'reference' }, base, transitionDataset('reference')), title: transitionActionTitle('reference', 'Create a reference leaf pointing at this trace') }
     );
@@ -17758,13 +17998,27 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
       return;
     }
 
+    const { workspaceFiles: configFiles, materialFiles } = await partitionWorkspaceDroppedFiles(files);
+
+    if (configFiles.length && !materialFiles.length) {
+      await openWorkspaceFiles(configFiles, { applyWorkspaceState: true, replaceNonDraftWorkspaces: true });
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      else if (typeof updateUrlState === 'function') updateUrlState();
+      return;
+    }
+
+    if (configFiles.length) {
+      await openWorkspaceFiles(configFiles, { applyWorkspaceState: true, replaceNonDraftWorkspaces: true });
+      if (!materialFiles.length) return;
+    }
+
     const datasetWs = target?.dataset?.ws ? getWorkspace(target.dataset.ws) : null;
-    const workspace = ws || datasetWs || createWorkspace('Local workspace', 'Local source workspace.');
+    const workspace = ws || datasetWs || getWorkspace(app.activeWorkspaceId || '') || createWorkspace('Local workspace', 'Local source workspace.');
     app.activeWorkspaceId = workspace.id;
     if (typeof focusWorkspaceWindow === 'function') focusWorkspaceWindow(workspace.id);
     render();
 
-    await readUploadedFilesIntoWorkspace(workspace, files);
+    await readUploadedFilesIntoWorkspace(workspace, materialFiles);
 
     if (typeof setRouteState === 'function') setRouteState('replace');
     else if (typeof updateUrlState === 'function') updateUrlState();
@@ -27048,8 +27302,30 @@ ${integrityFooterForPath(parent, path)}`,
     showExportResult(payload.packageResult, { target: 'download', label: exportDeliveryLabel('download'), status: 'downloaded', filename, archiveFormat: format, passwordMode });
     render(); toast(`Downloaded ${filename}.`, 'ok');
   }
+  async function downloadWorkspaceEntrypointFromModal(modal) {
+    const kind = workspaceExportKind(modal);
+    const duplicate = kind === 'duplicate-workspace';
+    const markdown = await buildCurrentLensConfigMarkdown({ duplicateWorkspace: duplicate });
+    const parsed = parseViewerConfigMarkdown(markdown, location.href);
+    const baseName = parsed.displayName || (duplicate ? workspaceDuplicateLabel('tiinex-viewer') : 'tiinex-viewer');
+    const filename = workspaceArtifactFilenameSafe(baseName);
+    downloadText(filename, markdown, 'text/markdown;charset=utf-8');
+    if (duplicate) workspaceOpenMergeRecord('duplicate-export', { filename, workspaceCount: app.workspaces?.length || 0 });
+    toast(duplicate ? `Downloaded duplicate workspace ${filename}.` : `Downloaded workspace entrypoint ${filename}.`, 'ok');
+  }
+
   registerActionHandler(async function archiveChoiceAction(event, next) {
     const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'export-set-workspace-kind') {
+      event.preventDefault(); event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'export-workspace') return;
+      app.modal.workspaceExportKind = event.currentTarget.dataset.kind || 'archive';
+      if (workspaceExportKind(app.modal) !== 'archive') {
+        app.modal.passwordMode = 'none';
+        app.modal.archiveFormat = app.modal.archiveFormat || 'zip';
+      }
+      render(); return;
+    }
     if (action === 'export-set-archive') {
       event.preventDefault(); event.stopPropagation();
       if (!app.modal || app.modal.type !== 'export-workspace') return;
@@ -27071,7 +27347,10 @@ ${integrityFooterForPath(parent, path)}`,
       if ((app.modal.deliveryTarget || 'download') === 'github-draft') return toast('Use the GitHub adapter copy/open actions in this export dialog.', 'warn');
       const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
       if (!ws) return toast('No workspace selected.', 'warn');
-      try { await exportWorkspaceArchive(ws, app.modal); }
+      try {
+        if (workspaceExportKind(app.modal) !== 'archive') await downloadWorkspaceEntrypointFromModal(app.modal);
+        else await exportWorkspaceArchive(ws, app.modal);
+      }
       catch (error) { toast(`Could not export: ${error.message}`, 'warn'); }
       return;
     }
@@ -27498,11 +27777,31 @@ ${integrityFooterForPath(parent, path)}`,
     </section>`;
   }
 
+  function workspaceExportKind(modal) {
+    const raw = String(modal?.workspaceExportKind || 'archive').toLowerCase();
+    return ['archive', 'portable-workspace', 'duplicate-workspace'].includes(raw) ? raw : 'archive';
+  }
+
+  function workspaceExportKindButton(modal, kind, label, icon, help) {
+    const active = workspaceExportKind(modal) === kind;
+    return `<button type="button" class="export-mode-card ${active ? 'active' : ''}" data-action="export-set-workspace-kind" data-kind="${escapeAttr(kind)}">
+      <span><i class="fa-solid ${escapeAttr(icon)}"></i></span>
+      <strong>${escapeHtml(label)}</strong>
+      <small>${escapeHtml(help)}</small>
+    </button>`;
+  }
+
   function renderDownloadSetupOptions(modal) {
-    const needsPassword = exportPasswordMode(modal) !== 'none';
+    const kind = workspaceExportKind(modal);
+    const needsPassword = kind === 'archive' && exportPasswordMode(modal) !== 'none';
     return `<section class="export-section export-setup-section">
       <h3>Download options</h3>
-      <div class="export-choice-grid compact-choice-grid">
+      <div class="export-mode-grid compact-mode-grid workspace-export-kind-grid">
+        ${workspaceExportKindButton(modal, 'archive', 'Archive', 'fa-file-zipper', 'Files and assets package.')}
+        ${workspaceExportKindButton(modal, 'portable-workspace', 'Workspace', 'fa-layer-group', 'Portable entrypoint.')}
+        ${workspaceExportKindButton(modal, 'duplicate-workspace', 'Duplicate', 'fa-copy', 'Open as a copy.')}
+      </div>
+      ${kind === 'archive' ? `<div class="export-choice-grid compact-choice-grid">
         ${renderArchiveButton(modal, 'zip', 'zip', 'Common default.')}
         ${renderArchiveButton(modal, 'tar', 'tar', 'Plain archive.')}
         ${renderArchiveButton(modal, 'tgz', 'tar.gz', 'Compressed tar.')}
@@ -27512,7 +27811,7 @@ ${integrityFooterForPath(parent, path)}`,
         ${renderPasswordButton(modal, 'tiinex', 'AES-GCM', 'PBKDF2 + AES-GCM package.')}
         ${renderPasswordButton(modal, 'zip', 'ZIP password', 'Visible names; encrypted contents.')}
       </div>
-      ${needsPassword ? `<label class="field-label compact-password-field">Password<input class="form-control tv-input" type="password" autocomplete="new-password" data-field="exportPassword" data-export-password value="${escapeAttr(modal.exportPassword || '')}" placeholder="Password for this export"></label>` : ''}
+      ${needsPassword ? `<label class="field-label compact-password-field">Password<input class="form-control tv-input" type="password" autocomplete="new-password" data-field="exportPassword" data-export-password value="${escapeAttr(modal.exportPassword || '')}" placeholder="Password for this export"></label>` : ''}` : `<p class="export-encryption-note">Workspace exports create a human-readable .workspace.md entrypoint. Browser-local drafts are not embedded; duplicate mode marks the file so opening it creates a separate workspace copy.</p>`}
     </section>`;
   }
 
@@ -27548,7 +27847,7 @@ ${integrityFooterForPath(parent, path)}`,
     const github = exportCapabilityTarget(modal) === 'github-draft';
     return `<section class="export-summary compact-export-summary ${github ? 'github-summary' : ''}">
       <div><strong>${escapeHtml(exportAdapterLabel(modal))}</strong><span>adapter</span></div>
-      <div><strong>${plan.counts.files}</strong><span>${github ? 'markdown entries' : 'file entries'}</span></div>
+      <div><strong>${github ? plan.counts.files : (workspaceExportKind(modal) !== 'archive' ? (app.workspaces || []).length : plan.counts.files)}</strong><span>${github ? 'markdown entries' : (workspaceExportKind(modal) !== 'archive' ? 'workspaces' : 'file entries')}</span></div>
       <div><strong>${plan.counts.assets}</strong><span>${github ? 'asset refs' : 'asset entries'}</span></div>
       <div><strong>${github ? githubOutboundSurface(modal) : escapeHtml(exportArchiveLabel(plan.archive.format))}</strong><span>${github ? githubExportAccessMode(modal) : escapeHtml(exportPasswordLabel(plan.archive.passwordMode))}</span></div>
     </section>`;
@@ -29125,7 +29424,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       : renderExportSetupStage(modal, ws, plan, sources, sourceRows);
     const surface = githubOutboundSurface(modal);
     const primaryDraft = surface === 'discussion' ? 'discussion' : 'issue';
-    const canExecute = (github ? plan.counts.files > 0 : plan.counts.entries > 0) && (!github || surface !== 'git');
+    const canExecute = (github ? plan.counts.files > 0 : (workspaceExportKind(modal) !== 'archive' ? (app.workspaces || []).length > 0 : plan.counts.entries > 0)) && (!github || surface !== 'git');
     const githubCtx = github && execute ? githubCurrentExportContext(modal) : null;
     const githubDraft = githubCtx?.item ? githubSingleArtifactDraft(githubCtx.ws, modal, githubCtx.item, githubCtx.surface) : null;
     const githubCanContinue = githubExportStateReady(githubCtx?.state, githubDraft, githubCtx?.surface);
@@ -29146,7 +29445,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
           ${execute
             ? (github
               ? `<button class="tv-btn primary" data-action="export-github-next-verified" ${canExecute && githubCanContinue ? '' : 'disabled'}>${githubLastItem ? 'Done' : 'Continue'}<i class="fa-solid fa-arrow-right"></i></button>`
-              : `<button class="tv-btn primary" data-action="export-execute-download" data-ws="${escapeAttr(ws.id)}" ${canExecute ? '' : 'disabled'}><i class="fa-solid fa-download"></i>Download now</button>`)
+              : `<button class="tv-btn primary" data-action="export-execute-download" data-ws="${escapeAttr(ws.id)}" ${canExecute ? '' : 'disabled'}><i class="fa-solid fa-download"></i>${workspaceExportKind(modal) === 'archive' ? 'Download now' : 'Download workspace'}</button>`)
             : `<button class="tv-btn primary" data-action="export-step-continue" ${canExecute ? '' : 'disabled'}>Continue<i class="fa-solid fa-arrow-right"></i></button>`}
           <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
         </div>
@@ -29303,7 +29602,10 @@ ${githubOutboundFileExcerpt(file, 18000)}
       if (!app.modal || app.modal.type !== 'export-workspace') return;
       const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
       if (!ws) return toast('No workspace selected.', 'warn');
-      try { await exportWorkspaceArchive(ws, app.modal); }
+      try {
+        if (workspaceExportKind(app.modal) !== 'archive') await downloadWorkspaceEntrypointFromModal(app.modal);
+        else await exportWorkspaceArchive(ws, app.modal);
+      }
       catch (error) { toast(`Could not export: ${error.message}`, 'warn'); }
       return;
     }
@@ -36289,6 +36591,38 @@ ${raw.slice(0, 800)}`) || 'en')}">
     };
   }
 
+  function workspaceOpenBoundaryReport() {
+    return {
+      schema: 'tiinex.workspace-open-boundary.report.v1',
+      policy: '.workspace.md opens workspace state instead of becoming a leaf; Open may close non-draft workspaces while preserving browser-local drafts; Merge upserts workspace/source config without closing workspaces; exported workspace files do not embed draft payloads',
+      lastOpen: app.workspaceOpenBoundary || null,
+      lastMerge: app.workspaceOpenMerge?.last || null,
+      workspaceCount: Array.isArray(app.workspaces) ? app.workspaces.length : 0,
+      draftWorkspaceCount: typeof localStateSerializableWorkspaces === 'function' ? localStateSerializableWorkspaces().length : 0,
+      workspaces: (app.workspaces || []).map((ws) => ({
+        label: workspaceDisplayLabel(ws),
+        localDraftPayload: workspaceHasUnpublishedDrafts(ws),
+        repo: ws.repo || '',
+        ref: ws.ref || '',
+        sourceCount: ws.sources?.size || 0,
+        nodes: ws.nodes?.length || 0
+      }))
+    };
+  }
+
+  function workspaceOpenMergeReport() {
+    const state = app.workspaceOpenMerge || { events: [], last: null, duplicateExports: 0, mergeImports: 0, openImports: 0 };
+    return {
+      schema: 'tiinex.workspace-open-merge.report.v1',
+      policy: 'Open replaces only non-draft workspaces; Merge keeps current workspaces and upserts matching workspace/source config; Duplicate workspace export marks the file as duplicate-import so it opens as a separate workspace while local drafts remain browser-local',
+      openImports: Number(state.openImports || 0),
+      mergeImports: Number(state.mergeImports || 0),
+      duplicateExports: Number(state.duplicateExports || 0),
+      last: state.last || null,
+      events: Array.isArray(state.events) ? state.events.slice(-20) : []
+    };
+  }
+
   window.TiinexDiagnostics = Object.assign(window.TiinexDiagnostics || {}, {
     mobileActionLayoutReadinessReport,
     mobileActionOwnershipReport,
@@ -36301,7 +36635,8 @@ ${raw.slice(0, 800)}`) || 'en')}">
     routeLoadPresentationReport,
     buildIdentityReport,
     parentOriginContinuityReport,
-    artifactPlacementReadinessReport
+    artifactPlacementReadinessReport,
+    workspaceOpenMergeReport
   });
 
 

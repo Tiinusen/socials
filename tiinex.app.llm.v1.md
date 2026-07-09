@@ -1,3 +1,5 @@
-## CP336 LLM note
+## CP339 LLM note
 
-CP336 treats `.workspace.md` export as a human-first artifact with a technical appendix. Do not place large source caches in the primary `Workspace Entrypoints` section. Summarize workspaces first, preserve technical restore state in `Workspace State`, keep `Machine State` topology visible, and keep source caches in `Source Caches`. Local browser material may be embedded in `Workspace State.localWorkspaces` and must restore to the owning workspace by label/topology rather than being absorbed into the active GitHub workspace. Use `TiinexDiagnostics.workspaceExportTopologyReport()` before Move/Rewire work.
+CP339 preserves CP338 workspace Open/Merge/Duplicate semantics but fixes the intake boundary. A dropped workspace export must be treated as a workspace entrypoint even when the browser renamed it, for example `*.workspace (4).md`, or when the content clearly declares `tiinex.workspace.v1` / Workspace State.
+
+Do not import those files as normal local leaves. Draft payloads remain browser-local and are not embedded in `.workspace.md` exports.

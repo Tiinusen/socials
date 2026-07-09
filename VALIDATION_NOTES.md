@@ -1,23 +1,18 @@
-# CP336 validation notes
+# CP339 validation notes
 
-Validated the CP336 workspace export/topology pass after updating source and public build checks.
+Validated the CP339 workspace drop/content-boundary pass.
 
-Runtime gate passed:
+Root cause: drop classification trusted exact filename suffix `.workspace.md`. Browser duplicate names such as `tiinex-viewer.workspace (4).md` therefore bypassed workspace import and became local artifact cards.
 
-- `node --check app.js`
-- `npm run build:public`
-- `npm run public:check`
-- `node --check .site-publish/tiinex.bundle.js`
-- `npm run metrics`
-- `npm run storage:scan`
+Fix: workspace drop classification now accepts browser duplicate workspace filenames and also inspects markdown content for `tiinex.workspace.v1`, Workspace Entrypoints, and Workspace State before routing files to local material intake.
 
-Observed boundaries:
+Passed:
 
-- Human-facing workspace export sections now precede technical appendices.
-- Issue thread caches remain available for restore but are no longer emitted inside the primary workspace entrypoint list.
-- Embedded local workspace state is available in `Workspace State.localWorkspaces` so local material can restore to its owning workspace.
-- `Machine State.workspaces` is populated for all visible workspaces to make topology review possible even when no node is expanded.
-
-Known non-gate:
-
-- `npm run validate` remains a stricter static hygiene/checklist signal and is not the publish/runtime gate for this iteration.
+```bash
+node --check app.js
+npm run build:public
+npm run public:check
+node --check .site-publish/tiinex.bundle.js
+npm run metrics
+npm run storage:scan
+```
