@@ -112,9 +112,9 @@
   };
 
   const TIINEX_APP_BUILD = Object.freeze({
-    release: '339',
-    codename: 'workspace-drop-content-boundary',
-    packageName: 'tiinex-site-339-clean-repo',
+    release: '342',
+    codename: 'workspace-drop-routing-share-boundary',
+    packageName: 'tiinex-site-342-clean-repo',
     builtFor: 'Tiinex/site source repo',
     publicBuildOutputExcluded: true
   });
@@ -971,12 +971,50 @@
     const state = app.workspaceOpenMerge || { events: [], last: null, duplicateExports: 0, mergeImports: 0, openImports: 0 };
     return {
       schema: 'tiinex.workspace-open-merge.report.v1',
-      policy: 'Open replaces only non-draft workspaces; Merge keeps current workspaces and upserts matching workspace/source config; Duplicate workspace export marks the file as duplicate-import so it opens as a separate workspace while local drafts remain browser-local',
+      policy: 'Open replaces only non-draft workspaces; Merge keeps current workspaces and upserts matching workspace/source config; Duplicate workspace export carries duplicate intent in the file and opens as a separate workspace copy while local drafts remain browser-local; confirmed close persists local-state deletion',
       openImports: Number(state.openImports || 0),
       mergeImports: Number(state.mergeImports || 0),
       duplicateExports: Number(state.duplicateExports || 0),
       last: state.last || null,
       events: Array.isArray(state.events) ? state.events.slice(-20) : []
+    };
+  }
+
+  function workspaceDropRoutingReport() {
+    const merge = app.workspaceOpenMerge || { events: [], last: null };
+    return {
+      schema: 'tiinex.workspace-drop-routing.report.v1',
+      policy: 'empty-stage workspace drops open directly; page-level drops with existing workspaces ask Open/Merge; drops on a concrete workspace add an entrypoint card; global known-file drops prevent browser navigation',
+      workspaceCount: Array.isArray(app.workspaces) ? app.workspaces.length : 0,
+      pendingChoice: app.pendingWorkspaceDropChoice ? { names: app.pendingWorkspaceDropChoice.names || [], scope: app.pendingWorkspaceDropChoice.scope || '' } : null,
+      lastOpenMerge: merge.last || null,
+      recentOpenMerge: Array.isArray(merge.events) ? merge.events.slice(-12) : []
+    };
+  }
+
+  function workspaceEntrypointShareReport() {
+    const rows = [];
+    for (const ws of app.workspaces || []) {
+      for (const node of ws.nodes || []) {
+        if (!isWorkspaceNode(node)) continue;
+        const href = shareNodeSourceUrl(node);
+        const eligibility = buildShareEligibility('artifact', ws, node);
+        rows.push({
+          workspace: workspaceDisplayLabel(ws),
+          title: artifactDisplayTitle(node) || node.title || '',
+          path: node.path || '',
+          sourceUrl: href,
+          target: eligibility.target || null,
+          publicUrl: eligibility.publicUrl || '',
+          status: eligibility.status || ''
+        });
+      }
+    }
+    return {
+      schema: 'tiinex.workspace-entrypoint-share.report.v1',
+      policy: 'workspace entrypoint cards share/open as workspace targets, including workspace markdown recovered from repo, issue, or comment surfaces',
+      count: rows.length,
+      rows
     };
   }
 
@@ -1031,6 +1069,8 @@
     workspaceExportTopologyReport: () => workspaceExportTopologyReport(),
     workspaceOpenBoundaryReport: () => workspaceOpenBoundaryReport(),
     workspaceOpenMergeReport: () => workspaceOpenMergeReport(),
+    workspaceDropRoutingReport: () => workspaceDropRoutingReport(),
+    workspaceEntrypointShareReport: () => workspaceEntrypointShareReport(),
     shareSignalPreviewForActive: (reason = '', intent = 'share') => shareSignalRecord(shareEligibilityForActive(), { intent, reason }),
     shareCounterObservationReport: () => shareCounterObservationReport(),
     crossWorkspaceRelationPickerReport: () => crossWorkspaceRelationPickerReport(),
@@ -2856,6 +2896,20 @@
     app.workspaces = app.workspaces.filter((item) => item.id !== wsId);
     if (app.activeWorkspaceId === wsId) app.activeWorkspaceId = app.workspaces[0]?.id || null;
     if (typeof ensureWorkspaceWindow === 'function') ensureWorkspaceWindow();
+    // Closing a workspace after the explicit confirmation must also update the
+    // browser-local profile. Otherwise local-state restore can rehydrate the
+    // same draft workspace immediately after render/F5, making the confirmed
+    // close look like it failed.
+    try {
+      if (typeof saveLocalStateNow === 'function') saveLocalStateNow({ allowEmptyLocalStateDelete: true, reason: 'confirmed-workspace-close' });
+    } catch (_) {}
+    app.workspaceOpenBoundary = Object.assign({}, app.workspaceOpenBoundary || {}, {
+      at: new Date().toISOString(),
+      reason: 'confirmed-workspace-close',
+      closedWorkspace: workspaceDisplayLabel(ws),
+      remainingWorkspaces: app.workspaces.length,
+      localStateUpdated: true
+    });
     if (typeof updateUrlState === 'function') updateUrlState({ replace: true });
     render();
   }
@@ -3775,6 +3829,31 @@
       if (typeof clearLineageViewLock === 'function') clearLineageViewLock('public-hash-target-replace');
     }
     const adapter = normalizedHashTarget.adapter;
+    const spec = typeof parseGitHubSocialTargetSpec === 'function' ? parseGitHubSocialTargetSpec(target.url) : null;
+    if (adapter === 'workspace' && spec?.kind === 'issue') {
+      const label = spec?.targetLabel || 'Shared Tiinex workspace issue';
+      const ws = createWorkspace(label, `Loaded workspace entrypoint from public hash target: ${target.url}`);
+      ws.publicShareTarget = { adapter, url: target.url };
+      app.activeWorkspaceId = ws.id;
+      await loadUrlsIntoWorkspace(ws, [target.url]);
+      computeWorkspaceIndex(ws);
+      const selected = selectPublicHashTargetNode(ws, target, spec, options.reason || 'workspace-hash-issue-target') || selectedNode(ws);
+      const markdown = selected && isWorkspaceNode(selected) ? workspaceNodeMarkdown(ws, selected) : '';
+      if (markdown && looksLikeWorkspaceMarkdown(markdown)) {
+        await openViewerConfigMarkdown(markdown, target.url, {
+          applyWorkspaceState: true,
+          replaceNonDraftWorkspaces: true,
+          workspaceOpenMode: 'open',
+          preserveShareHash: true,
+          reason: 'workspace-hash-issue-target-open'
+        });
+        app.viewerIdentity.publicShareTarget = { adapter, url: target.url, configUrl: target.url };
+        render();
+        return true;
+      }
+      render();
+      return true;
+    }
     if (adapter === 'workspace') {
       const configUrl = normalizeViewerConfigUrl(target.url);
       const markdown = await adapterFetchText(configUrl, { adapter: adapterIdForUrl(configUrl), label: 'Shared Tiinex workspace' });
@@ -3786,7 +3865,6 @@
       render();
       return true;
     }
-    const spec = typeof parseGitHubSocialTargetSpec === 'function' ? parseGitHubSocialTargetSpec(target.url) : null;
     const label = spec?.targetLabel || (adapter === 'github.file' ? 'Shared GitHub artifact' : 'Shared Tiinex target');
     const ws = createWorkspace(label, `Loaded from public hash target: ${target.url}`);
     ws.publicShareTarget = { adapter, url: target.url };
@@ -5288,6 +5366,7 @@
     if (action === 'open-markdown-modal') { app.modal = { type: 'markdown', wsId, nodeId }; updateUrlState({ replace: true }); render(); return; }
     if (action === 'open-workspace-artifact') { await openWorkspaceNode(getWorkspace(wsId), getWorkspace(wsId)?.nodeById?.get?.(nodeId)); return; }
     if (action === 'merge-workspace-artifact') { await mergeWorkspaceNode(getWorkspace(wsId), getWorkspace(wsId)?.nodeById?.get?.(nodeId)); return; }
+    if (action === 'configure-workspace-artifact') { openWorkspaceConfigEditor(getWorkspace(wsId), getWorkspace(wsId)?.nodeById?.get?.(nodeId)); return; }
     if (action === 'open-create') {
       openArtifactCreateIntent({ mode: event.currentTarget.dataset.mode, wsId, nodeId, schemaId: event.currentTarget.dataset.schemaId || event.currentTarget.dataset.schema || '' });
       return;
@@ -7752,10 +7831,28 @@
     if (app.workspaceDropDelegationBound) return;
     app.workspaceDropDelegationBound = true;
 
+    const preventNativeForKnownDrops = (event) => {
+      if (app.modal?.type === 'source') return false;
+      if (!dataTransferLikelyWorkspaceOrMarkdownDrop(event.dataTransfer)) return false;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+      return true;
+    };
+
+    window.addEventListener('dragover', preventNativeForKnownDrops, true);
+    window.addEventListener('drop', (event) => {
+      if (app.modal?.type === 'source') return;
+      if (!dataTransferLikelyWorkspaceOrMarkdownDrop(event.dataTransfer)) return;
+      event.preventDefault();
+    }, true);
+
     document.addEventListener('dragenter', (event) => {
       if (app.modal?.type === 'source') return;
       const zone = workspaceDropTargetFromEvent(event);
-      if (!zone) return;
+      if (!zone) {
+        preventNativeForKnownDrops(event);
+        return;
+      }
       event.preventDefault();
       zone.classList.add('drag-over');
     });
@@ -7763,7 +7860,10 @@
     document.addEventListener('dragover', (event) => {
       if (app.modal?.type === 'source') return;
       const zone = workspaceDropTargetFromEvent(event);
-      if (!zone) return;
+      if (!zone) {
+        preventNativeForKnownDrops(event);
+        return;
+      }
       event.preventDefault();
       zone.classList.add('drag-over');
     });
@@ -7778,7 +7878,34 @@
     document.addEventListener('drop', async (event) => {
       if (app.modal?.type === 'source') return;
       const zone = workspaceDropTargetFromEvent(event);
-      if (!zone) return;
+      if (!zone) {
+        if (!dataTransferLikelyWorkspaceOrMarkdownDrop(event.dataTransfer)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const files = await filesFromDataTransfer(event.dataTransfer);
+        const { workspaceFiles: configFiles, materialFiles } = await partitionWorkspaceDroppedFiles(files);
+        if (configFiles.length && !materialFiles.length) {
+          if (!app.workspaces?.length) {
+            await openWorkspaceFiles(configFiles, {
+              applyWorkspaceState: true,
+              replaceNonDraftWorkspaces: true,
+              workspaceOpenMode: 'open',
+              reason: 'workspace-drop-empty-stage-auto-open'
+            });
+            if (typeof setRouteState === 'function') setRouteState('replace');
+            else if (typeof updateUrlState === 'function') updateUrlState();
+            return;
+          }
+          openWorkspaceDropChoice(configFiles, { scope: 'page-drop' });
+          return;
+        }
+        if (configFiles.length) {
+          toast('Drop workspace files alone outside a workspace, or drop mixed material into a specific workspace.', 'warn');
+          return;
+        }
+        toast('Drop local material into a workspace or use Add.', 'warn');
+        return;
+      }
       const ws = zone.dataset.ws ? getWorkspace(zone.dataset.ws) : null;
       await handleWorkspaceDrop(event, ws, zone);
     });
@@ -13369,6 +13496,85 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return { workspaceFiles, materialFiles };
   }
 
+  function dataTransferLikelyWorkspaceOrMarkdownDrop(dataTransfer) {
+    const files = Array.from(dataTransfer?.files || []);
+    if (!files.length) return false;
+    return files.some((file) => {
+      const name = String(file?.name || file?.path || '');
+      return isWorkspaceFilename(name) || /\.md$/iu.test(name) || String(file?.type || '').includes('markdown') || String(file?.type || '').includes('text');
+    });
+  }
+
+  function workspaceDropFileNames(files) {
+    return Array.from(files || []).map((file) => String(file?.name || file?.path || 'workspace.md')).filter(Boolean);
+  }
+
+  function openWorkspaceDropChoice(files, options = {}) {
+    const list = Array.from(files || []);
+    if (!list.length) return false;
+    const id = `workspace-drop-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    app.pendingWorkspaceDropChoice = {
+      id,
+      files: list,
+      names: workspaceDropFileNames(list),
+      scope: options.scope || 'page',
+      at: new Date().toISOString()
+    };
+    app.modal = { type: 'workspace-drop-choice', pendingId: id };
+    render();
+    return true;
+  }
+
+  function pendingWorkspaceDropChoice() {
+    const id = app.modal?.pendingId || '';
+    const pending = app.pendingWorkspaceDropChoice || null;
+    if (!pending || (id && pending.id !== id)) return null;
+    return pending;
+  }
+
+  function clearPendingWorkspaceDropChoice() {
+    app.pendingWorkspaceDropChoice = null;
+    if (app.modal?.type === 'workspace-drop-choice') app.modal = null;
+  }
+
+  function renderWorkspaceDropChoiceModal(modal) {
+    const pending = pendingWorkspaceDropChoice();
+    const names = pending?.names || [];
+    const first = names[0] || 'workspace.md';
+    const more = Math.max(0, names.length - 1);
+    const detail = more ? `${first} + ${more} more` : first;
+    return `
+      <div class="modal-backdrop-custom focus-modal workspace-drop-choice-backdrop" role="dialog" aria-modal="true" aria-labelledby="workspace-drop-choice-title">
+        <div class="modal-panel source-modal-panel workspace-drop-choice-panel tiinex-choice-panel">
+          <div class="modal-header-lite sticky-modal-head workspace-drop-choice-head">
+            <div>
+              <p class="kicker">Workspace entrypoint</p>
+              <h2 id="workspace-drop-choice-title" class="modal-title-lite">How should Tiinex use this workspace?</h2>
+              <p class="text-secondary mb-0">${escapeHtml(detail)}</p>
+            </div>
+            <button class="tv-btn small subtle" data-action="cancel-workspace-drop-choice" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+          <div class="workspace-drop-choice-summary">
+            <i class="fa-solid fa-diagram-project"></i>
+            <span>Choose before mutating the workspace set. Dropping onto a specific workspace only adds an entrypoint card.</span>
+          </div>
+          <div class="source-choice-grid workspace-drop-choice-grid">
+            <button class="source-choice-card workspace-drop-choice-card selected" data-action="workspace-drop-open">
+              <span class="source-choice-icon"><i class="fa-solid fa-layer-group"></i></span>
+              <span><strong>Open</strong><small>Open as the current workspace set. Non-draft workspaces may close; browser-local drafts are preserved.</small></span>
+            </button>
+            <button class="source-choice-card workspace-drop-choice-card" data-action="workspace-drop-merge">
+              <span class="source-choice-icon"><i class="fa-solid fa-code-merge"></i></span>
+              <span><strong>Merge</strong><small>Keep open workspaces, then upsert workspaces and sources from this file without duplicating them.</small></span>
+            </button>
+          </div>
+          <div class="modal-footer-actions">
+            <button class="tv-btn subtle" data-action="cancel-workspace-drop-choice">Cancel</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
   function isWorkspaceNode(node) {
     const path = String(node?.path || node?.file?.path || node?.rawUrl || node?.browseUrl || '').toLowerCase();
     const schema = String(node?.currentSchemaText || node?.currentSchema || node?.file?.currentSchema || '').toLowerCase();
@@ -13407,8 +13613,14 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   }
 
   function workspaceImportMode(state, options = {}) {
-    const raw = String(options.workspaceOpenMode || state?.workspaceImportMode || state?.importMode || '').trim().toLowerCase();
-    if (raw === 'merge' || raw === 'duplicate') return raw;
+    const stateMode = String(state?.workspaceImportMode || state?.importMode || '').trim().toLowerCase();
+    const optionMode = String(options.workspaceOpenMode || '').trim().toLowerCase();
+    // A duplicate-export file carries user intent in the file itself. Preserve
+    // that intent even when the file was opened through the generic Open path;
+    // otherwise Duplicate behaves exactly like a normal workspace export.
+    if (stateMode === 'duplicate') return 'duplicate';
+    if (optionMode === 'merge') return 'merge';
+    if (optionMode === 'duplicate') return 'duplicate';
     return 'open';
   }
 
@@ -13505,11 +13717,12 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   async function openWorkspaceFiles(files, options = {}) {
     const workspaces = Array.from(files || []);
     if (!workspaces.length) return 0;
-    const mode = options.workspaceOpenMode === 'merge' ? 'merge' : 'open';
-    if (options.replaceNonDraftWorkspaces !== false && mode !== 'merge') workspaceOpenReplaceGuard(options);
+    const requestedMode = options.workspaceOpenMode === 'merge' ? 'merge' : (options.workspaceOpenMode === 'duplicate' ? 'duplicate' : '');
     for (const file of workspaces) {
       const text = String(file.__tiinexWorkspaceText || (await file.text()));
-      await openViewerConfigMarkdown(text, intakeRelativePath?.(file) || file.name || 'dropped.workspace.md', Object.assign({}, options, { workspaceOpenMode: mode, replaceNonDraftWorkspaces: false }));
+      const openOptions = Object.assign({}, options);
+      if (requestedMode) openOptions.workspaceOpenMode = requestedMode;
+      await openViewerConfigMarkdown(text, intakeRelativePath?.(file) || file.name || 'dropped.workspace.md', openOptions);
     }
     return workspaces.length;
   }
@@ -13520,7 +13733,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     parsed.configUrl = url;
     const mode = workspaceImportMode(parsed.viewerState || {}, options);
 
-    if (options.replaceNonDraftWorkspaces !== false && mode !== 'merge') workspaceOpenReplaceGuard(options);
+    if (options.replaceNonDraftWorkspaces !== false && mode !== 'merge' && mode !== 'duplicate') workspaceOpenReplaceGuard(options);
 
     await applyParsedViewerConfig(parsed, url, Object.assign({ applyWorkspaceState: true, workspaceOpenMode: mode }, options));
 
@@ -13539,6 +13752,46 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
     render();
   }
+
+  registerRenderModalWrapper(function renderModalWithWorkspaceDropChoice(modal, next) {
+    if (modal?.type === 'workspace-drop-choice') return renderWorkspaceDropChoiceModal(modal);
+    return next(modal);
+  });
+
+  registerActionHandler(async function workspaceDropChoiceAction(event, next) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'cancel-workspace-drop-choice') {
+      event.preventDefault();
+      event.stopPropagation();
+      clearPendingWorkspaceDropChoice();
+      render();
+      return;
+    }
+    if (action === 'workspace-drop-open' || action === 'workspace-drop-merge') {
+      event.preventDefault();
+      event.stopPropagation();
+      const pending = pendingWorkspaceDropChoice();
+      if (!pending?.files?.length) {
+        clearPendingWorkspaceDropChoice();
+        toast('Workspace drop is no longer available. Drop the file again.', 'warn');
+        render();
+        return;
+      }
+      const files = pending.files.slice();
+      const mode = action === 'workspace-drop-merge' ? 'merge' : 'open';
+      clearPendingWorkspaceDropChoice();
+      await openWorkspaceFiles(files, {
+        applyWorkspaceState: true,
+        replaceNonDraftWorkspaces: mode !== 'merge',
+        workspaceOpenMode: mode,
+        reason: 'workspace-drop-choice'
+      });
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      else if (typeof updateUrlState === 'function') updateUrlState();
+      return;
+    }
+    return next(event);
+  });
 
   async function buildCurrentLensConfigMarkdown(options = {}) {
     const cfg = app.viewerIdentity || {};
@@ -13585,8 +13838,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const workspaceState = state;
 
     const bodySections = [
-      sectionBlock('Viewer Identity', identityLines),
-      sectionBlock('What this workspace opens', `This file is a human-readable entrypoint for ${descriptors.length} workspace${descriptors.length === 1 ? '' : 's'}. Technical restore state and source caches are kept in the appendix so a reader can understand the workspace before encountering machine payloads. Browser-local drafts are not embedded; they stay in local storage until published, deleted, or manually closed.`),
+      sectionBlock('Viewer Identity', linesOrEmpty([identityLines, duplicateWorkspace ? '- Import Mode: duplicate' : ''])),
+      sectionBlock('What this workspace opens', duplicateWorkspace
+        ? `This file is a human-readable duplicate entrypoint for ${descriptors.length} workspace${descriptors.length === 1 ? '' : 's'}. Opening it creates a separate workspace copy and does not embed browser-local drafts.`
+        : `This file is a human-readable entrypoint for ${descriptors.length} workspace${descriptors.length === 1 ? '' : 's'}. Technical restore state and source caches are kept in the appendix so a reader can understand the workspace before encountering machine payloads. Browser-local drafts are not embedded; they stay in local storage until published, deleted, or manually closed.`),
       sectionBlock('Workspaces', workspaceSummary),
       sectionBlock('Empty Stage', emptyStageLines),
       sectionBlock('Workspace Discovery', discovery),
@@ -13624,6 +13879,191 @@ ${bodySections}
 
 
 
+
+
+  function workspaceConfigDraftFromMarkdown(markdown, configUrl = location.href) {
+    const parsed = parseViewerConfigMarkdown(markdown || '', configUrl || location.href);
+    return {
+      title: parsed.displayName || parsed.heading || 'Tiinex Viewer',
+      browserTitle: parsed.browserTitle || '',
+      publicBaseUrl: parsed.publicBaseUrl || parsed.viewerBaseUrl || parsed.shareBaseUrl || '',
+      workspaceHome: parsed.workspaceHome || '',
+      icon: parsed.iconRaw || parsed.icon || '',
+      accent: parsed.accent || '',
+      theme: parsed.theme || '',
+      subtitles: (parsed.noWorkspaceSubtitles || viewerSubtitlePool?.() || []).join('\n'),
+      customCss: parsed.customCss || extractViewerCustomCss(markdown || '') || '',
+      helpMarkdown: parsed.helpMarkdown || ''
+    };
+  }
+
+  function markdownLines(text) {
+    return normalizeNewlines(text || '').split('\n');
+  }
+
+  function replaceBodyTitle(markdown, title) {
+    const lines = markdownLines(markdown);
+    let afterEnvelope = false;
+    for (let i = 0; i < lines.length; i += 1) {
+      if (/^---+\s*$/.test(lines[i].trim())) { afterEnvelope = true; continue; }
+      if (afterEnvelope && /^#\s+/.test(lines[i])) {
+        lines[i] = `# ${String(title || 'Tiinex Viewer').trim() || 'Tiinex Viewer'}`;
+        return lines.join('\n');
+      }
+    }
+    return `${markdown}\n\n# ${String(title || 'Tiinex Viewer').trim() || 'Tiinex Viewer'}\n`;
+  }
+
+  function replaceMarkdownSection(markdown, heading, level, body, insertAfterHeading = '') {
+    const lines = markdownLines(markdown);
+    const h = '#'.repeat(level);
+    const matcher = new RegExp(`^${h}\\s+${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i');
+    const nextHeading = new RegExp(`^#{1,${level}}\\s+`);
+    let start = -1;
+    for (let i = 0; i < lines.length; i += 1) {
+      if (matcher.test(lines[i].trim())) { start = i; break; }
+    }
+    const replacement = [`${h} ${heading}`, '', String(body || '').trim()].filter((item, index) => index !== 2 || item).join('\n').split('\n');
+    if (start >= 0) {
+      let end = lines.length;
+      for (let i = start + 1; i < lines.length; i += 1) {
+        if (nextHeading.test(lines[i].trim())) { end = i; break; }
+      }
+      lines.splice(start, end - start, ...replacement);
+      return lines.join('\n');
+    }
+    if (insertAfterHeading) {
+      const afterMatcher = new RegExp(`^#{1,6}\\s+${insertAfterHeading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i');
+      for (let i = 0; i < lines.length; i += 1) {
+        if (afterMatcher.test(lines[i].trim())) {
+          let end = lines.length;
+          for (let j = i + 1; j < lines.length; j += 1) {
+            if (/^#{1,6}\s+/.test(lines[j].trim())) { end = j; break; }
+          }
+          lines.splice(end, 0, '', ...replacement, '');
+          return lines.join('\n');
+        }
+      }
+    }
+    return `${markdown.replace(/\s*$/u, '')}\n\n${replacement.join('\n')}\n`;
+  }
+
+  function workspaceConfigIdentityMarkdown(draft = {}) {
+    return linesOrEmpty([
+      configLine('Browser Title', draft.browserTitle),
+      configLine('Public Viewer URL', draft.publicBaseUrl),
+      configLine('Workspace Home', draft.workspaceHome),
+      configLine('Icon', draft.icon),
+      configLine('Accent', draft.accent),
+      configLine('Theme', draft.theme)
+    ]);
+  }
+
+  function workspaceConfigEmptyStageMarkdown(draft = {}) {
+    return linesOrEmpty(String(draft.subtitles || '').split(/\r?\n/u).map((item) => item.trim()).filter(Boolean).map((item) => `- Subtitle: ${item}`));
+  }
+
+  function updateWorkspaceConfigMarkdown(markdown, draft = {}) {
+    let out = replaceBodyTitle(markdown || '', draft.title || 'Tiinex Viewer');
+    out = replaceMarkdownSection(out, 'Viewer Identity', 2, workspaceConfigIdentityMarkdown(draft), 'Tiinex Viewer');
+    out = replaceMarkdownSection(out, 'Empty Stage', 2, workspaceConfigEmptyStageMarkdown(draft), 'Viewer Identity');
+    if (String(draft.helpMarkdown || '').trim()) out = replaceMarkdownSection(out, 'Help', 2, String(draft.helpMarkdown || '').trim(), 'Workspace Entrypoints');
+    if (String(draft.customCss || '').trim()) out = replaceMarkdownSection(out, 'Custom CSS', 2, `\`\`\`css\n${String(draft.customCss || '').trim()}\n\`\`\``, 'Help');
+    return out;
+  }
+
+  function openWorkspaceConfigEditor(ws, node) {
+    if (!ws || !node) return toast('No workspace card selected.', 'warn');
+    const markdown = workspaceNodeMarkdown(ws, node);
+    if (!looksLikeWorkspaceMarkdown(markdown)) return toast('This card is not a workspace entrypoint.', 'warn');
+    const configUrl = workspaceNodeConfigUrl(ws, node);
+    app.modal = {
+      type: 'workspace-config-editor',
+      wsId: ws.id,
+      nodeId: node.id,
+      configUrl,
+      originalMarkdown: markdown,
+      draft: workspaceConfigDraftFromMarkdown(markdown, configUrl)
+    };
+    updateUrlState({ replace: true });
+    render();
+  }
+
+  function renderWorkspaceConfigEditorModal(modal) {
+    const draft = modal.draft || {};
+    return `<div class="modal-backdrop-custom focus-modal workspace-config-editor-backdrop" role="dialog" aria-modal="true" aria-labelledby="workspace-config-editor-title">
+      <div class="modal-panel export-panel workspace-config-editor-panel">
+        <div class="modal-header-lite export-head compact-export-head">
+          <div>
+            <p class="kicker">Workspace config</p>
+            <h2 class="modal-title-lite" id="workspace-config-editor-title"><span class="export-title-icon"><i class="fa-solid fa-sliders"></i></span><span>Edit workspace identity</span></h2>
+            <p class="text-secondary mb-0">Brandable settings for this .workspace.md. Source-backed files are downloaded as an updated copy; drafts are not embedded.</p>
+          </div>
+          <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="export-body workspace-config-editor-body">
+          <section class="export-section">
+            <h3>Identity</h3>
+            <div class="schema-grid two-col">
+              <label>Workspace title<input class="form-control tv-input" data-workspace-config-field="title" value="${escapeAttr(draft.title || '')}" placeholder="Tiinex Viewer"></label>
+              <label>Browser title<input class="form-control tv-input" data-workspace-config-field="browserTitle" value="${escapeAttr(draft.browserTitle || '')}" placeholder="Tiinex"></label>
+              <label>Public viewer URL<input class="form-control tv-input" data-workspace-config-field="publicBaseUrl" value="${escapeAttr(draft.publicBaseUrl || '')}" placeholder="https://tiinex.dev/"></label>
+              <label>Workspace home<input class="form-control tv-input" data-workspace-config-field="workspaceHome" value="${escapeAttr(draft.workspaceHome || '')}" placeholder="https://tiinex.dev/"></label>
+              <label>Icon / favicon path<input class="form-control tv-input" data-workspace-config-field="icon" value="${escapeAttr(draft.icon || '')}" placeholder="assets/tiinex-logo-white-transparent.png"></label>
+              <label>Accent<input class="form-control tv-input" data-workspace-config-field="accent" value="${escapeAttr(draft.accent || '')}" placeholder="purple"></label>
+            </div>
+          </section>
+          <section class="export-section">
+            <h3>Empty stage subtitles</h3>
+            <textarea class="form-control tv-input" rows="5" data-workspace-config-field="subtitles" placeholder="One subtitle per line">${escapeHtml(draft.subtitles || '')}</textarea>
+          </section>
+          <section class="export-section">
+            <h3>Custom CSS</h3>
+            <textarea class="form-control tv-input" rows="6" data-workspace-config-field="customCss" placeholder="Optional workspace CSS">${escapeHtml(draft.customCss || '')}</textarea>
+          </section>
+        </div>
+        <div class="modal-footer-actions export-actions">
+          <button class="tv-btn primary" data-action="workspace-config-download"><i class="fa-solid fa-download"></i>Download updated workspace</button>
+          <button class="tv-btn constructive" data-action="workspace-config-apply"><i class="fa-solid fa-check"></i>Apply preview</button>
+          <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  registerRenderModalWrapper(function renderModalWithWorkspaceConfigEditor(modal, next) {
+    if (modal?.type === 'workspace-config-editor') return renderWorkspaceConfigEditorModal(modal);
+    return next(modal);
+  });
+
+  registerActionHandler(async function workspaceConfigEditorAction(event, next) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (event.target?.dataset?.workspaceConfigField && app.modal?.type === 'workspace-config-editor') {
+      const key = event.target.dataset.workspaceConfigField;
+      app.modal.draft = app.modal.draft || {};
+      app.modal.draft[key] = event.target.value || '';
+      return next(event);
+    }
+    if (action === 'workspace-config-apply' || action === 'workspace-config-download') {
+      event.preventDefault(); event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'workspace-config-editor') return;
+      const markdown = updateWorkspaceConfigMarkdown(app.modal.originalMarkdown || '', app.modal.draft || {});
+      const parsed = parseViewerConfigMarkdown(markdown, app.modal.configUrl || location.href);
+      app.viewerIdentity = Object.assign(app.viewerIdentity || {}, parsed || {}, { loaded: true, configUrl: app.modal.configUrl || app.viewerIdentity?.configUrl || '' });
+      syncDocumentTitle('workspace-config-editor');
+      applyViewerCustomCss(app.viewerIdentity.customCss || '');
+      if (action === 'workspace-config-download') {
+        const filename = workspaceArtifactFilenameSafe(parsed.displayName || app.modal.draft?.title || 'workspace');
+        downloadText(filename, markdown, 'text/markdown;charset=utf-8');
+        toast(`Downloaded updated workspace config ${filename}.`, 'ok');
+      } else {
+        toast('Workspace identity preview applied. Download the workspace to persist these settings.', 'ok');
+      }
+      render();
+      return;
+    }
+    return next(event);
+  });
 
   function helpMarkdownBaseUrl() {
     const cfgUrl = String(app.viewerIdentity?.configUrl || '').trim();
@@ -16083,7 +16523,8 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
     if (isWorkspaceNode(node)) {
       items.push(
         { label: 'Open', icon: 'fa-solid fa-layer-group', className: 'constructive workspace-open-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'open-workspace-artifact' }, base), title: 'Open this .workspace.md entrypoint as the current workspace set; non-draft workspaces may close' },
-        { label: 'Merge', icon: 'fa-solid fa-code-merge', className: 'constructive workspace-merge-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'merge-workspace-artifact' }, base), title: 'Merge this .workspace.md into the current workspace set without closing existing workspaces' }
+        { label: 'Merge', icon: 'fa-solid fa-code-merge', className: 'constructive workspace-merge-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'merge-workspace-artifact' }, base), title: 'Merge this .workspace.md into the current workspace set without closing existing workspaces' },
+        { label: 'Configure', icon: 'fa-solid fa-sliders', className: 'constructive workspace-config-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'configure-workspace-artifact' }, base), title: 'Edit the brandable workspace settings and download an updated .workspace.md' }
       );
     }
 
@@ -17999,21 +18440,45 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
     }
 
     const { workspaceFiles: configFiles, materialFiles } = await partitionWorkspaceDroppedFiles(files);
+    const datasetWs = target?.dataset?.ws ? getWorkspace(target.dataset.ws) : null;
+    const explicitWorkspace = ws || datasetWs || null;
 
-    if (configFiles.length && !materialFiles.length) {
-      await openWorkspaceFiles(configFiles, { applyWorkspaceState: true, replaceNonDraftWorkspaces: true });
+    // Dropping a workspace file onto a concrete workspace should not mutate the
+    // current workspace set. Treat it as a workspace-entrypoint card there, so
+    // the user can explicitly choose Open or Merge from the card actions.
+    if (configFiles.length && explicitWorkspace) {
+      app.activeWorkspaceId = explicitWorkspace.id;
+      if (typeof focusWorkspaceWindow === 'function') focusWorkspaceWindow(explicitWorkspace.id);
+      render();
+      await readUploadedFilesIntoWorkspace(explicitWorkspace, [...materialFiles, ...configFiles]);
+      toast(configFiles.length === 1 ? 'Added workspace entrypoint card. Use Open or Merge when ready.' : 'Added workspace entrypoint cards. Use Open or Merge when ready.', 'ok');
       if (typeof setRouteState === 'function') setRouteState('replace');
       else if (typeof updateUrlState === 'function') updateUrlState();
       return;
     }
 
+    if (configFiles.length && !materialFiles.length) {
+      if (!app.workspaces?.length) {
+        await openWorkspaceFiles(configFiles, {
+          applyWorkspaceState: true,
+          replaceNonDraftWorkspaces: true,
+          workspaceOpenMode: 'open',
+          reason: 'workspace-drop-empty-stage-auto-open'
+        });
+        if (typeof setRouteState === 'function') setRouteState('replace');
+        else if (typeof updateUrlState === 'function') updateUrlState();
+        return;
+      }
+      openWorkspaceDropChoice(configFiles, { scope: 'workspace-empty-drop' });
+      return;
+    }
+
     if (configFiles.length) {
-      await openWorkspaceFiles(configFiles, { applyWorkspaceState: true, replaceNonDraftWorkspaces: true });
+      toast('Drop workspace files alone to choose Open/Merge, or drop into a specific workspace to add them as entrypoint cards.', 'warn');
       if (!materialFiles.length) return;
     }
 
-    const datasetWs = target?.dataset?.ws ? getWorkspace(target.dataset.ws) : null;
-    const workspace = ws || datasetWs || getWorkspace(app.activeWorkspaceId || '') || createWorkspace('Local workspace', 'Local source workspace.');
+    const workspace = explicitWorkspace || getWorkspace(app.activeWorkspaceId || '') || createWorkspace('Local workspace', 'Local source workspace.');
     app.activeWorkspaceId = workspace.id;
     if (typeof focusWorkspaceWindow === 'function') focusWorkspaceWindow(workspace.id);
     render();
@@ -28969,7 +29434,9 @@ ${integrityFooterForPath(parent, path)}`,
   function githubTiinexViewerUrl(ws, file, options = {}) {
     const publicUrl = githubTiinexViewerSourceUrl(file, options);
     if (!publicUrl) return '';
-    const adapter = defaultAdapterForShareTarget(publicUrl);
+    const markdown = String(file?.content || file?.rawMarkdown || file?.body || '');
+    const workspaceEntry = isWorkspaceFilename(file?.path || file?.name || '') || looksLikeWorkspaceMarkdown(markdown);
+    const adapter = workspaceEntry ? 'workspace' : defaultAdapterForShareTarget(publicUrl);
     return publicViewerShareUrlForTarget(publicUrl, adapter);
   }
 
@@ -35362,9 +35829,12 @@ window.addEventListener('popstate', (event) => {
 
     if (resolvedScope === 'artifact' && activeNode) {
       const targetUrl = shareNodeSourceUrl(activeNode);
-      target = targetUrl ? { adapter: defaultAdapterForShareTarget(targetUrl), url: targetUrl, source: 'artifact-source-url' } : null;
-      title = artifactDisplayTitle(activeNode) || activeNode.title || 'Tiinex artifact';
-      summary = shortText(activeNode.summary || activeNode.why || activeNode.title || '', 220) || 'Artifact share target.';
+      const workspaceEntry = typeof isWorkspaceNode === 'function' && isWorkspaceNode(activeNode);
+      target = targetUrl ? { adapter: workspaceEntry ? 'workspace' : defaultAdapterForShareTarget(targetUrl), url: targetUrl, source: workspaceEntry ? 'workspace-artifact-source-url' : 'artifact-source-url' } : null;
+      title = artifactDisplayTitle(activeNode) || activeNode.title || (workspaceEntry ? 'Tiinex workspace' : 'Tiinex artifact');
+      summary = workspaceEntry
+        ? 'Workspace entrypoint. Open in Tiinex should load the workspace, not just select the markdown leaf.'
+        : (shortText(activeNode.summary || activeNode.why || activeNode.title || '', 220) || 'Artifact share target.');
       materialState = nodeShowsAuthoringDraftState(activeWs, activeNode) ? 'draft-local' : (target ? 'source-backed' : 'local-only');
     } else if (activeWs) {
       target = shareWorkspacePublicTarget(activeWs);
@@ -36614,12 +37084,50 @@ ${raw.slice(0, 800)}`) || 'en')}">
     const state = app.workspaceOpenMerge || { events: [], last: null, duplicateExports: 0, mergeImports: 0, openImports: 0 };
     return {
       schema: 'tiinex.workspace-open-merge.report.v1',
-      policy: 'Open replaces only non-draft workspaces; Merge keeps current workspaces and upserts matching workspace/source config; Duplicate workspace export marks the file as duplicate-import so it opens as a separate workspace while local drafts remain browser-local',
+      policy: 'Open replaces only non-draft workspaces; Merge keeps current workspaces and upserts matching workspace/source config; Duplicate workspace export carries duplicate intent in the file and opens as a separate workspace copy while local drafts remain browser-local; confirmed close persists local-state deletion',
       openImports: Number(state.openImports || 0),
       mergeImports: Number(state.mergeImports || 0),
       duplicateExports: Number(state.duplicateExports || 0),
       last: state.last || null,
       events: Array.isArray(state.events) ? state.events.slice(-20) : []
+    };
+  }
+
+  function workspaceDropRoutingReport() {
+    const merge = app.workspaceOpenMerge || { events: [], last: null };
+    return {
+      schema: 'tiinex.workspace-drop-routing.report.v1',
+      policy: 'empty-stage workspace drops open directly; page-level drops with existing workspaces ask Open/Merge; drops on a concrete workspace add an entrypoint card; global known-file drops prevent browser navigation',
+      workspaceCount: Array.isArray(app.workspaces) ? app.workspaces.length : 0,
+      pendingChoice: app.pendingWorkspaceDropChoice ? { names: app.pendingWorkspaceDropChoice.names || [], scope: app.pendingWorkspaceDropChoice.scope || '' } : null,
+      lastOpenMerge: merge.last || null,
+      recentOpenMerge: Array.isArray(merge.events) ? merge.events.slice(-12) : []
+    };
+  }
+
+  function workspaceEntrypointShareReport() {
+    const rows = [];
+    for (const ws of app.workspaces || []) {
+      for (const node of ws.nodes || []) {
+        if (!isWorkspaceNode(node)) continue;
+        const href = shareNodeSourceUrl(node);
+        const eligibility = buildShareEligibility('artifact', ws, node);
+        rows.push({
+          workspace: workspaceDisplayLabel(ws),
+          title: artifactDisplayTitle(node) || node.title || '',
+          path: node.path || '',
+          sourceUrl: href,
+          target: eligibility.target || null,
+          publicUrl: eligibility.publicUrl || '',
+          status: eligibility.status || ''
+        });
+      }
+    }
+    return {
+      schema: 'tiinex.workspace-entrypoint-share.report.v1',
+      policy: 'workspace entrypoint cards share/open as workspace targets, including workspace markdown recovered from repo, issue, or comment surfaces',
+      count: rows.length,
+      rows
     };
   }
 

@@ -1,12 +1,8 @@
-# CP339 validation notes
+# CP342 validation notes
 
-Validated the CP339 workspace drop/content-boundary pass.
+Validated the CP342 workspace drop routing and workspace-share boundary pass.
 
-Root cause: drop classification trusted exact filename suffix `.workspace.md`. Browser duplicate names such as `tiinex-viewer.workspace (4).md` therefore bypassed workspace import and became local artifact cards.
-
-Fix: workspace drop classification now accepts browser duplicate workspace filenames and also inspects markdown content for `tiinex.workspace.v1`, Workspace Entrypoints, and Workspace State before routing files to local material intake.
-
-Passed:
+Commands:
 
 ```bash
 node --check app.js

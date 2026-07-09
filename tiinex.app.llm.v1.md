@@ -1,5 +1,11 @@
-## CP339 LLM note
+## CP341 LLM note
 
-CP339 preserves CP338 workspace Open/Merge/Duplicate semantics but fixes the intake boundary. A dropped workspace export must be treated as a workspace entrypoint even when the browser renamed it, for example `*.workspace (4).md`, or when the content clearly declares `tiinex.workspace.v1` / Workspace State.
+CP341 keeps workspace-file drops explicit: dropping onto a workspace adds an entrypoint card, while dropping outside a workspace asks whether to Open or Merge.
 
-Do not import those files as normal local leaves. Draft payloads remain browser-local and are not embedded in `.workspace.md` exports.
+- Open replaces only safe/non-draft workspaces.
+- Merge upserts workspace/source config without closing existing workspaces.
+- Duplicate workspace export carries duplicate intent inside Workspace State and opens as a separate workspace copy.
+- Confirmed workspace close persists local-state deletion.
+- Workspace entrypoint cards now have Configure for brandable identity settings.
+
+Browser-local drafts remain local storage state and are not embedded into `.workspace.md` exports.

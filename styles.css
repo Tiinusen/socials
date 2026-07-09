@@ -22910,3 +22910,43 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
     overflow: hidden !important;
   }
 }
+
+/* CP342: workspace drop choice should feel like a Tiinex workflow, not a browser/system prompt. */
+.workspace-drop-choice-backdrop {
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 50% 20%, rgba(149, 88, 255, .22), rgba(8, 6, 14, .82) 52%, rgba(0, 0, 0, .9));
+}
+.workspace-drop-choice-panel.tiinex-choice-panel {
+  max-width: min(720px, calc(100vw - 28px));
+  border-color: rgba(190, 130, 255, .38);
+  box-shadow: 0 22px 80px rgba(0,0,0,.45), 0 0 0 1px rgba(190,130,255,.08) inset;
+}
+.workspace-drop-choice-head {
+  border-bottom: 1px solid rgba(190, 130, 255, .22);
+}
+.workspace-drop-choice-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 4px 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(120, 255, 210, .18);
+  border-radius: 14px;
+  color: var(--tv-muted);
+  background: rgba(36, 211, 173, .06);
+  font-size: .9rem;
+}
+.workspace-drop-choice-summary i { color: var(--tv-mint); }
+.workspace-drop-choice-card {
+  text-align: left;
+  min-height: 96px;
+}
+.workspace-drop-choice-card.selected {
+  background: linear-gradient(135deg, rgba(115, 62, 208, .30), rgba(36, 211, 173, .10));
+  border-color: rgba(190, 130, 255, .56);
+}
+@media (max-width: 680px) {
+  .workspace-drop-choice-grid { grid-template-columns: 1fr; }
+  .workspace-drop-choice-card { min-height: 84px; }
+}

@@ -38,7 +38,7 @@ try {
 
   if (existsSync(indexPath)) {
     const html = read(indexPath);
-    if (!html.includes('tiinex:build-id') || !html.includes('CP339-workspace-drop-content-boundary')) fail('public index must include CP339 build identity meta.');
+    if (!html.includes('tiinex:build-id') || !html.includes('CP342-workspace-drop-routing-share-boundary')) fail('public index must include CP342 build identity meta.');
     const localScripts = [...html.matchAll(/<script\s+src=["']\.\/[^"']+\.js["']><\/script>/gu)].map((match) => match[0]);
     if (localScripts.length !== 1 || !localScripts[0].includes('tiinex.bundle.js')) {
       fail(`public index must load exactly one local JS bundle, found: ${localScripts.join(', ') || 'none'}`);
@@ -52,7 +52,7 @@ try {
     const syntax = spawnSync(process.execPath, ['--check', bundlePath], { encoding: 'utf8' });
     if (syntax.status !== 0) fail(`node --check public bundle failed:\n${syntax.stderr || syntax.stdout}`.trim());
     const bundle = read(bundlePath);
-    if (!bundle.includes("release: '339'") || !bundle.includes('buildIdentityReport') || !bundle.includes('routeLoadPresentationReport')) fail('public bundle must include release 339 build and route-load diagnostics.');
+    if (!bundle.includes("release: '342'") || !bundle.includes('buildIdentityReport') || !bundle.includes('routeLoadPresentationReport')) fail('public bundle must include release 342 build and route-load diagnostics.');
     const sections = [
       'src/app/core-runtime.js',
       'src/app/services-runtime.js',
@@ -82,7 +82,7 @@ try {
   console.log('✓ public build creates bundled site');
   console.log('✓ public index loads one local app bundle');
   console.log('✓ public bundle syntax and section order are valid');
-  console.log('✓ public build preserves CNAME, favicon, and CP339 build identity');
+  console.log('✓ public build preserves CNAME, favicon, and CP342 build identity');
 } finally {
   rmSync(tmpRoot, { recursive: true, force: true });
 }
