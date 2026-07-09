@@ -112,9 +112,9 @@
   };
 
   const TIINEX_APP_BUILD = Object.freeze({
-    release: '331',
-    codename: 'mobile-reclaim-parent-scope',
-    packageName: 'tiinex-site-331-clean-repo',
+    release: '332',
+    codename: 'github-target-parent-raw-modal',
+    packageName: 'tiinex-site-332-clean-repo',
     builtFor: 'Tiinex/site source repo',
     publicBuildOutputExcluded: true
   });
@@ -28318,6 +28318,24 @@ ${integrityFooterForPath(parent, path)}`,
     });
   }
 
+  function githubIssueTargetUrlsFromArtifactPath(pathValue = '', repoHint = '') {
+    const path = canonicalWorkspacePath(pathValue || '');
+    if (!path) return [];
+    const out = [];
+    const repoClean = String(repoHint || '').trim();
+    const match = path.match(/(?:^|\/)github-issues\/([^\/]+?)-(\d+)(?:-[^\/]*)?(?:\/|$)/i);
+    if (match) {
+      const issueNumber = Number(match[2]);
+      let repo = /^[-_.A-Za-z0-9]+\/[-_.A-Za-z0-9]+$/.test(repoClean) ? repoClean : '';
+      if (!repo) {
+        const parts = String(match[1] || '').split('-').filter(Boolean);
+        if (parts.length >= 2) repo = `${parts[0]}/${parts.slice(1).join('-')}`;
+      }
+      if (repo && Number.isInteger(issueNumber) && issueNumber > 0) out.push(`https://github.com/${repo}/issues/${issueNumber}`);
+    }
+    return out;
+  }
+
   function githubExportTargetCandidates(ws, item, surface = 'issue') {
     const file = item?.file || item;
     const node = githubExportFileNode(ws, file);
@@ -28328,22 +28346,38 @@ ${integrityFooterForPath(parent, path)}`,
       if (direct) addGithubTargetCandidate(candidates, value, reason, surface);
       githubUrlsFromText(value, surface).forEach((url) => addGithubTargetCandidate(candidates, url, reason, surface));
     };
+    const scanPath = (value, reason, repoHint = '') => {
+      if (surface !== 'issue') return;
+      githubIssueTargetUrlsFromArtifactPath(value, repoHint || ws?.repo || '').forEach((url) => addGithubTargetCandidate(candidates, url, reason, surface));
+    };
+    const scanNode = (candidate, reasonPrefix = 'lineage') => {
+      if (!candidate) return;
+      scan(candidate.browseUrl, `${reasonPrefix} source`);
+      scan(candidate.rawUrl, `${reasonPrefix} raw source`);
+      scan(candidate.sourceOrigin, `${reasonPrefix} source origin`);
+      scan(candidate.recoveredFromUrl, `${reasonPrefix} recovered GitHub origin`);
+      scan(candidate.parentOriginBrowse, `${reasonPrefix} parent origin`);
+      scan(candidate.originUrl, `${reasonPrefix} origin`);
+      scan(candidate.rawMarkdown || candidate.body || candidate.content || '', `${reasonPrefix} markdown`);
+      scanPath(candidate.path || candidate.file?.path || '', `${reasonPrefix} path`, candidate.repo || candidate.file?.repo || ws?.repo || '');
+    };
     scan(file?.browseUrl, 'artifact source URL');
     scan(file?.rawUrl, 'artifact raw URL');
     scan(file?.sourceUrl, 'artifact source URL');
     scan(file?.sourceOrigin, 'artifact source origin');
     scan(file?.recoveredFromUrl, 'recovered artifact GitHub origin');
     scan(file?.content || file?.rawMarkdown || file?.body || '', 'artifact markdown');
+    scanPath(file?.path || file?.name || '', 'artifact path', file?.repo || ws?.repo || '');
+
+    const original = typeof originalNodeForLocalShadowDraft === 'function' ? originalNodeForLocalShadowDraft(ws, node) : null;
+    if (original && original !== node) scanNode(original, 'original source artifact');
+
     let cursor = node;
     let depth = 0;
     while (cursor && depth < 8) {
-      scan(cursor.browseUrl, depth ? 'parent lineage source' : 'loaded node source');
-      scan(cursor.rawUrl, depth ? 'parent lineage raw source' : 'loaded node raw source');
-      scan(cursor.sourceOrigin, depth ? 'parent source origin' : 'loaded node source origin');
-      scan(cursor.recoveredFromUrl, depth ? 'parent recovered GitHub origin' : 'loaded recovered GitHub origin');
-      scan(cursor.parentOriginBrowse, 'parent origin');
-      scan(cursor.originUrl, 'origin');
-      scan(cursor.rawMarkdown || cursor.body || '', depth ? 'parent markdown' : 'loaded node markdown');
+      scanNode(cursor, depth ? 'parent lineage' : 'loaded node');
+      const shadow = typeof originalNodeForLocalShadowDraft === 'function' ? originalNodeForLocalShadowDraft(ws, cursor) : null;
+      if (shadow && shadow !== cursor) scanNode(shadow, depth ? 'parent original source artifact' : 'original source artifact');
       cursor = cursor.parentNode || null;
       depth += 1;
     }

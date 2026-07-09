@@ -1,6 +1,6 @@
-# CP331 validation notes
+# CP332 validation notes
 
-Validated after mobile chrome reclaim and continuity-parent picker foundation:
+Validated after GitHub target candidate discovery and mobile raw modal close fixes:
 
 - `node --check app.js`
 - `npm run build:public`
@@ -11,7 +11,7 @@ Validated after mobile chrome reclaim and continuity-parent picker foundation:
 
 Manual checks requested:
 
-1. On mobile, scroll down until chrome fades; content should reclaim the space instead of leaving an empty spacer.
-2. Open a create/edit wizard and confirm Storage placement and Continuity parent appear as separate pre-content scopes.
-3. Choose parent, cancel parent, and detach parent; the wizard should restore without changing storage folder unexpectedly.
-4. Hidden/unresolved parent state should be shown as a relation state, not by forcing hidden discovery findings visible.
+1. Open GitHub export for a local draft whose parent/original is a GitHub issue/comment discovery artifact. The target step should offer Create comment / Update known instead of defaulting to Create new when a target can be inferred.
+2. Verify that hidden discovery findings remain hidden in the feed unless the user explicitly reveals them; using their GitHub issue as publication target must not change feed visibility.
+3. Open Raw markdown on a long document in mobile/narrow width. The close button must remain visible/reachable.
+4. Confirm repo zip shape remains replace-ready: root files present, no `.git`, no `.site-publish`, no `.nojekyll`, no `tiinex.bundle.js`.
