@@ -22400,3 +22400,95 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
     pointer-events: auto !important;
   }
 }
+
+/* CP329: tree-backed artifact placement picker */
+.wizard-placement-preview.picker-ready {
+  grid-column: 1 / -1;
+  border: 1px solid rgba(216,180,254,0.14);
+  border-radius: 0.9rem;
+  padding: 0.72rem;
+  background: rgba(168,85,247,0.06);
+}
+
+.wizard-placement-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.65rem;
+  align-items: center;
+  margin-bottom: 0.55rem;
+}
+
+.wizard-placement-current {
+  min-width: 0;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 0.7rem;
+  padding: 0.48rem 0.62rem;
+  background: rgba(255,255,255,0.035);
+}
+
+.wizard-placement-current span {
+  display: block;
+  color: var(--tv-muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.wizard-placement-current strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(248,246,255,0.95);
+  font-weight: 650;
+}
+
+.path-preview-label {
+  margin-bottom: 0.35rem;
+}
+
+.folder-picker-active .tree-folder-add {
+  display: none !important;
+}
+
+.tree-folder-select {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 1.85rem;
+  border-radius: 999px;
+  border: 1px solid rgba(16,185,129,0.34);
+  background: rgba(6,78,59,0.16);
+  color: rgba(167,243,208,0.98);
+  padding: 0 0.62rem;
+  font-weight: 700;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.tree-folder-select:hover:not(:disabled) {
+  border-color: rgba(16,185,129,0.58);
+  background: rgba(6,95,70,0.24);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.12), 0 0 18px rgba(16,185,129,0.14);
+}
+
+.tree-folder-select:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+
+.folder-picker-banner .picker-context {
+  font-size: 0.82rem;
+  opacity: 0.86;
+}
+
+@media (max-width: 760px) {
+  .wizard-placement-row {
+    grid-template-columns: 1fr;
+  }
+
+  .tree-folder-select span {
+    display: none;
+  }
+}

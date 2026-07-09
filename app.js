@@ -104,6 +104,7 @@
     activeWorkspaceId: null,
     sourceOpen: false,
     modal: null,
+    folderPicker: null,
     toasts: [],
     isBootingFromUrl: false,
     closedDialogRouteSessions: new Set(),
@@ -111,9 +112,9 @@
   };
 
   const TIINEX_APP_BUILD = Object.freeze({
-    release: '328',
-    codename: 'route-render-placement-foundation',
-    packageName: 'tiinex-site-328-clean-repo',
+    release: '329',
+    codename: 'placement-picker-foundation',
+    packageName: 'tiinex-site-329-clean-repo',
     builtFor: 'Tiinex/site source repo',
     publicBuildOutputExcluded: true
   });
@@ -122,7 +123,9 @@
 
   function tiinexBuildIdentity() {
     return Object.assign({}, TIINEX_APP_BUILD, {
-      href: location.href,
+      location: `${location.origin}${location.pathname}${location.search}`,
+      hashKind: location.hash ? String(location.hash).slice(0, 16) : '',
+      hashLength: location.hash ? location.hash.length : 0,
       diagnosticsRegistered: Boolean(window.TiinexDiagnostics?.buildIdentityReport)
     });
   }
@@ -859,7 +862,9 @@
       folderPath: modal ? defaultArtifactFolder(ws, modal) : '',
       pathPreview: path,
       crossWorkspacePlacementReady: true,
-      moveRewireReady: false
+      moveRewireReady: false,
+      folderPickerActive: Boolean(app.folderPicker),
+      folderPicker: app.folderPicker ? { originWsId: app.folderPicker.originWsId || '', modalWsId: app.folderPicker.modal?.wsId || '', previousViewCount: Array.isArray(app.folderPicker.previousViews) ? app.folderPicker.previousViews.length : 0 } : null
     };
   }
 
@@ -4014,6 +4019,7 @@
 
   function treeFolderExpanded(ws, path) {
     ws.treeExpandedFolders = ws.treeExpandedFolders || {};
+    if (app.folderPicker) return true;
     if (Object.prototype.hasOwnProperty.call(ws.treeExpandedFolders, path)) return Boolean(ws.treeExpandedFolders[path]);
     return false;
   }
@@ -4033,6 +4039,7 @@
     return `<div class="discovery-tree has-folder-add">
       <div class="tree-root-note root-add">
         <span><i class="fa-solid fa-folder-tree"></i> Root${roots.length === 1 ? '' : 's'}: ${escapeHtml(roots.join(', '))}</span>
+        ${folderPickerSelectControl(ws, rootFolder, `Select ${rootFolder}`)}
         ${folderAddButton(ws, rootFolder, `Add local artifact in ${rootFolder}`)}
       </div>
       ${renderTreeFolderChildren(ws, tree, 0, visibleIds)}
@@ -4060,6 +4067,7 @@
           <span class="tree-count">${folder.artifactCount} artifacts</span>
           <span class="tree-count">${folder.leafCount} leaves</span>
         </button>
+        ${folderPickerSelectControl(ws, actualPath, `Select ${actualPath}`)}
         ${folderAddButton(ws, actualPath, `Add local artifact in ${actualPath}`)}
       </div>
       ${expanded ? `<div class="tree-children">${renderTreeFolderChildren(ws, folder, depth + 1, visibleIds)}</div>` : ''}
@@ -23736,6 +23744,66 @@ ${wizardBlank(f.notes)}`,
     return Boolean(app.parentPicker);
   }
 
+
+  function folderPickerActiveFor(ws) {
+    return Boolean(app.folderPicker);
+  }
+
+  function renderFolderPickerBanner(ws) {
+    if (!folderPickerActiveFor(ws)) return '';
+    const picker = app.folderPicker || {};
+    const modal = picker.modal || {};
+    const sourceWs = workspaceById(modal.wsId || picker.originWsId || '') || ws;
+    const sourceLabel = sourceWs ? workspaceDisplayLabel(sourceWs) : 'current workspace';
+    return `<div class="folder-picker-banner parent-picker-banner">
+      <div><strong><i class="fa-solid fa-folder-tree"></i>Select storage folder</strong><p>Choose a folder in the tree. Continuity parent stays separate from storage path; cross-workspace folder selection is allowed only when this draft has no same-workspace parent yet.</p><p class="picker-context">Draft: ${escapeHtml(modal.title || modal.summary || 'new leaf')} · from ${escapeHtml(sourceLabel)}</p></div>
+      <button class="tv-btn tiny subtle" data-action="cancel-folder-picker" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-xmark"></i>Cancel</button>
+    </div>`;
+  }
+
+  function restoreFolderPickerViews() {
+    const picker = app.folderPicker || {};
+    const previous = Array.isArray(picker.previousViews) ? picker.previousViews : [];
+    for (const item of previous) {
+      const ws = getWorkspace(item.wsId || '');
+      if (ws) {
+        ws.discoveryView = item.discoveryView || 'feed';
+        ws.selectedNodeId = item.selectedNodeId || ws.selectedNodeId || null;
+      }
+    }
+  }
+
+  function enterFolderPlacementPicker(ws, modal) {
+    if (!ws || !modal || modal.type !== 'artifact-wizard') return;
+    const savedModal = Object.assign({}, modal, { folderPath: defaultArtifactFolder(ws, modal) });
+    app.folderPicker = {
+      originWsId: ws.id,
+      modal: savedModal,
+      previousViews: (app.workspaces || []).map((item) => ({ wsId: item.id, discoveryView: item.discoveryView || 'feed', selectedNodeId: item.selectedNodeId || '' })),
+      startedAt: Date.now()
+    };
+    app.modal = null;
+    for (const item of app.workspaces || []) {
+      item.discoveryView = 'tree';
+      item.selectedNodeId = null;
+    }
+    render();
+    toast('Choose a folder from the tree.', 'ok');
+  }
+
+  function folderPickerSelectControl(ws, folderPath, label = 'Select folder') {
+    if (!folderPickerActiveFor(ws)) return '';
+    const picker = app.folderPicker || {};
+    const modal = picker.modal || {};
+    const hasParent = Boolean(modal.parentNodeId);
+    const crossWorkspace = Boolean(hasParent && modal.wsId && ws?.id && modal.wsId !== ws.id);
+    const disabled = crossWorkspace;
+    const title = disabled ? 'Cross-workspace storage with a same-workspace parent belongs to Move/Rewire, not ordinary create placement yet.' : label;
+    return `<button type="button" class="tree-folder-select" data-action="select-folder-placement" data-ws="${escapeAttr(ws?.id || '')}" data-folder="${escapeAttr(folderPath || '')}" ${disabled ? 'disabled aria-disabled="true"' : ''} title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}">
+      <i class="fa-solid fa-location-dot"></i><span>${disabled ? 'Later' : 'Select'}</span>
+    </button>`;
+  }
+
   function renderParentPickerBanner(ws) {
     if (!parentPickerActiveFor(ws)) return '';
     const picker = app.parentPicker || {};
@@ -23761,6 +23829,11 @@ ${wizardBlank(f.notes)}`,
     if (!parentPickerActiveFor(ws)) return html;
     return html.replace('<div class="post-feed', `${renderParentPickerBanner(ws)}<div class="post-feed`);
   });
+  registerRenderWorkspaceFeedWrapper(function renderWorkspaceFeedWithFolderPicker(ws, selected, next) {
+    const html = next(ws, selected);
+    if (!folderPickerActiveFor(ws)) return html;
+    return html.replace('<div class="post-feed', `${renderFolderPickerBanner(ws)}<div class="post-feed`);
+  });
   function parentPickerSelectActionItem(ws, node) {
     const mode = app.parentPicker?.mode || 'reference';
     return {
@@ -23784,6 +23857,7 @@ ${wizardBlank(f.notes)}`,
   registerRenderWrapper(function renderWithParentPickerClass(next) {
     const result = next();
     document.body.classList.toggle('parent-picker-active', Boolean(app.parentPicker));
+    document.body.classList.toggle('folder-picker-active', Boolean(app.folderPicker));
     return result;
   });
 
@@ -23919,6 +23993,47 @@ ${wizardBlank(f.notes)}`,
       event.preventDefault();
       event.stopPropagation();
       app.parentPicker = null;
+      render();
+      return;
+    }
+
+    if (action === 'open-folder-placement-picker') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || app.activeWorkspaceId || '');
+      if (!ws || !app.modal || app.modal.type !== 'artifact-wizard') return toast('No draft is open for folder placement.', 'warn');
+      enterFolderPlacementPicker(ws, app.modal);
+      return;
+    }
+
+    if (action === 'select-folder-placement') {
+      event.preventDefault();
+      event.stopPropagation();
+      const picker = app.folderPicker || {};
+      const selectedWs = getWorkspace(event.currentTarget.dataset.ws || '');
+      const folder = normalizedFolderPath(event.currentTarget.dataset.folder || '');
+      if (!picker.modal || !selectedWs || !folder) return toast('Could not resolve selected folder.', 'warn');
+      const sourceModal = picker.modal || {};
+      if (sourceModal.parentNodeId && sourceModal.wsId && selectedWs.id !== sourceModal.wsId) {
+        return toast('Cross-workspace folder placement with an existing parent will be handled by Move/Rewire.', 'warn');
+      }
+      const nextModal = Object.assign({}, sourceModal, { wsId: selectedWs.id, folderPath: folder, wizardStep: sourceModal.wizardStep || 'describe' });
+      restoreFolderPickerViews();
+      app.folderPicker = null;
+      app.modal = nextModal;
+      updateUrlState({ replace: true });
+      render();
+      toast(`Folder selected: ${folder}`, 'ok');
+      return;
+    }
+
+    if (action === 'cancel-folder-picker') {
+      event.preventDefault();
+      event.stopPropagation();
+      const picker = app.folderPicker || {};
+      restoreFolderPickerViews();
+      app.modal = picker.modal || null;
+      app.folderPicker = null;
       render();
       return;
     }
@@ -24420,10 +24535,13 @@ ${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source findi
     const folder = defaultArtifactFolder(ws, modal);
     const path = wizardPathFor(ws, modal, option, title || defaultWizardTitle(ws, modal, option));
     const edit = modal?.mode === 'edit';
-    return `<div class="wizard-placement-preview" aria-label="Artifact storage placement">
-      <label class="field-label">Folder<input class="form-control tv-input" data-field="wizardFolderPath" value="${escapeAttr(folder)}" ${edit ? 'disabled' : ''}></label>
-      <label class="field-label">Path preview<input class="form-control tv-input" value="${escapeAttr(path)}" readonly></label>
-      <small>Continuity parent and storage path are separate. New child artifacts default to the parent folder; override the folder before saving when this leaf belongs elsewhere.</small>
+    return `<div class="wizard-placement-preview picker-ready" aria-label="Artifact storage placement">
+      <div class="wizard-placement-row">
+        <div class="wizard-placement-current"><span>Folder</span><strong>${escapeHtml(folder)}</strong></div>
+        <button type="button" class="tv-btn tiny subtle" data-action="open-folder-placement-picker" data-ws="${escapeAttr(ws?.id || '')}" ${edit ? 'disabled aria-disabled="true"' : ''}><i class="fa-solid fa-folder-tree"></i>Choose folder</button>
+      </div>
+      <label class="field-label path-preview-label">Path preview<input class="form-control tv-input" value="${escapeAttr(path)}" readonly></label>
+      <small>Continuity parent and storage path are separate. Choose a folder from the tree instead of typing a path; new child artifacts still default to the parent folder.</small>
     </div>`;
   }
 

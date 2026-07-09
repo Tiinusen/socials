@@ -1,4 +1,26 @@
-# CP328 validation notes
+# CP329 validation notes
+
+Validated after replacing the free-text Folder input with a tree-backed placement picker.
+
+Commands:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Manual checks:
+
+1. Open Create/Continue/Reference wizard.
+2. On Details, click Choose folder.
+3. Visible workspaces should switch to Tree view and show Select folder controls.
+4. Choosing a folder should return to the wizard with the folder/path preview updated.
+5. Cancelling should restore the previous view/selection.
+6. Same-workspace parented drafts should not silently move storage into a different workspace.
+
+# CP329 validation notes
 
 Validated locally after adding build identity, route-load presentation diagnostics, parent/origin repair visibility, and artifact placement preview.
 

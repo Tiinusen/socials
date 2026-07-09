@@ -1,6 +1,21 @@
-# CP328 — route/render truth + placement foundation
+# CP329 — placement picker foundation
 
-CP328 follows CP327 after field testing showed the browser had no trustworthy build identity signal and `routeLoadPresentationReport()` could be missing in deployed code. The primary goal is to make route-owned startup/back behavior observable and to seed artifact storage placement without starting the full Move/Rewire feature yet.
+CP329 follows CP328 after field testing showed the raw Folder text input was not respectful enough for ordinary users. Artifact storage placement now uses a tree-backed picker flow instead of asking users to type folder paths.
+
+Changes:
+
+- Build identity now reports a compact location/hash summary instead of echoing the full shared state hash.
+- The artifact wizard shows Folder as a selected placement with a Choose folder action.
+- Choose folder temporarily switches visible workspaces to Tree view so the user can pick placement from the same spatial model used for browsing.
+- Folder picker preserves prior view/selection state and restores it when the picker is cancelled or a folder is chosen.
+- Tree folders show a Select action during placement picking; ordinary add buttons are hidden while the picker is active.
+- Cross-workspace folder selection is deferred when the draft already has a same-workspace parent, avoiding silent continuity breakage before Move/Rewire exists.
+
+Validation gate remains the publish-readiness chain, not legacy `npm test` static hygiene.
+
+# CP329 — placement picker foundation
+
+CP329 follows CP327 after field testing showed the browser had no trustworthy build identity signal and `routeLoadPresentationReport()` could be missing in deployed code. The primary goal is to make route-owned startup/back behavior observable and to seed artifact storage placement without starting the full Move/Rewire feature yet.
 
 Changes:
 

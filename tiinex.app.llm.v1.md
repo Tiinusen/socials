@@ -1,4 +1,8 @@
-## CP328 LLM note
+## CP329 LLM note
+
+Artifact placement is now treated as a picker workflow rather than a text-path editing task. Continuity parent and storage folder remain separate. When extending Move/Rewire, keep folder placement, parent selection, insert-between, detach/splice, and cross-workspace moves explicit rather than silently rewriting lineage.
+
+## CP329 LLM note
 
 Route/render ownership is now a first-class field-test surface. Before diagnosing startup or mobile back/swipe behavior, check `TiinexDiagnostics.buildIdentityReport()` and `TiinexDiagnostics.routeLoadPresentationReport()` so stale deploys and missing diagnostics are visible. Artifact creation now exposes storage placement separately from continuity parentage; do not treat file path moves and graph rewires as the same operation.
 
