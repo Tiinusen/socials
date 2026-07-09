@@ -11822,7 +11822,7 @@ select.tv-input option:disabled,
 
 
 @media (max-width: 640px) {
-  /* Header hides on down-scroll and returns on up-scroll/top. */
+  /* Header/chrome hides after the near-top threshold and returns only at the top boundary. */
   body.mobile-chrome .topbar,
   body.mobile-chrome .topbar.compact,
   body.mobile-chrome .topbar-foundation,

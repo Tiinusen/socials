@@ -2091,6 +2091,7 @@
     displayOptionsMobileReadinessReport: () => displayOptionsMobileReadinessReport(),
     valueFirstUxReadinessReport: () => valueFirstUxReadinessReport(),
     uxPolishReadinessReport: () => uxPolishReadinessReport(),
+    previewMaterialFilterReadinessReport: () => previewMaterialFilterReadinessReport(),
     shareSignalPreviewForActive: (reason = '', intent = 'share') => shareSignalRecord(shareEligibilityForActive(), { intent, reason }),
     shareCounterObservationReport: () => shareCounterObservationReport(),
     crossWorkspaceRelationPickerReport: () => crossWorkspaceRelationPickerReport(),
@@ -23902,7 +23903,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
       defaults: () => Object.assign({}, defaults),
       bodyFromForm: (f) => sectionNames.map((name) => {
         const key = camelKey(name);
-        return `## ${name}\n\n${paragraph(f[key], `Describe ${name.toLowerCase()}.`)}`;
+        return `## ${name}\n\n${wizardBlank(f[key])}`;
       }).join('\n\n'),
       formStateFromSections: (sections) => Object.fromEntries(sectionNames.map((name) => [camelKey(name), plainBlock(sections[name.toLowerCase()] || '')]))
     };
@@ -23925,11 +23926,11 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
         { key: 'nextArtifacts', label: 'Next artifacts', type: 'list', placeholder: 'One continuation or artifact idea per line' }
       ],
       defaults: () => ({ currentRead: '', designDirection: '', nextArtifacts: '' }),
-      bodyFromForm: (f) => `${paragraph(f.currentRead, 'Describe the present topic state.')}
+      bodyFromForm: (f) => `${wizardBlank(f.currentRead)}
 
 ## Design Direction
 
-${paragraph(f.designDirection, 'State where this topic should move next.')}
+${wizardBlank(f.designDirection)}
 
 ## Next Artifacts
 
@@ -24015,7 +24016,7 @@ ${blocks.limits}`;
 
 ## Feedback Received
 
-${paragraph(f.feedbackReceived, 'Preserve or summarize the feedback.')}
+${wizardBlank(f.feedbackReceived)}
 
 ## Disposition
 
@@ -24024,7 +24025,7 @@ ${paragraph(f.feedbackReceived, 'Preserve or summarize the feedback.')}
 
 ## Limits
 
-${listBlock(f.limits, 'State fidelity, scope, or interpretation limits.')}`,
+${listBlock(f.limits)}`,
       formStateFromSections: (sections) => ({
         feedbackTarget: singleFieldFromBullet(sections['feedback target'] || '', 'Target'),
         feedbackReceived: plainBlock(sections['feedback received'] || ''),
@@ -24052,19 +24053,19 @@ ${listBlock(f.limits, 'State fidelity, scope, or interpretation limits.')}`,
       defaults: () => ({ sourceContext: '', carryForwardState: '', lossAndUncertainty: '', validation: '' }),
       bodyFromForm: (f) => `## Source Context
 
-${paragraph(f.sourceContext, '- Source: ')}
+${wizardBlank(f.sourceContext)}
 
 ## Carry-Forward State
 
-${paragraph(f.carryForwardState, '- State what later work may rely on.')}
+${wizardBlank(f.carryForwardState)}
 
 ## Loss And Uncertainty
 
-${listBlock(f.lossAndUncertainty, 'State what was omitted, compressed, degraded, or remains uncertain.')}
+${listBlock(f.lossAndUncertainty)}
 
 ## Validation
 
-${listBlock(f.validation, 'State human review, runtime validation, source checks, or explicit limits.')}`,
+${listBlock(f.validation)}`,
       formStateFromSections: (sections) => ({
         sourceContext: plainBlock(sections['source context'] || ''),
         carryForwardState: plainBlock(sections['carry-forward state'] || ''),
@@ -24092,7 +24093,7 @@ ${listBlock(f.validation, 'State human review, runtime validation, source checks
       defaults: () => ({ objective: '', doneCriteria: '', inScope: '', outOfScope: '', dependencies: '' }),
       bodyFromForm: (f) => `## Objective
 
-${paragraph(f.objective, 'Describe the concrete work being asked for.')}
+${wizardBlank(f.objective)}
 
 ## Done Criteria
 
@@ -24177,7 +24178,7 @@ ${listBlock(f.consequences)}`,
 
 ## Current Read
 
-${paragraph(f.currentRead, 'Explain what this pointer currently points toward.')}
+${wizardBlank(f.currentRead)}
 
 ## Destinations
 
@@ -24277,7 +24278,7 @@ ${listBlock(f.consequences)}`,
       defaults: () => ({ workspaceScope: '', sources: '', notes: '' }),
       bodyFromForm: (f) => `## Workspace Scope
 
-${paragraph(f.workspaceScope, 'What this workspace contains.')}
+${wizardBlank(f.workspaceScope)}
 
 ## Sources
 
@@ -24285,7 +24286,7 @@ ${listBlock(f.sources)}
 
 ## Notes
 
-${paragraph(f.notes, 'What the next reader should know.')}`,
+${wizardBlank(f.notes)}`,
       formStateFromSections: (sections) => ({
         workspaceScope: plainBlock(sections['workspace scope'] || ''),
         sources: plainBlock(sections.sources || ''),
@@ -25262,14 +25263,55 @@ ${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source findi
     return String(value || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   }
 
+  function wizardInstructionalPlaceholder(value = '', placeholder = '') {
+    const clean = String(value || '').trim().replace(/^[-*]\s+/, '').replace(/\s+/g, ' ');
+    if (!clean) return false;
+    const lower = clean.toLowerCase();
+    const expected = String(placeholder || '').trim().replace(/^[-*]\s+/, '').replace(/\s+/g, ' ').toLowerCase();
+    if (expected && lower === expected) return true;
+    const stripped = lower.replace(/[.!?]+$/g, '');
+    if (/^describe [a-z0-9][a-z0-9\s/_-]{1,80}$/.test(stripped)) return true;
+    return [
+      'describe the present topic state',
+      'state where this topic should move next',
+      'preserve or summarize the feedback',
+      'state fidelity, scope, or interpretation limits',
+      'state what was omitted, compressed, degraded, or remains uncertain',
+      'state human review, runtime validation, source checks, or explicit limits',
+      'describe the concrete work being asked for',
+      'explain what this pointer currently points toward',
+      'what this workspace contains',
+      'what the next reader should know'
+    ].includes(stripped);
+  }
+
+  function wizardContent(value = '', placeholder = '') {
+    const clean = String(value || '').trim();
+    return wizardInstructionalPlaceholder(clean, placeholder) ? '' : clean;
+  }
+
   function listBlock(value, fallback = '') {
-    const lines = formLines(value);
-    if (!lines.length) return fallback ? `- ${fallback}` : '- ';
+    const lines = formLines(value).filter((line) => !wizardInstructionalPlaceholder(line));
+    if (!lines.length) return String(fallback || '').trim() ? `- ${fallback}` : '';
     return lines.map((line) => line.startsWith('- ') ? line : `- ${line}`).join('\n');
   }
 
   function paragraph(value, fallback = '') {
     return String(value || '').trim() || fallback;
+  }
+
+  function wizardBlank(value = '', placeholder = '') {
+    return wizardContent(value, placeholder);
+  }
+
+  function sanitizeWizardFormState(schemaId, state = {}) {
+    const out = Object.assign({}, state || {});
+    const fields = schemaFormFor(schemaId) || [];
+    for (const field of fields) {
+      if (!field?.key || typeof out[field.key] !== 'string') continue;
+      out[field.key] = wizardContent(out[field.key], field.placeholder || '');
+    }
+    return out;
   }
 
   function defaultFormValues(schemaId, modal, option) {
@@ -25289,7 +25331,8 @@ ${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source findi
 
   function bodyFromForm(schemaId, f, context = {}) {
     const def = wizardSchemaDefinition(schemaId);
-    return typeof def.bodyFromForm === 'function' ? def.bodyFromForm(f || {}, context) : '';
+    const cleanState = sanitizeWizardFormState(schemaId, f || {});
+    return typeof def.bodyFromForm === 'function' ? def.bodyFromForm(cleanState, context) : '';
   }
 
   function renderWizardField(field, value) {
@@ -25311,7 +25354,8 @@ ${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source findi
     if (typeof renderer === 'function') return renderer(ws, modal, selected, title, summary, body);
     const fields = schemaFormFor(schemaId);
     ensureWizardFormDefaults(modal, selected);
-    const state = wizardFormState(modal);
+    const state = sanitizeWizardFormState(schemaId, wizardFormState(modal));
+    modal.formFields = state;
     return `<section class="wizard-step wizard-step-page wizard-describe-step schema-aware-describe">
       <div class="wizard-step-head"><span>2</span><div><strong>Describe the leaf</strong><p>${fields ? 'Fill only the fields that matter. The viewer assembles the Tiinex markdown.' : 'Use raw markdown for this not-yet-modeled shape.'}</p></div></div>
       <div class="wizard-selected-type-strip">
@@ -25477,7 +25521,8 @@ ${integrityFooterForPath(parent, path)}`,
     const schemaId = wizardSchemaId(selected);
     ensureWizardFormDefaults(modal, selected);
     ensureEvidenceRelationAttachment(ws, modal, selected, title);
-    const state = wizardFormState(modal);
+    const state = sanitizeWizardFormState(schemaId, wizardFormState(modal));
+    modal.formFields = state;
     return `<section class="wizard-step wizard-step-page wizard-describe-step schema-aware-describe evidence-describe compact polished">
       <div class="wizard-step-head compact polished"><span>2</span><div><strong>Collect evidence</strong><p>State the claim, then attach the material.</p></div></div>
       <div class="wizard-selected-type-strip compact polished">
@@ -26119,6 +26164,7 @@ ${integrityFooterForPath(parent, path)}`,
   registerActionHandler(async function wizardDirectCreateAction(event, next) {
     const action = event.currentTarget?.dataset?.action || '';
     if (action === 'wizard-create-direct') {
+      if (app.modal?.mode === 'edit') return next(event);
       event.preventDefault();
       event.stopPropagation();
       const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
@@ -26167,7 +26213,7 @@ ${integrityFooterForPath(parent, path)}`,
     const schemaId = schemaIdForNode(node);
     const def = wizardSchemaDefinition(schemaId);
     if (typeof def.formStateFromSections !== 'function') return {};
-    return def.formStateFromSections(sectionMap(node?.body || ''));
+    return sanitizeWizardFormState(schemaId, def.formStateFromSections(sectionMap(node?.body || '')));
   }
 
   function openSchemaAwareEditWizard(ws, node) {
@@ -30017,6 +30063,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       workspaceDisplayOptions(ws).leavesOnly ? 'leaf' : 'all',
       `artifact:${normalizeArtifactDisplayFilterList(workspaceDisplayOptions(ws).artifactKindFilters || workspaceDisplayOptions(ws).artifactKindFilter).join(',') || 'all'}`,
       workspaceDisplayOptions(ws).showAssets ? 'assets' : '',
+      previewMaterialActive(ws) ? `preview:${previewMaterialKind(ws)}` : '',
       temporalLensActive(ws) ? `time:${workspaceDisplayOptions(ws).temporalStart || ''}->${workspaceDisplayOptions(ws).temporalEnd || 'latest'}` : 'latest'
     ].join('|');
   }
@@ -30064,6 +30111,22 @@ ${githubOutboundFileExcerpt(file, 18000)}
       </div>
     </div>`;
   }
+  function discoveryWindowShowsAllMatches(ws) {
+    if (!ws) return false;
+    const opts = workspaceDisplayOptions(ws);
+    const schemaFilters = typeof normalizeDiscoveryFilterListForWorkspace === 'function' ? normalizeDiscoveryFilterListForWorkspace(ws) : [];
+    const artifactFilters = normalizeArtifactDisplayFilterList(opts.artifactKindFilters || opts.artifactKindFilter);
+    return Boolean(
+      normalizeSearchText(ws.discoverySearch || '')
+      || previewMaterialActive(ws)
+      || schemaFilters.length
+      || artifactFilters.length
+      || opts.mismatchesOnly
+      || opts.showAssets
+      || temporalLensActive(ws)
+    );
+  }
+
   registerRenderWorkspaceFeedWrapper(function renderWorkspaceFeedWindowed(ws, selected, next) {
     if (selected || (ws.discoveryView || 'feed') !== 'feed') {
       const html = next(ws, selected);
@@ -30074,14 +30137,14 @@ ${githubOutboundFileExcerpt(file, 18000)}
     }
 
     const all = filteredDiscoveryNodes(ws);
-    const searchActive = Boolean(normalizeSearchText(ws.discoverySearch || ''));
-    const limit = searchActive ? all.length : discoveryVisibleCount(ws);
+    const showAllMatches = discoveryWindowShowsAllMatches(ws);
+    const limit = showAllMatches ? all.length : discoveryVisibleCount(ws);
     app.discoveryWindowContext = { wsId: ws.id, limit };
     let html = next(ws, selected);
     app.discoveryWindowContext = null;
 
     const shown = Math.min(limit, all.length);
-    const footer = searchActive ? '' : discoveryLoadMoreFooter(ws, all.length, shown);
+    const footer = showAllMatches ? '' : discoveryLoadMoreFooter(ws, all.length, shown);
     if (footer) html = html.replace(/\s*<\/div>\s*$/, `${footer}</div>`);
     if (workspaceHasActiveDiscoveryProgress(ws) && html.includes('<div class="post-feed')) {
       html = html.replace('<div class="post-feed', `${loadingProgressNotice(ws)}<div class="post-feed`);
@@ -30854,9 +30917,31 @@ ${githubOutboundFileExcerpt(file, 18000)}
     return materialRefsForPreview(ws, node).length > 0;
   }
 
-  function previewMaterialKindsForWorkspace(ws) {
+  function previewScopedBaseNodes(ws) {
+    if (!ws) return [];
+    const wasActive = Boolean(ws.previewMaterialMode);
+    const kind = ws.previewMaterialKind;
+    const kinds = Array.isArray(ws.previewMaterialKinds) ? ws.previewMaterialKinds.slice() : null;
+    const context = app.discoveryWindowContext || null;
+    try {
+      ws.previewMaterialMode = false;
+      app.discoveryWindowContext = null;
+      const nodes = filteredDiscoveryNodes(ws) || [];
+      return Array.isArray(nodes) ? nodes : [];
+    } catch (_) {
+      return Array.isArray(ws.nodes) ? ws.nodes : [];
+    } finally {
+      ws.previewMaterialMode = wasActive;
+      ws.previewMaterialKind = kind;
+      if (kinds) ws.previewMaterialKinds = kinds;
+      app.discoveryWindowContext = context;
+    }
+  }
+
+  function previewMaterialKindsForWorkspace(ws, nodes = null) {
     const counts = new Map();
-    for (const node of ws?.nodes || []) {
+    const sourceNodes = Array.isArray(nodes) ? nodes : previewScopedBaseNodes(ws);
+    for (const node of sourceNodes || []) {
       for (const ref of nodeMaterialRefs(ws, node)) {
         const kind = materialKindKey(ref);
         counts.set(kind, (counts.get(kind) || 0) + 1);
@@ -31281,7 +31366,16 @@ ${githubOutboundFileExcerpt(file, 18000)}
     }
   }
 
-  let lastScrollTop = new WeakMap();
+  const MOBILE_CHROME_COMPACT_ENTER_TOP = 52;
+  const MOBILE_CHROME_COMPACT_EXIT_TOP = 12;
+
+  function mobileChromeCompactForTop(currentCompact, top) {
+    const safeTop = Math.max(0, Number(top || 0) || 0);
+    if (safeTop <= MOBILE_CHROME_COMPACT_EXIT_TOP) return false;
+    if (safeTop >= MOBILE_CHROME_COMPACT_ENTER_TOP) return true;
+    return Boolean(currentCompact);
+  }
+
   function onMobileFeedScroll(event) {
     if (!window.matchMedia?.('(max-width: 640px)').matches) return;
     const el = event.target;
@@ -31289,11 +31383,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
     const ws = mobileChromeWorkspaceFromFeed(el);
     if (!ws) return;
     const top = Math.max(0, el.scrollTop || 0);
-    const prev = lastScrollTop.get(el) || 0;
-    lastScrollTop.set(el, top);
-    if (top < 24) return setWorkspaceChromeCompact(ws, false);
-    if (top > prev + 4) return setWorkspaceChromeCompact(ws, true);
-    if (top < prev - 8) return setWorkspaceChromeCompact(ws, false);
+    setWorkspaceChromeCompact(ws, mobileChromeCompactForTop(ws.mobileChromeCompact, top));
   }
 
   document.addEventListener('scroll', onMobileFeedScroll, true);
@@ -32216,22 +32306,20 @@ ${githubOutboundFileExcerpt(file, 18000)}
     return next(event);
   });
 
-  let lastMobileFeedTop = new WeakMap();
+  function setMobileReadingChromeForTop(top, reason = 'scroll') {
+    if (!document.body?.classList) return false;
+    const next = mobileChromeCompactForTop(document.body.classList.contains('mobile-reading'), top);
+    document.body.classList.toggle('mobile-reading', next);
+    document.body.dataset.mobileReadingChromeOwner = next ? `top-threshold:${reason}` : 'near-top';
+    return next;
+  }
+
   function onMobileChromeScroll(event) {
     if (!mobileLensActive()) return;
     const el = event.target;
     if (!el?.classList?.contains('post-feed')) return;
     const top = Math.max(0, el.scrollTop || 0);
-    const prev = lastMobileFeedTop.get(el) || 0;
-    lastMobileFeedTop.set(el, top);
-
-    if (top < 18 || top < prev - 8) {
-      document.body.classList.remove('mobile-reading');
-      return;
-    }
-    if (top > prev + 4 && top > 42) {
-      document.body.classList.add('mobile-reading');
-    }
+    setMobileReadingChromeForTop(top, 'feed-scroll');
   }
 
   document.addEventListener('scroll', onMobileChromeScroll, true);
@@ -36393,6 +36481,30 @@ ${raw.slice(0, 800)}`) || 'en')}">
 
 
 
+  function previewMaterialFilterReadinessReport() {
+    const activeWs = app.workspaces?.[app.activeIndex || 0] || null;
+    const scopedBase = previewScopedBaseNodes(activeWs);
+    const activeKinds = activeWs ? Array.from(previewMaterialKindSet(activeWs)) : [];
+    const scopedKinds = activeWs ? previewMaterialKindsForWorkspace(activeWs, scopedBase) : [];
+    const filtered = activeWs ? scopedBase.filter((node) => nodeHasPreviewMaterial(activeWs, node)) : [];
+    const selectedTotal = activeKinds.length
+      ? scopedKinds.filter((item) => activeKinds.includes(item.kind)).reduce((sum, item) => sum + item.count, 0)
+      : scopedKinds.reduce((sum, item) => sum + item.count, 0);
+    return {
+      schema: 'tiinex.preview-material-filter.readiness.report.v1',
+      policy: 'preview type counts are scoped to the current non-preview feed result; preview/search/filter narrowing renders all matching cards without Show more',
+      workspace: activeWs ? workspaceDisplayLabel(activeWs) : '',
+      previewActive: previewMaterialActive(activeWs),
+      activeKinds,
+      scopedBaseNodes: scopedBase.length,
+      previewMatchedNodes: filtered.length,
+      selectedMaterialCount: selectedTotal,
+      kindCounts: scopedKinds,
+      showMorePresent: Boolean(document.querySelector('[data-action="load-more-discovery"]')),
+      emptyState: String(document.querySelector('.post-feed .empty-state, .empty-state')?.textContent || '').trim().replace(/\s+/g, ' ')
+    };
+  }
+
   function uxPolishReadinessReport() {
     const activeWs = app.workspaces?.[app.activeIndex || 0] || null;
     const searchActive = Boolean(activeWs && normalizeSearchText(activeWs.discoverySearch || activeWs.lineageSearch || ''));
@@ -36405,7 +36517,8 @@ ${raw.slice(0, 800)}`) || 'en')}">
       schema: 'tiinex.ux-polish.readiness.report.v1',
       sourceStripPolicy: 'compact horizontal source summary on mobile; details remain in chips without breaking layout',
       toolbarPolicy: 'discovery and lineage search share a consistent responsive width model',
-      discoverySearchShowsAllMatches: true,
+      discoverySearchShowsAllMatches: activeWs ? discoveryWindowShowsAllMatches(activeWs) : true,
+      previewFilterShowsAllMatches: activeWs ? (previewMaterialActive(activeWs) ? discoveryWindowShowsAllMatches(activeWs) : true) : true,
       evidenceMaterialPolicy: 'image evidence owns the visual proof; material/provenance metadata collapses under it instead of creating another tall card',
       searchActive,
       toolbarRows
@@ -36461,14 +36574,17 @@ ${raw.slice(0, 800)}`) || 'en')}">
       label: ws.querySelector('.workspace-title')?.textContent?.trim() || '',
       singleSourceState: ws.classList.contains('single-source-state'),
       mobileChromeCompact: ws.classList.contains('mobile-chrome-compact'),
+      feedTop: Math.round(ws.querySelector('.post-feed')?.scrollTop || 0),
       hasSourceStrip: Boolean(ws.querySelector(':scope > .workspace-source-strip, .mobile-source-mode-row .workspace-source-strip')),
       sourceCount: ws.querySelectorAll('.workspace-source-pill, .source-pill, .source-chip').length
     }));
     return {
       schema: 'tiinex.source-chrome-stability.report.v1',
-      policy: 'source strip remains a one-line left-aligned horizontal rail; single-source rows remain visible so source settings stay reachable; mobile reading fades chrome without collapsing layout height',
+      policy: 'source strip remains a one-line horizontal rail; mobile chrome expands/collapses only at the near-top boundary so mid-scroll direction changes do not resize the feed',
       mobileReading: document.body.classList.contains('mobile-reading'),
+      mobileReadingChromeOwner: document.body.dataset.mobileReadingChromeOwner || '',
       mobileChrome: document.body.classList.contains('mobile-chrome'),
+      thresholds: { compactEnterTop: MOBILE_CHROME_COMPACT_ENTER_TOP, compactExitTop: MOBILE_CHROME_COMPACT_EXIT_TOP },
       strips,
       workspaces
     };
@@ -36480,7 +36596,8 @@ ${raw.slice(0, 800)}`) || 'en')}">
     evidencePreviewReadinessReport,
     routeReuseReadinessReport,
     publishReadyShareBoundaryReport,
-    sourceChromeStabilityReport
+    sourceChromeStabilityReport,
+    previewMaterialFilterReadinessReport
   });
 
 
