@@ -51,11 +51,18 @@ jobs:
         with:
           node-version: 20
 
-      - name: Validate source
-        run: npm test
+      - name: Check app syntax
+        run: node --check app.js
 
       - name: Build public site
         run: npm run build:public
+
+      - name: Check public artifact
+        run: |
+          npm run public:check
+          node --check .site-publish/tiinex.bundle.js
+          npm run metrics
+          npm run storage:scan
 
       - name: Publish public branch
         uses: peaceiris/actions-gh-pages@v4
