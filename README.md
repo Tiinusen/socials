@@ -1,3 +1,26 @@
+# CP326 — route restore reuses materialized sources
+
+CP326 follows CP325 after field testing showed that initial load and mobile back/swipe could still clear the current workspace, show discovery progress, briefly render content, and then reload the same source again.
+
+Root cause:
+
+- Route/source equality still compared runtime source resolution details such as access mode/resolution kind, and route state carried active discovered issue URLs as if they were editable source config.
+- After the default workspace was materialized, the later route restore could decide the already-loaded workspace was a different source and recreate it from scratch.
+
+Changes:
+
+- Browser route matching now compares editable source config only: repo, requested/default ref, root paths, enabled surfaces, and explicitly configured Issue URLs. Runtime access mode, resolution kind, resolved commit observation, and discovered/imported issue URLs no longer make a loaded workspace look like a different source.
+- Route state now persists configured Issue URLs as source config; active/discovered Issue URLs remain material, not route identity.
+- If a route source is the same base repo/ref/root but config changed, route restore refreshes that workspace in place instead of clearing the whole app.
+- `TiinexDiagnostics.routeAndLocalStateContinuityReport()` now reports the last route-apply decision and route/current source signatures.
+
+Validation focus:
+
+- Fresh load with an existing `#state` route should not run the Tiinex/docs workspace discovery twice.
+- Mobile back/swipe should restore view state without blanking the feed and rebuilding the same source from zero.
+- Source edit changes such as adding an explicit Issue URL may refresh in place, but should not clear all existing cards first.
+- Run `TiinexDiagnostics.routeAndLocalStateContinuityReport()` and check `routing.lastApplyRouteState`.
+
 # CP325 — route/local continuity + mobile lineage chrome
 
 CP325 follows CP324 after field testing showed that mobile lineage inherited collapsed discovery chrome, local workspaces with GitHub sources could be merged into the default Tiinex/docs workspace on restart, and public deploys needed CNAME to survive force-orphan publishes.

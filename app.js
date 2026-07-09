@@ -664,7 +664,10 @@
       routing: {
         restoring: Boolean(app.routing?.restoring),
         popDirection: Number(app.routing?.popDirection || 0),
-        activeWorkspaceId: app.activeWorkspaceId || ''
+        activeWorkspaceId: app.activeWorkspaceId || '',
+        lastApplyRouteState: app.routing?.lastApplyRouteState || null,
+        routeSourcesSignature: (() => { try { return routeSourcesSignature(typeof decodeRouteStateFromHash === 'function' ? (decodeRouteStateFromHash() || { sources: [] }) : { sources: [] }); } catch (_) { return ''; } })(),
+        currentSourcesSignature: (() => { try { return currentSourcesSignature(); } catch (_) { return ''; } })()
       },
       localState: {
         currentId,
@@ -3849,27 +3852,11 @@
 
 
   function routeSourcesSignature(state) {
-    return (state.sources || []).map((source) => {
-      if (source.kind === 'github-tree' || source.kind === 'github') return gitHubSourceStateSignature(source);
-      return `urls:${(source.urls || []).join('\n')}`;
-    }).join('\n---workspace---\n');
+    return (state.sources || []).map((source) => configSourceSignature(source)).join('\n---workspace---\n');
   }
 
   function currentSourcesSignature() {
-    return app.workspaces.map((ws) => {
-      const githubSource = Array.from(ws.sources?.values?.() || []).find((source) => source.kind === 'github' && source.repo);
-      if (githubSource) return gitHubSourceStateSignature(githubSource);
-      if (ws.discoverySource?.kind === 'github-tree') {
-        return gitHubSourceStateSignature({
-          repo: ws.discoverySource.repo,
-          ref: ws.discoverySource.ref || ws.ref || '',
-          rootPaths: ws.discoverySource.rootPaths || [ws.discoverySource.rootPath || '.topics'],
-          enabledSurfaces: ws.discoverySource.enabledSurfaces || { repoFiles: true, issues: false },
-          issueUrls: ws.discoverySource.issueUrls || []
-        });
-      }
-      return `urls:${workspaceSourceUrls(ws).join('\n')}`;
-    }).join('\n---workspace---\n');
+    return app.workspaces.map((ws) => workspaceConfigSignature(ws)).join('\n---workspace---\n');
   }
 
   async function applyRouteState(state, recreate = false) {
@@ -3877,7 +3864,40 @@
     app.routing.restoring = true;
     app.isBootingFromUrl = true;
     try {
-      if (recreate || !routeSourcesMatch(state)) {
+      const sourcesMatch = routeSourcesMatch(state);
+      const reuseInPlace = !sourcesMatch && routeSourcesReusableInPlace(state);
+      app.routing.lastApplyRouteState = {
+        at: new Date().toISOString(),
+        recreateRequested: Boolean(recreate),
+        sourcesMatch,
+        reuseInPlace,
+        routeSources: Array.isArray(state.sources) ? state.sources.length : 0,
+        currentWorkspaces: app.workspaces.length
+      };
+
+      if (sourcesMatch && !recreate) {
+        state.sources.forEach((source, index) => applyViewStateToWorkspace(app.workspaces[index], source));
+      } else if (reuseInPlace) {
+        const used = new Set();
+        const ordered = [];
+        for (let index = 0; index < state.sources.length; index += 1) {
+          const source = state.sources[index];
+          const ws = findWorkspaceForRouteSourceBase(source, index, used);
+          if (!ws) continue;
+          used.add(ws.id);
+          ordered.push(ws);
+          const configChanged = workspaceConfigSignature(ws) !== configSourceSignature(source);
+          if (configChanged && (source.kind === 'github-tree' || source.kind === 'github')) {
+            routeOwnerRecord('route:reuse-refresh-source', { index, source: configSourceSignature(source), workspace: workspaceConfigSignature(ws) });
+            await loadGitHubStateSourceIntoWorkspace(ws, source, { refreshExisting: true });
+          } else if (configChanged) {
+            await loadUrlsIntoWorkspace(ws, source.urls || []);
+          }
+          applyViewStateToWorkspace(ws, source);
+        }
+        if (ordered.length) app.workspaces = ordered.concat(app.workspaces.filter((ws) => !used.has(ws.id)));
+        routeOwnerRecord('route:reuse-in-place', app.routing.lastApplyRouteState);
+      } else {
         app.workspaces = [];
         app.activeWorkspaceId = null;
         app.workspaceOffset = 0;
@@ -3890,8 +3910,6 @@
           }
           applyViewStateToWorkspace(ws, source);
         }
-      } else {
-        state.sources.forEach((source, index) => applyViewStateToWorkspace(app.workspaces[index], source));
       }
 
       const activeIndex = Math.max(0, Math.min(Number(state.activeIndex || 0), app.workspaces.length - 1));
@@ -7666,9 +7684,38 @@
     </section>`;
   }
 
+  function gitHubSourceComparableRef(source = {}) {
+    const ref = String(source.requestedRef || source.ref || 'master').trim();
+    return ref || 'master';
+  }
+
+  function gitHubSourceConfigSignature(source = {}) {
+    const normalized = normalizeGitHubSourceState(source);
+    const surfaces = normalizeGithubSurfaceConfig(normalized.enabledSurfaces);
+    const configuredIssues = configuredGitHubIssueUrls(source, normalized.repo || '');
+    return [
+      `github:${normalized.repo || ''}@${gitHubSourceComparableRef(normalized)}`,
+      `roots:${(normalized.rootPaths || ['.topics']).map(normalizeRepoPath).join('|')}`,
+      `surfaces:repoFiles=${surfaces.repoFiles ? 'on' : 'off'};issues=${surfaces.issues ? 'on' : 'off'}`,
+      `issues:${configuredIssues.join('|')}`
+    ].join('::');
+  }
+
   function configSourceSignature(source) {
     if (!source) return '';
-    if (source.kind === 'github-tree' || source.kind === 'github') return gitHubSourceStateSignature(source);
+    if (source.kind === 'github-tree' || source.kind === 'github') return gitHubSourceConfigSignature(source);
+    return `urls:${(source.urls || []).join('\n')}`;
+  }
+
+  function configSourceBaseSignature(source) {
+    if (!source) return '';
+    if (source.kind === 'github-tree' || source.kind === 'github') {
+      const normalized = normalizeGitHubSourceState(source);
+      return [
+        `github:${normalized.repo || ''}@${gitHubSourceComparableRef(normalized)}`,
+        `roots:${(normalized.rootPaths || ['.topics']).map(normalizeRepoPath).join('|')}`
+      ].join('::');
+    }
     return `urls:${(source.urls || []).join('\n')}`;
   }
 
@@ -7680,19 +7727,56 @@
       return configSourceSignature({
         kind: 'github-tree',
         repo: ws.discoverySource.repo,
-        ref: ws.discoverySource.ref || ws.ref || '',
+        ref: ws.discoverySource.requestedRef || ws.discoverySource.ref || ws.ref || '',
+        requestedRef: ws.discoverySource.requestedRef || ws.discoverySource.ref || ws.ref || '',
         rootPaths: ws.discoverySource.rootPaths || [ws.discoverySource.rootPath || '.topics'],
         enabledSurfaces: ws.discoverySource.enabledSurfaces || { repoFiles: true, issues: false },
-        issueUrls: ws.discoverySource.issueUrls || []
+        configuredIssueUrls: ws.discoverySource.configuredIssueUrls || ws.discoverySource.issueUrls || []
       });
     }
     return configSourceSignature({ kind: 'urls', urls: workspaceSourceUrls(ws) });
+  }
+
+  function workspaceConfigBaseSignature(ws) {
+    if (!ws) return '';
+    const githubSource = Array.from(ws.sources?.values?.() || []).find((source) => source.kind === 'github' && source.repo);
+    if (githubSource) return configSourceBaseSignature(githubSource);
+    if (ws.discoverySource?.kind === 'github-tree') {
+      return configSourceBaseSignature({
+        kind: 'github-tree',
+        repo: ws.discoverySource.repo,
+        ref: ws.discoverySource.requestedRef || ws.discoverySource.ref || ws.ref || '',
+        requestedRef: ws.discoverySource.requestedRef || ws.discoverySource.ref || ws.ref || '',
+        rootPaths: ws.discoverySource.rootPaths || [ws.discoverySource.rootPath || '.topics']
+      });
+    }
+    return configSourceBaseSignature({ kind: 'urls', urls: workspaceSourceUrls(ws) });
   }
 
   function findWorkspaceForConfigSource(source) {
     const sig = configSourceSignature(source);
     if (!sig) return null;
     return app.workspaces.find((ws) => workspaceConfigSignature(ws) === sig) || null;
+  }
+
+  function findWorkspaceForRouteSourceBase(source, preferredIndex = -1, used = new Set()) {
+    const sig = configSourceBaseSignature(source);
+    if (!sig) return null;
+    const preferred = preferredIndex >= 0 ? app.workspaces[preferredIndex] : null;
+    if (preferred && !used.has(preferred.id) && workspaceConfigBaseSignature(preferred) === sig) return preferred;
+    return app.workspaces.find((ws) => !used.has(ws.id) && workspaceConfigBaseSignature(ws) === sig) || null;
+  }
+
+  function routeSourcesReusableInPlace(state) {
+    const sources = Array.isArray(state?.sources) ? state.sources : [];
+    if (!sources.length || sources.length > app.workspaces.length) return false;
+    const used = new Set();
+    for (let index = 0; index < sources.length; index += 1) {
+      const ws = findWorkspaceForRouteSourceBase(sources[index], index, used);
+      if (!ws) return false;
+      used.add(ws.id);
+    }
+    return true;
   }
 
   async function applyViewerStatePreservingLocal(state, options = {}) {
@@ -28722,10 +28806,15 @@ ${githubOutboundFileExcerpt(file, 18000)}
       item.resolvedCommit = normalized.resolvedCommit || githubSource.resolvedCommit || ws.resolvedCommit || '';
       item.rootPaths = normalized.rootPaths || ['.topics'];
       item.enabledSurfaces = normalizeGithubSurfaceConfig(normalized.enabledSurfaces || {});
-      item.issueUrls = activeGitHubIssueUrls(normalized, normalized.repo || '', ws);
       item.configuredIssueUrls = configuredGitHubIssueUrls(normalized, normalized.repo || '');
+      // Route state carries editable source config, not every imported/discovered
+      // issue encountered while rendering. Persisting active discovered issue URLs
+      // made browser Back/F5 treat a materialized workspace as a different source
+      // and clear/reload it. Explicit issue URLs remain durable through
+      // configuredIssueUrls/issueUrls; discovered URLs stay in workspace material.
+      item.issueUrls = item.configuredIssueUrls.slice();
       item.discoveredIssueUrls = normalized.discoveredIssueUrls || [];
-      item.issueThreadCache = githubIssueThreadCacheSubsetForUrls(item.issueUrls || []);
+      item.issueThreadCache = githubIssueThreadCacheSubsetForUrls(activeGitHubIssueUrls(normalized, normalized.repo || '', ws) || []);
       item.discoveryDirective = normalized.discoveryDirective || { kind: 'implicit-workspace-inline', source: 'workspace.md', status: 'bootstrap' };
     });
     return state;
@@ -35350,7 +35439,10 @@ ${raw.slice(0, 800)}`) || 'en')}">
       routing: {
         restoring: Boolean(app.routing?.restoring),
         popDirection: Number(app.routing?.popDirection || 0),
-        activeWorkspaceId: app.activeWorkspaceId || ''
+        activeWorkspaceId: app.activeWorkspaceId || '',
+        lastApplyRouteState: app.routing?.lastApplyRouteState || null,
+        routeSourcesSignature: (() => { try { return routeSourcesSignature(typeof decodeRouteStateFromHash === 'function' ? (decodeRouteStateFromHash() || { sources: [] }) : { sources: [] }); } catch (_) { return ''; } })(),
+        currentSourcesSignature: (() => { try { return currentSourcesSignature(); } catch (_) { return ''; } })()
       },
       localState: {
         currentId,

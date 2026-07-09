@@ -1,3 +1,25 @@
+# CP326 validation notes
+
+Validated locally after route restore/source-config identity changes:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Manual browser validation requested:
+
+1. Open the public app with an existing `#state` route and watch initial load. The Tiinex/docs workspace should materialize once, not complete once and then clear/reload.
+2. On mobile, navigate into lineage and swipe/back to the previous view. The feed should restore without emptying and running the same discovery from scratch.
+3. If route config only adds/removes explicit Issue URLs for the same repo/ref/root, refresh may happen in place but existing cards should remain visible.
+4. Run `TiinexDiagnostics.routeAndLocalStateContinuityReport()` and inspect `routing.lastApplyRouteState`, `routeSourcesSignature`, and `currentSourcesSignature`.
+
+Known non-blocking local static validation state:
+
+- `npm test` still fails on pre-existing strict static/package hygiene checks. The runtime/public checkpoint gate above is the pass signal for this fix.
+
 # CP325 validation notes
 
 Validated locally after mobile lineage chrome, local-state matching, and CNAME publish fixes:
