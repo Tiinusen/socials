@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { fileURLToPath } from 'node:url';
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 
 const root = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '');
 const scriptOrder = Object.freeze([
@@ -38,6 +38,16 @@ function copyPath(source, outDir, target = source) {
   rmSync(to, { recursive: true, force: true });
   ensureParent(to);
   cpSync(from, to, { recursive: true });
+}
+
+function publishCname() {
+  const envCname = (process.env.PAGES_CNAME || '').trim();
+  if (envCname) return envCname;
+
+  const sourceCnamePath = path('CNAME');
+  if (!existsSync(sourceCnamePath)) return '';
+
+  return readFileSync(sourceCnamePath, 'utf8').trim();
 }
 
 function stripLocalScripts(html) {
@@ -85,7 +95,8 @@ function main() {
   }
 
   writeFileSync(join(out, '.nojekyll'), '', 'utf8');
-  const cname = (process.env.PAGES_CNAME || '').trim();
+
+  const cname = publishCname();
   if (cname) writeFileSync(join(out, 'CNAME'), `${cname}\n`, 'utf8');
 
   console.log(`Built public site: ${basename(out)}`);
