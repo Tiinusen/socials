@@ -1,3 +1,161 @@
+# CP316 validation notes
+
+Validated locally after replacing mobile card action compression with a dedicated mobile action rail:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Manual browser validation requested:
+
+1. On a 360px-ish mobile viewport, each card should show one compact action rail, not stretched desktop buttons.
+2. The rail should contain Read, Markdown, Share, Edit when available, and More when secondary actions exist.
+3. Continue / Reference / Use As / Remove should appear in More, not as full-width rows under every card.
+4. Source chips should stay compact and horizontally scroll instead of breaking the header into odd rows.
+5. Run `TiinexDiagnostics.mobileActionLayoutReadinessReport()` and `TiinexDiagnostics.mobileActionOwnershipReport()`.
+
+# CP315 validation notes
+
+Validated locally after the mobile value pass and image inspection updates:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Manual browser validation requested:
+
+1. Expanded Evidence and Schema Read View should show inline image evidence naturally.
+2. Provenance should read as a structured list/section, not a long compressed pill.
+3. On mobile, card actions should be a compact single row and should not dominate vertical space.
+4. Source chips on mobile should stay compact and horizontally scrollable instead of breaking the row.
+5. Image preview should open in Fit mode, then `1:1 / pan` should allow detailed inspection without cropping the image.
+6. Display Options on mobile should show clean picker rows for Schema and Artifact and avoid label overlap/overflow.
+
+Diagnostics to run:
+
+```js
+TiinexDiagnostics.previewInspectionReadinessReport()
+TiinexDiagnostics.displayOptionsMobileReadinessReport()
+TiinexDiagnostics.evidenceInlinePreviewReadinessReport()
+TiinexDiagnostics.mobileActionLayoutReadinessReport()
+```
+
+# CP314 validation notes
+
+Local validation executed after evidence inline-preview and mobile action containment fixes:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Runtime validation to collect:
+
+```js
+TiinexDiagnostics.evidenceInlinePreviewReadinessReport()
+TiinexDiagnostics.evidenceLocalAssetPersistenceReport()
+TiinexDiagnostics.evidenceAssetRoundtripReport()
+TiinexDiagnostics.mobileActionLayoutReadinessReport()
+```
+
+Expected outcome: local/draft Evidence images have `inlinePreview: true`, nonzero image count, and mobile actions remain inside the card viewport.
+
+# CP313 validation notes
+
+Local validation executed after inline image evidence preview and list readability updates:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Runtime diagnostics to run after loading evidence with an image:
+
+```js
+TiinexDiagnostics.evidenceInlinePreviewReadinessReport()
+TiinexDiagnostics.evidenceLocalAssetPersistenceReport()
+TiinexDiagnostics.evidenceAssetRoundtripReport()
+```
+
+Expected behavior:
+
+- Evidence with image material reports `inlinePreview: true`.
+- The image is visible in expanded Evidence and detail/read view, not only in edit/attachment preview.
+- Generic referenced-material list does not duplicate the same image immediately under the evidence presenter.
+- Local draft images still do not expose guessed GitHub source links.
+
+# CP311 — value-first UX trust gate
+
+CP311 is a focused trust-gate pass before moving from the viewer/share work toward schema building and later Leaflet modes. The goal is not new capability; it is making the current field experience respect the user's screen and material boundaries.
+
+Changes:
+
+- Local/draft evidence asset paths such as `assets` or `assets/...` no longer resolve to guessed GitHub source URLs when the local asset is unavailable after refresh.
+- Missing local evidence assets render as local-only/unavailable material instead of web URL/source material.
+- Local asset recovery now also scans bare evidence lines such as `- Source: assets` in addition to markdown links.
+- Mobile card actions are value-first: compact horizontal action row, expand/anchor hidden, no full-width boilerplate rows for Edit/Continue/Reference/Use As.
+- Added diagnostic: `TiinexDiagnostics.valueFirstUxReadinessReport()`.
+
+Validation run:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+# CP310 validation notes
+
+Validated locally after mobile UX and evidence asset roundtrip cleanup:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Manual browser validation requested:
+
+1. Mobile card actions should no longer show full-width boilerplate rows.
+2. Source strip should not dominate the mobile viewport.
+3. Camera/image picker should still add a local image attachment.
+4. After creating evidence and re-editing it, local images should recover as file/image attachments, not URL=`assets`.
+5. `TiinexDiagnostics.evidenceAssetRoundtripReport()` should show `warningCount: 0` after image evidence roundtrip.
+
+# CP308 validation notes
+
+Validated locally after mobile action parity, evidence image preview, single Camera action, and public-hash route reuse changes:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Manual browser validation requested:
+
+1. On mobile width, each card should show compact action buttons in desktop semantic order, with no separate full-width Edit/Continue/Reference rows.
+2. Evidence Camera should be one action and open the native image/camera picker.
+3. Evidence image preview should fit the whole image inside the viewport without cropping, should close with the X/backdrop/Escape, and should allow user zoom where the browser supports it.
+4. Browser back/forward between an already loaded public hash target and an exact view should not clear the workspace or restart discovery.
+5. Run:
+   - `TiinexDiagnostics.mobileActionLayoutReadinessReport()`
+   - `TiinexDiagnostics.evidencePreviewReadinessReport()`
+   - `TiinexDiagnostics.routeReuseReadinessReport()`
+
 # CP298 validation note — cross-workspace relations
 
 Intent: Reference and Use As must not be limited to artifacts from the same workspace. A visible artifact from another workspace can be the relation target/basis, while the newly created artifact is placed under the user-selected destination parent.
@@ -3898,3 +4056,80 @@ Validation notes:
 - Desktop without camera capture should still offer image/gallery fallback.
 - Mobile browsers should be tested for back/front camera capture through browser-native UI.
 - `npm test` may still flag historical package wording in README/styles and was not used as the release pass signal.
+
+## Checkpoint 307 validation notes
+
+Field fixes applied after mobile publish testing:
+
+- Evidence Camera is now a single native image picker action.
+- Local/draft image attachments should show preview affordances but not guessed GitHub source links.
+- Mobile card actions are no longer replaced by an empty placeholder; the regular compact action row remains available.
+- GitHub repo discovery keys normalize blank ref to `master` to avoid a duplicate startup pass observed on mobile.
+
+Commands run for this checkpoint are listed in the assistant response.
+
+
+### CP307 command results
+
+Passed:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Known non-pass signal:
+
+- `npm test` still fails on package hygiene, not runtime syntax/build:
+  - `.site-publish` present at root
+  - legacy scaffold/debug wording markers in README/VALIDATION_NOTES
+
+
+## Checkpoint 309 validation notes
+
+Local validation performed:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+`npm test` was not used as a pass/fail signal for this checkpoint because earlier package-hygiene markers still produce unrelated historical warnings in this line.
+
+Manual browser verification still recommended for:
+
+- mobile action layout at 360px width,
+- draft/nonpublic Share dialog,
+- downloaded artifact package HTML,
+- Evidence image preview on phone and desktop,
+- browser Back/Forward reuse on already loaded public hash targets.
+
+## Checkpoint 312 validation notes
+
+Local validation executed:
+
+```txt
+node --check app.js
+npm run build:public
+npm run public:check
+node --check .site-publish/tiinex.bundle.js
+npm run metrics
+npm run storage:scan
+```
+
+Manual validation requested:
+
+1. Create Evidence with an image attachment.
+2. Confirm preview works before refresh.
+3. Refresh.
+4. Confirm the image does not return as URL=`assets` and does not show a guessed GitHub source.
+5. Run:
+   - `TiinexDiagnostics.evidenceLocalAssetPersistenceReport()`
+   - `TiinexDiagnostics.evidenceAssetRoundtripReport()`
+   - `TiinexDiagnostics.valueFirstUxReadinessReport()`
+
+Expected: local image rows should report `persistent: true` when browser storage accepted the persisted data URL.

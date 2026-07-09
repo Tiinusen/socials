@@ -1,3 +1,143 @@
+# CP316 — mobile action owner rail
+
+CP316 makes mobile card actions value-first by giving mobile cards their own action owner instead of continuing to compress the desktop `.post-actions` bar.
+
+Changes:
+
+- Desktop keeps the existing `.post-actions` rendering.
+- Mobile now hides the desktop action bar and renders a separate `.mobile-card-action-rail`.
+- The mobile rail shows primary actions only: Read, Markdown, Share, Edit when available, plus More when secondary actions exist.
+- Secondary actions such as Continue, Reference, Use As, Source, Remove, and adapter/import actions move into the existing mobile More sheet.
+- Parent-picking mode still exposes the parent-select action directly in the mobile rail.
+- Mobile source chips are tighter and horizontal-scrollable so source context does not break into awkward multi-line rows.
+- Added `TiinexDiagnostics.mobileActionOwnershipReport()`.
+
+This is intentionally a light ownership refactor rather than another CSS-only override. The goal is same semantics as desktop, not the same physical layout.
+
+# CP315 — mobile value pass + image inspection controls
+
+CP315 follows CP314 after field testing showed that evidence images were now visible inline, but image inspection, mobile action density, provenance presentation, and mobile Display Options still needed polish.
+
+Changes:
+
+- Evidence provenance is no longer duplicated as a long one-line meta pill; it remains in the structured Provenance section where list semantics are preserved.
+- Mobile card actions switch to a single compact horizontal row with icon-only affordances, reducing vertical boilerplate while keeping actions reachable.
+- Workspace source chips are tighter on mobile and use horizontal overflow rather than breaking the source row into awkward stacked fragments.
+- Material image preview now has two inspection modes: `Fit` for full-image review and `1:1 / pan` for close inspection inside a scrollable surface.
+- Mobile image preview uses a fullscreen-ish surface with compact header/footer and safe-area padding.
+- Display Options mobile picker cards are cleaned up: schema/artifact select rows collapse to one clean column, helper labels no longer float over the controls, and Time Portal collapses without horizontal overflow.
+
+Diagnostics added:
+
+```js
+TiinexDiagnostics.previewInspectionReadinessReport()
+TiinexDiagnostics.displayOptionsMobileReadinessReport()
+```
+
+# CP314 — evidence inline preview actually visible + mobile action containment
+
+CP314 follows CP313 after browser validation showed that the inline Evidence image preview still did not appear in expanded/read views when the material was a local/draft asset. The root cause was material filtering: local assets and local-unavailable image refs were removed before the evidence presenter could see them.
+
+Changes:
+
+- Local/draft material refs now survive the referenced-material filter so Evidence presenters can render inline image previews.
+- Evidence inline preview now works for local assets as well as source-backed images.
+- Material list formatting preserves top-level markdown bullets instead of stripping them from Evidence Material / Observed Material.
+- Supported Claim multiline plain text is rendered as a list when it was entered as one line per item but lacked explicit bullets.
+- Mobile card action rows are contained in a stable compact grid up to tablet-ish widths, preventing Edit/Continue/Reference from stretching past the viewport.
+- `TiinexDiagnostics.evidenceInlinePreviewReadinessReport()` now includes `materialRefCount` and richer image ref details.
+
+Manual checks requested:
+
+1. Open an Evidence artifact with a local image in expanded card view.
+2. Open the same artifact in Schema Read View.
+3. Confirm the image appears inline and opens the existing preview/lightbox.
+4. Confirm Evidence Material and Supported Claim list formatting reads naturally.
+5. Check mobile width: card actions should stay contained and not stick out past the viewport.
+
+# CP313 — evidence inline image preview + list readability
+
+CP313 follows the evidence persistence hotfix. The local image asset now survives refresh, but the read surfaces still made the image feel detached: evidence expanded/detail views showed only material metadata while the actual visual evidence lived behind a separate preview. This pass integrates image evidence into the evidence presenter itself.
+
+Changes:
+
+- Evidence presenter now renders image material inline inside expanded and detail read views.
+- Inline image cards use fit-contain thumbnails and open the existing image lightbox on click.
+- Evidence detail/expanded views avoid duplicating image material in the generic referenced-material section when an inline image preview is already shown.
+- Local/unavailable image material is represented as local-only/unavailable instead of a source link.
+- Markdown list rendering now supports indented continuation lines under list items.
+- Markdown list spacing is tightened so evidence/provenance lists read less like broken nested boilerplate.
+- Added diagnostic: `TiinexDiagnostics.evidenceInlinePreviewReadinessReport()`.
+
+Manual browser validation requested:
+
+1. Open the evidence artifact with a local image in expanded/read mode. The image should appear naturally inside the Evidence presenter near Material.
+2. Open the same artifact in detail/read view. The image should appear there too.
+3. Click the inline image preview. The existing lightbox should open.
+4. Refresh/F5 and verify the image still appears or is clearly marked local-unavailable.
+5. Confirm lists in Supported Claim / Material / Provenance read with normal list rhythm.
+
+# CP311 — value-first UX trust gate
+
+CP311 is a focused trust-gate pass before moving from the viewer/share work toward schema building and later Leaflet modes. The goal is not new capability; it is making the current field experience respect the user's screen and material boundaries.
+
+Changes:
+
+- Local/draft evidence asset paths such as `assets` or `assets/...` no longer resolve to guessed GitHub source URLs when the local asset is unavailable after refresh.
+- Missing local evidence assets render as local-only/unavailable material instead of web URL/source material.
+- Local asset recovery now also scans bare evidence lines such as `- Source: assets` in addition to markdown links.
+- Mobile card actions are value-first: compact horizontal action row, expand/anchor hidden, no full-width boilerplate rows for Edit/Continue/Reference/Use As.
+- Added diagnostic: `TiinexDiagnostics.valueFirstUxReadinessReport()`.
+
+Validation run:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+# CP310 — field mobile UX + evidence asset roundtrip cleanup
+
+CP310 follows CP309 field/video review. It targets runtime UX regressions rather than new product scope.
+
+Changes:
+
+- Mobile card actions are compact again: same semantic order as desktop, no expand action, no full-width Edit/Continue/Reference rows.
+- Source strip on mobile is more compact and horizontally scrollable so source chips do not dominate the viewport.
+- Camera remains a single native image/camera picker action.
+- Draft/local evidence image links recovered from markdown now become file/image attachments rather than URL attachments.
+- Bare `assets/...` or `_assets/...` URL attachments are flagged as suspicious by diagnostics.
+- Recovered local image attachments can reuse local workspace assets for preview when available.
+- Draft/local cards do not show guessed GitHub Source links.
+
+Diagnostics:
+
+```js
+TiinexDiagnostics.evidenceAssetRoundtripReport()
+TiinexDiagnostics.fieldRegressionReadinessReport()
+TiinexDiagnostics.mobileActionLayoutReadinessReport()
+TiinexDiagnostics.evidencePreviewReadinessReport()
+TiinexDiagnostics.routeReuseReadinessReport()
+```
+
+# CP308 — mobile action parity + evidence preview polish
+
+CP308 follows CP307 after field/mobile testing found three publish-facing regressions: card actions on mobile no longer matched the desktop semantic order, evidence image preview could crop/overflow and the close button was unreliable because the overlay was injected outside the normal app binding root, and browser back/forward to an already loaded public hash target could clear the workspace and trigger a new discovery pass.
+
+Changes:
+
+- Mobile card action rows keep the same semantic order as desktop while hiding only the expand/anchor affordance to save space.
+- Mutating actions such as Edit, Continue, Reference, and Use As no longer stretch into separate full-width rows on mobile.
+- Evidence Camera is now a single native image/camera picker action with no front/back app-level choice.
+- Evidence image preview uses almost the full viewport, preserves image aspect ratio, avoids crop/hidden overflow, and allows browser pinch zoom by removing the old viewport zoom lock.
+- Evidence preview close works through a document-level handler because the preview overlay is rendered outside the normal app event-binding root. Backdrop click and Escape also close it.
+- Back/forward to an already loaded public hash target reuses the existing workspace instead of clearing workspaces and running discovery again.
+- Added diagnostics: `TiinexDiagnostics.mobileActionLayoutReadinessReport()`, `TiinexDiagnostics.evidencePreviewReadinessReport()`, and `TiinexDiagnostics.routeReuseReadinessReport()`.
+
+Browser/mobile validation is still the deciding signal before publishing.
+
 # CP298 — Cross-workspace reference/use-as parity
 
 CP298 follows CP297 after browser testing showed that Reference and Use As still behaved as if the selected parent had to live in the same workspace as the referenced/basis artifact. That discriminated based on origin and broke the golden rule for multi-workspace Tiinex work: any visible artifact should be able to anchor a relation when the user explicitly chooses it.
@@ -1858,3 +1998,41 @@ Diagnostic:
 ```js
 TiinexDiagnostics.evidenceCameraCaptureReport()
 ```
+
+## Checkpoint 307 — field regression sweep
+
+- Simplified evidence image capture to one native Camera/Image picker action.
+- Kept Camera visible on desktop and mobile without app-level front/back choice.
+- Preserved local evidence images as local material refs so the viewer can preview them instead of guessing GitHub source URLs.
+- Hid Open source for local/draft evidence assets to avoid non-existent GitHub links before publication.
+- Kept the real card action bar visible on mobile so Continue, Reference, Use As and related actions remain available in the field.
+- Normalized GitHub repo discovery keys so omitted ref and `master` do not start duplicate mobile discovery passes.
+
+
+## Checkpoint 309 — mobile share boundary + draft package polish
+
+This checkpoint is a field polish pass after mobile/desktop review.
+
+- Mobile card actions now use a stable grid instead of squeezed horizontal rows.
+- Expand/anchor affordances are hidden on phone card action rows to save space.
+- Real transition actions remain visible and labelled where possible.
+- Share cards no longer fall back to exact-view URLs as if they were public origins.
+- Public link / Open HTML / Native share require a public or access-bound target.
+- Draft/unpublished artifacts get an explicit artifact package HTML download that carries the artifact markdown for private review.
+- Evidence preview keeps pinch-zoom friendly viewport/touch hints.
+
+## Checkpoint 312 — evidence image persistence hotfix + restructure roadmap guard
+
+This checkpoint focuses on the remaining field blocker before shifting attention toward schema building / Leaflet-mode work.
+
+Changes:
+
+- Replaced undefined `basename(...)` calls with the viewer path helper to remove the console ReferenceError seen after evidence recovery.
+- Evidence image attachments now read a persistent data URL before local save, so draft/local image previews can survive refresh when browser storage allows it.
+- Local image assets restored from workspace state are served directly from persisted data URLs rather than being converted into guessed GitHub source URLs.
+- Material extraction now detects bare local image/material lines in addition to markdown links, so evidence material such as `001.png` or `assets/001.png` can recover as local image material.
+- Added `TiinexDiagnostics.evidenceLocalAssetPersistenceReport()` to verify whether local image assets are actually persisted, blob-only, and previewable.
+
+Design note for upcoming workspace restructuring:
+
+Moving, deleting, inserting, or reparenting artifacts must be implemented as graph-safe workspace operations with dry-run previews and reference rewrites. Those operations should preserve continuity by updating relative paths, relinking children, and recording user-visible transition intent instead of silently mutating provenance.

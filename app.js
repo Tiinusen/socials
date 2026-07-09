@@ -682,6 +682,13 @@
     sharePolishReadinessReport: () => sharePolishReadinessReport(),
     evidenceRelationAttachmentReport: () => evidenceRelationAttachmentReport(),
     evidenceCameraCaptureReport: () => evidenceCameraCaptureReport(),
+    fieldRegressionReadinessReport: () => fieldRegressionReadinessReport(),
+    evidenceAssetRoundtripReport: () => evidenceAssetRoundtripReport(),
+    evidenceLocalAssetPersistenceReport: () => evidenceLocalAssetPersistenceReport(),
+    evidenceInlinePreviewReadinessReport: () => evidenceInlinePreviewReadinessReport(),
+    previewInspectionReadinessReport: () => previewInspectionReadinessReport(),
+    displayOptionsMobileReadinessReport: () => displayOptionsMobileReadinessReport(),
+    valueFirstUxReadinessReport: () => valueFirstUxReadinessReport(),
     shareSignalPreviewForActive: (reason = '', intent = 'share') => shareSignalRecord(shareEligibilityForActive(), { intent, reason }),
     shareCounterObservationReport: () => shareCounterObservationReport(),
     crossWorkspaceRelationPickerReport: () => crossWorkspaceRelationPickerReport(),
@@ -2022,7 +2029,7 @@
         openList(type);
       }
       if (liOpen) html += '</li>';
-      html += `<li>${renderInline(String(item.text || '').trim())}`;
+      html += `<li>${renderInline(String(item.text || '').trim()).replace(/\n/g, '<br>')}`;
       liOpen = true;
     }
     if (liOpen) html += '</li>';
@@ -2094,6 +2101,15 @@
         closeParagraph();
         closeBlockquote();
         listItems.push(listItem);
+        continue;
+      }
+
+      // Markdown continuation line for the previous list item. This keeps
+      // field-style lists readable in evidence/provenance blocks instead of
+      // prematurely closing the list and turning the continuation into a
+      // detached paragraph.
+      if (listItems.length && /^\s{2,}\S/.test(line)) {
+        listItems[listItems.length - 1].text = `${listItems[listItems.length - 1].text || ''}\n${trimmed}`;
         continue;
       }
 
@@ -3688,7 +3704,13 @@
 
   function repoDiscoveryKey(repo, ref, rootPath) {
     const roots = Array.isArray(rootPath) ? rootPath : parseRootPaths(rootPath || '.topics');
-    return `${repo}@${ref || ''}:${roots.map(normalizeRepoPath).join('|')}`;
+    // Treat an omitted ref and the viewer default branch as the same discovery
+    // key. On slower/mobile startup the same source could otherwise run twice
+    // (blank ref during route/workspace restore, then master during hydrated
+    // source startup), briefly showing content and then replacing it with a
+    // slower fallback pass.
+    const normalizedRef = String(ref || 'master').trim() || 'master';
+    return `${repo}@${normalizedRef}:${roots.map(normalizeRepoPath).join('|')}`;
   }
 
   function renderDiscoveryViewToggle(ws) {
@@ -3980,9 +4002,20 @@
   }
 
   function cleanObservedMaterialText(text) {
-    let clean = stripMarkdownFence(text || '').trim();
-    clean = clean.replace(/^[-*]\s+/gm, '').trim();
-    return clean;
+    // Preserve list markers. Earlier cleanup stripped top-level bullets from
+    // Evidence Material, which made expanded/detail read views look like broken
+    // paragraphs and hid the intended list hierarchy.
+    return stripMarkdownFence(text || '').trim();
+  }
+
+  function listifyPlainMultilineBlock(value) {
+    const clean = stripMarkdownFence(value || '').trim();
+    if (!clean) return '';
+    const lines = clean.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (lines.length < 2) return clean;
+    const hasMarkdownStructure = lines.some((line) => /^(?:[-*+]\s+|\d+[.)]\s+|#{1,6}\s+|>\s?|```|\|)/.test(line));
+    if (hasMarkdownStructure) return clean;
+    return lines.map((line) => `- ${line}`).join('\n');
   }
 
   function renderPrimaryReadBlock(label, value, options = {}) {
@@ -4389,20 +4422,71 @@
       </section>`;
   }
 
+  function evidenceInlineImageRefs(ws, node) {
+    if (!ws || !node || typeof nodeMaterialRefs !== 'function') return [];
+    const seen = new Set();
+    return (nodeMaterialRefs(ws, node) || []).filter((ref) => {
+      if (!ref || ref.kind !== 'image') return false;
+      const src = ref.localUrl || ref.rawUrl || ref.sourceUrl || '';
+      if (!src && !ref.localMissingAsset) return false;
+      const key = ref.path || ref.href || ref.label || src;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function evidenceHasInlineImagePreview(ws, node) {
+    return evidenceInlineImageRefs(ws, node).length > 0;
+  }
+
+  function renderEvidenceInlineImagePreview(ws, node, options = {}) {
+    const refs = evidenceInlineImageRefs(ws, node);
+    if (!refs.length) return '';
+    const compact = Boolean(options.compact || options.inline);
+    const shown = refs.slice(0, compact ? 1 : 4);
+    const more = refs.length - shown.length;
+    return `<section class="evidence-inline-preview ${compact ? 'compact' : 'full'}" translate="no">
+      <div class="evidence-inline-preview-head">
+        <span><i class="fa-solid fa-image"></i> Image evidence</span>
+        <small>${escapeHtml(refs.length === 1 ? '1 image' : `${refs.length} images`)}</small>
+      </div>
+      <div class="evidence-inline-preview-grid">
+        ${shown.map((ref) => {
+          const idx = materialRefIndex(ws, node, ref);
+          const src = ref.localUrl || ref.rawUrl || ref.sourceUrl || '';
+          const title = ref.label || fileNameFromPath(ref.path || ref.href || src) || 'Image evidence';
+          const badge = ref.localAsset ? 'local image asset' : ref.localMissingAsset ? 'local unavailable' : 'source image';
+          if (!src) {
+            return `<div class="evidence-inline-image-card unavailable">
+              <span class="evidence-inline-image-missing"><i class="fa-solid fa-image-slash"></i></span>
+              <strong>${escapeHtml(shortText(title, 68))}</strong>
+              <small>${escapeHtml(badge)}</small>
+            </div>`;
+          }
+          return `<button type="button" class="evidence-inline-image-card" data-action="open-material-lightbox" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" data-ref="${escapeAttr(idx)}" title="Preview ${escapeAttr(title)}">
+            <span class="evidence-inline-image-frame"><img src="${escapeAttr(src)}" alt="${escapeAttr(title)}" loading="lazy"></span>
+            <span class="evidence-inline-image-meta"><strong>${escapeHtml(shortText(title, compact ? 64 : 92))}</strong><small>${escapeHtml(badge)}</small></span>
+          </button>`;
+        }).join('')}
+      </div>
+      ${more > 0 ? `<p class="evidence-inline-preview-more">+ ${more} more image${more === 1 ? '' : 's'} in material references.</p>` : ''}
+    </section>`;
+  }
+
   function renderEvidenceSummary(node, options = {}) {
     const map = sectionMap(node.body || node.rawMarkdown);
     const claim = sectionPlainAny(map, ['Supported Claim', 'Supports']) || introPlain(map);
     const material = sectionValueAny(map, ['Evidence Material', 'Unavailable Material']);
     const provenance = sectionValueAny(map, ['Provenance']);
     const limits = sectionValueAny(map, ['Interpretation Limits', 'Interpretation Notes and Limits']);
+    const imagePreview = options.ws ? renderEvidenceInlineImagePreview(options.ws, node, options) : '';
     return `
       <section class="${presenterClass('schema-presenter evidence-presenter', options)}">
         ${renderPresenterHead('Evidence', 'fa-solid fa-paperclip', node.title || 'Evidence', node.summary || '', options)}
-        ${claim ? renderPrimaryReadBlock('Supported claim', claim, { compact: options.compact, limit: options.compact ? 280 : 620 }) : ''}
+        ${claim ? renderPrimaryReadBlock('Supported claim', listifyPlainMultilineBlock(claim), { compact: options.compact, limit: options.compact ? 280 : 620 }) : ''}
+        ${imagePreview}
         ${material ? renderReadMarkdownSection('Material', cleanObservedMaterialText(material), { compact: options.compact, limit: options.compact ? 280 : 620 }) : ''}
-        ${renderReadMetaStrip([
-          ['Provenance', provenance ? shortText(stripMarkdownInline(provenance), 120) : '']
-        ])}
         ${!options.inline && provenance ? renderReadDetailSections('Provenance', [{ label: 'Provenance', value: provenance, limit: 620 }], { compact: options.compact }) : ''}
         ${renderBasisLine(map, options)}
         ${limits ? renderReadDetailSections('Limits', [{ label: 'Interpretation limits', value: limits, limit: 520 }], { compact: options.compact }) : ''}
@@ -4466,7 +4550,7 @@
 
   function renderContinuityPreview(node, ws = null) {
     const presenter = renderSchemaReadPresenter(ws, node, { compact: false, inline: true, full: true });
-    if (presenter) return presenter + (ws ? renderMaterialSection(ws, node, { compact: true }) : '');
+    if (presenter) return presenter + (ws ? renderMaterialSection(ws, node, { compact: true, excludeKinds: evidenceHasInlineImagePreview(ws, node) ? ['image'] : [] }) : '');
     const key = schemaKey(node.currentSchemaText || node.currentSchema);
     const sections = extractBodySections(node.body || node.rawMarkdown);
     let html = '';
@@ -4498,8 +4582,8 @@
         </div>
         <p>${escapeHtml(node.summary || '')}</p>
       </div>
-      ${presenter || renderContinuityPreview(node)}
-      ${renderMaterialSection(ws, node, { compact: false })}
+      ${presenter || renderContinuityPreview(node, ws)}
+      ${renderMaterialSection(ws, node, { compact: false, excludeKinds: evidenceHasInlineImagePreview(ws, node) ? ['image'] : [] })}
       <hr class="soft-rule">
       <details class="artifact-body-read" ${artifactProseAttrs(node)}>
         <summary>
@@ -4536,7 +4620,8 @@
 
     for (const ref of refs) {
       if (isStructuralMaterialRef(ref)) continue;
-      if (!materialHasOpenableSource(ref)) continue;
+      const keepLocalMaterial = Boolean(ref.localAsset || ref.localMissingAsset || ref.localUrl);
+      if (!materialHasOpenableSource(ref) && !keepLocalMaterial) continue;
       const key = materialDedupKey(ref);
       if (seen.has(key)) continue;
       seen.add(key);
@@ -4575,11 +4660,18 @@
       return '';
     });
 
+    source.replace(/(?:^|\n)\s*(?:[-*]\s*)?(?:source|material|attachment)?\s*:?\s*((?:\.\.?\/)?(?:assets|_assets)\/[^\s<>)]+|[A-Za-z0-9][A-Za-z0-9_.-]*\.(?:png|jpe?g|gif|webp|svg|bmp|avif))(?:\s|$)/gi, (_, href) => {
+      const clean = String(href || '').trim();
+      if (clean) add(fileNameFromPath(clean) || clean, clean, true);
+      return '';
+    });
+
     return filterMaterialRefs(found).filter((ref) => !isParentLikeMaterialRef(ws, node, ref));
   }
 
   function renderMaterialSection(ws, node, opts = {}) {
-    const refs = nodeMaterialRefs(ws, node);
+    const excludeKinds = new Set((opts.excludeKinds || []).map((kind) => String(kind || '').trim()).filter(Boolean));
+    const refs = (nodeMaterialRefs(ws, node) || []).filter((ref) => !excludeKinds.has(ref.kind));
     if (!refs.length) return '';
     const compact = Boolean(opts.compact);
     const limit = compact ? Number(app.settings.materialCompactLimit || 5) : 9999;
@@ -4624,7 +4716,17 @@
       event.stopPropagation();
       const { ws, node, ref } = materialRefFromEvent(event.currentTarget);
       if (ws && node && ref) {
-        app.modal = { type: 'material-lightbox', wsId: ws.id, nodeId: node.id, refIndex: materialRefIndex(ws, node, ref) };
+        app.modal = { type: 'material-lightbox', wsId: ws.id, nodeId: node.id, refIndex: materialRefIndex(ws, node, ref), zoomMode: 'fit' };
+        render();
+      }
+      return;
+    }
+
+    if (action === 'set-material-lightbox-zoom') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (app.modal?.type === 'material-lightbox') {
+        app.modal.zoomMode = event.currentTarget.dataset.mode === 'actual' ? 'actual' : 'fit';
         render();
       }
       return;
@@ -5339,8 +5441,9 @@
 
   function materialHasOpenableSource(ref) {
     if (!ref) return false;
+    if (ref.localMissingAsset) return false;
     if (ref.loadedNodeId) return true;
-    if (ref.localAsset) return true;
+    if (ref.localAsset) return false;
     const source = ref.sourceUrl || ref.browseUrl || ref.rawUrl || ref.href || '';
     if (!source) return false;
     if (isLocalAbsolutePath(source) || isLocalAbsolutePath(ref.href) || isLocalAbsolutePath(ref.path)) return false;
@@ -5364,24 +5467,29 @@
 
   function renderMaterialItem(ws, node, ref, compact = false) {
     const source = ref.sourceUrl || ref.browseUrl || ref.rawUrl || ref.href;
+    const showSource = Boolean(source && !ref.localAsset && materialHasOpenableSource(ref));
     const previewable = ref.kind === 'image' || ref.kind === 'text' || ref.kind === 'markdown';
     const title = ref.label || fileNameFromPath(ref.path || ref.href);
-    const subtitle = ref.localAsset ? `${ref.path} · local asset` : (ref.path || ref.href);
+    const subtitle = ref.localAsset
+      ? `${ref.path} · local asset`
+      : ref.localMissingAsset
+        ? `${ref.path || ref.href} · local asset unavailable after refresh`
+        : (ref.path || ref.href);
     const imageSrc = ref.localUrl || ref.rawUrl;
     const thumbnail = ref.kind === 'image' && imageSrc
       ? `<button class="material-thumb" data-action="open-material-lightbox" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" data-ref="${escapeAttr(materialRefIndex(ws, node, ref))}" title="Preview image"><img src="${escapeAttr(imageSrc)}" alt="${escapeAttr(title)}" loading="lazy" onerror="this.closest('.material-thumb').classList.add('broken')"></button>`
-      : `<span class="material-icon"><i class="${escapeAttr(materialIcon(ref.kind))}"></i></span>`;
+      : `<span class="material-icon ${ref.localMissingAsset ? 'missing-local-asset' : ''}"><i class="${escapeAttr(ref.localMissingAsset ? 'fa-solid fa-image-slash' : materialIcon(ref.kind))}"></i></span>`;
 
     return `
-      <div class="material-item kind-${escapeAttr(ref.kind)} ${ref.localAsset ? 'local-asset' : ''}">
+      <div class="material-item kind-${escapeAttr(ref.kind)} ${ref.localAsset ? 'local-asset' : ''} ${ref.localMissingAsset ? 'local-missing-asset' : ''}">
         ${thumbnail}
         <div class="material-meta">
-          <div class="material-title">${escapeHtml(shortText(title, compact ? 44 : 90))}${ref.localAsset ? '<span class="trace-ref-status loaded">local asset</span>' : ''}</div>
+          <div class="material-title">${escapeHtml(shortText(title, compact ? 44 : 90))}${ref.localAsset ? '<span class="trace-ref-status loaded">local asset</span>' : ref.localMissingAsset ? '<span class="trace-ref-status pending">local only</span>' : ''}</div>
           <div class="material-subtitle">${escapeHtml(shortText(subtitle, compact ? 58 : 140))}</div>
           <div class="material-actions">
             ${renderMaterialPrimaryAction(ws, node, ref)}
             ${previewable && ref.kind !== 'image' ? `<button class="mini-action" data-action="open-material-preview" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" data-ref="${escapeAttr(materialRefIndex(ws, node, ref))}">Preview</button>` : ''}
-            ${source ? `<a class="mini-action anchor" href="${escapeAttr(safeUrl(source) || source)}" target="_blank" rel="noopener noreferrer">${ref.localAsset ? 'Open asset' : 'Open source'}</a>` : ''}
+            ${showSource ? `<a class="mini-action anchor" href="${escapeAttr(safeUrl(source) || source)}" target="_blank" rel="noopener noreferrer">Open source</a>` : ''}
             <button class="mini-action subtle" data-action="copy-material-ref" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" data-ref="${escapeAttr(materialRefIndex(ws, node, ref))}">Copy</button>
           </div>
         </div>
@@ -5437,23 +5545,28 @@
     const ref = node ? nodeMaterialRefs(ws, node)[Number(modal.refIndex || 0)] : null;
     if (!ws || !node || !ref) return '';
     const src = ref.localUrl || ref.rawUrl || ref.sourceUrl;
+    const zoomMode = modal.zoomMode === 'actual' ? 'actual' : 'fit';
+    const title = ref.label || fileNameFromPath(ref.path || src) || 'Image evidence';
     return `
       <div class="modal-backdrop-custom focus-modal material-lightbox-modal" role="dialog" aria-modal="true">
-        <div class="modal-panel lightbox-panel">
-          <div class="modal-header-lite sticky-modal-head">
+        <div class="modal-panel lightbox-panel image-inspection-panel ${zoomMode === 'actual' ? 'actual-size' : 'fit-size'}">
+          <div class="modal-header-lite sticky-modal-head lightbox-head-compact">
             <div>
-              <p class="kicker">${ref.localAsset ? 'Local image asset' : 'Image attachment'}</p>
-              <h2 class="modal-title-lite">${escapeHtml(ref.label || fileNameFromPath(ref.path || src))}</h2>
-              <p class="text-secondary mb-0">${escapeHtml(ref.path || ref.href)}</p>
+              <p class="kicker">${ref.localAsset ? 'Local image asset' : 'Image evidence'}</p>
+              <h2 class="modal-title-lite">${escapeHtml(title)}</h2>
+              <p class="text-secondary mb-0">${escapeHtml(ref.path || ref.href || '')}</p>
             </div>
-            <button class="tv-btn small subtle" data-action="close-modal"><i class="fa-solid fa-xmark"></i></button>
+            <button class="tv-btn small subtle lightbox-close" data-action="close-modal" aria-label="Close image preview"><i class="fa-solid fa-xmark"></i></button>
           </div>
-          <div class="lightbox-body">
-            <img src="${escapeAttr(src)}" alt="${escapeAttr(ref.label || 'attachment image')}" loading="eager">
+          <div class="lightbox-body image-inspection-body ${zoomMode === 'actual' ? 'actual-size' : 'fit-size'}" aria-label="Image inspection surface">
+            <img src="${escapeAttr(src)}" alt="${escapeAttr(title)}" loading="eager" draggable="false">
           </div>
-          <div class="modal-footer-actions">
-            ${src ? `<a class="tv-btn subtle" href="${escapeAttr(safeUrl(src) || src)}" target="_blank" rel="noopener noreferrer"><i class="fa-solid fa-arrow-up-right-from-square"></i>${ref.localAsset ? 'Open asset' : 'Open source'}</a>` : ''}
-            <button class="tv-btn subtle" data-action="close-modal">Close</button>
+          <div class="modal-footer-actions image-inspection-actions">
+            <div class="image-inspection-zoom-controls" role="group" aria-label="Image zoom controls">
+              <button class="tv-btn tiny subtle ${zoomMode === 'fit' ? 'active' : ''}" data-action="set-material-lightbox-zoom" data-mode="fit"><i class="fa-solid fa-compress"></i>Fit</button>
+              <button class="tv-btn tiny subtle ${zoomMode === 'actual' ? 'active' : ''}" data-action="set-material-lightbox-zoom" data-mode="actual"><i class="fa-solid fa-magnifying-glass-plus"></i>1:1 / pan</button>
+            </div>
+            ${src && !ref.localAsset && materialHasOpenableSource(ref) ? `<a class="tv-btn tiny subtle" href="${escapeAttr(safeUrl(src) || src)}" target="_blank" rel="noopener noreferrer"><i class="fa-solid fa-arrow-up-right-from-square"></i>Open source</a>` : ''}
           </div>
         </div>
       </div>`;
@@ -6572,8 +6685,10 @@
     if (!ws || !asset) return '';
     ensureWorkspaceAssets(ws);
     const key = asset.key || sourceFileKey(asset.sourceId, asset.path, false);
+    const content = String(asset.content || '');
+    if (/^data:/i.test(content)) return content;
     if (ws.assetUrls.has(key)) return ws.assetUrls.get(key);
-    const blob = asset.blob || new Blob([asset.content || ''], { type: asset.type || 'application/octet-stream' });
+    const blob = asset.blob || new Blob([content || ''], { type: asset.type || 'application/octet-stream' });
     const url = URL.createObjectURL(blob);
     ws.assetUrls.set(key, url);
     return url;
@@ -14034,10 +14149,42 @@ ${bodySections}
 
   function renderMaterialPrimaryAction(ws, node, ref) {
     const idx = materialRefIndex(ws, node, ref);
-    if (ref.kind === 'image' && ref.rawUrl) {
+    if (ref.kind === 'image' && (ref.rawUrl || ref.localUrl)) {
       return `<button class="mini-action primary" data-action="open-material-lightbox" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" data-ref="${escapeAttr(idx)}">Preview</button>`;
     }
     return '';
+  }
+
+
+  function workspaceAssetByMaterialPath(ws, path = '') {
+    const clean = normalizeAssetPath(stripUrlDecorations(path || ''));
+    if (!ws || !clean) return null;
+    const values = Array.from(ws.assets?.values?.() || []);
+    return values.find((asset) => sameImportedPath(asset.path || asset.name || '', clean)) || null;
+  }
+
+  function materialKindForAsset(asset, imageHint = false) {
+    if (!asset) return imageHint ? 'image' : 'file';
+    const type = String(asset.type || '');
+    const name = String(asset.name || asset.path || '');
+    if (imageHint || type.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(name)) return 'image';
+    if (type.startsWith('text/') || /\.(md|txt|json|csv|log|xml|html|css|js)$/i.test(name)) return 'text';
+    return 'file';
+  }
+
+
+  function isLocalEvidenceAssetPath(rawHref = '', targetPath = '') {
+    const raw = stripUrlDecorations(String(rawHref || '').trim()).replace(/^\.\//, '');
+    const target = stripUrlDecorations(String(targetPath || '').trim()).replace(/^\.\//, '');
+    if (!raw && !target) return false;
+    if (/^(?:assets|_assets)(?:\/|$)/i.test(raw)) return true;
+    if (/(?:^|\/)(?:assets|_assets)(?:\/|$)/i.test(target)) return true;
+    return false;
+  }
+
+  function missingLocalMaterialKind(rawHref = '', targetPath = '', imageHint = false) {
+    if (imageHint || /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(`${rawHref} ${targetPath}`)) return 'image';
+    return 'file';
   }
 
   function resolveMaterialHref(ws, node, href, image = false, label = '') {
@@ -14072,11 +14219,33 @@ ${bodySections}
       const cleanNoDecor = stripUrlDecorations(rawHref);
       const targetPath = canonicalWorkspacePath(joinPath(dirname(node.path), cleanNoDecor));
       base.path = targetPath || cleanNoDecor;
-      if (base.repo && base.ref && targetPath) {
+      const localAsset = workspaceAssetByMaterialPath(ws, base.path) || workspaceAssetByMaterialPath(ws, cleanNoDecor);
+      if (localAsset) {
+        base.path = localAsset.path || base.path;
+        base.localAsset = localAsset;
+        base.localUrl = assetObjectUrl(ws, localAsset);
+        base.rawUrl = '';
+        base.browseUrl = '';
+        base.sourceUrl = '';
+        base.kind = materialKindForAsset(localAsset, image);
+        base.id = `${base.kind}:${base.path || base.href}`;
+        return base;
+      }
+      if (isLocalEvidenceAssetPath(cleanNoDecor, targetPath)) {
+        base.localMissingAsset = true;
+        base.rawUrl = '';
+        base.browseUrl = '';
+        base.sourceUrl = '';
+        base.kind = missingLocalMaterialKind(cleanNoDecor, targetPath, image);
+        base.label = label || fileNameFromPath(targetPath || cleanNoDecor) || cleanNoDecor || 'local asset';
+        base.id = `${base.kind}:local-missing:${base.path || base.href}`;
+        return base;
+      }
+      if (base.repo && base.ref && targetPath && !node.isGenerated && !node.localEditDraft && !nodeShowsAuthoringDraftState(ws, node)) {
         base.rawUrl = githubRawUrl(base.repo, base.ref, targetPath);
         base.browseUrl = githubBrowseUrl(base.repo, base.ref, targetPath);
         base.sourceUrl = base.browseUrl;
-      } else if (node.rawUrl) {
+      } else if (node.rawUrl && !node.isGenerated && !node.localEditDraft) {
         try {
           base.rawUrl = new URL(rawHref, sourceUrlDirectory(node.rawUrl)).toString();
           base.sourceUrl = base.rawUrl;
@@ -14806,6 +14975,46 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
     return hadLineage || hadModal;
   }
 
+
+
+  function normalizedPublicHashTargetForCompare(target = {}) {
+    return {
+      adapter: String(target.adapter || '').trim().toLowerCase(),
+      url: String(target.url || '').trim().replace(/#$/, '')
+    };
+  }
+
+  function publicHashTargetsEquivalent(a = {}, b = {}) {
+    const left = normalizedPublicHashTargetForCompare(a);
+    const right = normalizedPublicHashTargetForCompare(b);
+    if (!left.url || !right.url) return false;
+    if (left.url !== right.url) return false;
+    return !left.adapter || !right.adapter || left.adapter === right.adapter;
+  }
+
+  function workspaceMatchesPublicHashTarget(ws, target) {
+    if (!ws || !target) return false;
+    if (publicHashTargetsEquivalent(ws.publicShareTarget || {}, target)) return true;
+    if (publicHashTargetsEquivalent(ws.viewerIdentity?.publicShareTarget || {}, target)) return true;
+    if (publicHashTargetsEquivalent(ws.discoverySource?.publicShareTarget || {}, target)) return true;
+    return (ws.nodes || []).some((node) => {
+      const candidates = [
+        node?.sourceUrl,
+        node?.sourceOrigin,
+        node?.publishedOriginUrl,
+        node?.recoveredFromUrl,
+        node?.origin,
+        node?.browseUrl,
+        node?.rawUrl
+      ].filter(Boolean).map((url) => ({ adapter: target.adapter || '', url }));
+      return candidates.some((candidate) => publicHashTargetsEquivalent(candidate, target));
+    });
+  }
+
+  function existingWorkspaceForPublicHashTarget(target) {
+    return (app.workspaces || []).find((ws) => workspaceMatchesPublicHashTarget(ws, target)) || null;
+  }
+
   async function restoreRouteFromBrowserHistory() {
     const previousRestoring = Boolean(app.routing?.restoring);
     app.routing = app.routing || {};
@@ -14814,6 +15023,16 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
       const hashTarget = parseHashShareTarget();
       if (hashTarget) {
         routeOwnerRecord('route:popstate-share-target', { target: hashTarget });
+        const existingWs = existingWorkspaceForPublicHashTarget(hashTarget);
+        if (existingWs) {
+          app.activeWorkspaceId = existingWs.id;
+          if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(existingWs);
+          const spec = typeof parseGitHubSocialTargetSpec === 'function' ? parseGitHubSocialTargetSpec(hashTarget.url || '') : null;
+          if (typeof selectPublicHashTargetNode === 'function') selectPublicHashTargetNode(existingWs, hashTarget, spec, 'popstate-hash-target-reuse');
+          render();
+          if (typeof scheduleRouteHistoryScrollRestore === 'function') scheduleRouteHistoryScrollRestore('popstate-hash-target-reuse');
+          return;
+        }
         app.workspaces = [];
         app.activeWorkspaceId = null;
         await loadHashShareTarget(hashTarget, { reason: 'popstate-hash-target' });
@@ -14905,7 +15124,7 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
       readOnly({ label: 'Share', icon: 'fa-solid fa-share-nodes', className: 'share-action', dataset: Object.assign({ action: 'open-share-modal', scope: 'artifact' }, base), title: 'Review share eligibility for this artifact' })
     );
 
-    if (node.browseUrl) {
+    if (node.browseUrl && !node.isGenerated && !node.localEditDraft && !nodeShowsAuthoringDraftState(ws, node)) {
       items.push(readOnly({ label: 'Source', icon: 'fa-brands fa-github', className: 'anchor source-action', href: safeUrl(node.browseUrl) || node.browseUrl, title: 'Open original source location' }));
     }
 
@@ -23465,7 +23684,50 @@ ${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source findi
     attachments.unshift(relationAttachment);
   }
 
-  function markdownLinkAttachmentsFromText(text = '') {
+  function evidenceRecoverLinkTargetPath(node, href = '') {
+    const clean = stripUrlDecorations(String(href || '').trim());
+    if (!clean) return '';
+    if (/^https?:\/\//i.test(clean)) return '';
+    if (clean.startsWith('asset:') || clean.startsWith('blob:') || clean.startsWith('data:')) return '';
+    if (clean.startsWith('/')) return normalizeAssetPath(clean.replace(/^\/+/, ''));
+    const base = dirname(node?.path || '.topics/evidence.trace.md') || '.topics';
+    return canonicalWorkspacePath(joinPath(base, clean));
+  }
+
+  function evidenceImageLikePath(path = '') {
+    return /(?:^|\/)(?:assets|_assets)(?:\/|$)/i.test(path || '') || /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(path || '');
+  }
+
+  function evidenceRecoveredAssetForLink(ws, node, href = '') {
+    const targetPath = evidenceRecoverLinkTargetPath(node, href);
+    if (!targetPath) return null;
+    return workspaceAssetByMaterialPath(ws, targetPath) || workspaceAssetByMaterialPath(ws, href) || null;
+  }
+
+  function evidenceRecoveredAttachmentFromLocalAsset(ws, node, href, label, index) {
+    const targetPath = evidenceRecoverLinkTargetPath(node, href);
+    const asset = evidenceRecoveredAssetForLink(ws, node, href);
+    const name = fileNameFromPath(targetPath || href || label || `attachment-${index}`) || (String(href || '').match(/^(?:assets|_assets)$/i) ? 'local asset' : '') || label || `attachment-${index}`;
+    return {
+      id: `existing-file-${String(index)}`,
+      kind: 'file',
+      name,
+      label: label || name,
+      path: asset?.path || targetPath || href,
+      url: '',
+      representation: evidenceImageLikePath(name) ? 'local image asset' : 'local file asset',
+      notes: 'Recovered from local evidence material link. This is draft/local material until the asset is published or exported.',
+      limits: 'Local asset reference; no GitHub source link should be implied before publication.',
+      recoveredFromMarkdown: true,
+      localAsset: asset || null,
+      previewUrl: asset ? assetObjectUrl(ws, asset) : '',
+      contentDataUrl: /^data:/i.test(String(asset?.content || '')) ? asset.content : '',
+      type: asset?.type || '',
+      size: asset?.size || 0
+    };
+  }
+
+  function markdownLinkAttachmentsFromText(text = '', ws = null, node = null) {
     const attachments = [];
     const seen = new Set();
     const sectionCandidates = ['Linked Artifacts', 'Discovery Finding Basis', 'Provenance', 'Evidence Material'];
@@ -23481,6 +23743,14 @@ ${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source findi
         if (seen.has(key)) continue;
         seen.add(key);
         const relation = /source finding|use as|discovery finding basis/i.test(chunk) ? 'use-as' : (/referenced artifact|linked artifacts/i.test(chunk) ? 'reference' : 'source');
+        const localPath = evidenceRecoverLinkTargetPath(node, url) || url;
+        const recoveredAsset = relation === 'source' && evidenceImageLikePath(localPath)
+          ? evidenceRecoveredAttachmentFromLocalAsset(ws, node, url, label, seen.size)
+          : null;
+        if (recoveredAsset) {
+          attachments.push(recoveredAsset);
+          continue;
+        }
         attachments.push({
           id: `existing-${relation}-${String(seen.size)}`,
           kind: relation === 'source' ? 'url' : 'relation',
@@ -23493,12 +23763,23 @@ ${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source findi
           locked: relation !== 'source'
         });
       }
+      for (const line of String(chunk).split(/\r?\n/)) {
+        const match = line.match(/^\s*-\s*(?:source|material|attachment|url)?\s*:?\s*((?:assets|_assets)(?:\/[^\s)]+)?)(?:\s|$)/i);
+        if (!match) continue;
+        const url = shareClean(match[1] || '');
+        const key = `local-asset|${url}`;
+        if (!url || seen.has(key)) continue;
+        seen.add(key);
+        attachments.push(evidenceRecoveredAttachmentFromLocalAsset(ws, node, url, fileNameFromPath(url) || 'local asset', seen.size));
+      }
     }
     return attachments;
   }
 
-  function evidenceAttachmentsFromNode(node) {
-    return markdownLinkAttachmentsFromText(node?.body || node?.rawMarkdown || node?.file?.text || '');
+  function evidenceAttachmentsFromNode(wsOrNode, maybeNode = null) {
+    const ws = maybeNode ? wsOrNode : null;
+    const node = maybeNode || wsOrNode;
+    return markdownLinkAttachmentsFromText(node?.body || node?.rawMarkdown || node?.file?.text || '', ws, node);
   }
 
 
@@ -23701,10 +23982,8 @@ ${integrityFooterForPath(parent, path)}`,
 
   function renderEvidenceCameraChoice(modal) {
     if (!evidenceCameraChoiceOpen(modal)) return '';
-    return `<div class="evidence-camera-choice polished" role="group" aria-label="Choose evidence camera or image source">
-      <button type="button" class="tv-btn tiny subtle evidence-camera-option" data-action="evidence-pick-camera" data-facing="environment" title="Use the rear camera when the browser/device supports it"><i class="fa-solid fa-camera"></i>Back camera</button>
-      <button type="button" class="tv-btn tiny subtle evidence-camera-option" data-action="evidence-pick-camera" data-facing="user" title="Use the front camera when the browser/device supports it"><i class="fa-solid fa-user-camera"></i>Front camera</button>
-      <button type="button" class="tv-btn tiny subtle evidence-camera-option" data-action="evidence-pick-camera" data-facing="gallery" title="Choose an existing image if camera capture is unavailable"><i class="fa-solid fa-images"></i>Image / gallery</button>
+    return `<div class="evidence-camera-choice polished compact" role="group" aria-label="Choose evidence image source">
+      <button type="button" class="tv-btn tiny subtle evidence-camera-option" data-action="evidence-pick-camera" title="Take or choose an image with the browser/device picker"><i class="fa-solid fa-camera"></i>Take or choose image</button>
       <button type="button" class="tv-btn tiny subtle evidence-camera-option" data-action="evidence-close-camera-choice" aria-label="Close camera choices"><i class="fa-solid fa-xmark"></i></button>
     </div>`;
   }
@@ -23719,17 +23998,14 @@ ${integrityFooterForPath(parent, path)}`,
           <p>Drop files, add URLs, or capture camera evidence.</p>
         </div>
         <div class="evidence-collector-actions polished">
-          <button type="button" class="tv-btn tiny subtle evidence-camera-trigger" data-action="evidence-open-camera-choice" title="Capture or choose a photo"><i class="fa-solid fa-camera"></i>Camera</button>
+          <button type="button" class="tv-btn tiny subtle evidence-camera-trigger" data-action="evidence-pick-camera" title="Take or choose an image with the browser/device picker"><i class="fa-solid fa-camera"></i>Camera</button>
           <button type="button" class="tv-btn tiny subtle" data-action="evidence-add-url"><i class="fa-solid fa-link"></i>URL</button>
           <button type="button" class="tv-btn tiny subtle" data-action="evidence-pick-file"><i class="fa-solid fa-file-arrow-up"></i>File</button>
           <input class="visually-hidden evidence-file-input" type="file" multiple data-evidence-file-input="1" aria-hidden="true" tabindex="-1">
-          <input class="visually-hidden evidence-camera-input evidence-camera-input-environment" type="file" accept="image/*" capture="environment" data-evidence-camera-input="environment" aria-hidden="true" tabindex="-1">
-          <input class="visually-hidden evidence-camera-input evidence-camera-input-user" type="file" accept="image/*" capture="user" data-evidence-camera-input="user" aria-hidden="true" tabindex="-1">
-          <input class="visually-hidden evidence-camera-input evidence-camera-input-gallery" type="file" accept="image/*" data-evidence-camera-input="gallery" aria-hidden="true" tabindex="-1">
+          <input class="visually-hidden evidence-camera-input" type="file" accept="image/*" data-evidence-camera-input="camera" aria-hidden="true" tabindex="-1">
         </div>
       </div>
-      ${renderEvidenceCameraChoice(modal)}
-      ${count ? `<div class="evidence-attachment-grid compact polished">${attachments.map(renderEvidenceAttachmentCard).join('')}</div>` : `<div class="evidence-empty-drop compact polished"><i class="fa-solid fa-cloud-arrow-up"></i><strong>Drop files or capture camera</strong><span>add URL/file/photo</span></div>`}
+      ${count ? `<div class="evidence-attachment-grid compact polished">${attachments.map(renderEvidenceAttachmentCard).join('')}</div>` : `<div class="evidence-empty-drop compact polished"><i class="fa-solid fa-cloud-arrow-up"></i><strong>Drop files or use Camera</strong><span>add URL/file/photo</span></div>`}
     </section>`;
   }
 
@@ -23772,11 +24048,42 @@ ${integrityFooterForPath(parent, path)}`,
     });
   }
 
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve) => {
+      if (!file || typeof FileReader === 'undefined') return resolve('');
+      try {
+        const reader = new FileReader();
+        reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(file);
+      } catch (_) {
+        resolve('');
+      }
+    });
+  }
+
+  function hydrateEvidenceAttachmentContent(attachment) {
+    if (!attachment || attachment.kind !== 'file' || !attachment.file || attachment.contentDataUrl || attachment.contentReadPending) return;
+    const type = String(attachment.type || attachment.file.type || '');
+    const imageLike = type.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(String(attachment.name || attachment.file.name || ''));
+    if (!imageLike) return;
+    attachment.contentReadPending = true;
+    readFileAsDataUrl(attachment.file).then((dataUrl) => {
+      attachment.contentReadPending = false;
+      if (!dataUrl) return;
+      attachment.contentDataUrl = dataUrl;
+      attachment.previewUrl = dataUrl;
+      if (evidenceWizardActive?.()) render();
+      if (typeof scheduleLocalStateSaveAfterWorkspaceMutation === 'function') scheduleLocalStateSaveAfterWorkspaceMutation();
+    });
+  }
+
   function cameraFacingLabel(facing = '') {
     const key = String(facing || '').toLowerCase();
-    if (key === 'environment') return 'back camera';
-    if (key === 'user') return 'front camera';
-    return 'camera';
+    if (key === 'device-picker' || key === 'camera') return 'camera / image picker';
+    if (key === 'environment') return 'camera';
+    if (key === 'user') return 'camera';
+    return 'camera / image picker';
   }
 
   function evidenceCameraFileName(file, facing = '') {
@@ -23811,17 +24118,23 @@ ${integrityFooterForPath(parent, path)}`,
       file
     };
     evidenceAttachments().push(attachment);
+    hydrateEvidenceAttachmentContent(attachment);
     readImageMetadata(attachment);
   }
 
-  function storeEvidenceAttachmentFiles(ws, modal, artifactPath) {
+  async function storeEvidenceAttachmentFiles(ws, modal, artifactPath) {
     for (const attachment of evidenceAttachments(modal)) {
-      if (attachment.kind !== 'file' || !attachment.file) continue;
+      if (attachment.kind !== 'file' || (!attachment.file && !attachment.contentDataUrl)) continue;
       const path = evidenceAttachmentPath(artifactPath, attachment);
       attachment.path = path;
-      storeWorkspaceAsset(ws, path, attachment.file, {
-        type: attachment.type || attachment.file.type || '',
-        size: attachment.size || attachment.file.size || 0,
+      if (attachment.file && !attachment.contentDataUrl) {
+        attachment.contentDataUrl = await readFileAsDataUrl(attachment.file);
+        if (attachment.contentDataUrl) attachment.previewUrl = attachment.contentDataUrl;
+      }
+      const payload = attachment.contentDataUrl || attachment.file;
+      storeWorkspaceAsset(ws, path, payload, {
+        type: attachment.type || attachment.file?.type || '',
+        size: attachment.size || attachment.file?.size || attachment.contentDataUrl?.length || 0,
         source: attachment.source === 'camera' ? 'evidence-camera-capture' : 'evidence-attachment',
         cameraFacing: attachment.cameraFacing || '',
         capturedAt: attachment.capturedAt || ''
@@ -23869,17 +24182,11 @@ ${integrityFooterForPath(parent, path)}`,
     if (action === 'evidence-pick-camera') {
       event.preventDefault();
       event.stopPropagation();
-      const facing = event.currentTarget.dataset.facing || 'environment';
-      const selector = facing === 'user'
-        ? '.evidence-camera-input-user'
-        : facing === 'gallery'
-          ? '.evidence-camera-input-gallery'
-          : '.evidence-camera-input-environment';
-      const input = document.querySelector(selector) || document.querySelector('.evidence-file-input');
+      const input = document.querySelector('.evidence-camera-input') || document.querySelector('.evidence-file-input');
       if (input) {
         input.click();
       } else {
-        toast('Camera capture is not available in this browser. Use File to attach an image instead.', 'warn');
+        toast('Image capture is not available in this browser. Use File to attach an image instead.', 'warn');
       }
       return;
     }
@@ -23924,7 +24231,7 @@ ${integrityFooterForPath(parent, path)}`,
 
     if (action === 'save-new-artifact' && app.modal?.type === 'add-artifact' && Array.isArray(app.modal.evidenceAttachments)) {
       const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
-      if (ws) storeEvidenceAttachmentFiles(ws, app.modal, canonicalWorkspacePath(app.modal.path || ''));
+      if (ws) await storeEvidenceAttachmentFiles(ws, app.modal, canonicalWorkspacePath(app.modal.path || ''));
       return next(event);
     }
 
@@ -23947,8 +24254,7 @@ ${integrityFooterForPath(parent, path)}`,
     }
     const cameraFacing = event.target?.dataset?.evidenceCameraInput || '';
     if (cameraFacing && app.modal?.type === 'artifact-wizard') {
-      const source = cameraFacing === 'gallery' ? 'file' : 'camera';
-      Array.from(event.target.files || []).forEach((file) => addEvidenceFileAttachment(file, { source, cameraFacing }));
+      Array.from(event.target.files || []).forEach((file) => addEvidenceFileAttachment(file, { source: 'camera', cameraFacing: 'device-picker' }));
       event.target.value = '';
       app.modal.evidenceCameraChoiceOpen = false;
       render();
@@ -24126,8 +24432,16 @@ ${integrityFooterForPath(parent, path)}`,
   }
 
   function evidenceAttachmentObjectUrl(attachment) {
-    if (!attachment || !attachment.file) return '';
+    if (!attachment) return '';
     if (attachment.previewUrl) return attachment.previewUrl;
+    if (attachment.localAsset) {
+      try {
+        const ws = getWorkspace(app.modal?.wsId || '') || activeWorkspace();
+        attachment.previewUrl = assetObjectUrl(ws, attachment.localAsset);
+        if (attachment.previewUrl) return attachment.previewUrl;
+      } catch (_) {}
+    }
+    if (!attachment.file) return '';
     try {
       attachment.previewUrl = URL.createObjectURL(attachment.file);
       return attachment.previewUrl;
@@ -24135,6 +24449,7 @@ ${integrityFooterForPath(parent, path)}`,
       return '';
     }
   }
+
 
   function evidenceAttachmentThumb(attachment, icon) {
     if (!evidenceAttachmentIsImage(attachment)) {
@@ -24260,6 +24575,25 @@ ${integrityFooterForPath(parent, path)}`,
   window.addEventListener('keydown', closeEvidencePreviewOnEscape, true);
 
 
+  function closeEvidencePreview(reason = 'manual') {
+    if (!app.evidencePreviewAttachmentId) return false;
+    app.evidencePreviewAttachmentId = '';
+    routeOwnerRecord?.('evidence-preview:close', { reason });
+    render();
+    return true;
+  }
+
+  document.addEventListener('click', function evidencePreviewDocumentClick(event) {
+    if (!app.evidencePreviewAttachmentId) return;
+    const actionEl = event.target?.closest?.('[data-action="evidence-close-preview"]');
+    const overlay = event.target?.classList?.contains?.('evidence-preview-overlay');
+    if (!actionEl && !overlay) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeEvidencePreview(actionEl ? 'button' : 'backdrop');
+  }, true);
+
+
 
 
   function wizardDirectButtonText(modal) {
@@ -24297,7 +24631,7 @@ ${integrityFooterForPath(parent, path)}`,
 
     if (artifact.evidenceAttachments && typeof storeEvidenceAttachmentFiles === 'function') {
       const stash = { evidenceAttachments: artifact.evidenceAttachments };
-      storeEvidenceAttachmentFiles(ws, stash, path);
+      await storeEvidenceAttachmentFiles(ws, stash, path);
     }
 
     const finalizedText = await finalizeCreatedArtifactIntegrity(ws, artifact, modal);
@@ -24386,7 +24720,7 @@ ${integrityFooterForPath(parent, path)}`,
       parentNodeId: node.parentNode?.id || '',
       wizardStep: 'describe',
       formFields: formStateFromNode(node),
-      evidenceAttachments: schemaId === 'tiinex.evidence.v1' ? evidenceAttachmentsFromNode(node) : []
+      evidenceAttachments: schemaId === 'tiinex.evidence.v1' ? evidenceAttachmentsFromNode(ws, node) : []
     };
     updateUrlState({ replace: false });
     render();
@@ -24401,7 +24735,7 @@ ${integrityFooterForPath(parent, path)}`,
     const artifact = wizardTemplate(ws, modal);
     if (artifact.evidenceAttachments && typeof storeEvidenceAttachmentFiles === 'function') {
       const stash = { evidenceAttachments: artifact.evidenceAttachments };
-      storeEvidenceAttachmentFiles(ws, stash, artifact.path || node.path || '');
+      await storeEvidenceAttachmentFiles(ws, stash, artifact.path || node.path || '');
     }
     await saveNodeEdit(ws, node, artifact.text);
     markDialogRouteSessionClosed(modal);
@@ -30145,30 +30479,13 @@ ${githubOutboundFileExcerpt(file, 18000)}
     let html = next(ws, node, options);
     if (!mobileLensActive()) return html;
     if (!ws || !node) return html;
-
-    const parentPickerActive = typeof parentPickerActiveFor === 'function' && parentPickerActiveFor(ws);
-    const parentPickerChip = `<button class="badge-soft mobile-card-select-parent-chip select-parent-action" data-action="select-parent-placement" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="Select as parent for reference leaf" aria-label="Select as parent"><i class="fa-solid fa-location-crosshairs"></i></button>`;
-    const moreChip = `<button class="badge-soft mobile-card-more-chip" data-action="mobile-card-more" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="More actions" aria-label="More actions"><i class="fa-solid fa-ellipsis"></i></button>`;
-    const actionChip = parentPickerActive ? parentPickerChip : moreChip;
-
-    // Mobile card primary action is the card itself. Keep secondary actions
-    // behind the compact More affordance, except during parent picking where
-    // the single task is selecting the card as parent and a one-item sheet is
-    // unnecessary indirection. In parent-picker mode the Select affordance stays
-    // in the same reserved right-side action rail as the normal ellipsis so it
-    // does not consume or reorder semantic badges.
-    if (!/mobile-card-more-chip|mobile-card-select-parent-chip/u.test(html)) {
-      html = html.replace(/(<div class="post-chips)([^"]*)(">)([\s\S]*?)(<\/div>)/u, (_, open, classes, endOpen, body, close) => {
-        const baseClasses = /mobile-card-more-row/u.test(classes) ? classes : `${classes} mobile-card-more-row`;
-        const nextClasses = parentPickerActive && !/mobile-card-parent-select-row/u.test(baseClasses)
-          ? `${baseClasses} mobile-card-parent-select-row`
-          : baseClasses;
-        return `${open}${nextClasses}${endOpen}${body}${actionChip}${close}`;
-      });
+    const lineage = Boolean(options?.lineage);
+    const rail = renderMobileActionRail(ws, node, lineage);
+    html = html.replace('<div class="post-actions" translate="no">', '<div class="post-actions desktop-post-actions" translate="no">');
+    if (rail && !/mobile-card-action-rail/u.test(html)) {
+      html = html.replace('</article>', `${rail}</article>`);
     }
-
-    const mobileActions = `<div class="mobile-card-actions" aria-hidden="true"></div>`;
-    return html.replace(/<div class="post-actions[\s\S]*?<\/div>/, mobileActions);
+    return html;
   });
 
   function collapseExpandedNodesForModeChange(ws) {
@@ -30286,13 +30603,75 @@ ${githubOutboundFileExcerpt(file, 18000)}
 
 
 
-  function mobileNodeActions(ws, node, lineage = false) {
-    if (!ws || !node || typeof nodeActionItems !== 'function') return [];
+  function mobileActionKey(action = {}) {
+    const datasetAction = action?.dataset?.action || '';
+    const mode = action?.dataset?.mode || '';
+    if (datasetAction === 'open-create' && mode) return `${datasetAction}:${mode}`;
+    if (action.href) return 'source-href';
+    return datasetAction || String(action?.label || '').toLowerCase();
+  }
+
+  function mobileActionSemanticType(action = {}) {
+    const key = mobileActionKey(action);
+    const label = String(action?.label || '').toLowerCase();
+    if (key === 'open-detail-modal') return 'read';
+    if (key === 'open-markdown-modal') return 'markdown';
+    if (key === 'open-share-modal') return 'share';
+    if (key === 'open-node-edit') return 'edit';
+    if (key === 'open-create:continue') return 'continue';
+    if (key === 'open-create:reference') return 'reference';
+    if (key === 'open-use-as-picker') return 'use-as';
+    if (key === 'source-href' || label === 'source') return 'source';
+    if (key === 'remove-local-node') return 'remove';
+    return label || key || 'action';
+  }
+
+  function splitMobileNodeActions(ws, node, lineage = false) {
+    if (!ws || !node || typeof nodeActionItems !== 'function') return { primary: [], secondary: [] };
     if (typeof parentPickerActiveFor === 'function' && parentPickerActiveFor(ws)) {
-      return [parentPickerSelectActionItem(ws, node)];
+      return { primary: [parentPickerSelectActionItem(ws, node)], secondary: [] };
     }
-    const actions = nodeActionItems(ws, node, { lineage });
-    return actions.filter((action) => action?.dataset?.action !== 'toggle-node-expand');
+    const raw = nodeActionItems(ws, node, { lineage })
+      .filter((action) => action?.dataset?.action !== 'toggle-node-expand')
+      .filter((action) => !/anchor/i.test(String(action?.label || '')));
+    const used = new Set();
+    const primaryOrder = ['read', 'markdown', 'share', 'edit'];
+    const primary = [];
+    for (const type of primaryOrder) {
+      const match = raw.find((action, index) => !used.has(index) && mobileActionSemanticType(action) === type);
+      if (match) {
+        used.add(raw.indexOf(match));
+        primary.push(Object.assign({}, match, { iconOnly: true, mobilePrimary: true }));
+      }
+    }
+    const secondary = raw.filter((_, index) => !used.has(index));
+    return { primary, secondary };
+  }
+
+  function renderMobileRailAction(action = {}) {
+    const type = mobileActionSemanticType(action);
+    const classes = ['mobile-rail-action', `mobile-rail-${type.replace(/[^a-z0-9-]+/g, '-')}`, action.danger ? 'danger' : ''].filter(Boolean).join(' ');
+    const title = action.title || action.label || 'Action';
+    const icon = `<i class="${escapeAttr(action.icon || 'fa-solid fa-circle-dot')}"></i>`;
+    const label = `<span>${escapeHtml(action.label || title)}</span>`;
+    if (action.href) {
+      return `<a class="${escapeAttr(classes)}" href="${escapeAttr(action.href)}" target="_blank" rel="noopener" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}">${icon}${label}</a>`;
+    }
+    return `<button class="${escapeAttr(classes)}"${nodeActionDatasetAttrs(action.dataset || {})}${action.disabled ? ' disabled' : ''} title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}">${icon}${label}</button>`;
+  }
+
+  function renderMobileActionRail(ws, node, lineage = false) {
+    const { primary, secondary } = splitMobileNodeActions(ws, node, lineage);
+    if (!primary.length && !secondary.length) return '';
+    const buttons = primary.map(renderMobileRailAction).join('');
+    const more = secondary.length
+      ? `<button class="mobile-rail-action mobile-rail-more" data-action="mobile-card-more" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(node.id)}" title="More artifact actions" aria-label="More artifact actions"><i class="fa-solid fa-ellipsis"></i><span>More</span></button>`
+      : '';
+    return `<div class="mobile-card-action-rail" data-mobile-action-owner="mobile-card-action-rail" data-primary-count="${primary.length}" data-secondary-count="${secondary.length}" translate="no">${buttons}${more}</div>`;
+  }
+
+  function mobileNodeActions(ws, node, lineage = false) {
+    return splitMobileNodeActions(ws, node, lineage).secondary;
   }
 
   function mobileDispatchActionInitial(dataset, ws) {
@@ -33473,6 +33852,8 @@ window.addEventListener('popstate', (event) => {
     return {
       schema: 'tiinex.share.eligibility.v1',
       scope: resolvedScope,
+      wsId: activeWs?.id || '',
+      nodeId: activeNode?.id || '',
       status,
       statusLabel: shareStatusLabel(status),
       severity: shareSeverityForStatus(status),
@@ -33556,7 +33937,10 @@ window.addEventListener('popstate', (event) => {
 
   function sharePrimaryHref(item = {}, options = {}) {
     if (options.preferExact && item.exactUrl) return item.exactUrl;
-    return item.publicUrl || item.exactUrl || item.target?.url || '';
+    if (item.publicUrl) return item.publicUrl;
+    if (item.status === 'access-bound' && item.target?.url && options.allowAccessBound !== false) return item.target.url;
+    if (options.allowExact && item.exactUrl) return item.exactUrl;
+    return '';
   }
 
   function shareHasViewerHashOrigin(url = '') {
@@ -33844,6 +34228,8 @@ ${redirectMeta}
       ? `<code>${escapeHtml(item.target.adapter || defaultAdapterForShareTarget(item.target.url))}|${escapeHtml(item.target.url)}</code>`
       : '<em>No external target found yet.</em>';
     const publicDisabled = item.publicUrl ? '' : ' disabled';
+    const packageAvailable = item.scope === 'artifact' || Boolean(item.nodeId);
+    const publicFlowDisabled = sharePrimaryHref(item) ? '' : ' disabled';
     const originHref = sharePrimaryHref(item);
     const originNotice = originHref && shareHasViewerHashOrigin(originHref)
       ? 'Has hash origin.'
@@ -33877,9 +34263,10 @@ ${redirectMeta}
             <button class="tv-btn subtle" data-action="copy-share-guestbook" data-scope="${escapeAttr(item.scope || '')}" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}" title="Copy text suitable for a comment, guestbook, or simple destination"><i class="fa-regular fa-comment-dots"></i><span>Comment</span></button>
             <button class="tv-btn subtle" data-action="copy-share-public" data-scope="${escapeAttr(item.scope || '')}" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}"${publicDisabled} title="Copy only the plain public Tiinex link"><i class="fa-solid fa-link"></i><span>Link</span></button>
             <button class="tv-btn subtle" data-action="download-share-html" data-scope="${escapeAttr(item.scope || '')}" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}" title="Download a standalone HTML presentation card"><i class="fa-regular fa-file-code"></i><span>Card HTML</span></button>
-            <button class="tv-btn subtle" data-action="download-share-redirect-html" data-scope="${escapeAttr(item.scope || '')}" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}" title="Download a tiny redirect/open-in-browser HTML file"><i class="fa-solid fa-arrow-up-right-from-square"></i><span>Open HTML</span></button>
+            <button class="tv-btn subtle" data-action="download-draft-package-html" data-scope="${escapeAttr(item.scope || '')}" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}"${packageAvailable ? '' : ' disabled'} title="Download this artifact as a review package with embedded markdown"><i class="fa-solid fa-box-archive"></i><span>Package</span></button>
+            <button class="tv-btn subtle" data-action="download-share-redirect-html" data-scope="${escapeAttr(item.scope || '')}" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}"${publicFlowDisabled} title="Download a tiny redirect/open-in-browser HTML file"><i class="fa-solid fa-arrow-up-right-from-square"></i><span>Open HTML</span></button>
             <button class="tv-btn subtle" data-action="prepare-share-bookmark" data-scope="${escapeAttr(item.scope || '')}" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}" title="Prepare an exact-view URL for the browser bookmark bar"><i class="fa-regular fa-bookmark"></i><span>Bookmark</span></button>
-            <button class="tv-btn subtle" data-action="native-share-card" data-scope="${escapeAttr(item.scope || '')}" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}" title="Use the browser/system share sheet when available"><i class="fa-solid fa-arrow-up-from-bracket"></i><span>Native</span></button>
+            <button class="tv-btn subtle" data-action="native-share-card" data-scope="${escapeAttr(item.scope || '')}" data-ws="${escapeAttr(modal.wsId || '')}" data-node="${escapeAttr(modal.nodeId || '')}"${publicFlowDisabled} title="Use the browser/system share sheet when available"><i class="fa-solid fa-arrow-up-from-bracket"></i><span>Native</span></button>
           </div>
         </div>
       </div>`;
@@ -33976,6 +34363,66 @@ ${redirectMeta}
     return `${slug.slice(0, 72)}-tiinex-share.html`;
   }
 
+  function shareArtifactForEligibility(item = {}) {
+    const ws = getWorkspace(item.wsId || app.modal?.wsId || '') || getActiveWorkspace?.() || null;
+    if (!ws) return { ws: null, node: null };
+    const node = ws.nodeById?.get?.(item.nodeId || app.modal?.nodeId || '') || selectedNode(ws) || null;
+    return { ws, node };
+  }
+
+  function shareArtifactPackageHtmlDocument(item = {}, options = {}) {
+    const reason = shareClean(options.reason || '');
+    const { ws, node } = shareArtifactForEligibility(item);
+    const title = item.title || node?.title || 'Tiinex artifact package';
+    const raw = nodeMarkdownForIntegrity(node) || node?.rawMarkdown || node?.body || '';
+    const cardHtml = interactionCardPreviewHtml(item, { reason });
+    const created = new Date().toISOString();
+    return `<!doctype html>
+<html lang="${escapeAttr(guessArtifactLanguage(`${title}
+${item.summary || ''}
+${raw.slice(0, 800)}`) || 'en')}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5, user-scalable=yes">
+<title>${escapeHtml(title)} · Tiinex artifact package</title>
+<style>
+  :root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0f0b16;color:#f6f1ff;}
+  body{margin:0;padding:clamp(14px,4vw,42px);background:radial-gradient(circle at 10% 0%,rgba(150,79,255,.22),transparent 42%),#0f0b16;}
+  main{max-width:900px;margin:0 auto;display:grid;gap:24px;}
+  article,section{border:1px solid rgba(202,153,255,.32);border-radius:24px;padding:clamp(16px,3vw,28px);background:rgba(255,255,255,.045);box-shadow:0 24px 80px rgba(0,0,0,.34);}
+  h1,h2,h3{margin-top:0} a{color:#d8b8ff;overflow-wrap:anywhere}.badge-soft,.share-status-chip{border:1px solid rgba(202,153,255,.3);border-radius:999px;padding:4px 10px;font-size:12px;color:#d9c3ff;display:inline-flex;margin:0 6px 8px 0}.share-rendered-question{border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:14px;background:rgba(255,255,255,.035);margin-top:16px}dt{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#b6a5cc}dd{margin:0 0 10px}pre{white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:16px;background:#07040d;max-height:70vh;overflow:auto}.limit{color:#cbbde4;font-size:14px;line-height:1.5}
+</style>
+</head>
+<body>
+<main>
+  ${cardHtml}
+  <section>
+    <h2>Packaged artifact markdown</h2>
+    <p class="limit">This package carries the artifact markdown for private review. It is not publication, preservation, proof, or source mutation by itself. Created ${escapeHtml(created)} from workspace ${escapeHtml(workspaceDisplayLabel(ws) || ws?.id || 'unknown')}.</p>
+    <pre><code>${escapeHtml(raw || 'No artifact markdown was available in this viewer state.')}</code></pre>
+  </section>
+</main>
+</body>
+</html>`;
+  }
+
+  function downloadDraftPackageHtml(item = {}, reason = '') {
+    const html = shareArtifactPackageHtmlDocument(item, { reason });
+    const slug = (typeof slugifyTitle === 'function' ? slugifyTitle(item.title || 'tiinex-artifact-package') : slugify(item.title || 'tiinex-artifact-package')) || 'tiinex-artifact-package';
+    const filename = `${slug.slice(0,72)}-tiinex-artifact-package.html`;
+    downloadText(filename, html, 'text/html;charset=utf-8');
+    showShareActionResult({
+      title: 'Artifact package downloaded',
+      message: `Saved ${filename}. This file carries the selected artifact markdown for review without pretending it has a public origin.`,
+      steps: [
+        'Open the downloaded HTML file to verify the package.',
+        'Send the file by email or another private channel when the artifact is not published yet.',
+        'Publish or bind a public origin later if you want ordinary public links.'
+      ],
+      primaryLabel: 'Done'
+    });
+  }
+
   function downloadShareHtmlCard(item = {}, reason = '') {
     const html = shareCardHtmlDocument(item, { reason });
     const filename = shareHtmlFilename(item);
@@ -34035,7 +34482,7 @@ ${redirectMeta}
   }
 
   async function nativeShareCard(item = {}, reason = '') {
-    const url = item.publicUrl || item.exactUrl || '';
+    const url = sharePrimaryHref(item);
     const text = interactionCardGuestbookText(item, { reason });
     if (!navigator.share) return copyShareText(text, 'System share is unavailable, copied guestbook text instead.', 'System share unavailable and clipboard copy failed.');
     try {
@@ -34071,7 +34518,7 @@ ${redirectMeta}
       schema: 'tiinex.share.compactness.report.v1',
       reasonInputLocation: 'inside rendered interaction card',
       duplicateReasonInput: false,
-      actionLabels: ['Card', 'Comment', 'Link', 'Card HTML', 'Open HTML', 'Bookmark', 'Native'],
+      actionLabels: ['Card', 'Comment', 'Link', 'Card HTML', 'Package', 'Open HTML', 'Bookmark', 'Native'],
       mobileActionLayout: 'grid auto-fit with two-column fallback',
       boundaryDefault: 'collapsed unless dangerous',
       note: 'Share actions remain destination-neutral while keeping public link, card, guestbook, HTML, bookmark, and native share as separate flows.'
@@ -34099,10 +34546,10 @@ ${redirectMeta}
   function sharePolishReadinessReport() {
     return {
       schema: 'tiinex.share.polish.readiness.v1',
-      mobileDialog: 'single-column header, compact scroll body, 2-column action grid at phone widths',
+      mobileDialog: 'single-column header, compact scroll body, 2-column action grid at phone widths; nonpublic artifacts prefer package/bookmark flows',
       closeButton: 'fixed circular icon button inside share modal header',
       guestbookContext: 'question and answer are copied together',
-      htmlVariants: ['presentation card', 'redirect/open-in-browser HTML'],
+      htmlVariants: ['presentation card', 'artifact package', 'redirect/open-in-browser HTML'],
       serverPolling: false
     };
   }
@@ -34113,11 +34560,142 @@ ${redirectMeta}
       for (const node of ws.nodes || []) {
         const schemaId = schemaIdForNode(node);
         if (schemaId !== 'tiinex.evidence.v1') continue;
-        const links = evidenceAttachmentsFromNode(node).filter((item) => item.kind === 'relation');
+        const links = evidenceAttachmentsFromNode(ws, node).filter((item) => item.kind === 'relation');
         if (links.length) rows.push({ workspace: workspaceDisplayLabel(ws) || ws.id, path: node.path || '', title: node.title || '', relationCount: links.length, relations: links.map((item) => ({ relationship: item.relationship, label: item.label, url: item.url })) });
       }
     }
     return { schema: 'tiinex.evidence.relation.attachment.report.v1', rows, warningCount: 0 };
+  }
+
+
+
+  function fieldRegressionReadinessReport() {
+    const wsList = Array.isArray(app.workspaces) ? app.workspaces : [];
+    const material = [];
+    for (const ws of wsList) {
+      for (const node of ws.nodes || []) {
+        for (const ref of nodeMaterialRefs(ws, node)) {
+          if (ref.localAsset || String(ref.localUrl || '').startsWith('blob:')) {
+            material.push({ workspace: ws.label || '', artifact: node.title || node.path || '', ref: ref.label || ref.path || '', localAsset: Boolean(ref.localAsset), previewable: Boolean(ref.localUrl || ref.rawUrl) });
+          }
+        }
+      }
+    }
+    return {
+      schema: 'tiinex.field.publish-readiness.report.v1',
+      cameraPicker: 'single native image picker action; no front/back app choice',
+      mobileActions: 'real card action bar remains visible on mobile; ellipsis sheet is supplemental',
+      localMaterialSourcePolicy: 'local/draft assets do not render Open source links to guessed GitHub URLs',
+      localMaterialCount: material.length,
+      localMaterial: material.slice(0, 25)
+    };
+  }
+
+
+  function valueFirstUxReadinessReport() {
+    const visibleCards = Array.from(document.querySelectorAll('.lineage-post')).slice(0, 12).map((post) => ({
+      title: post.querySelector('.post-title')?.textContent?.trim() || '',
+      actionCount: post.querySelectorAll('.post-actions [data-action], .post-actions a').length,
+      renderedHeight: Math.round(post.getBoundingClientRect?.().height || 0)
+    }));
+    const suspicious = [];
+    for (const ws of app.workspaces || []) {
+      for (const node of ws.nodes || []) {
+        for (const ref of nodeMaterialRefs(ws, node)) {
+          const target = String(ref.href || ref.path || ref.sourceUrl || ref.rawUrl || '');
+          if (isLocalEvidenceAssetPath(target, ref.path || '') && (ref.sourceUrl || ref.rawUrl)) suspicious.push({ workspace: workspaceDisplayLabel(ws) || ws.id, title: node.title || node.path, target, sourceUrl: ref.sourceUrl || ref.rawUrl });
+        }
+      }
+    }
+    return {
+      schema: 'tiinex.value-first-ux.readiness.v1',
+      mobileActionPolicy: 'content first; real actions compact and horizontally available; no full-width boilerplate rows',
+      localAssetPolicy: 'local/draft asset paths never resolve to guessed GitHub source URLs',
+      visibleCards,
+      suspiciousLocalAssetSources: suspicious,
+      suspiciousCount: suspicious.length
+    };
+  }
+
+  function previewInspectionReadinessReport() {
+    const modal = app.modal?.type === 'material-lightbox' ? app.modal : null;
+    return {
+      schema: 'tiinex.preview.inspection-readiness.v1',
+      active: Boolean(modal),
+      zoomMode: modal?.zoomMode || 'fit',
+      fitMode: 'fit-contain inside viewport',
+      inspectionMode: '1:1 / pan uses scrollable lightbox body and keeps image aspect ratio',
+      mobilePolicy: 'fullscreen-ish modal, compact header, zoom controls in footer, no crop-by-default',
+      pinchZoomViewport: document.querySelector('meta[name="viewport"]')?.getAttribute('content') || ''
+    };
+  }
+
+  function displayOptionsMobileReadinessReport() {
+    return {
+      schema: 'tiinex.display-options.mobile-readiness.v1',
+      pickerPolicy: 'schema/artifact picker cards collapse to one clean column on phone width',
+      filterChips: 'all chips are secondary and placed below the select, never floating over it',
+      timePortal: 'date inputs and buttons collapse without horizontal overflow',
+      desktopImpact: 'desktop rules are unchanged except shared min-width safety'
+    };
+  }
+
+  function evidenceInlinePreviewReadinessReport() {
+    const rows = [];
+    for (const ws of app.workspaces || []) {
+      for (const node of ws.nodes || []) {
+        if (String(node.currentSchemaText || node.currentSchema || '') !== 'tiinex.evidence.v1') continue;
+        const refs = evidenceInlineImageRefs(ws, node);
+        rows.push({
+          workspace: workspaceDisplayLabel(ws) || ws.id,
+          title: node.title || node.path || '',
+          imageCount: refs.length,
+          inlinePreview: refs.length > 0,
+          materialRefCount: (nodeMaterialRefs(ws, node) || []).length,
+          images: refs.map((ref) => ({ label: ref.label || ref.path || '', kind: ref.kind || '', path: ref.path || '', localAsset: Boolean(ref.localAsset), localMissingAsset: Boolean(ref.localMissingAsset), hasPreviewSource: Boolean(ref.localUrl || ref.rawUrl || ref.sourceUrl) }))
+        });
+      }
+    }
+    return { schema: 'tiinex.evidence.inline-preview.readiness.v1', rows, warningCount: rows.filter((row) => row.imageCount && !row.inlinePreview).length };
+  }
+
+  function evidenceLocalAssetPersistenceReport() {
+    const rows = [];
+    for (const ws of app.workspaces || []) {
+      for (const asset of Array.from(ws.assets?.values?.() || [])) {
+        const path = asset.path || asset.name || '';
+        if (!/(?:^|\/)assets\//i.test(path) && !/\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(path)) continue;
+        rows.push({ workspace: workspaceDisplayLabel(ws) || ws.id, path, type: asset.type || '', size: asset.size || 0, persistent: typeof asset.content === 'string' && /^data:/i.test(asset.content), hasBlob: Boolean(asset.blob), hasPreview: Boolean(assetObjectUrl(ws, asset)) });
+      }
+    }
+    return { schema: 'tiinex.evidence.local-asset.persistence.report.v1', rows, persistentCount: rows.filter((row) => row.persistent).length, warningCount: rows.filter((row) => !row.persistent).length };
+  }
+
+  function evidenceAssetRoundtripReport() {
+    const rows = [];
+    for (const ws of app.workspaces || []) {
+      for (const node of ws.nodes || []) {
+        if (schemaIdForNode(node) !== 'tiinex.evidence.v1') continue;
+        const attachments = evidenceAttachmentsFromNode(ws, node);
+        const files = attachments.filter((item) => item.kind === 'file');
+        const suspiciousUrls = attachments.filter((item) => item.kind === 'url' && /^(assets|_assets)(?:\/|$)/i.test(String(item.url || '')));
+        if (files.length || suspiciousUrls.length) {
+          rows.push({
+            workspace: workspaceDisplayLabel(ws) || ws.id,
+            title: node.title || node.path || '',
+            path: node.path || '',
+            recoveredFiles: files.map((item) => ({ label: item.label || item.name || '', path: item.path || '', hasLocalAsset: Boolean(item.localAsset), hasPreview: Boolean(item.previewUrl || item.localAsset || item.file) })),
+            suspiciousUrls: suspiciousUrls.map((item) => item.url || item.label || '')
+          });
+        }
+      }
+    }
+    return {
+      schema: 'tiinex.evidence.asset-roundtrip.report.v1',
+      rows,
+      warningCount: rows.reduce((sum, row) => sum + row.suspiciousUrls.length, 0),
+      policy: 'local evidence image links recover as file/image attachments; bare assets URLs are suspicious and should not be treated as web sources'
+    };
   }
 
 
@@ -34126,8 +34704,8 @@ ${redirectMeta}
     return {
       schema: 'tiinex.evidence.camera.capture.report.v1',
       active: evidenceWizardActive(),
-      nativeCaptureInputs: 3,
-      facingModes: ['environment', 'user', 'gallery'],
+      nativeCaptureInputs: 1,
+      facingModes: ['native-picker'],
       alwaysVisibleAction: true,
       gracefulFallback: 'camera button remains visible on desktop; browser falls back to image picker when native capture is unavailable',
       implementation: 'native file input accept=image/* with capture hints; no camera stream kept open',
@@ -34207,6 +34785,13 @@ ${redirectMeta}
       const reason = shareReasonFromPanel(event.currentTarget);
       return downloadShareHtmlCard(item, reason);
     }
+    if (action === 'download-draft-package-html') {
+      event.preventDefault();
+      event.stopPropagation();
+      const item = shareEligibilityForEvent(event);
+      const reason = shareReasonFromPanel(event.currentTarget);
+      return downloadDraftPackageHtml(item, reason);
+    }
     if (action === 'download-share-redirect-html') {
       event.preventDefault();
       event.stopPropagation();
@@ -34239,6 +34824,89 @@ ${redirectMeta}
     app.shareReasonLivePreviewBound = true;
   }
 
+
+
+
+  function mobileActionLayoutReadinessReport() {
+    const visiblePosts = Array.from(document.querySelectorAll('.lineage-post')).slice(0, 12);
+    return {
+      schema: 'tiinex.mobile.action-layout.report.v2',
+      actionOwner: 'mobile-card-action-rail',
+      policy: 'desktop .post-actions is hidden on mobile; mobile cards render a separate compact primary rail plus secondary More sheet',
+      visiblePostCount: visiblePosts.length,
+      rows: visiblePosts.map((post) => {
+        const rail = post.querySelector('.mobile-card-action-rail');
+        return {
+          title: post.querySelector('.post-title')?.textContent?.trim() || '',
+          hasRail: Boolean(rail),
+          primaryCount: Number(rail?.dataset?.primaryCount || 0),
+          secondaryCount: Number(rail?.dataset?.secondaryCount || 0),
+          desktopActionsHiddenCandidate: Boolean(post.querySelector('.desktop-post-actions')),
+          railActions: Array.from(post.querySelectorAll('.mobile-card-action-rail [data-action], .mobile-card-action-rail a')).map((el) => el.getAttribute('data-action') || el.getAttribute('title') || el.textContent.trim()).filter(Boolean)
+        };
+      })
+    };
+  }
+
+  function evidencePreviewReadinessReport() {
+    return {
+      schema: 'tiinex.evidence.preview-readiness.report.v1',
+      overlayOpen: Boolean(app.evidencePreviewAttachmentId),
+      policy: 'fit complete image inside viewport without cropping; close is handled by document-level action delegation; browser pinch zoom is not disabled by viewport meta',
+      viewportMeta: document.querySelector('meta[name="viewport"]')?.getAttribute('content') || '',
+      hasGlobalPreviewCloseHandler: true
+    };
+  }
+
+  function routeReuseReadinessReport() {
+    const target = parseHashShareTarget(location.hash || '') || app.activePublicShareTarget || null;
+    return {
+      schema: 'tiinex.route.reuse-readiness.report.v1',
+      activeHashTarget: target,
+      reusableWorkspace: target ? Boolean(existingWorkspaceForPublicHashTarget(target)) : false,
+      sourceSignature: currentSourcesSignature(),
+      policy: 'back/forward to already-loaded public hash targets reuses workspace instead of clearing and re-running discovery'
+    };
+  }
+
+
+  function mobileActionOwnershipReport() {
+    const rows = Array.from(document.querySelectorAll('.lineage-post')).slice(0, 20).map((post) => ({
+      title: post.querySelector('.post-title')?.textContent?.trim() || '',
+      rail: Boolean(post.querySelector('.mobile-card-action-rail')),
+      desktopPostActions: Boolean(post.querySelector('.desktop-post-actions')),
+      railPrimaryCount: Number(post.querySelector('.mobile-card-action-rail')?.dataset?.primaryCount || 0),
+      railSecondaryCount: Number(post.querySelector('.mobile-card-action-rail')?.dataset?.secondaryCount || 0)
+    }));
+    return {
+      schema: 'tiinex.mobile.action-ownership.report.v1',
+      owner: 'mobile-card-action-rail',
+      desktopActionBarHiddenOnMobile: true,
+      rows,
+      warningCount: rows.filter((row) => !row.rail).length
+    };
+  }
+
+  function publishReadyShareBoundaryReport() {
+    const active = shareEligibilityForActive();
+    return {
+      schema: 'tiinex.share.publish-boundary.report.v1',
+      activeStatus: active.status,
+      publicLinkEnabled: Boolean(active.publicUrl),
+      primaryHref: sharePrimaryHref(active),
+      draftPackageAvailable: active.scope === 'artifact' || Boolean(active.nodeId),
+      plainShareUsesExactViewByDefault: false,
+      policy: 'public link/native/open-html require public or access-bound origin; local drafts use bookmark/private package/review flows instead of pretending Tiinex viewer alone is a public origin'
+    };
+  }
+
+  window.TiinexDiagnostics = Object.assign(window.TiinexDiagnostics || {}, {
+    mobileActionLayoutReadinessReport,
+    mobileActionOwnershipReport,
+    evidencePreviewReadinessReport,
+    routeReuseReadinessReport,
+    publishReadyShareBoundaryReport
+  });
 
 
 })();
