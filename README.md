@@ -1,16 +1,19 @@
-# CP334 — mobile density, lifecycle responsiveness, and GitHub issue binding
+# CP335 — mobile chrome reclaim without blank spacer
 
-CP334 follows CP333 after video review showed three remaining trust/UX gaps:
-
-- mobile feed action buttons kept good width but still consumed too much vertical card space;
-- mobile Chrome/tab/app switching could briefly freeze because lifecycle handlers synchronously serialized local workspace state on pagehide/beforeunload;
-- Update known issue verification found the target, but local publication binding still treated non-comment issue updates like comment publication, allowing local draft shadows and imported issue bodies to coexist.
+CP335 follows CP334 after field testing showed mobile chrome/header fading out but leaving a blank spacer before the first feed card.
 
 Changes:
 
-- Mobile card action rails keep their current width distribution but reduce height, padding, radius, and icon size.
-- Lifecycle leave now performs only a lightweight scroll/lens flush; durable local edits remain saved at mutation/save boundaries instead of doing a heavy synchronous localStorage serialization during app/tab switches.
-- GitHub export publication binding treats `Update known issue` / existing-issue updates as issue-body bindings, not comment bindings.
-- Added diagnostics: `TiinexDiagnostics.lifecycleResponsivenessReport()` and `TiinexDiagnostics.githubExportBindingReport()`.
+- Mobile reading mode now collapses transient source/mode/feed toolbar rows instead of keeping their reserved slot.
+- The workspace title row remains reachable near the top, but when reading it is compact and does not preserve the old source-row spacer.
+- First feed/lineage cards reclaim the released vertical space.
+- Build identity updated to `CP335-mobile-chrome-reclaim`.
 
-Validation signal: `node --check app.js`, `npm run build:public`, `npm run public:check`, `node --check .site-publish/tiinex.bundle.js`, `npm run metrics`, and `npm run storage:scan`.
+Validation gate:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`

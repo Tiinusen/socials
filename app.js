@@ -112,9 +112,9 @@
   };
 
   const TIINEX_APP_BUILD = Object.freeze({
-    release: '334',
-    codename: 'mobile-density-lifecycle-export-binding',
-    packageName: 'tiinex-site-334-clean-repo',
+    release: '335',
+    codename: 'mobile-chrome-reclaim',
+    packageName: 'tiinex-site-335-clean-repo',
     builtFor: 'Tiinex/site source repo',
     publicBuildOutputExcluded: true
   });

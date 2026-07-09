@@ -22843,3 +22843,70 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
     max-height: 1.72rem !important;
   }
 }
+
+/* CP335: hidden mobile chrome must not leave a blank spacer.
+   Source/mode rows were intentionally stable in CP329, but after Feed/Tree moved
+   into the workspace title row that stability became empty vertical space while
+   reading. Collapse the now-transient rows only in mobile reading/compact state;
+   near-top mode still keeps the source/title controls reachable. */
+@media (max-width: 640px) {
+  body.mobile-reading .mobile-source-mode-row,
+  body.mobile-reading .workspace-source-strip,
+  body.mobile-reading .source-strip-stable,
+  body.mobile-reading .feed-toolbar.mobile-tools-only,
+  body.mobile-reading .feed-toolbar.discovery.mobile-tools-only,
+  body.mobile-reading .feed-toolbar.lineage.mobile-tools-only,
+  body.mobile-reading .workspace-policy-foundation,
+  body.mobile-reading .workspace-policy-shell,
+  body.mobile-reading .policy-note.workspace-policy-foundation {
+    display: none !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    max-height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    opacity: 0 !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
+  }
+
+  body.mobile-reading .workspace-strip.mobile-title-mode-row {
+    height: 2.12rem !important;
+    min-height: 2.12rem !important;
+    max-height: 2.12rem !important;
+    padding-top: 0.32rem !important;
+    padding-bottom: 0.32rem !important;
+    border-bottom-width: 0 !important;
+  }
+
+  body.mobile-reading .workspace,
+  body.mobile-reading .workspace.workspace-shell,
+  body.mobile-reading .workspace.workspace-foundation {
+    gap: 0 !important;
+  }
+
+  body.mobile-reading .post-feed.discovery,
+  body.mobile-reading .post-feed.lineage,
+  body.mobile-reading .post-feed {
+    padding-top: 0.18rem !important;
+  }
+
+  body.mobile-reading .post-feed > .lineage-post:first-child,
+  body.mobile-reading .post-feed > .lineage-search-legend:first-child + .lineage-post,
+  body.mobile-reading .post-feed > .discovery-window-loader:first-child + .lineage-post {
+    margin-top: 0 !important;
+  }
+
+  .workspace.mobile-chrome-compact .mobile-source-mode-row:not(:has(.feed-mode)),
+  .workspace.mobile-chrome-compact .mobile-source-mode-row:has(.workspace-source-strip):not(:has(.workspace-source-pill:not([hidden]))) {
+    display: none !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    max-height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    overflow: hidden !important;
+  }
+}
