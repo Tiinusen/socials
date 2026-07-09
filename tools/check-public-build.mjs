@@ -32,12 +32,13 @@ try {
   const bundlePath = join(out, 'tiinex.bundle.js');
   const stylesPath = join(out, 'styles.css');
 
-  for (const required of [indexPath, bundlePath, stylesPath, join(out, '.nojekyll'), join(out, 'assets'), join(out, '.topics'), join(out, 'samples'), join(out, 'llms.txt'), join(out, 'tiinex.app.llm.v1.md'), join(out, 'favicon.ico')]) {
+  for (const required of [indexPath, bundlePath, stylesPath, join(out, '.nojekyll'), join(out, 'assets'), join(out, '.topics'), join(out, 'samples'), join(out, 'llms.txt'), join(out, 'tiinex.app.llm.v1.md'), join(out, 'favicon.ico'), join(out, 'CNAME')]) {
     if (!existsSync(required)) fail(`Missing public build output: ${required}`);
   }
 
   if (existsSync(indexPath)) {
     const html = read(indexPath);
+    if (!html.includes('tiinex:build-id') || !html.includes('CP328-route-render-placement-foundation')) fail('public index must include CP328 build identity meta.');
     const localScripts = [...html.matchAll(/<script\s+src=["']\.\/[^"']+\.js["']><\/script>/gu)].map((match) => match[0]);
     if (localScripts.length !== 1 || !localScripts[0].includes('tiinex.bundle.js')) {
       fail(`public index must load exactly one local JS bundle, found: ${localScripts.join(', ') || 'none'}`);
@@ -51,6 +52,7 @@ try {
     const syntax = spawnSync(process.execPath, ['--check', bundlePath], { encoding: 'utf8' });
     if (syntax.status !== 0) fail(`node --check public bundle failed:\n${syntax.stderr || syntax.stdout}`.trim());
     const bundle = read(bundlePath);
+    if (!bundle.includes("release: '328'") || !bundle.includes('buildIdentityReport') || !bundle.includes('routeLoadPresentationReport')) fail('public bundle must include release 328 build and route-load diagnostics.');
     const sections = [
       'src/app/core-runtime.js',
       'src/app/services-runtime.js',
@@ -80,6 +82,7 @@ try {
   console.log('✓ public build creates bundled site');
   console.log('✓ public index loads one local app bundle');
   console.log('✓ public bundle syntax and section order are valid');
+  console.log('✓ public build preserves CNAME, favicon, and CP328 build identity');
 } finally {
   rmSync(tmpRoot, { recursive: true, force: true });
 }

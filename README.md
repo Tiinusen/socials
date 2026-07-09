@@ -1,3 +1,28 @@
+# CP328 — route/render truth + placement foundation
+
+CP328 follows CP327 after field testing showed the browser had no trustworthy build identity signal and `routeLoadPresentationReport()` could be missing in deployed code. The primary goal is to make route-owned startup/back behavior observable and to seed artifact storage placement without starting the full Move/Rewire feature yet.
+
+Changes:
+
+- Added `TiinexDiagnostics.buildIdentityReport()` so field tests can prove which source bundle is actually running.
+- Expanded `TiinexDiagnostics.routeLoadPresentationReport()` into a session-based report with render events and content-clear tracking.
+- Route restore now records whether it reused, refreshed in place, or destructively recreated workspaces.
+- Route-owned GitHub source loads suppress intermediate issue/status renders so repo material does not flash as complete before configured issue surfaces finish.
+- Added `TiinexDiagnostics.parentOriginContinuityReport()` to expose unresolved parent/origin edges such as orphaned “Awaiting response” leaves.
+- Added `TiinexDiagnostics.artifactPlacementReadinessReport()` and a wizard path/folder preview. Continuity parent and storage path are now visible as separate concerns before save.
+- Child artifacts default their storage folder from the parent artifact folder unless the user overrides the folder.
+- Public build checks now require CNAME, favicon, build identity meta, and route-load diagnostics in the bundle.
+- Clean repo zip format is repo-root direct: no `site/` wrapper, no duplicate `work_cp*` folder, no `.git`, `.site-publish`, `.nojekyll`, or `tiinex.bundle.js`.
+
+Manual checks requested:
+
+1. Replace repo root from the clean zip while preserving `.git/`.
+2. Publish and confirm `TiinexDiagnostics.buildIdentityReport()` reports release `328`.
+3. Open a shared `#state` link and confirm the route-load report is present, not `null`.
+4. On mobile, swipe back/forward and confirm content is not cleared when source signatures match.
+5. Open an artifact wizard from a parent and confirm Folder + Path preview defaults to the parent folder.
+6. Run `TiinexDiagnostics.parentOriginContinuityReport()` and inspect unresolved parent edges before doing any manual repair.
+
 # CP327 — single startup progress + favicon
 
 CP327 follows CP326 after field testing showed `bootFromUrl` was only called once, but the route-owned GitHub source load still looked like two loads: repo material rendered once, then the configured issue/social surface continued and the user saw loading return. The app also lacked a favicon, causing `/favicon.ico` 404s.

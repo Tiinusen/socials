@@ -110,6 +110,100 @@
     openOriginalShadows: {}
   };
 
+  const TIINEX_APP_BUILD = Object.freeze({
+    release: '328',
+    codename: 'route-render-placement-foundation',
+    packageName: 'tiinex-site-328-clean-repo',
+    builtFor: 'Tiinex/site source repo',
+    publicBuildOutputExcluded: true
+  });
+
+  app.routeLoadPresentation = app.routeLoadPresentation || { sessions: [], active: null, renderEvents: [], contentClears: 0 };
+
+  function tiinexBuildIdentity() {
+    return Object.assign({}, TIINEX_APP_BUILD, {
+      href: location.href,
+      diagnosticsRegistered: Boolean(window.TiinexDiagnostics?.buildIdentityReport)
+    });
+  }
+
+  function routeLoadPresentationEnsure() {
+    app.routeLoadPresentation = app.routeLoadPresentation || { sessions: [], active: null, renderEvents: [], contentClears: 0 };
+    app.routeLoadPresentation.sessions = Array.isArray(app.routeLoadPresentation.sessions) ? app.routeLoadPresentation.sessions : [];
+    app.routeLoadPresentation.renderEvents = Array.isArray(app.routeLoadPresentation.renderEvents) ? app.routeLoadPresentation.renderEvents : [];
+    return app.routeLoadPresentation;
+  }
+
+  function routeLoadPresentationStart(reason = 'route-load', details = {}) {
+    const state = routeLoadPresentationEnsure();
+    if (state.active && !state.active.completedAt) {
+      state.active.stages.push({ at: new Date().toISOString(), phase: 'reuse-active', reason, details });
+      return state.active;
+    }
+    const session = {
+      id: `route-load-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      reason,
+      startedAt: new Date().toISOString(),
+      completedAt: '',
+      beforeWorkspaceCount: app.workspaces?.length || 0,
+      beforeActiveWorkspaceId: app.activeWorkspaceId || '',
+      contentCleared: false,
+      suppressIntermediateRender: Boolean(details.suppressIntermediateRender),
+      routeSourcesSignature: details.routeSourcesSignature || '',
+      currentSourcesSignature: details.currentSourcesSignature || '',
+      stages: [{ at: new Date().toISOString(), phase: 'start', reason, details }]
+    };
+    state.active = session;
+    state.sessions.push(session);
+    while (state.sessions.length > 20) state.sessions.shift();
+    return session;
+  }
+
+  function routeLoadPresentationStage(phase = 'stage', details = {}) {
+    const state = routeLoadPresentationEnsure();
+    if (!state.active || state.active.completedAt) return null;
+    state.active.stages.push({ at: new Date().toISOString(), phase, details });
+    while (state.active.stages.length > 80) state.active.stages.shift();
+    return state.active;
+  }
+
+  function routeLoadPresentationContentClear(reason = 'unknown') {
+    const state = routeLoadPresentationEnsure();
+    state.contentClears += 1;
+    const session = state.active && !state.active.completedAt ? state.active : routeLoadPresentationStart('content-clear-without-active-route-load', {});
+    session.contentCleared = true;
+    session.stages.push({ at: new Date().toISOString(), phase: 'content-clear', reason, beforeWorkspaceCount: app.workspaces?.length || 0 });
+  }
+
+  function routeLoadPresentationComplete(reason = 'complete', details = {}) {
+    const state = routeLoadPresentationEnsure();
+    if (!state.active || state.active.completedAt) return null;
+    state.active.completedAt = new Date().toISOString();
+    state.active.afterWorkspaceCount = app.workspaces?.length || 0;
+    state.active.afterActiveWorkspaceId = app.activeWorkspaceId || '';
+    state.active.stages.push({ at: state.active.completedAt, phase: reason, details });
+    const done = state.active;
+    state.active = null;
+    return done;
+  }
+
+  function routeLoadPresentationRender(reason = 'render') {
+    const state = routeLoadPresentationEnsure();
+    const event = {
+      at: new Date().toISOString(),
+      reason,
+      activeSessionId: state.active?.id || '',
+      workspaceCount: app.workspaces?.length || 0,
+      loadingWorkspaces: (app.workspaces || []).filter((ws) => ws?.loading || ws?.discoveryProgress).length,
+      activeWorkspaceId: app.activeWorkspaceId || ''
+    };
+    state.renderEvents.push(event);
+    while (state.renderEvents.length > 40) state.renderEvents.shift();
+    if (state.active && !state.active.completedAt) state.active.stages.push(Object.assign({ phase: 'render' }, event));
+    return event;
+  }
+
+
   const STORAGE_KEYS = Object.freeze({
     authors: 'tiinex.viewer.authors',
     localWorkspaceRegistry: 'tiinex.localWorkspace.registry',
@@ -651,13 +745,38 @@
     };
   }
 
-  function routeLoadPresentationReport() {
+  function buildIdentityReport() {
     return {
-      schema: 'tiinex.route-load-presentation.report.v1',
-      policy: 'route-owned startup keeps one continuous progress presentation until repo and configured issue surfaces finish; intermediate repo completion must not flash content and restart loading',
+      schema: 'tiinex.build-identity.report.v1',
+      identity: tiinexBuildIdentity(),
+      appMarker: `${TIINEX_APP_BUILD.release}:${TIINEX_APP_BUILD.codename}`,
+      diagnostics: Object.keys(window.TiinexDiagnostics || {}).sort().filter((key) => /Report$|Summary$|Json$/.test(key)).slice(0, 120),
+      requiredDiagnosticsPresent: [
+        'buildIdentityReport',
+        'routeLoadPresentationReport',
+        'routeAndLocalStateContinuityReport',
+        'startupRouteInitReport',
+        'githubRepoFetchSummary',
+        'parentOriginContinuityReport',
+        'artifactPlacementReadinessReport'
+      ].every((key) => typeof window.TiinexDiagnostics?.[key] === 'function')
+    };
+  }
+
+  function routeLoadPresentationReport() {
+    const state = routeLoadPresentationEnsure();
+    return {
+      schema: 'tiinex.route-load-presentation.report.v2',
+      build: tiinexBuildIdentity(),
+      policy: 'route-owned startup keeps one continuous progress presentation until repo and configured issue surfaces finish; existing matching workspaces must stay visible on back/swipe and intermediate source phases must not flash complete content then restart loading',
+      active: state.active || null,
+      sessions: state.sessions.slice(-8),
+      renderEvents: state.renderEvents.slice(-16),
+      contentClears: state.contentClears || 0,
       routeBoot: app.startupBoot || {},
       routing: app.routing?.lastApplyRouteState || null,
       workspaces: (app.workspaces || []).map((ws) => ({
+        id: ws.id || '',
         label: ws.label || '',
         repo: ws.repo || '',
         ref: ws.ref || '',
@@ -668,6 +787,79 @@
         files: ws.files?.size || 0,
         selected: Boolean(ws.selectedNodeId || ws.pendingSelectedRoute)
       }))
+    };
+  }
+
+  function candidateParentContinuityMatches(ws, node, limit = 5) {
+    const href = String(node?.parentHref || node?.parentResolvedPath || '').toLowerCase();
+    const title = String(node?.title || '').toLowerCase();
+    const dir = dirname(node?.path || '');
+    return (ws?.nodes || [])
+      .filter((candidate) => candidate && candidate.id !== node?.id)
+      .map((candidate) => {
+        let score = 0;
+        const cPath = String(candidate.path || '').toLowerCase();
+        const cTitle = String(candidate.title || '').toLowerCase();
+        if (href && cPath && href.includes(cPath)) score += 5;
+        if (href && cTitle && href.includes(cTitle)) score += 3;
+        if (dir && dirname(candidate.path || '') === dir) score += 1;
+        if (title && cTitle && title.includes(cTitle)) score += 1;
+        return { score, title: candidate.title || '', path: candidate.path || '', id: candidate.id || '' };
+      })
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+      .slice(0, limit);
+  }
+
+  function parentOriginContinuityReport() {
+    const unresolved = [];
+    const resolved = [];
+    for (const ws of app.workspaces || []) {
+      for (const node of ws.nodes || []) {
+        const hasParentSignal = Boolean(node.parentHref || node.parentResolvedPath || node.parentSchema || node.parentSchemaText);
+        if (!hasParentSignal) continue;
+        const row = {
+          workspace: workspaceDisplayLabel(ws),
+          wsId: ws.id || '',
+          title: node.title || '',
+          path: node.path || '',
+          parentHref: node.parentHref || '',
+          parentResolvedPath: node.parentResolvedPath || '',
+          parentResolved: Boolean(node.parentNode),
+          candidates: node.parentNode ? [] : candidateParentContinuityMatches(ws, node)
+        };
+        (row.parentResolved ? resolved : unresolved).push(row);
+      }
+    }
+    return {
+      schema: 'tiinex.parent-origin-continuity.report.v1',
+      policy: 'broken parent/origin edges must be visible and repairable before Move/Rewire rewrites continuity; candidate parents are suggestions, not automatic repairs',
+      unresolvedCount: unresolved.length,
+      resolvedCount: resolved.length,
+      unresolved: unresolved.slice(0, 40),
+      resolvedSample: resolved.slice(0, 12)
+    };
+  }
+
+  function artifactPlacementReadinessReport() {
+    const modal = app.modal?.type === 'artifact-wizard' ? app.modal : null;
+    const ws = modal ? getWorkspace(modal.wsId) : getActiveWorkspace();
+    const selected = modal ? schemaOptionById(modal.schemaId || 'tiinex.topic.v1') : null;
+    const title = modal && selected ? defaultWizardTitle(ws, modal, selected) : '';
+    const path = modal && ws && selected ? wizardPathFor(ws, modal, selected, title) : '';
+    const parent = modal ? wizardNodeById(ws, modal.parentNodeId) : null;
+    return {
+      schema: 'tiinex.artifact-placement-readiness.report.v1',
+      policy: 'continuity edge and storage placement are separate; create defaults to current workspace and parent folder while exposing folder/path before save',
+      activeWizard: Boolean(modal),
+      workspace: ws ? workspaceDisplayLabel(ws) : '',
+      mode: modal?.mode || '',
+      schemaId: modal?.schemaId || '',
+      parent: parent ? { title: parent.title || '', path: parent.path || '' } : null,
+      folderPath: modal ? defaultArtifactFolder(ws, modal) : '',
+      pathPreview: path,
+      crossWorkspacePlacementReady: true,
+      moveRewireReady: false
     };
   }
 
@@ -717,6 +909,7 @@
   }
 
   window.TiinexDiagnostics = Object.assign(window.TiinexDiagnostics || {}, {
+    buildIdentityReport: () => buildIdentityReport(),
     githubIssueImportTrace: () => githubIssueImportTraceEnsure().slice(),
     githubIssueImportTraceJson,
     clearGithubIssueImportTrace,
@@ -736,6 +929,8 @@
     parseHashShareTarget: (hash = location.hash) => parseHashShareTarget(hash),
     startupRouteInitReport: () => startupRouteInitReport(),
     routeLoadPresentationReport: () => routeLoadPresentationReport(),
+    parentOriginContinuityReport: () => parentOriginContinuityReport(),
+    artifactPlacementReadinessReport: () => artifactPlacementReadinessReport(),
     configuredPublicViewerBaseUrl: () => configuredPublicViewerBaseUrl(),
     shareEligibilityForActive: () => shareEligibilityForActive(),
     shareEligibilityForWorkspace: (wsId = '') => shareEligibilityForWorkspaceId(wsId),
@@ -3884,18 +4079,35 @@
     if (!state || !Array.isArray(state.sources)) return false;
     app.routing.restoring = true;
     app.isBootingFromUrl = true;
+    let routeLoadSession = null;
     try {
       const sourcesMatch = routeSourcesMatch(state);
       const reuseInPlace = !sourcesMatch && routeSourcesReusableInPlace(state);
+      const routeOwnedStartup = Boolean(!sourcesMatch && !reuseInPlace && !app.workspaces.length);
+      const destructiveRouteReload = Boolean(!sourcesMatch && !reuseInPlace && app.workspaces.length);
       app.routing.lastApplyRouteState = {
         at: new Date().toISOString(),
         recreateRequested: Boolean(recreate),
         sourcesMatch,
         reuseInPlace,
-        routeOwnedStartup: Boolean(!sourcesMatch && !reuseInPlace && !app.workspaces.length),
+        routeOwnedStartup,
+        destructiveRouteReload,
         routeSources: Array.isArray(state.sources) ? state.sources.length : 0,
         currentWorkspaces: app.workspaces.length
       };
+      if (!sourcesMatch || recreate || routeOwnedStartup) {
+        routeLoadSession = routeLoadPresentationStart(routeOwnedStartup ? 'route-owned-startup' : (reuseInPlace ? 'route-reuse-refresh' : 'route-recreate'), {
+          suppressIntermediateRender: routeOwnedStartup || reuseInPlace,
+          recreate: Boolean(recreate),
+          sourcesMatch,
+          reuseInPlace,
+          routeOwnedStartup,
+          routeSourcesSignature: routeSourcesSignature(state),
+          currentSourcesSignature: currentSourcesSignature()
+        });
+      } else {
+        routeLoadPresentationStage('route-view-restore-no-source-load', { sourcesMatch, recreate: Boolean(recreate) });
+      }
 
       if (sourcesMatch && !recreate) {
         state.sources.forEach((source, index) => applyViewStateToWorkspace(app.workspaces[index], source));
@@ -3920,17 +4132,20 @@
         if (ordered.length) app.workspaces = ordered.concat(app.workspaces.filter((ws) => !used.has(ws.id)));
         routeOwnerRecord('route:reuse-in-place', app.routing.lastApplyRouteState);
       } else {
+        if (app.workspaces.length) routeLoadPresentationContentClear('apply-route-state-recreate');
         app.workspaces = [];
         app.activeWorkspaceId = null;
         app.workspaceOffset = 0;
         for (const source of state.sources) {
           const ws = createWorkspace(source.label || 'Shared lineage workspace', 'Loaded from URL route state.');
+          routeLoadPresentationStage('route-source-load-start', { kind: source.kind || '', label: source.label || '', repo: source.repo || '' });
           if (source.kind === 'github-tree' || source.kind === 'github') {
             await loadGitHubStateSourceIntoWorkspace(ws, source, { routeOwnedStartup: true });
           } else {
             await loadUrlsIntoWorkspace(ws, source.urls || []);
           }
           applyViewStateToWorkspace(ws, source);
+          routeLoadPresentationStage('route-source-load-applied', { workspaceId: ws.id, nodes: ws.nodes?.length || 0, files: ws.files?.size || 0 });
         }
       }
 
@@ -3940,10 +4155,14 @@
       app.activeWorkspaceId = app.workspaces[activeIndex]?.id || app.workspaces[0]?.id || null;
       app.workspaceOffset = Math.max(0, Math.min(Number(state.workspaceOffset || activeIndex || 0), maxOffset));
       applyRouteModalState(state.modal || null);
+      if (routeLoadSession) routeLoadPresentationComplete('route-apply-complete', { activeWorkspaceId: app.activeWorkspaceId || '', workspaceCount: app.workspaces.length });
       return true;
     } finally {
       app.routing.restoring = false;
       app.isBootingFromUrl = false;
+      if (routeLoadSession && routeLoadPresentationEnsure().active?.id === routeLoadSession.id) {
+        routeLoadPresentationComplete('route-apply-finally-complete', { workspaceCount: app.workspaces.length });
+      }
     }
   }
 
@@ -10617,7 +10836,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     // Save/source-edit owns disabling surfaces and has its own pruning path.
     if (options.allowSurfaceDisable) applyGitHubSourceSurfacePruning(ws, githubSource, enabledSurfaces, false);
     const progressScope = options.userInitiated || options.refreshExisting || options.hardRefresh || options.routeOwnedStartup ? 'github-source-refresh' : '';
+    const routeOwnedProgress = Boolean(options.routeOwnedStartup);
+    const issueRenderStatus = !routeOwnedProgress;
     const keepProgressForIssueStage = Boolean(progressScope && enabledSurfaces.repoFiles && enabledSurfaces.issues && typeof discoverGitHubIssuesIntoWorkspace === 'function');
+    if (routeOwnedProgress) routeLoadPresentationStage('github-source-load-start', { repo: normalizedSource.repo, ref: normalizedSource.ref || '', rootPaths });
     if (enabledSurfaces.repoFiles && typeof discoverGitHubRepoIntoWorkspace === 'function') {
       await discoverGitHubRepoIntoWorkspace(ws, {
         repo: normalizedSource.repo,
@@ -10631,6 +10853,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         sourceProgress: progressScope,
         keepDiscoveryProgress: keepProgressForIssueStage
       });
+      if (routeOwnedProgress) routeLoadPresentationStage('github-repo-files-loaded', { files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
     } else {
       ws.repo = normalizedSource.repo;
       if (normalizedSource.ref) ws.ref = normalizedSource.ref;
@@ -10647,8 +10870,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           userInitiated: Boolean(options.userInitiated),
           discoveryProgress: Boolean(progressScope),
           sourceProgress: progressScope,
-          renderStatus: true
+          renderStatus: issueRenderStatus
         });
+        if (routeOwnedProgress) routeLoadPresentationStage('github-explicit-issues-loaded', { issueTargets: explicitIssueTargets.length, files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
       }
       if (enabledSurfaces.issues) {
         await discoverGitHubIssuesIntoWorkspace(ws, githubSource, [], {
@@ -10658,8 +10882,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           userInitiated: Boolean(options.userInitiated),
           discoveryProgress: Boolean(progressScope),
           sourceProgress: progressScope,
-          renderStatus: true
+          renderStatus: issueRenderStatus
         });
+        if (routeOwnedProgress) routeLoadPresentationStage('github-broad-issues-loaded', { files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
       }
     }
     if (progressScope) {
@@ -10674,6 +10899,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       ws.loading = false;
       ws.discoveryProgress = null;
       if (typeof render === 'function') render();
+      if (routeOwnedProgress) routeLoadPresentationStage('github-source-load-complete', { files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
     }
     return githubSource;
   }
@@ -12769,6 +12995,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   }
 
   function render() {
+    routeLoadPresentationRender('render');
     const snapshots = typeof snapshotRenderScrolls === 'function' ? snapshotRenderScrolls() : { feed: [], modal: [] };
     const root = $('app');
     ensureWorkspaceWindow();
@@ -20807,6 +21034,7 @@ ${integrityFooter()}`;
     if (app.modal.type === 'artifact-wizard') {
       if (field === 'wizardTitle') { app.modal.title = value; return true; }
       if (field === 'wizardSummary') { app.modal.summary = value; return true; }
+      if (field === 'wizardFolderPath') { app.modal.folderPath = normalizedFolderPath(value || defaultArtifactFolder(getWorkspace(app.modal.wsId), app.modal)); return true; }
       if (field === 'wizardBody') { app.modal.body = value; return true; }
     }
     if (field === 'editNodeText') {
@@ -23441,11 +23669,13 @@ ${wizardBlank(f.notes)}`,
 
     if ((modal?.mode === 'continue' || modal?.mode === 'use-as') && modal.parentNodeId && kind === 'trace') {
       const parent = wizardNodeById(ws, modal.parentNodeId);
+      if (parent && modal?.folderPath) return uniquePathInFolder(ws, modal.folderPath, title || `${parent.title || 'artifact'} continuation`, '.trace.md');
       if (parent) return nextSiblingTracePath(parent, ws);
     }
 
     if (modal?.mode === 'reference' && modal.parentNodeId && kind === 'trace') {
       const parent = wizardNodeById(ws, modal.parentNodeId);
+      if (parent && modal?.folderPath) return uniquePathInFolder(ws, modal.folderPath, title || `${parent.title || 'artifact'} reference`, '-reference.trace.md');
       if (parent) return nextSiblingTracePath(parent, ws).replace(/\.trace\.md$/i, '-reference.trace.md');
     }
 
@@ -24184,6 +24414,19 @@ ${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source findi
     return `<label class="field-label schema-aware-field" for="${escapeAttr(id)}">${label}<textarea id="${escapeAttr(id)}" class="form-control tv-textarea schema-aware-textarea ${field.type === 'list' ? 'list-field' : ''}" data-wizard-form-field="${escapeAttr(field.key)}" placeholder="${escapeAttr(field.placeholder || '')}" spellcheck="true">${escapeHtml(value || '')}</textarea>${field.type === 'list' ? '<small>One item per line. Tiinex formats it as a markdown list.</small>' : ''}</label>`;
   }
 
+
+  function wizardPlacementPreview(ws, modal, selected, title) {
+    const option = selected || schemaOptionById(modal?.schemaId || 'tiinex.topic.v1');
+    const folder = defaultArtifactFolder(ws, modal);
+    const path = wizardPathFor(ws, modal, option, title || defaultWizardTitle(ws, modal, option));
+    const edit = modal?.mode === 'edit';
+    return `<div class="wizard-placement-preview" aria-label="Artifact storage placement">
+      <label class="field-label">Folder<input class="form-control tv-input" data-field="wizardFolderPath" value="${escapeAttr(folder)}" ${edit ? 'disabled' : ''}></label>
+      <label class="field-label">Path preview<input class="form-control tv-input" value="${escapeAttr(path)}" readonly></label>
+      <small>Continuity parent and storage path are separate. New child artifacts default to the parent folder; override the folder before saving when this leaf belongs elsewhere.</small>
+    </div>`;
+  }
+
   function wizardDescribeStep(ws, modal, selected, title, summary, body) {
     const schemaId = wizardSchemaId(selected);
     const renderer = wizardSchemaDefinition(schemaId).describeStep;
@@ -24202,6 +24445,7 @@ ${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source findi
       <div class="wizard-fields paged schema-aware-fields">
         <label class="field-label">Title<input class="form-control tv-input" data-field="wizardTitle" value="${escapeAttr(title)}"></label>
         <label class="field-label">Summary<input class="form-control tv-input" data-field="wizardSummary" value="${escapeAttr(summary)}"></label>
+        ${wizardPlacementPreview(ws, modal, selected, title)}
         ${fields ? `<div class="schema-aware-form-grid">${fields.map((field) => renderWizardField(field, state[field.key] || '')).join('')}</div>` : `<label class="field-label wizard-body-field">${escapeHtml(selected.bodyLabel || 'Body')}<textarea class="form-control tv-textarea wizard-body-textarea paged" data-field="wizardBody" spellcheck="true">${escapeHtml(body)}</textarea></label>`}
       </div>
     </section>`;
@@ -24369,6 +24613,7 @@ ${integrityFooterForPath(parent, path)}`,
       <div class="wizard-fields paged schema-aware-fields evidence-fields compact polished">
         <label class="field-label">Title<input class="form-control tv-input compact" data-field="wizardTitle" value="${escapeAttr(title)}"></label>
         <label class="field-label">Summary<input class="form-control tv-input compact" data-field="wizardSummary" value="${escapeAttr(summary)}"></label>
+        ${wizardPlacementPreview(ws, modal, selected, title)}
         <label class="field-label evidence-claim-field compact polished">Supported claim <span class="wizard-required">required</span><textarea class="form-control tv-textarea evidence-claim-textarea compact polished" data-wizard-form-field="supportedClaim" placeholder="What does this evidence show or support?">${escapeHtml(state.supportedClaim || '')}</textarea></label>
         ${renderEvidenceAttachmentCollector(modal)}
       </div>
@@ -25137,8 +25382,13 @@ ${integrityFooterForPath(parent, path)}`,
   }
 
   function defaultArtifactFolder(ws, modal) {
+    if (modal?.folderPath) return normalizedFolderPath(modal.folderPath);
+    const parent = wizardNodeById(ws, modal?.parentNodeId || '');
+    if (parent?.path) return normalizedFolderPath(dirname(parent.path) || '.topics');
+    const referenced = wizardRelatedNode(ws, modal || {}, 'referencedNodeId', 'referencedWsId');
+    if (referenced?.path) return normalizedFolderPath(dirname(referenced.path) || '.topics');
     const roots = typeof discoveryRootsForWorkspace === 'function' ? discoveryRootsForWorkspace(ws) : ['.topics'];
-    return normalizedFolderPath(modal?.folderPath || roots?.[0] || '.topics');
+    return normalizedFolderPath(roots?.[0] || '.topics');
   }
 
   function treeFolderActualPath(ws, folderPath = '') {
@@ -35501,7 +35751,11 @@ ${raw.slice(0, 800)}`) || 'en')}">
     publishReadyShareBoundaryReport,
     sourceChromeStabilityReport,
     previewMaterialFilterReadinessReport,
-    routeAndLocalStateContinuityReport
+    routeAndLocalStateContinuityReport,
+    routeLoadPresentationReport,
+    buildIdentityReport,
+    parentOriginContinuityReport,
+    artifactPlacementReadinessReport
   });
 
 

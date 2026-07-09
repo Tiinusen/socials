@@ -1,3 +1,7 @@
+## CP328 LLM note
+
+Route/render ownership is now a first-class field-test surface. Before diagnosing startup or mobile back/swipe behavior, check `TiinexDiagnostics.buildIdentityReport()` and `TiinexDiagnostics.routeLoadPresentationReport()` so stale deploys and missing diagnostics are visible. Artifact creation now exposes storage placement separately from continuity parentage; do not treat file path moves and graph rewires as the same operation.
+
 ## CP294 LLM note
 
 Schema presentation is now treated as a coverage surface, not only a prettified preview. When adding or changing schemas, ensure expanded and detail read presenters surface important human-authored body sections before relying on the collapsed raw artifact body. Use `TiinexDiagnostics.presentationCoverageReport()` to inspect which known important sections are present and surfaced. Topic presenters must preserve content/intro text, design direction, next artifacts, candidate directions, and transition boundary when available.

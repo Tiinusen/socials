@@ -1,3 +1,30 @@
+# CP328 validation notes
+
+Validated locally after adding build identity, route-load presentation diagnostics, parent/origin repair visibility, and artifact placement preview.
+
+Passed:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Additional public-build contract now checks that `.site-publish` contains `CNAME`, `favicon.ico`, build identity metadata, and route-load diagnostics.
+
+`npm run validate` remains non-blocking for product iteration because existing static-hygiene checks still expect the old publish workflow gate and older material-pipeline cleanup. After removing generated `.site-publish`, the remaining known failures are static-hygiene/workflow-contract related, not runtime validation for this patch.
+
+Field diagnostics to run:
+
+```js
+TiinexDiagnostics.buildIdentityReport()
+TiinexDiagnostics.routeLoadPresentationReport()
+TiinexDiagnostics.routeAndLocalStateContinuityReport()
+TiinexDiagnostics.parentOriginContinuityReport()
+TiinexDiagnostics.artifactPlacementReadinessReport()
+```
+
 # CP327 validation notes
 
 Validated locally after route-owned loading presentation and favicon fixes:
