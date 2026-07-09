@@ -1,3 +1,21 @@
+# CP333 validation notes
+
+Validated after target-aware GitHub issue verification and mobile read/raw modal containment.
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Manual checks:
+
+1. Export a local draft using Update known issue and verify after updating the issue body.
+2. Export a continuation comment and verify by matching comments.
+3. Open Raw markdown and Schema read view on mobile; the close button must remain visible and content must not collapse into one-character columns.
+4. Change a continuity parent in schema-aware edit, save, refresh, and confirm the parent edge still resolves or remains explicitly unresolved rather than disappearing.
+
 # CP332 validation notes
 
 Validated after GitHub target candidate discovery and mobile raw modal close fixes:

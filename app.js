@@ -112,9 +112,9 @@
   };
 
   const TIINEX_APP_BUILD = Object.freeze({
-    release: '332',
-    codename: 'github-target-parent-raw-modal',
-    packageName: 'tiinex-site-332-clean-repo',
+    release: '333',
+    codename: 'github-target-aware-verify-mobile-read',
+    packageName: 'tiinex-site-333-clean-repo',
     builtFor: 'Tiinex/site source repo',
     publicBuildOutputExcluded: true
   });
@@ -21168,7 +21168,7 @@ ${integrityFooter()}`;
     return true;
   }
 
-  async function saveNodeEdit(ws, node, text) {
+  async function saveNodeEdit(ws, node, text, options = {}) {
     const path = node.path || node.file?.path || 'edited.trace.md';
     const directLocalEdit = nodeIsLocalEditableMaterial(ws, node);
     const sourceId = directLocalEdit ? (node.sourceId || node.file?.sourceId || 'local') : 'local';
@@ -21199,7 +21199,7 @@ ${integrityFooter()}`;
       localDraftOf: sourceOrigin || sourceShadowKeyForNode(node),
       localEditDraft: true
     } : existingShadowMeta;
-    const finalizedText = await finalizeSavedLocalIntegrity(ws, path, text, { existingNode: node });
+    const finalizedText = await finalizeSavedLocalIntegrity(ws, path, text, Object.assign({ existingNode: node }, options || {}));
     const file = upsertWorkspaceTextFile(ws, path, finalizedText, sourceId, meta);
     // Replace preserved markdown asset too so export/preview sees the edited text.
     const assetKey = sourceFileKey(sourceId, path, false);
@@ -25582,7 +25582,7 @@ ${integrityFooterForPath(parent, path)}`,
       const stash = { evidenceAttachments: artifact.evidenceAttachments };
       await storeEvidenceAttachmentFiles(ws, stash, artifact.path || node.path || '');
     }
-    await saveNodeEdit(ws, node, artifact.text);
+    await saveNodeEdit(ws, node, artifact.text, { parentNodeId: modal.parentNodeId || '', parentPath: modal.parentPath || '' });
     markDialogRouteSessionClosed(modal);
     app.modal = null;
     app.pendingRouteModal = null;
@@ -27708,6 +27708,33 @@ ${integrityFooterForPath(parent, path)}`,
     throw new Error('Tiinex could not find a GitHub issue comment whose body matches the copied draft. Post/update the comment, then verify again.');
   }
 
+  async function resolvePublishedGitHubIssueTargetUrl(spec, draft, mode, options = {}) {
+    if (!spec) throw new Error('Expected a GitHub issue URL.');
+    const body = draft?.body || '';
+    const commentId = githubIssueCommentIdFromAnchor(spec.commentAnchor || '');
+    if (mode === 'create-comment' || commentId) {
+      const url = await resolvePublishedGitHubIssueCommentUrl(spec, draft, options);
+      return { url, kind: 'comment', title: '', state: '' };
+    }
+
+    const thread = await fetchGitHubIssueThread(spec, { commentLimit: options.commentLimit || 100, hardRefresh: true, authMode: 'none' });
+    if (githubExportPublishedBodyMatchesDraft(thread?.issue?.body || '', body)) {
+      return {
+        url: spec.issueUrl || githubPublishedResultUrlFromSpec(spec, ''),
+        kind: 'issue',
+        title: thread?.issue?.title || '',
+        state: thread?.issue?.state || ''
+      };
+    }
+
+    try {
+      const url = await resolvePublishedGitHubIssueCommentUrl(spec, draft, options);
+      return { url, kind: 'comment', title: '', state: '' };
+    } catch (error) {
+      throw new Error('Tiinex could not verify the GitHub issue body or find a matching issue comment. If you used Update known, paste the copied markdown into the issue body; if you created a comment, paste the comment permalink or choose Create comment.');
+    }
+  }
+
   function githubExportFileContentSignature(file) {
     const content = githubExportNormalizeMarkdownForComparison(file?.content || file?.rawMarkdown || file?.body || '');
     return content ? hashFast(content) : '';
@@ -28801,16 +28828,25 @@ ${githubOutboundFileExcerpt(file, 18000)}
       const spec = parseGitHubIssueSpec(url);
       if (!spec) throw new Error('Expected a GitHub issue URL like https://github.com/owner/repo/issues/123.');
       let publishedResultUrl = githubPublishedResultUrlFromSpec(spec, url);
+      let verificationTargetKind = mode === 'create-new' ? 'url' : 'issue';
+      let resolvedIssueTitle = '';
+      let resolvedIssueState = '';
       if (mode !== 'create-new') {
-        publishedResultUrl = await resolvePublishedGitHubIssueCommentUrl(spec, draft, { commentLimit: 100 });
+        const resolvedTarget = await resolvePublishedGitHubIssueTargetUrl(spec, draft, mode, { commentLimit: 100 });
+        publishedResultUrl = resolvedTarget.url || publishedResultUrl;
+        verificationTargetKind = resolvedTarget.kind || verificationTargetKind;
+        resolvedIssueTitle = resolvedTarget.title || '';
+        resolvedIssueState = resolvedTarget.state || '';
       }
       const resultSpec = parseGitHubIssueSpec(publishedResultUrl) || spec;
       ctx.state.publishedUrl = githubPublishedResultUrlFromSpec(resultSpec, publishedResultUrl);
       ctx.state.targetUrl = ctx.state.targetUrl || fallbackTarget || resultSpec.issueUrl || spec.issueUrl;
-      ctx.state.resolvedTitle = resultSpec.targetLabel || `Issue #${resultSpec.issueNumber || spec.issueNumber}`;
-      ctx.state.resolvedState = resultSpec.commentAnchor
-        ? (mode === 'create-new' ? 'comment permalink accepted' : (mode === 'create-comment' ? 'new continuation comment matched copied draft' : 'comment body matched copied draft'))
-        : 'issue URL accepted';
+      ctx.state.resolvedTitle = resolvedIssueTitle || resultSpec.targetLabel || `Issue #${resultSpec.issueNumber || spec.issueNumber}`;
+      ctx.state.resolvedState = verificationTargetKind === 'issue'
+        ? (resolvedIssueState ? `issue body matched copied draft · ${resolvedIssueState}` : 'issue body matched copied draft')
+        : (resultSpec.commentAnchor
+          ? (mode === 'create-new' ? 'comment permalink accepted' : (mode === 'create-comment' ? 'new continuation comment matched copied draft' : 'comment body matched copied draft'))
+          : 'issue URL accepted');
       ctx.state.resolvedRepo = resultSpec.repo || spec.repo;
       ctx.state.resolvedNumber = resultSpec.issueNumber || spec.issueNumber;
       if (mode === 'create-new') {
@@ -28841,7 +28877,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
     ctx.state.verifiedSignature = githubExportVerifySignature(ctx.surface, mode, ctx.state.publishedUrl || ctx.state.targetUrl || url);
     ctx.state.verificationMeaning = mode === 'create-new'
       ? 'verified published GitHub target URL'
-      : (mode === 'create-comment' ? 'verified new GitHub comment matches copied Tiinex draft' : 'verified GitHub comment body matches copied Tiinex draft');
+      : (mode === 'create-comment' ? 'verified new GitHub comment matches copied Tiinex draft' : (ctx.state.resolvedState && ctx.state.resolvedState.includes('issue body matched') ? 'verified GitHub issue body matches copied Tiinex draft' : 'verified GitHub comment body matches copied Tiinex draft'));
     modal.githubPublishedUrl = '';
     modal.githubTargetUrl = '';
     return ctx;

@@ -22720,3 +22720,74 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
     overflow-wrap: anywhere !important;
   }
 }
+
+/* CP333: mobile read/raw markdown containment. The global mobile button rule makes
+   .tv-btn full width; read modal close controls must keep a fixed action slot so
+   titles/paths wrap instead of pushing markdown into a one-letter column. */
+.read-modal-panel .read-modal-head,
+.read-modal-panel .sticky-modal-head {
+  display: flex !important;
+  align-items: flex-start !important;
+  justify-content: space-between !important;
+  gap: 0.85rem !important;
+}
+
+.read-modal-panel .read-modal-head > div,
+.read-modal-panel .sticky-modal-head > div {
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+  max-width: 100% !important;
+}
+
+.read-modal-panel .read-modal-head .tv-btn[data-action="close-modal"],
+.read-modal-panel .sticky-modal-head .tv-btn[data-action="close-modal"] {
+  width: 2.35rem !important;
+  min-width: 2.35rem !important;
+  max-width: 2.35rem !important;
+  height: 2.35rem !important;
+  flex: 0 0 2.35rem !important;
+  padding: 0 !important;
+  justify-content: center !important;
+}
+
+.read-modal-panel .modal-title-lite,
+.read-modal-panel .text-secondary,
+.read-modal-panel .modal-read-scroll,
+.read-modal-panel .modal-read-body,
+.read-modal-panel .markdown-rendered,
+.read-modal-panel .modal-source,
+.read-modal-panel .modal-source code {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  overflow-wrap: anywhere !important;
+}
+
+.read-modal-panel .modal-source {
+  width: 100% !important;
+  box-sizing: border-box !important;
+  overflow-x: auto !important;
+  white-space: pre-wrap !important;
+}
+
+.read-modal-panel .modal-source code {
+  display: block !important;
+  width: 100% !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+}
+
+@media (max-width: 560px) {
+  .read-modal-panel .read-modal-head,
+  .read-modal-panel .sticky-modal-head {
+    padding: 0.78rem 0.82rem !important;
+  }
+
+  .read-modal-panel .modal-read-scroll {
+    padding: 0.78rem 0.82rem !important;
+  }
+
+  .read-modal-panel .modal-source {
+    font-size: 0.76rem !important;
+    line-height: 1.42 !important;
+  }
+}

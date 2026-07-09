@@ -1,3 +1,7 @@
+# CP333 — target-aware GitHub verify + mobile read modal containment
+
+CP333 follows CP332 after field testing showed Update known issue targets were detected correctly but verification still scanned issue comments. Verification is now target-aware: known issue targets verify the issue body, comment targets verify comments, and mobile read/raw markdown modals keep their close control reachable.
+
 # CP332 — GitHub target parent binding + raw modal close
 
 CP332 keeps publication target selection grounded when a local draft is attached to a source-backed or hidden discovery/original artifact. GitHub export now scans the local draft, its continuity parent chain, original-source shadow artifacts, and GitHub issue-style storage paths before falling back to a new issue target.
