@@ -2069,6 +2069,7 @@
     githubRepoMaterialProblemTargets: (limit = 80) => githubRepoMaterialProblemTargets(githubRepoFetchCurrentSessionEvents(), limit),
     publicViewerShareUrlFor: (url, adapter = '') => publicViewerShareUrlForTarget(url, adapter),
     parseHashShareTarget: (hash = location.hash) => parseHashShareTarget(hash),
+    startupRouteInitReport: () => startupRouteInitReport(),
     configuredPublicViewerBaseUrl: () => configuredPublicViewerBaseUrl(),
     shareEligibilityForActive: () => shareEligibilityForActive(),
     shareEligibilityForWorkspace: (wsId = '') => shareEligibilityForWorkspaceId(wsId),
@@ -2089,6 +2090,7 @@
     previewInspectionReadinessReport: () => previewInspectionReadinessReport(),
     displayOptionsMobileReadinessReport: () => displayOptionsMobileReadinessReport(),
     valueFirstUxReadinessReport: () => valueFirstUxReadinessReport(),
+    uxPolishReadinessReport: () => uxPolishReadinessReport(),
     shareSignalPreviewForActive: (reason = '', intent = 'share') => shareSignalRecord(shareEligibilityForActive(), { intent, reason }),
     shareCounterObservationReport: () => shareCounterObservationReport(),
     crossWorkspaceRelationPickerReport: () => crossWorkspaceRelationPickerReport(),
@@ -5874,6 +5876,29 @@
     </section>`;
   }
 
+
+  function renderEvidenceMaterialCompactDetails(material, options = {}) {
+    const clean = cleanObservedMaterialText(material || '');
+    if (!clean) return '';
+    const rendered = renderSafeMarkdown(clean);
+    const summary = options.imagePreview
+      ? '<span><i class="fa-solid fa-list-check"></i> Material details</span><small>metadata and source notes</small>'
+      : '<span><i class="fa-solid fa-list-check"></i> Material</span>';
+    return `<details class="evidence-material-inline-details" ${options.open ? 'open' : ''}>
+      <summary>${summary}</summary>
+      <div class="markdown-rendered compact-markdown evidence-material-inline-list" translate="yes" data-tiinex-language-surface="artifact-material">${rendered}</div>
+    </details>`;
+  }
+
+  function renderEvidenceProvenanceCompactDetails(provenance, options = {}) {
+    const clean = cleanObservedMaterialText(provenance || '');
+    if (!clean) return '';
+    return `<details class="evidence-material-inline-details evidence-provenance-inline-details">
+      <summary><span><i class="fa-solid fa-route"></i> Provenance</span><small>expand for full metadata</small></summary>
+      <div class="markdown-rendered compact-markdown evidence-material-inline-list" translate="yes" data-tiinex-language-surface="artifact-provenance">${renderSafeMarkdown(clean)}</div>
+    </details>`;
+  }
+
   function renderEvidenceSummary(node, options = {}) {
     const map = sectionMap(node.body || node.rawMarkdown);
     const claim = sectionPlainAny(map, ['Supported Claim', 'Supports']) || introPlain(map);
@@ -5886,9 +5911,9 @@
         ${renderPresenterHead('Evidence', 'fa-solid fa-paperclip', node.title || 'Evidence', node.summary || '', options)}
         ${claim ? renderPrimaryReadBlock('Supported claim', listifyPlainMultilineBlock(claim), { compact: options.compact, limit: options.compact ? 280 : 620 }) : ''}
         ${imagePreview}
-        ${material ? renderReadMarkdownSection('Material', cleanObservedMaterialText(material), { compact: options.compact, limit: options.compact ? 280 : 620 }) : ''}
-        ${!options.inline && provenance ? renderReadDetailSections('Provenance', [{ label: 'Provenance', value: provenance, limit: 620 }], { compact: options.compact }) : ''}
-        ${renderBasisLine(map, options)}
+        ${material ? (imagePreview ? renderEvidenceMaterialCompactDetails(material, { imagePreview: true, open: false }) : renderReadMarkdownSection('Material', cleanObservedMaterialText(material), { compact: options.compact, limit: options.compact ? 280 : 620 })) : ''}
+        ${!options.inline && provenance ? renderEvidenceProvenanceCompactDetails(provenance, options) : ''}
+        ${renderBasisLine(map, Object.assign({}, options, { compactEvidence: Boolean(imagePreview) }))}
         ${limits ? renderReadDetailSections('Limits', [{ label: 'Interpretation limits', value: limits, limit: 520 }], { compact: options.compact }) : ''}
       </section>`;
   }
@@ -14932,7 +14957,7 @@ ${bodySections}
 
     if (shouldUseEmbeddedDefaultWorkspace()) {
       try {
-        await applyEmbeddedDefaultWorkspace({ applyWorkspaceState: !startupHasPublicHashShareTarget() });
+        await applyEmbeddedDefaultWorkspace({ applyWorkspaceState: startupShouldApplyViewerWorkspaceState() });
       } catch (error) {
         app.viewerIdentity.error = error?.message || String(error || '');
         applyViewerCustomCss('');
@@ -14952,7 +14977,7 @@ ${bodySections}
         }
         const markdown = await fetchText(url, 'viewer workspace');
         const parsed = parseViewerConfigMarkdown(markdown, url);
-        await applyParsedViewerConfig(parsed, url, { applyWorkspaceState: true });
+        await applyParsedViewerConfig(parsed, url, { applyWorkspaceState: startupShouldApplyViewerWorkspaceState() });
         return;
       } catch (error) {
         lastError = error;
@@ -16329,7 +16354,7 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
 
       const state = decodeRouteStateFromHash();
       if (state && Array.isArray(state.sources) && state.sources.length) {
-        const restored = await applyRouteState(state, true);
+        const restored = await applyRouteState(state, !routeSourcesMatch(state));
         if (restored) return;
       }
 
@@ -16353,6 +16378,41 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
     } finally {
       app.isBootingFromUrl = false;
     }
+  }
+
+  function startupRouteInitSummary() {
+    let state = null;
+    try { state = staticDiskMode() ? decodeViewRouteFromHash() : decodeRouteStateFromHash(); } catch (_) {}
+    return {
+      hashKind: parseHashShareTarget(location.hash || '') ? 'public-share-target' : (/^#view=/i.test(location.hash || '') ? 'view' : (/^#state=/i.test(location.hash || '') ? 'state' : (location.hash ? 'other' : 'none'))),
+      applyConfigWorkspaceState: startupShouldApplyViewerWorkspaceState(),
+      bootstrapGitNativeBeforeRoute: typeof startupShouldBootstrapGitNativeBeforeRoute === 'function' ? startupShouldBootstrapGitNativeBeforeRoute() : null,
+      routeOwnsSourceLoading: typeof startupRouteOwnsSourceLoading === 'function' ? startupRouteOwnsSourceLoading() : null,
+      routeSources: Array.isArray(state?.sources) ? state.sources.length : 0,
+      currentSources: app.workspaces?.length || 0,
+      routeSourcesMatch: state?.sources ? routeSourcesMatch(state) : false
+    };
+  }
+
+  async function bootFromUrlOnce() {
+    app.startupBoot = app.startupBoot || { calls: 0, skipped: 0, completed: 0, history: [] };
+    app.startupBoot.calls += 1;
+    const summary = startupRouteInitSummary();
+    app.startupBoot.history.push(Object.assign({ event: 'boot-call', at: new Date().toISOString() }, summary));
+    if (app.startupBoot.promise) {
+      app.startupBoot.skipped += 1;
+      routeOwnerRecord('route:boot-skip-inflight', summary);
+      return app.startupBoot.promise;
+    }
+    app.startupBoot.promise = (async () => {
+      routeOwnerRecord('route:boot-once-start', summary);
+      await bootFromUrl();
+      app.startupBoot.completed += 1;
+      app.startupBoot.completedAt = new Date().toISOString();
+      app.startupBoot.history.push(Object.assign({ event: 'boot-complete', at: app.startupBoot.completedAt }, startupRouteInitSummary()));
+      routeOwnerRecord('route:boot-once-complete', startupRouteInitSummary());
+    })().finally(() => { app.startupBoot.promise = null; });
+    return app.startupBoot.promise;
   }
 
   function handleBrowserHistoryNoRoute(reason = 'browser-no-route') {
@@ -21474,10 +21534,14 @@ This removes the imported file and its preserved local asset copy from the curre
     const showOriginCard = traversal?.nonLineageOrigin && visibleCount >= traversal.nodes.length && !searchActive;
     const openBoundary = selected ? firstOpenLineageBoundary(ws, selected) : null;
 
-    const emptyText = temporalLensActive(ws) ? 'No nodes match this temporal view.' : 'No nodes match this view.';
+    const loadingActive = typeof workspaceHasActiveDiscoveryProgress === 'function' ? workspaceHasActiveDiscoveryProgress(ws) : Boolean(ws?.loading || ws?.discoveryProgress);
+    const emptyText = loadingActive
+      ? 'Loading workspace source…'
+      : (temporalLensActive(ws) ? 'No nodes match this temporal view.' : 'No nodes match this view.');
+    const emptyClass = loadingActive ? 'empty-state loading-empty-state' : 'empty-state';
     const bodyHtml = mode === 'discovery' && discoveryView === 'tree'
       ? renderDiscoveryTree(ws, nodes)
-      : (nodes.length ? renderLineageNodeList(ws, nodes, mode, searchActive, lineageQuery) : `<div class="empty-state">${escapeHtml(emptyText)}</div>`);
+      : (nodes.length ? renderLineageNodeList(ws, nodes, mode, searchActive, lineageQuery) : `<div class="${emptyClass}">${escapeHtml(emptyText)}</div>`);
 
     const html = `
       <div class="feed-toolbar feed-toolbar-foundation feed-toolbar-shell feed-toolbar-layout ${mode}">
@@ -30010,13 +30074,14 @@ ${githubOutboundFileExcerpt(file, 18000)}
     }
 
     const all = filteredDiscoveryNodes(ws);
-    const limit = discoveryVisibleCount(ws);
+    const searchActive = Boolean(normalizeSearchText(ws.discoverySearch || ''));
+    const limit = searchActive ? all.length : discoveryVisibleCount(ws);
     app.discoveryWindowContext = { wsId: ws.id, limit };
     let html = next(ws, selected);
     app.discoveryWindowContext = null;
 
     const shown = Math.min(limit, all.length);
-    const footer = discoveryLoadMoreFooter(ws, all.length, shown);
+    const footer = searchActive ? '' : discoveryLoadMoreFooter(ws, all.length, shown);
     if (footer) html = html.replace(/\s*<\/div>\s*$/, `${footer}</div>`);
     if (workspaceHasActiveDiscoveryProgress(ws) && html.includes('<div class="post-feed')) {
       html = html.replace('<div class="post-feed', `${loadingProgressNotice(ws)}<div class="post-feed`);
@@ -33159,6 +33224,58 @@ window.addEventListener('popstate', () => {
     return startupHasPublicHashShareTarget();
   }
 
+  function startupShouldApplyViewerWorkspaceState() {
+    const params = new URLSearchParams(location.search || '');
+    // A direct URL import or public/readable share target is the workspace owner.
+    // Loading the default .workspace.md state first makes init look like it loads
+    // once, clears, then loads again.
+    if (params.get('url')) return false;
+    if (startupHasPublicHashShareTarget()) return false;
+    // Hosted/public route state carries its own source list. Let bootFromUrl own it.
+    // file:// #view is different: it contains only view selection and still needs
+    // the packaged/default workspace to exist before the view state can apply.
+    if (!staticDiskMode() && /^#state=/i.test(location.hash || '')) return false;
+    return true;
+  }
+
+  function startupRouteOwnsSourceLoading() {
+    const params = new URLSearchParams(location.search || '');
+    if (params.get('url')) return true;
+    if (startupHasPublicHashShareTarget()) return true;
+    return !staticDiskMode() && /^#state=/i.test(location.hash || '');
+  }
+
+  function startupShouldBootstrapGitNativeBeforeRoute() {
+    // Explicit route/source hashes should not trigger a default persisted Git-native
+    // bootstrap before the route owner runs. The route's source discovery can still
+    // use Git-native through its own source options, but skipping pre-route bootstrap
+    // avoids the visible init -> empty -> re-init pattern on slow/mobile networks.
+    return !startupRouteOwnsSourceLoading();
+  }
+
+  function startupGitNativeBootstrapDecision() {
+    return {
+      beforeRouteBootstrap: startupShouldBootstrapGitNativeBeforeRoute(),
+      routeOwnsSourceLoading: startupRouteOwnsSourceLoading(),
+      explicitSharedState: startupHasExplicitSharedState(),
+      hash: location.hash ? location.hash.slice(0, 32) : ''
+    };
+  }
+
+  function startupRouteInitReport() {
+    const boot = app.startupBoot || {};
+    return {
+      schema: 'tiinex.startup.route-init.report.v1',
+      summary: typeof startupRouteInitSummary === 'function' ? startupRouteInitSummary() : {},
+      bootCalls: Number(boot.calls || 0),
+      skippedInflight: Number(boot.skipped || 0),
+      completed: Number(boot.completed || 0),
+      history: Array.isArray(boot.history) ? boot.history.slice(-12) : [],
+      gitNativeBootstrap: typeof startupGitNativeBootstrapDecision === 'function' ? startupGitNativeBootstrapDecision() : {},
+      policy: 'explicit route/public hash/direct url owns workspace init; config identity and default Git-native bootstrap must not pre-load source state when route sources are explicit'
+    };
+  }
+
   function startupHashRouteModalState() {
     try {
       const state = staticDiskMode() ? decodeViewRouteFromHash() : decodeRouteStateFromHash();
@@ -34660,10 +34777,15 @@ window.addEventListener('popstate', (event) => {
 
   installGitNativeRawFetchGate();
 
-  ensurePersistedGitNativeDiscoveryRuntime('startup-before-config')
+  Promise.resolve()
+    .then(() => startupShouldBootstrapGitNativeBeforeRoute()
+      ? ensurePersistedGitNativeDiscoveryRuntime('startup-before-config')
+      : githubRepoFetchTrace('git-native.bootstrap.skip', { reason: 'startup-before-config', skippedReason: 'explicit-route-owner' }))
     .then(() => loadViewerConfig())
-    .then(() => ensurePersistedGitNativeDiscoveryRuntime('startup-before-boot'))
-    .then(() => bootFromUrl())
+    .then(() => startupShouldBootstrapGitNativeBeforeRoute()
+      ? ensurePersistedGitNativeDiscoveryRuntime('startup-before-boot')
+      : githubRepoFetchTrace('git-native.bootstrap.skip', { reason: 'startup-before-boot', skippedReason: 'explicit-route-owner' }))
+    .then(() => bootFromUrlOnce())
     .then(() => { if (typeof maybeOfferLocalStateRestore === 'function') maybeOfferLocalStateRestore(); })
     .then(() => {
       render();
@@ -36270,6 +36392,26 @@ ${raw.slice(0, 800)}`) || 'en')}">
   }
 
 
+
+  function uxPolishReadinessReport() {
+    const activeWs = app.workspaces?.[app.activeIndex || 0] || null;
+    const searchActive = Boolean(activeWs && normalizeSearchText(activeWs.discoverySearch || activeWs.lineageSearch || ''));
+    const toolbarRows = Array.from(document.querySelectorAll('.feed-toolbar')).slice(0, 8).map((toolbar) => ({
+      mode: toolbar.classList.contains('lineage') ? 'lineage' : toolbar.classList.contains('discovery') ? 'discovery' : 'unknown',
+      searchWidth: Math.round(toolbar.querySelector('.search-box')?.getBoundingClientRect?.().width || 0),
+      controlCount: toolbar.querySelectorAll('button, input, select').length
+    }));
+    return {
+      schema: 'tiinex.ux-polish.readiness.report.v1',
+      sourceStripPolicy: 'compact horizontal source summary on mobile; details remain in chips without breaking layout',
+      toolbarPolicy: 'discovery and lineage search share a consistent responsive width model',
+      discoverySearchShowsAllMatches: true,
+      evidenceMaterialPolicy: 'image evidence owns the visual proof; material/provenance metadata collapses under it instead of creating another tall card',
+      searchActive,
+      toolbarRows
+    };
+  }
+
   function mobileActionOwnershipReport() {
     const rows = Array.from(document.querySelectorAll('.lineage-post')).slice(0, 20).map((post) => ({
       title: post.querySelector('.post-title')?.textContent?.trim() || '',
@@ -36300,12 +36442,45 @@ ${raw.slice(0, 800)}`) || 'en')}">
     };
   }
 
+  function sourceChromeStabilityReport() {
+    const strips = Array.from(document.querySelectorAll('.workspace-source-strip')).slice(0, 8).map((strip) => {
+      const rect = strip.getBoundingClientRect?.() || { width: 0, height: 0 };
+      const style = getComputedStyle(strip);
+      return {
+        visible: style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) !== 0,
+        sourceCount: strip.querySelectorAll('.workspace-source-pill, .source-pill, .source-chip').length,
+        width: Math.round(rect.width || 0),
+        height: Math.round(rect.height || 0),
+        scrollWidth: Math.round(strip.scrollWidth || 0),
+        overflowX: style.overflowX,
+        wraps: style.flexWrap,
+        justify: style.justifyContent
+      };
+    });
+    const workspaces = Array.from(document.querySelectorAll('.workspace')).slice(0, 8).map((ws) => ({
+      label: ws.querySelector('.workspace-title')?.textContent?.trim() || '',
+      singleSourceState: ws.classList.contains('single-source-state'),
+      mobileChromeCompact: ws.classList.contains('mobile-chrome-compact'),
+      hasSourceStrip: Boolean(ws.querySelector(':scope > .workspace-source-strip, .mobile-source-mode-row .workspace-source-strip')),
+      sourceCount: ws.querySelectorAll('.workspace-source-pill, .source-pill, .source-chip').length
+    }));
+    return {
+      schema: 'tiinex.source-chrome-stability.report.v1',
+      policy: 'source strip remains a one-line left-aligned horizontal rail; single-source rows remain visible so source settings stay reachable; mobile reading fades chrome without collapsing layout height',
+      mobileReading: document.body.classList.contains('mobile-reading'),
+      mobileChrome: document.body.classList.contains('mobile-chrome'),
+      strips,
+      workspaces
+    };
+  }
+
   window.TiinexDiagnostics = Object.assign(window.TiinexDiagnostics || {}, {
     mobileActionLayoutReadinessReport,
     mobileActionOwnershipReport,
     evidencePreviewReadinessReport,
     routeReuseReadinessReport,
-    publishReadyShareBoundaryReport
+    publishReadyShareBoundaryReport,
+    sourceChromeStabilityReport
   });
 
 

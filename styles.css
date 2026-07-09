@@ -21857,3 +21857,514 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
     min-height: 1.9rem !important;
   }
 }
+
+/* CP318: explicit route startup should not look empty while source owner loads. */
+.loading-empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  color: var(--tv-muted, rgba(245, 238, 255, 0.72));
+  border-style: solid;
+  background: linear-gradient(135deg, rgba(160, 83, 255, 0.08), rgba(22, 240, 226, 0.035));
+}
+.loading-empty-state::before {
+  content: '';
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 999px;
+  border: 2px solid rgba(202, 153, 255, 0.28);
+  border-top-color: rgba(202, 153, 255, 0.92);
+  animation: tiinex-spin 0.9s linear infinite;
+  flex: 0 0 auto;
+}
+
+/* CP319: value-first polish consolidation.
+   This final layer owns the small-screen header, source strip, search sizing,
+   evidence metadata density, and Display Options mobile layout. */
+
+/* Consistent search/tool sizing across Discovery and Lineage. */
+.feed-toolbar.discovery,
+.feed-toolbar.lineage {
+  align-items: center !important;
+  gap: 0.55rem !important;
+}
+.feed-toolbar.discovery .discovery-tools,
+.feed-toolbar.discovery .discovery-tools-foundation,
+.feed-toolbar.discovery .discovery-tools-layout,
+.feed-toolbar.discovery .tree-toolbar-tools,
+.feed-toolbar.lineage .lineage-search-wrap,
+.feed-toolbar.lineage .lineage-action-tools {
+  display: grid !important;
+  grid-template-columns: auto auto minmax(260px, min(38vw, 420px)) !important;
+  align-items: center !important;
+  justify-content: end !important;
+  gap: 0.45rem !important;
+  min-width: min(100%, 520px) !important;
+}
+.feed-toolbar.discovery .search-box,
+.feed-toolbar.lineage .search-box,
+.feed-toolbar.discovery .discovery-tools > .search-box,
+.feed-toolbar.discovery .tree-toolbar-tools > .search-box,
+.feed-toolbar.lineage .lineage-search-wrap > .search-box,
+.feed-toolbar.lineage .lineage-action-tools > .search-box {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 420px !important;
+  justify-self: stretch !important;
+}
+.feed-toolbar.discovery .search-box input,
+.feed-toolbar.lineage .search-box input {
+  width: 100% !important;
+}
+.feed-toolbar.discovery .preview-toggle,
+.feed-toolbar.lineage .preview-toggle,
+.feed-toolbar.lineage .audit-lineage-btn,
+.feed-toolbar .tree-all-toggle {
+  flex: 0 0 auto !important;
+}
+
+/* Compact, readable source strip. */
+.workspace-sources,
+.source-mode-row,
+body.mobile-chrome .workspace-sources,
+body.mobile-lens .workspace-sources {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  gap: 0.38rem !important;
+  align-items: center !important;
+  scrollbar-width: none !important;
+  padding-bottom: 0.05rem !important;
+}
+.workspace-sources::-webkit-scrollbar,
+.source-mode-row::-webkit-scrollbar { display: none !important; }
+.source-chip,
+.source-mode-row .source-chip,
+body.mobile-chrome .source-chip {
+  flex: 0 0 auto !important;
+  max-width: min(16rem, 54vw) !important;
+  min-width: 0 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  padding-inline: 0.58rem !important;
+}
+.source-chip > span,
+.source-chip small {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  min-width: 0 !important;
+}
+.source-chip .source-chip-count,
+.source-chip .source-count,
+.source-chip .badge-count {
+  flex: 0 0 auto !important;
+}
+
+/* Evidence image owns the visual material; metadata stays attached but compact. */
+.evidence-material-inline-details {
+  margin-top: 0.7rem !important;
+  border: 1px solid rgba(202, 153, 255, 0.22) !important;
+  border-radius: 0.92rem !important;
+  background: rgba(255, 255, 255, 0.028) !important;
+  overflow: hidden !important;
+}
+.evidence-material-inline-details > summary {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 0.8rem !important;
+  min-height: 2.35rem !important;
+  padding: 0.58rem 0.78rem !important;
+  cursor: pointer !important;
+  list-style: none !important;
+  color: rgba(245, 238, 255, 0.84) !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.08em !important;
+  font-size: 0.74rem !important;
+  font-weight: 900 !important;
+}
+.evidence-material-inline-details > summary::-webkit-details-marker { display: none !important; }
+.evidence-material-inline-details > summary::before {
+  content: '▸';
+  color: rgba(216, 180, 254, 0.78);
+  margin-right: 0.35rem;
+}
+.evidence-material-inline-details[open] > summary::before { content: '▾'; }
+.evidence-material-inline-details > summary span {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 0.42rem !important;
+}
+.evidence-material-inline-details > summary small {
+  color: rgba(245, 238, 255, 0.56) !important;
+  font-size: 0.72rem !important;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+  font-weight: 700 !important;
+}
+.evidence-material-inline-list {
+  padding: 0.05rem 1rem 0.78rem 1.45rem !important;
+}
+.evidence-material-inline-list ul,
+.evidence-material-inline-list ol {
+  margin-block: 0.26rem !important;
+}
+.evidence-material-inline-list li {
+  margin-block: 0.18rem !important;
+}
+.evidence-presenter .schema-primary-block + .evidence-inline-preview {
+  margin-top: 0.78rem !important;
+}
+.evidence-presenter .evidence-inline-preview + .evidence-material-inline-details {
+  margin-top: 0.62rem !important;
+}
+
+/* More respectful mobile card actions: one owned rail, compact, no stretched edit bar. */
+@media (max-width: 760px) {
+  .lineage-post > .desktop-post-actions,
+  .lineage-post > .post-actions.desktop-post-actions {
+    display: none !important;
+  }
+  .lineage-post > .mobile-card-action-rail {
+    display: grid !important;
+    grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+    gap: 0.36rem !important;
+    padding: 0.48rem 0.62rem !important;
+    border-top: 1px solid rgba(255,255,255,0.085) !important;
+    background: rgba(255,255,255,0.015) !important;
+    overflow: hidden !important;
+  }
+  .lineage-post > .mobile-card-action-rail .mobile-rail-action {
+    width: 100% !important;
+    min-width: 0 !important;
+    height: 2.05rem !important;
+    min-height: 2.05rem !important;
+    padding: 0 !important;
+    border-radius: 0.72rem !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+  .lineage-post > .mobile-card-action-rail .mobile-rail-action span {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    overflow: hidden !important;
+    clip: rect(0 0 0 0) !important;
+    white-space: nowrap !important;
+  }
+  .lineage-post > .mobile-card-action-rail .mobile-rail-edit {
+    grid-column: auto !important;
+    width: 100% !important;
+  }
+}
+
+@media (max-width: 680px) {
+  .feed-toolbar.discovery,
+  .feed-toolbar.lineage {
+    grid-template-columns: 1fr !important;
+    gap: 0.42rem !important;
+  }
+  .feed-toolbar.discovery .discovery-tools,
+  .feed-toolbar.discovery .discovery-tools-foundation,
+  .feed-toolbar.discovery .discovery-tools-layout,
+  .feed-toolbar.discovery .tree-toolbar-tools,
+  .feed-toolbar.lineage .lineage-search-wrap,
+  .feed-toolbar.lineage .lineage-action-tools {
+    width: 100% !important;
+    min-width: 0 !important;
+    grid-template-columns: auto auto minmax(0, 1fr) !important;
+    justify-content: stretch !important;
+  }
+  .feed-toolbar.discovery .search-box,
+  .feed-toolbar.lineage .search-box {
+    max-width: none !important;
+  }
+  .source-chip,
+  .source-mode-row .source-chip,
+  body.mobile-chrome .source-chip {
+    max-width: 44vw !important;
+    padding-inline: 0.48rem !important;
+  }
+}
+
+/* Display Options mobile: controls become clean vertical pickers without
+   label/select collisions, while desktop keeps the wider compact cards. */
+@media (max-width: 700px) {
+  .display-options-backdrop {
+    align-items: stretch !important;
+    padding: max(0.45rem, env(safe-area-inset-top)) 0.45rem max(0.45rem, env(safe-area-inset-bottom)) !important;
+  }
+  .display-options-panel {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: calc(100dvh - 0.9rem) !important;
+    max-height: calc(100dvh - 0.9rem) !important;
+    border-radius: 1rem !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+  }
+  .display-options-head {
+    flex: 0 0 auto !important;
+    padding: 0.9rem 1rem 0.72rem !important;
+  }
+  .display-options-body {
+    flex: 1 1 auto !important;
+    overflow: auto !important;
+    padding: 0.82rem !important;
+  }
+  .display-filter-picker.compact {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 0.55rem !important;
+  }
+  .display-filter-picker.compact .filter-select-wrap {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 0.32rem !important;
+    align-items: stretch !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+    border: 0 !important;
+  }
+  .display-filter-picker.compact .filter-select-wrap span {
+    position: static !important;
+    width: auto !important;
+    height: auto !important;
+    opacity: 1 !important;
+    clip: auto !important;
+    overflow: visible !important;
+    white-space: normal !important;
+    color: rgba(245,238,255,0.64) !important;
+    font-size: 0.72rem !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.08em !important;
+    font-weight: 900 !important;
+    padding: 0 0.1rem !important;
+  }
+  .display-filter-picker.compact .filter-select-wrap select {
+    width: 100% !important;
+    min-width: 0 !important;
+    height: 2.55rem !important;
+    padding-inline: 0.72rem !important;
+  }
+  .display-filter-picker.compact .display-filter-chip-row {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    gap: 0.35rem !important;
+    min-width: 0 !important;
+  }
+  .display-filter-picker.compact .display-filter-chip,
+  .display-filter-picker.compact .display-filter-clear {
+    max-width: 100% !important;
+  }
+  .temporal-lens-grid.temporal-range-grid {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 0.46rem !important;
+  }
+  .temporal-lens-grid.temporal-range-grid .tv-btn {
+    width: 100% !important;
+  }
+}
+
+/* CP320: source strip ownership + no-jump mobile chrome. */
+.workspace > .workspace-source-strip,
+.workspace .mobile-source-mode-row .workspace-source-strip,
+.workspace.single-source-state > .workspace-source-strip,
+.workspace.single-source-state > .mobile-source-mode-row .workspace-source-strip,
+body.mobile-chrome .workspace.single-source-state > .workspace-source-strip,
+body.mobile-lens .workspace.single-source-state > .workspace-source-strip,
+body.mobile-chrome .workspace.single-source-state > .mobile-source-mode-row .workspace-source-strip,
+body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .workspace-source-strip {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  text-align: left !important;
+  gap: 0.38rem !important;
+  min-height: 2rem !important;
+  max-height: 2.35rem !important;
+  height: auto !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  white-space: nowrap !important;
+  scrollbar-width: thin !important;
+  -webkit-overflow-scrolling: touch !important;
+  pointer-events: auto !important;
+  border-width: 1px !important;
+}
+
+.workspace > .workspace-source-strip,
+.workspace .mobile-source-mode-row .workspace-source-strip {
+  padding: 0.32rem 0.7rem !important;
+  margin: 0 !important;
+}
+
+.workspace-source-strip .workspace-source-pill,
+.mobile-source-mode-row .workspace-source-pill,
+.source-mode-row .workspace-source-pill,
+.workspace-source-strip .source-pill,
+.workspace-source-strip .source-chip {
+  flex: 0 0 auto !important;
+  min-width: max-content !important;
+  max-width: min(14rem, 72vw) !important;
+  white-space: nowrap !important;
+}
+
+.workspace-source-strip .workspace-source-pill > span,
+.mobile-source-mode-row .workspace-source-pill > span,
+.source-mode-row .workspace-source-pill > span {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+@media (max-width: 640px) {
+  .workspace > .workspace-source-strip,
+  .workspace .mobile-source-mode-row .workspace-source-strip,
+  .workspace.single-source-state > .workspace-source-strip,
+  .workspace.single-source-state > .mobile-source-mode-row .workspace-source-strip,
+  body.mobile-chrome .workspace:not(.single-source-state) > .workspace-source-strip,
+  body.mobile-lens .workspace:not(.single-source-state) > .workspace-source-strip,
+  body.mobile-chrome .workspace.single-source-state > .workspace-source-strip,
+  body.mobile-lens .workspace.single-source-state > .workspace-source-strip {
+    justify-content: flex-start !important;
+    text-align: left !important;
+    padding: 0.26rem 0.58rem !important;
+    min-height: 1.92rem !important;
+    max-height: 2rem !important;
+    border-width: 0 !important;
+    scrollbar-width: none !important;
+    mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 1.1rem), transparent 100%);
+  }
+
+  .workspace > .workspace-source-strip::-webkit-scrollbar,
+  .workspace .mobile-source-mode-row .workspace-source-strip::-webkit-scrollbar,
+  .workspace-source-tabs::-webkit-scrollbar,
+  .source-tabs::-webkit-scrollbar,
+  .workspace-sources::-webkit-scrollbar {
+    display: none !important;
+  }
+
+  .workspace-source-strip .workspace-source-pill,
+  .mobile-source-mode-row .workspace-source-pill,
+  .source-mode-row .workspace-source-pill {
+    max-width: min(12.5rem, 68vw) !important;
+    min-height: 1.55rem !important;
+    padding: 0.16rem 0.46rem !important;
+    font-size: 0.7rem !important;
+  }
+
+  .workspace-source-strip .source-close-btn,
+  .mobile-source-mode-row .source-close-btn,
+  .source-mode-row .source-close-btn {
+    width: 1.18rem !important;
+    min-width: 1.18rem !important;
+    height: 1.18rem !important;
+    min-height: 1.18rem !important;
+    margin-left: 0.18rem !important;
+  }
+
+  .workspace-source-strip.source-strip-empty {
+    display: none !important;
+    min-height: 0 !important;
+    max-height: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Preserve the layout slot while fading reading chrome. This keeps scrolling
+     stable: expanding/collapsing chrome no longer pushes the card list down/up. */
+  body.mobile-reading .topbar,
+  body.mobile-reading .topbar.compact,
+  body.mobile-reading .topbar-foundation,
+  body.mobile-reading .topbar-shell,
+  body.mobile-reading .topbar-layout,
+  body.mobile-reading .topbar-actions,
+  body.mobile-reading .topbar-branded,
+  body.mobile-reading .workspace-header,
+  body.mobile-reading .workspace-top,
+  body.mobile-reading .workspace-title-row,
+  body.mobile-reading .workspace-source-tabs,
+  body.mobile-reading .source-tabs,
+  body.mobile-reading .workspace-sources,
+  body.mobile-reading .feed-toolbar.discovery,
+  body.mobile-reading .feed-toolbar.discovery.feed-toolbar-foundation,
+  body.mobile-reading .feed-toolbar.discovery.feed-toolbar-shell,
+  body.mobile-reading .feed-toolbar.discovery.feed-toolbar-layout,
+  body.mobile-reading .lineage-toolbar,
+  body.mobile-reading .lineage-search-wrap,
+  body.mobile-reading .preview-filter-bar {
+    max-height: none !important;
+    min-height: revert !important;
+    height: auto !important;
+    padding-top: revert !important;
+    padding-bottom: revert !important;
+    margin-top: revert !important;
+    margin-bottom: revert !important;
+    border-width: revert !important;
+    overflow: visible !important;
+    pointer-events: none !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    transform: translateY(-0.35rem) !important;
+    transition: opacity 140ms ease, transform 160ms ease, visibility 0s linear 160ms !important;
+  }
+
+  body.mobile-reading .workspace-header,
+  body.mobile-reading .workspace-top,
+  body.mobile-reading .workspace-title-row {
+    padding: 0.55rem 0.72rem 0.42rem !important;
+  }
+
+  body.mobile-reading .workspace-source-tabs,
+  body.mobile-reading .source-tabs,
+  body.mobile-reading .workspace-sources,
+  body.mobile-reading .workspace > .workspace-source-strip {
+    padding: 0.26rem 0.58rem !important;
+    min-height: 1.92rem !important;
+    max-height: 2rem !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+  }
+
+  body.mobile-reading .feed-toolbar.discovery,
+  body.mobile-reading .feed-toolbar.discovery.feed-toolbar-foundation,
+  body.mobile-reading .feed-toolbar.discovery.feed-toolbar-shell,
+  body.mobile-reading .feed-toolbar.discovery.feed-toolbar-layout,
+  body.mobile-reading .lineage-toolbar,
+  body.mobile-reading .lineage-search-wrap {
+    padding: 0.4rem 0.55rem !important;
+    min-height: 2.55rem !important;
+    overflow: visible !important;
+  }
+
+  body.mobile-reading .topbar,
+  body.mobile-reading .topbar.compact,
+  body.mobile-reading .topbar-foundation,
+  body.mobile-reading .topbar-shell,
+  body.mobile-reading .topbar-layout,
+  body.mobile-reading .topbar-actions,
+  body.mobile-reading .topbar-branded {
+    min-height: 2.75rem !important;
+    padding-top: 0.2rem !important;
+    padding-bottom: 0.2rem !important;
+  }
+
+  body.mobile-reading .workspace.mobile-chrome-compact .workspace-source-strip,
+  body.mobile-reading .workspace.mobile-chrome-compact .mobile-source-mode-row .workspace-source-strip {
+    display: flex !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+  }
+}
