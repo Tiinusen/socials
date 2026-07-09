@@ -32,7 +32,7 @@ try {
   const bundlePath = join(out, 'tiinex.bundle.js');
   const stylesPath = join(out, 'styles.css');
 
-  for (const required of [indexPath, bundlePath, stylesPath, join(out, '.nojekyll'), join(out, 'assets'), join(out, '.topics'), join(out, 'samples'), join(out, 'llms.txt'), join(out, 'tiinex.app.llm.v1.md')]) {
+  for (const required of [indexPath, bundlePath, stylesPath, join(out, '.nojekyll'), join(out, 'assets'), join(out, '.topics'), join(out, 'samples'), join(out, 'llms.txt'), join(out, 'tiinex.app.llm.v1.md'), join(out, 'favicon.ico')]) {
     if (!existsSync(required)) fail(`Missing public build output: ${required}`);
   }
 

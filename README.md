@@ -1,3 +1,25 @@
+# CP327 — single startup progress + favicon
+
+CP327 follows CP326 after field testing showed `bootFromUrl` was only called once, but the route-owned GitHub source load still looked like two loads: repo material rendered once, then the configured issue/social surface continued and the user saw loading return. The app also lacked a favicon, causing `/favicon.ico` 404s.
+
+Root cause:
+
+- Route-owned startup used the same source load presentation as ordinary repo discovery. Repo discovery cleared `ws.loading` and rendered after repo files finished, even when configured issue discovery still belonged to the same route source load.
+- The source repo had a Tiinex logo asset, but neither source nor public build emitted `favicon.ico`.
+
+Changes:
+
+- Initial route-owned GitHub loads now use the continuous source-refresh progress path, keeping one progress presentation until repo files, configured issue URLs, broad issue discovery, finalization, and render completion are done.
+- Added `TiinexDiagnostics.routeLoadPresentationReport()` for route-owned loading state.
+- Added root `favicon.ico` generated from the Tiinex logo and linked it from `index.html`.
+- Public build now copies `favicon.ico`; public check requires it.
+
+Validation focus:
+
+- Fresh `#state` load should show one continuous loading phase and then content, not content flash followed by a second loading phase.
+- Browser/mobile back with an already materialized matching workspace should reuse the workspace without clearing visible cards.
+- `https://tiinex.dev/favicon.ico` should no longer 404 after publish.
+
 # CP326 — route restore reuses materialized sources
 
 CP326 follows CP325 after field testing showed that initial load and mobile back/swipe could still clear the current workspace, show discovery progress, briefly render content, and then reload the same source again.

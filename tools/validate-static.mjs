@@ -1484,6 +1484,7 @@ function validateRootPackageShape() {
 
   const repoMetadataRootEntries = new Set([
     'CNAME',
+    'favicon.ico',
     'LICENSE',
     'NOTICE',
     'discord'

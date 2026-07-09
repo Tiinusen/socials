@@ -77,7 +77,7 @@ function main() {
   writeFileSync(join(out, 'index.html'), publicIndex, 'utf8');
   writeFileSync(join(out, 'tiinex.bundle.js'), bundleSource(), 'utf8');
 
-  for (const file of ['styles.css', 'llms.txt', 'tiinex.app.llm.v1.md']) {
+  for (const file of ['styles.css', 'llms.txt', 'tiinex.app.llm.v1.md', 'favicon.ico']) {
     copyPath(file, out);
   }
   for (const dir of ['assets', '.topics', 'samples']) {

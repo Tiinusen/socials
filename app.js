@@ -651,6 +651,26 @@
     };
   }
 
+  function routeLoadPresentationReport() {
+    return {
+      schema: 'tiinex.route-load-presentation.report.v1',
+      policy: 'route-owned startup keeps one continuous progress presentation until repo and configured issue surfaces finish; intermediate repo completion must not flash content and restart loading',
+      routeBoot: app.startupBoot || {},
+      routing: app.routing?.lastApplyRouteState || null,
+      workspaces: (app.workspaces || []).map((ws) => ({
+        label: ws.label || '',
+        repo: ws.repo || '',
+        ref: ws.ref || '',
+        loading: Boolean(ws.loading),
+        progressPhase: ws.discoveryProgress?.phase || '',
+        sourceProgress: ws.discoveryProgress?.sourceProgress || '',
+        nodes: Array.isArray(ws.nodes) ? ws.nodes.length : 0,
+        files: ws.files?.size || 0,
+        selected: Boolean(ws.selectedNodeId || ws.pendingSelectedRoute)
+      }))
+    };
+  }
+
   function routeAndLocalStateContinuityReport() {
     let registry = [];
     try { registry = readLocalStateRegistry(); } catch (_) {}
@@ -715,6 +735,7 @@
     publicViewerShareUrlFor: (url, adapter = '') => publicViewerShareUrlForTarget(url, adapter),
     parseHashShareTarget: (hash = location.hash) => parseHashShareTarget(hash),
     startupRouteInitReport: () => startupRouteInitReport(),
+    routeLoadPresentationReport: () => routeLoadPresentationReport(),
     configuredPublicViewerBaseUrl: () => configuredPublicViewerBaseUrl(),
     shareEligibilityForActive: () => shareEligibilityForActive(),
     shareEligibilityForWorkspace: (wsId = '') => shareEligibilityForWorkspaceId(wsId),
@@ -3871,6 +3892,7 @@
         recreateRequested: Boolean(recreate),
         sourcesMatch,
         reuseInPlace,
+        routeOwnedStartup: Boolean(!sourcesMatch && !reuseInPlace && !app.workspaces.length),
         routeSources: Array.isArray(state.sources) ? state.sources.length : 0,
         currentWorkspaces: app.workspaces.length
       };
@@ -3904,7 +3926,7 @@
         for (const source of state.sources) {
           const ws = createWorkspace(source.label || 'Shared lineage workspace', 'Loaded from URL route state.');
           if (source.kind === 'github-tree' || source.kind === 'github') {
-            await loadGitHubStateSourceIntoWorkspace(ws, source);
+            await loadGitHubStateSourceIntoWorkspace(ws, source, { routeOwnedStartup: true });
           } else {
             await loadUrlsIntoWorkspace(ws, source.urls || []);
           }
@@ -10594,7 +10616,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     // Source refresh/reconcile must not be a destructive config owner. Explicit
     // Save/source-edit owns disabling surfaces and has its own pruning path.
     if (options.allowSurfaceDisable) applyGitHubSourceSurfacePruning(ws, githubSource, enabledSurfaces, false);
-    const progressScope = options.userInitiated || options.refreshExisting || options.hardRefresh ? 'github-source-refresh' : '';
+    const progressScope = options.userInitiated || options.refreshExisting || options.hardRefresh || options.routeOwnedStartup ? 'github-source-refresh' : '';
     const keepProgressForIssueStage = Boolean(progressScope && enabledSurfaces.repoFiles && enabledSurfaces.issues && typeof discoverGitHubIssuesIntoWorkspace === 'function');
     if (enabledSurfaces.repoFiles && typeof discoverGitHubRepoIntoWorkspace === 'function') {
       await discoverGitHubRepoIntoWorkspace(ws, {

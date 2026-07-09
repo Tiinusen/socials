@@ -1,3 +1,26 @@
+# CP327 validation notes
+
+Validated locally after route-owned loading presentation and favicon fixes:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Manual browser validation requested:
+
+1. Open a public `#state` route. The app may show progress while repo/files/issues load, but content should appear once at the end rather than flashing and then returning to loading.
+2. On mobile, swipe/back to a previous view with the same workspace already present. It should restore view state without clearing the cards and starting the same source load over.
+3. Confirm `.site-publish/favicon.ico` exists after `npm run build:public`.
+4. Confirm `/favicon.ico` no longer 404s after publish.
+5. Run `TiinexDiagnostics.routeLoadPresentationReport()` if the load still appears to restart.
+
+Known non-blocking local static validation state:
+
+- `npm test` may still fail on pre-existing strict static/package hygiene checks. The runtime/public checkpoint gate above is the pass signal for this fix.
+
 # CP326 validation notes
 
 Validated locally after route restore/source-config identity changes:
