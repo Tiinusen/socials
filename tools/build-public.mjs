@@ -40,16 +40,6 @@ function copyPath(source, outDir, target = source) {
   cpSync(from, to, { recursive: true });
 }
 
-function publishCname() {
-  const envCname = (process.env.PAGES_CNAME || '').trim();
-  if (envCname) return envCname;
-
-  const sourceCnamePath = path('CNAME');
-  if (!existsSync(sourceCnamePath)) return '';
-
-  return readFileSync(sourceCnamePath, 'utf8').trim();
-}
-
 function stripLocalScripts(html) {
   let output = html;
   for (const script of scriptOrder) {
@@ -95,8 +85,9 @@ function main() {
   }
 
   writeFileSync(join(out, '.nojekyll'), '', 'utf8');
-
-  const cname = publishCname();
+  const envCname = (process.env.PAGES_CNAME || '').trim();
+  const sourceCname = existsSync(path('CNAME')) ? readFileSync(path('CNAME'), 'utf8').trim() : '';
+  const cname = envCname || sourceCname;
   if (cname) writeFileSync(join(out, 'CNAME'), `${cname}\n`, 'utf8');
 
   console.log(`Built public site: ${basename(out)}`);

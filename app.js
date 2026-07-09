@@ -651,6 +651,48 @@
     };
   }
 
+  function routeAndLocalStateContinuityReport() {
+    let registry = [];
+    try { registry = readLocalStateRegistry(); } catch (_) {}
+    const currentId = currentLocalStateCandidateId();
+    const snapshot = currentId ? localStateStoredSnapshot(currentId) : null;
+    return {
+      schema: 'tiinex.route-local-continuity.report.v1',
+      policy: 'browser back/view restore must reuse materialized workspaces; local-state restore matches local payload by label before repo/ref so source-backed workspaces do not absorb separate local workspaces',
+      startup: typeof startupRouteInitSummary === 'function' ? startupRouteInitSummary() : {},
+      routeBoot: app.startupBoot || {},
+      routing: {
+        restoring: Boolean(app.routing?.restoring),
+        popDirection: Number(app.routing?.popDirection || 0),
+        activeWorkspaceId: app.activeWorkspaceId || ''
+      },
+      localState: {
+        currentId,
+        registryCount: registry.length,
+        snapshotWorkspaceCount: Array.isArray(snapshot?.workspaces) ? snapshot.workspaces.length : 0,
+        snapshotWorkspaces: (snapshot?.workspaces || []).map((saved) => ({
+          label: saved.label || '',
+          repo: saved.repo || '',
+          ref: saved.ref || '',
+          localPayload: localStateSnapshotHasLocalPayload(saved),
+          files: Array.isArray(saved.files) ? saved.files.length : 0,
+          assets: Array.isArray(saved.assets) ? saved.assets.length : 0,
+          sourceCount: Array.isArray(saved.sources) ? saved.sources.length : 0
+        }))
+      },
+      workspaces: (app.workspaces || []).map((ws) => ({
+        label: ws.label || '',
+        repo: ws.repo || '',
+        ref: ws.ref || '',
+        selected: Boolean(ws.selectedNodeId || ws.pendingSelectedRoute),
+        mobileChromeCompact: Boolean(ws.mobileChromeCompact),
+        sourceCount: ws.sources?.size || 0,
+        files: ws.files?.size || 0,
+        nodes: ws.nodes?.length || 0
+      }))
+    };
+  }
+
   window.TiinexDiagnostics = Object.assign(window.TiinexDiagnostics || {}, {
     githubIssueImportTrace: () => githubIssueImportTraceEnsure().slice(),
     githubIssueImportTraceJson,
@@ -2464,6 +2506,7 @@
     ws.pendingSelectedRoute = null;
     suppressCachedLens('select-node-lineage-route', 1200);
     lockLineageView(ws, node, 'select-node');
+    if (typeof expandMobileChromeForLineage === 'function') expandMobileChromeForLineage(ws, 'select-node');
 
     if (typeof setRouteState === 'function') setRouteState('push');
     else updateUrlState();
@@ -10870,10 +10913,26 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     }, 0);
   }
 
+  function localStateSnapshotHasLocalPayload(saved) {
+    if (!saved) return false;
+    const files = Array.isArray(saved.files) ? saved.files : [];
+    const assets = Array.isArray(saved.assets) ? saved.assets : [];
+    const sources = Array.isArray(saved.sources) ? saved.sources : [];
+    return Boolean(
+      files.length
+      || assets.length
+      || sources.some((source) => ['local', 'draft', 'upload', 'generated'].includes(String(source?.kind || source?.id || '').toLowerCase()))
+    );
+  }
+
   function workspaceMatchesLocalStateSnapshot(ws, saved) {
     if (!ws || !saved) return false;
-    if (saved.repo && ws.repo && saved.repo === ws.repo && (saved.ref || '') === (ws.ref || '')) return true;
+    // Local-state snapshots are continuity workspaces first. Repo/ref is only a
+    // source resolver and must not merge a local workspace into a remote/default
+    // workspace that happens to use the same GitHub source.
     if (saved.label && ws.label && saved.label === ws.label) return true;
+    if (localStateSnapshotHasLocalPayload(saved)) return false;
+    if (saved.repo && ws.repo && saved.repo === ws.repo && (saved.ref || '') === (ws.ref || '')) return true;
     return false;
   }
 
@@ -21726,6 +21785,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     if (selected) {
       ws.selectedNodeId = selected.id;
       ws.pendingSelectedRoute = null;
+      if (typeof expandMobileChromeForLineage === 'function') expandMobileChromeForLineage(ws, 'route-state');
       return;
     }
     if (wantsLineage) {
@@ -21737,6 +21797,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
         selectedTitle: source.selectedTitle || '',
         mode: 'lineage'
       };
+      if (typeof expandMobileChromeForLineage === 'function') expandMobileChromeForLineage(ws, 'pending-route-state');
       return;
     }
     ws.selectedNodeId = null;
@@ -30055,6 +30116,13 @@ ${githubOutboundFileExcerpt(file, 18000)}
     return Boolean(currentCompact);
   }
 
+  function expandMobileChromeForLineage(ws, reason = 'lineage-open') {
+    if (!window.matchMedia?.('(max-width: 640px)').matches) return;
+    if (ws) setWorkspaceChromeCompact(ws, false);
+    document.body.classList.remove('mobile-reading');
+    document.body.dataset.mobileReadingChromeOwner = `lineage:${reason}`;
+  }
+
   function onMobileFeedScroll(event) {
     if (!window.matchMedia?.('(max-width: 640px)').matches) return;
     const el = event.target;
@@ -35269,6 +35337,48 @@ ${raw.slice(0, 800)}`) || 'en')}">
     };
   }
 
+  function routeAndLocalStateContinuityReport() {
+    let registry = [];
+    try { registry = readLocalStateRegistry(); } catch (_) {}
+    const currentId = currentLocalStateCandidateId();
+    const snapshot = currentId ? localStateStoredSnapshot(currentId) : null;
+    return {
+      schema: 'tiinex.route-local-continuity.report.v1',
+      policy: 'browser back/view restore must reuse materialized workspaces; local-state restore matches local payload by label before repo/ref so source-backed workspaces do not absorb separate local workspaces',
+      startup: typeof startupRouteInitSummary === 'function' ? startupRouteInitSummary() : {},
+      routeBoot: app.startupBoot || {},
+      routing: {
+        restoring: Boolean(app.routing?.restoring),
+        popDirection: Number(app.routing?.popDirection || 0),
+        activeWorkspaceId: app.activeWorkspaceId || ''
+      },
+      localState: {
+        currentId,
+        registryCount: registry.length,
+        snapshotWorkspaceCount: Array.isArray(snapshot?.workspaces) ? snapshot.workspaces.length : 0,
+        snapshotWorkspaces: (snapshot?.workspaces || []).map((saved) => ({
+          label: saved.label || '',
+          repo: saved.repo || '',
+          ref: saved.ref || '',
+          localPayload: localStateSnapshotHasLocalPayload(saved),
+          files: Array.isArray(saved.files) ? saved.files.length : 0,
+          assets: Array.isArray(saved.assets) ? saved.assets.length : 0,
+          sourceCount: Array.isArray(saved.sources) ? saved.sources.length : 0
+        }))
+      },
+      workspaces: (app.workspaces || []).map((ws) => ({
+        label: ws.label || '',
+        repo: ws.repo || '',
+        ref: ws.ref || '',
+        selected: Boolean(ws.selectedNodeId || ws.pendingSelectedRoute),
+        mobileChromeCompact: Boolean(ws.mobileChromeCompact),
+        sourceCount: ws.sources?.size || 0,
+        files: ws.files?.size || 0,
+        nodes: ws.nodes?.length || 0
+      }))
+    };
+  }
+
   window.TiinexDiagnostics = Object.assign(window.TiinexDiagnostics || {}, {
     mobileActionLayoutReadinessReport,
     mobileActionOwnershipReport,
@@ -35276,7 +35386,8 @@ ${raw.slice(0, 800)}`) || 'en')}">
     routeReuseReadinessReport,
     publishReadyShareBoundaryReport,
     sourceChromeStabilityReport,
-    previewMaterialFilterReadinessReport
+    previewMaterialFilterReadinessReport,
+    routeAndLocalStateContinuityReport
   });
 
 

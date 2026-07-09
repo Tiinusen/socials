@@ -22368,3 +22368,35 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
     pointer-events: none !important;
   }
 }
+
+
+@media (max-width: 640px) {
+  /* CP325: lineage is a navigation/read surface, not discovery scrolling chrome.
+     Opening/restoring lineage from a compact discovery scroll must keep the
+     lineage toolbar/search available instead of inheriting hidden discovery chrome. */
+  body.mobile-reading .feed-toolbar.lineage,
+  body.mobile-reading .lineage-toolbar,
+  body.mobile-reading .lineage-search-wrap {
+    max-height: none !important;
+    min-height: 0 !important;
+    height: auto !important;
+    opacity: 1 !important;
+    padding-top: initial !important;
+    padding-bottom: initial !important;
+    margin-top: initial !important;
+    margin-bottom: initial !important;
+    border-width: initial !important;
+    overflow: visible !important;
+    pointer-events: auto !important;
+  }
+
+  .workspace.mobile-chrome-compact .feed-toolbar.lineage .search-box,
+  .workspace.mobile-chrome-compact .feed-toolbar.lineage .preview-toggle,
+  .workspace.mobile-chrome-compact .feed-toolbar.lineage .tree-all-toggle,
+  .workspace.mobile-chrome-compact .feed-toolbar.lineage .lineage-display-spacer {
+    max-height: none !important;
+    height: auto !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+  }
+}

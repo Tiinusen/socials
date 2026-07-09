@@ -1,3 +1,21 @@
+# CP325 validation notes
+
+Validated locally after mobile lineage chrome, local-state matching, and CNAME publish fixes:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Manual checks requested:
+
+1. From mobile discovery mid-scroll, open a lineage card; lineage toolbar/search should be available instead of inheriting the hidden discovery chrome state.
+2. Restart after saving a local workspace with a GitHub source; a separate local workspace should stay separate and not merge into Tiinex/docs only because repo/ref match.
+3. Confirm `.site-publish/CNAME` contains `tiinex.dev` after `npm run build:public`.
+4. Run `TiinexDiagnostics.routeAndLocalStateContinuityReport()` after restart/back navigation.
+
 # CP324 validation notes
 
 Validated locally after repairing workspace export/source-config ownership:

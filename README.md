@@ -1,3 +1,15 @@
+# CP325 — route/local continuity + mobile lineage chrome
+
+CP325 follows CP324 after field testing showed that mobile lineage inherited collapsed discovery chrome, local workspaces with GitHub sources could be merged into the default Tiinex/docs workspace on restart, and public deploys needed CNAME to survive force-orphan publishes.
+
+Changes:
+
+- Mobile lineage entry now expands mobile chrome when selecting or restoring a lineage route, so the lineage toolbar/search does not inherit a collapsed discovery feed state.
+- Local-state restore now treats local payload workspaces as workspace-continuity identities first; repo/ref is only a remote resolver fallback and must not absorb separate local workspaces into Tiinex/docs.
+- Public build now writes `.site-publish/CNAME` from `PAGES_CNAME` or root `CNAME`.
+- Added root `CNAME` for `tiinex.dev`.
+- Added `TiinexDiagnostics.routeAndLocalStateContinuityReport()`.
+
 # CP324 — workspace config source truth
 
 CP324 follows CP323 and a field report that Save workspace exported the active GitHub source as local-only. The root cause was export-state ownership: the base route state filtered out workspaces with no generic URL list before the GitHub-source wrapper could attach repo/ref/root/issue config, so `.workspace.md` export fell back to a local entrypoint.
