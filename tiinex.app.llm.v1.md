@@ -1,4 +1,3 @@
-## CP335 LLM note
+## CP336 LLM note
 
-CP335 treats mobile chrome collapse as a layout ownership issue. When `body.mobile-reading` is active, transient source/tool rows must not preserve empty spacer height after Feed/Tree has moved into the workspace title row. Preserve near-top safety, but let feed and lineage cards reclaim space while reading.
-
+CP336 treats `.workspace.md` export as a human-first artifact with a technical appendix. Do not place large source caches in the primary `Workspace Entrypoints` section. Summarize workspaces first, preserve technical restore state in `Workspace State`, keep `Machine State` topology visible, and keep source caches in `Source Caches`. Local browser material may be embedded in `Workspace State.localWorkspaces` and must restore to the owning workspace by label/topology rather than being absorbed into the active GitHub workspace. Use `TiinexDiagnostics.workspaceExportTopologyReport()` before Move/Rewire work.

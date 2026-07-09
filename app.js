@@ -112,9 +112,9 @@
   };
 
   const TIINEX_APP_BUILD = Object.freeze({
-    release: '335',
-    codename: 'mobile-chrome-reclaim',
-    packageName: 'tiinex-site-335-clean-repo',
+    release: '336',
+    codename: 'human-first-workspace-topology',
+    packageName: 'tiinex-site-336-clean-repo',
     builtFor: 'Tiinex/site source repo',
     publicBuildOutputExcluded: true
   });
@@ -994,6 +994,7 @@
     uxPolishReadinessReport: () => uxPolishReadinessReport(),
     previewMaterialFilterReadinessReport: () => previewMaterialFilterReadinessReport(),
     workspaceSourceConfigReadinessReport: () => workspaceSourceConfigReadinessReport(),
+    workspaceExportTopologyReport: () => workspaceExportTopologyReport(),
     shareSignalPreviewForActive: (reason = '', intent = 'share') => shareSignalRecord(shareEligibilityForActive(), { intent, reason }),
     shareCounterObservationReport: () => shareCounterObservationReport(),
     crossWorkspaceRelationPickerReport: () => crossWorkspaceRelationPickerReport(),
@@ -8113,9 +8114,25 @@
       if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
     }
 
+    const embeddedLocalWorkspaces = Array.isArray(state.localWorkspaces) ? state.localWorkspaces : (Array.isArray(state.localState?.workspaces) ? state.localState.workspaces : []);
+    if (embeddedLocalWorkspaces.length && typeof restoreLocalStateIntoCurrentWorkspaces === 'function') {
+      const restoredLocal = restoreLocalStateIntoCurrentWorkspaces({
+        displayName: state.localState?.displayName || state.localDisplayName || '',
+        activeWorkspaceLabel: state.activeWorkspaceLabel || state.localState?.activeWorkspaceLabel || '',
+        workspaceOffset: state.localState?.workspaceOffset,
+        workspaces: embeddedLocalWorkspaces
+      });
+      if (restoredLocal && !firstWs) firstWs = app.workspaces.find((ws) => embeddedLocalWorkspaces.some((saved) => saved?.label && saved.label === ws.label)) || app.workspaces[0] || null;
+    }
+
     if (firstWs) {
       app.activeWorkspaceId = firstWs.id;
       if (typeof focusWorkspaceWindow === 'function') focusWorkspaceWindow(firstWs.id);
+    }
+    const activeLabel = String(state.activeWorkspaceLabel || state.localState?.activeWorkspaceLabel || '').trim();
+    if (activeLabel) {
+      const active = app.workspaces.find((ws) => ws.label === activeLabel);
+      if (active) app.activeWorkspaceId = active.id;
     }
     if (Number.isFinite(state.workspaceOffset)) app.workspaceOffset = Math.max(0, Number(state.workspaceOffset) || 0);
     if (typeof setRouteState === 'function' && options.preserveShareHash !== true) setRouteState('replace');
@@ -8169,6 +8186,17 @@
     const state = typeof routeState === 'function' ? routeState() : { v: 1, sources: [] };
     state.exportedAt = new Date().toISOString();
     state.exportedBy = 'tiinex-lineage-viewer';
+    state.activeWorkspaceLabel = getActiveWorkspace()?.label || '';
+    const localWorkspaces = typeof localStateSerializableWorkspaces === 'function' ? localStateSerializableWorkspaces() : [];
+    if (localWorkspaces.length) {
+      state.localWorkspaces = localWorkspaces;
+      state.localState = {
+        displayName: app.localState?.currentDisplayName || '',
+        activeWorkspaceLabel: state.activeWorkspaceLabel,
+        workspaceOffset: Number(app.workspaceOffset || 0) || 0,
+        workspaceCount: localWorkspaces.length
+      };
+    }
     return state;
   }
 
@@ -12445,8 +12473,34 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return out;
   }
 
+  function parseWorkspaceSourceCaches(markdown) {
+    const section = markdownSectionContent(markdown, 'Source Caches', 2) || markdownSectionContent(markdown, 'Technical Source Caches', 2);
+    const out = new Map();
+    if (!section) return out;
+    const lines = normalizeMarkdown(section).split('\n');
+    let current = null;
+    for (const raw of lines) {
+      const h = raw.match(/^###\s+(.+?)\s*$/);
+      if (h) {
+        current = stripMarkdownInline(h[1].trim());
+        if (!out.has(current)) out.set(current, {});
+        continue;
+      }
+      if (!current) continue;
+      const kv = keyValuePair(raw);
+      if (!kv) continue;
+      const entry = out.get(current) || {};
+      const key = kv.key.toLowerCase();
+      if (['issue thread cache', 'github issue cache'].includes(key)) entry.issueThreadCache = stripMarkdownInline(kv.value || '').trim();
+      if (['source kind', 'kind'].includes(key)) entry.kind = stripMarkdownInline(kv.value || '').trim();
+      out.set(current, entry);
+    }
+    return out;
+  }
+
   function parseWorkspaceEntrypoints(markdown, configUrl, machineState = null) {
     const section = markdownSectionContent(markdown, 'Workspace Entrypoints', 2);
+    const sourceCaches = parseWorkspaceSourceCaches(markdown);
     if (!section) return null;
 
     const lines = normalizeMarkdown(section).split('\n');
@@ -12509,7 +12563,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         });
         source.configuredIssueUrls = parseSourceIssueUrls(splitCsv(allKv(map, ['Issue URL', 'Issue URLs', 'Social Target URL', 'Social Target URLs'])).join('\n'), source.repo);
         source.issueUrls = source.configuredIssueUrls.slice();
-        const encodedIssueCache = firstKv(map, ['Issue Thread Cache', 'GitHub Issue Cache'], '');
+        const encodedIssueCache = firstKv(map, ['Issue Thread Cache', 'GitHub Issue Cache'], '') || sourceCaches.get(label)?.issueThreadCache || sourceCaches.get(group.title)?.issueThreadCache || '';
         if (encodedIssueCache) {
           try { source.issueThreadCache = JSON.parse(b64UrlDecode(encodedIssueCache)); } catch (_) { source.issueThreadCache = {}; }
         }
@@ -12539,7 +12593,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           });
           source.configuredIssueUrls = parseSourceIssueUrls(splitCsv(allKv(map, ['Issue URL', 'Issue URLs', 'Social Target URL', 'Social Target URLs'])).join('\n'), source.repo);
           source.issueUrls = source.configuredIssueUrls.slice();
-          const encodedIssueCache = firstKv(map, ['Issue Thread Cache', 'GitHub Issue Cache'], '');
+          const encodedIssueCache = firstKv(map, ['Issue Thread Cache', 'GitHub Issue Cache'], '') || sourceCaches.get(label)?.issueThreadCache || sourceCaches.get(group.title)?.issueThreadCache || '';
           if (encodedIssueCache) {
             try { source.issueThreadCache = JSON.parse(b64UrlDecode(encodedIssueCache)); } catch (_) { source.issueThreadCache = {}; }
           }
@@ -12630,6 +12684,32 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return clean ? `## ${title}\n\n${clean}` : '';
   }
 
+  function workspaceDescriptorSourceSummary(item) {
+    const source = item?.source || {};
+    if (item?.shareable && (source.kind === 'github-tree' || source.kind === 'github')) return `GitHub repo ${source.repo || ''}${source.requestedRef || source.ref ? ` @ ${source.requestedRef || source.ref}` : ''}`.trim();
+    if (item?.shareable && (source.urls || []).length) return `${(source.urls || []).length} direct URL source${(source.urls || []).length === 1 ? '' : 's'}`;
+    if (item?.localOnlyItems) return `${item.localOnlyItems} local item${item.localOnlyItems === 1 ? '' : 's'}`;
+    return 'Local-only or unsaved material';
+  }
+
+  function workspaceHumanSummaryMarkdown(descriptors) {
+    const sections = [];
+    (descriptors || []).forEach((item) => {
+      const source = item.source || {};
+      const lines = [
+        `- Source: ${workspaceDescriptorSourceSummary(item)}`,
+        `- Portable entrypoint: ${item.shareable ? 'yes' : 'local state only'}`
+      ];
+      if ((source.rootPaths || []).length) lines.push(`- Roots: ${(source.rootPaths || []).join(', ')}`);
+      const issueCount = normalizedGitHubIssueUrls(source.issueUrls || source.configuredIssueUrls || [], source.repo || '').length;
+      if (issueCount) lines.push(`- GitHub issue targets: ${issueCount}`);
+      if (item.localOnlyItems) lines.push(`- Local material: ${item.localOnlyItems} item${item.localOnlyItems === 1 ? '' : 's'} preserved in Workspace State appendix`);
+      if (item.selectedPath) lines.push(`- Selected artifact: ${item.selectedPath}`);
+      sections.push(`### ${item.label}\n\n${lines.join('\n')}`);
+    });
+    return sections.join('\n\n');
+  }
+
   function workspaceEntrypointsMarkdown(descriptors) {
     const sections = [];
     (descriptors || []).forEach((item) => {
@@ -12647,48 +12727,85 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         lines.push(`- Issue Discovery: ${surfaces.issues ? 'on' : 'off'}`);
         if (source.discoveryDirective?.path) lines.push(`- Discovery Directive: ${source.discoveryDirective.path}`);
         normalizedGitHubIssueUrls(source.issueUrls || source.configuredIssueUrls || [], source.repo || '').filter(Boolean).forEach((url) => lines.push(`- Issue URL: ${url}`));
-        if (source.issueThreadCache && Object.keys(source.issueThreadCache).length) {
-          try { lines.push(`- Issue Thread Cache: ${b64UrlEncode(JSON.stringify(source.issueThreadCache))}`); } catch (_) {}
-        }
       } else if (item.shareable && (source.urls || []).length) {
         lines.push('- Source Kind: urls');
         (source.urls || []).forEach((url) => lines.push(`- URL: ${url}`));
       } else {
         lines.push('- Source Kind: local');
-        lines.push('- Open On Apply: no');
+        lines.push('- Open On Apply: yes');
+        lines.push('- Restore From: Workspace State appendix');
       }
       if (source.discoveryView && source.discoveryView !== 'feed') lines.push(`- Default View: ${source.discoveryView}`);
       if ((source.discoveryFilterSchema || source.filterSchema || 'all') !== 'all') lines.push(`- Default Filter: ${source.discoveryFilterSchema || source.filterSchema}`);
       if (source.discoverySearch) lines.push(`- Default Search: ${source.discoverySearch}`);
       if (item.selectedPath) lines.push(`- Selected Path: ${item.selectedPath}`);
-      if (item.localOnlyItems) lines.push(`- Local-only items omitted from portable config: ${item.localOnlyItems}`);
+      if (item.localOnlyItems) lines.push(`- Local material: preserved in Workspace State appendix (${item.localOnlyItems} item${item.localOnlyItems === 1 ? '' : 's'})`);
       sections.push(`### ${item.label}\n\n${lines.join('\n')}`);
     });
     return sections.join('\n\n');
   }
 
+  function workspaceSourceCachesMarkdown(descriptors) {
+    const sections = [];
+    (descriptors || []).forEach((item) => {
+      const source = item.source || {};
+      const lines = [];
+      if (source.issueThreadCache && Object.keys(source.issueThreadCache).length) {
+        try { lines.push(`- Issue Thread Cache: ${b64UrlEncode(JSON.stringify(source.issueThreadCache))}`); } catch (_) {}
+      }
+      if (lines.length) sections.push(`### ${item.label}\n\n${lines.join('\n')}`);
+    });
+    return sections.join('\n\n');
+  }
+
   function machineStateForExport(descriptors) {
+    const descriptorByLabel = new Map((descriptors || []).map((item) => [item.label, item]));
     const state = {
       schema: 'tiinex.workspace.machineState.v1',
       workspaceOffset: Number(app.workspaceOffset || 0) || 0,
       activeWorkspace: getActiveWorkspace()?.label || '',
       workspaces: []
     };
-    (app.workspaces || []).forEach((ws) => {
-      const item = { label: ws.label || '' };
+    (app.workspaces || []).forEach((ws, index) => {
+      const descriptor = descriptorByLabel.get(ws.label || '') || null;
+      const item = {
+        index: index + 1,
+        label: ws.label || '',
+        sourceKind: descriptor?.sourceKind || descriptor?.source?.kind || (workspaceHasLocalStateContent(ws) ? 'local' : ''),
+        localPayload: workspaceHasLocalStateContent(ws)
+      };
+      if (ws.repo) item.repo = ws.repo;
+      if (ws.ref) item.ref = ws.ref;
       if (ws.treeExpandedFolders && Object.keys(ws.treeExpandedFolders).length) item.treeExpandedFolders = ws.treeExpandedFolders;
       const expandedPaths = (ws.nodes || []).filter((node) => node.expanded).map((node) => node.path).filter(Boolean);
       if (expandedPaths.length) item.expandedPaths = expandedPaths;
       const selected = selectedNode(ws);
       if (selected?.path) item.selectedPath = selected.path;
-      if (Object.keys(item).length > 1) state.workspaces.push(item);
+      state.workspaces.push(item);
     });
     if (!state.workspaceOffset && !state.activeWorkspace && !state.workspaces.length) return null;
     return state;
   }
 
-
-
+  function workspaceExportTopologyReport() {
+    const state = viewerStateForExport();
+    const descriptors = app.workspaces.map((ws, index) => workspaceExportDescriptor(ws, index, state.sources));
+    return {
+      schema: 'tiinex.workspace-export-topology.report.v1',
+      policy: 'human-first workspace exports summarize workspaces before technical caches; local browser material is embedded in Workspace State and restored to its owning workspace by label/topology rather than absorbed by the active GitHub workspace',
+      workspaceCount: app.workspaces.length,
+      localWorkspaceCount: (state.localWorkspaces || []).length,
+      sourceCount: (state.sources || []).length,
+      descriptors: descriptors.map((item) => ({
+        label: item.label,
+        shareable: item.shareable,
+        sourceKind: item.sourceKind,
+        localOnlyItems: item.localOnlyItems,
+        selectedPath: item.selectedPath,
+        issueCacheMovedToAppendix: Boolean(item.source?.issueThreadCache && Object.keys(item.source.issueThreadCache).length)
+      }))
+    };
+  }
 
   function helpMarkdownFromConfig(markdown) {
     return markdownSectionContent(markdown, 'Help', 2);
@@ -13229,16 +13346,24 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const emptyStageLines = linesOrEmpty(subtitles.map((item) => `- Subtitle: ${item}`));
     const discovery = String(cfg.configDiscoveryMarkdown || '').trim();
     const workspaceEntrypoints = workspaceEntrypointsMarkdown(descriptors);
+    const workspaceSummary = workspaceHumanSummaryMarkdown(descriptors);
+    const sourceCaches = workspaceSourceCachesMarkdown(descriptors);
     const machineState = machineStateForExport(descriptors);
+    const workspaceState = state;
 
     const bodySections = [
       sectionBlock('Viewer Identity', identityLines),
+      sectionBlock('What this workspace opens', `This file is a human-readable entrypoint for ${descriptors.length} workspace${descriptors.length === 1 ? '' : 's'}. Technical restore state and source caches are kept in the appendix so a reader can understand the workspace before encountering machine payloads.`),
+      sectionBlock('Workspaces', workspaceSummary),
       sectionBlock('Empty Stage', emptyStageLines),
       sectionBlock('Workspace Discovery', discovery),
       sectionBlock('Workspace Entrypoints', workspaceEntrypoints),
       help ? sectionBlock('Help', help) : '',
       css ? sectionBlock('Custom CSS', `\`\`\`css\n${css}\n\`\`\``) : '',
-      machineState ? sectionBlock('Machine State', `\`\`\`json\n${JSON.stringify(machineState, null, 2)}\n\`\`\``) : ''
+      sectionBlock('Technical Appendix', 'The following sections preserve route/view state, local browser material, and source caches. They are intentionally placed after the human-facing workspace description.'),
+      sectionBlock('Workspace State', `\`\`\`json\n${JSON.stringify(workspaceState, null, 2)}\n\`\`\``),
+      machineState ? sectionBlock('Machine State', `\`\`\`json\n${JSON.stringify(machineState, null, 2)}\n\`\`\``) : '',
+      sourceCaches ? sectionBlock('Source Caches', sourceCaches) : ''
     ].filter(Boolean).join('\n\n');
 
     const summary = omitted.length

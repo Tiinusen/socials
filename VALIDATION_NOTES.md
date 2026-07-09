@@ -1,15 +1,8 @@
-# CP335 validation notes
+# CP336 validation notes
 
-Validated after mobile chrome reclaim fix.
+Validated the CP336 workspace export/topology pass after updating source and public build checks.
 
-Expected manual result on mobile:
-
-1. Scroll down in Feed or Lineage until chrome fades/collapses.
-2. The blank source/tool spacer below the workspace title row should disappear.
-3. The first visible card should move up and use the reclaimed space.
-4. Return near top; controls should remain reachable without covering the first card.
-
-Commands executed:
+Runtime gate passed:
 
 - `node --check app.js`
 - `npm run build:public`
@@ -17,3 +10,14 @@ Commands executed:
 - `node --check .site-publish/tiinex.bundle.js`
 - `npm run metrics`
 - `npm run storage:scan`
+
+Observed boundaries:
+
+- Human-facing workspace export sections now precede technical appendices.
+- Issue thread caches remain available for restore but are no longer emitted inside the primary workspace entrypoint list.
+- Embedded local workspace state is available in `Workspace State.localWorkspaces` so local material can restore to its owning workspace.
+- `Machine State.workspaces` is populated for all visible workspaces to make topology review possible even when no node is expanded.
+
+Known non-gate:
+
+- `npm run validate` remains a stricter static hygiene/checklist signal and is not the publish/runtime gate for this iteration.

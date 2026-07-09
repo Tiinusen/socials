@@ -1,15 +1,18 @@
-# CP335 — mobile chrome reclaim without blank spacer
+# CP336 — human-first workspace topology export
 
-CP335 follows CP334 after field testing showed mobile chrome/header fading out but leaving a blank spacer before the first feed card.
+CP336 makes Save workspace produce a human-first `.workspace.md` while keeping machine restore state and source caches available in a technical appendix.
 
 Changes:
 
-- Mobile reading mode now collapses transient source/mode/feed toolbar rows instead of keeping their reserved slot.
-- The workspace title row remains reachable near the top, but when reading it is compact and does not preserve the old source-row spacer.
-- First feed/lineage cards reclaim the released vertical space.
-- Build identity updated to `CP335-mobile-chrome-reclaim`.
+- Workspace exports now summarize what the file opens before technical caches.
+- GitHub issue-thread caches move out of `Workspace Entrypoints` into `Source Caches` after the human-facing sections.
+- `Workspace State` is exported explicitly and can carry local browser material for restore.
+- Local workspace material is restored to its owning workspace by label/topology instead of being silently absorbed into whichever GitHub workspace is active.
+- `Machine State` now lists all visible workspaces, not only workspaces with expanded/selected details.
+- Added `TiinexDiagnostics.workspaceExportTopologyReport()` to verify source/local topology before Move/Rewire work.
+- Build identity updated to `CP336-human-first-workspace-topology`.
 
-Validation gate:
+Validation:
 
 - `node --check app.js`
 - `npm run build:public`
