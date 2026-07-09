@@ -51,13 +51,13 @@ jobs:
         with:
           node-version: 20
 
-      - name: Check app syntax
+      - name: Validate app syntax
         run: node --check app.js
 
       - name: Build public site
         run: npm run build:public
 
-      - name: Check public artifact
+      - name: Check public publish artifact
         run: |
           npm run public:check
           node --check .site-publish/tiinex.bundle.js

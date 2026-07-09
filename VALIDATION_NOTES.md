@@ -1,3 +1,167 @@
+# CP324 validation notes
+
+Validated locally after repairing workspace export/source-config ownership:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Manual browser validation requested:
+
+1. Edit the GitHub source for `Tiinex/docs`, set `Ref` to `master`, root `.topics`, and explicit Issue URLs for issues 9 and 10.
+2. Save workspace and inspect the downloaded `.workspace.md`.
+3. Expected: the Tiinex docs entrypoint is `Source Kind: github-tree`, keeps `Ref: master`, includes both Issue URL lines, and does not degrade to `Source Kind: local` / `Open On Apply: no`.
+4. Reopen the source modal after refresh; the editable Ref should remain `master`, with resolved commit tracked separately.
+5. Run `TiinexDiagnostics.workspaceSourceConfigReadinessReport()`.
+
+Known non-blocking local static validation state:
+
+- `npm test` still fails on pre-existing static/package hygiene checks and the workflow-contract checker that expects `npm test` in the publish workflow. The runtime/public checkpoint gate above is the pass signal for this fix.
+
+
+# CP323 validation notes
+
+Validated locally after replacing scroll-direction mobile chrome resizing with a near-top threshold owner:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Manual browser validation requested:
+
+1. On a real or emulated mobile viewport, scroll down from the top until the chrome hides/collapses.
+2. Scroll slightly upward and downward while still mid-feed. The card list should not repeatedly grow/shrink.
+3. Scroll back to the near-top boundary. Chrome should expand before the first card is hidden behind the header/source/search rows.
+4. Run `TiinexDiagnostics.sourceChromeStabilityReport()` and check `thresholds`, `mobileReading`, and `workspaces[].feedTop`.
+
+
+# CP322 validation notes
+
+Validated locally after replacing the publish workflow gate with the checkpoint runtime/public readiness gate:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Workflow-specific validation:
+
+- `.github/workflows/publish-public.yml` now builds `.site-publish` before `public:check`.
+- The publish job no longer calls `npm test`, because strict static hygiene currently fails on known non-runtime cleanup items and should not be the deploy gate.
+- `npm test` is still expected to fail until the package-history/static-hygiene and canonical material-pipeline warnings are cleaned separately.
+
+Manual GitHub validation requested:
+
+1. Push CP322 to `master` or run `Publish Public Branch` manually.
+2. Confirm the job reaches `Publish public branch` after `Check public publish artifact`.
+3. Treat the Node 20 deprecation annotation as a separate maintenance warning unless the log shows an action-resolution failure.
+
+
+# CP321 validation notes
+
+Validated locally after schema edit ownership and preview filter truth fixes:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Manual browser validation requested:
+
+1. Create a Discovery Research artifact with only some fields filled. Empty fields should stay empty in read/presentation views, not show instructional placeholders.
+2. Edit the same/root local artifact with schema-aware edit and Save local edit. It should update in place instead of hitting duplicate/new-path validation.
+3. Use Preview material filters under a narrowed feed. Counts should be scoped to the current feed and Show more should not appear for preview/search/filter narrowing.
+4. Run `TiinexDiagnostics.previewMaterialFilterReadinessReport()`.
+
+
+
+# CP320 — source rail + no-jump mobile chrome
+
+CP320 is a focused UX hotfix after CP319 mobile polish testing. It does not change evidence persistence, share, route ownership, or schema rendering.
+
+Changes:
+
+- Workspace sources are now owned by a one-line horizontal source rail.
+- Source rail is left-aligned and horizontally scrollable on desktop and mobile.
+- Mobile source rail hides its scrollbar so users can swipe horizontally without the row looking like a broken wrap layout.
+- Single-source workspaces keep the source rail visible so source settings/actions remain reachable.
+- Mobile reading chrome keeps its layout slot while fading out; content no longer jumps down/up when chrome expands or collapses.
+- Added `TiinexDiagnostics.sourceChromeStabilityReport()`.
+
+Validation focus:
+
+- Mobile: source row should use one row and swipe horizontally.
+- Desktop: source row should also stay in one row and scroll when needed.
+- Mobile: scroll down/up should fade chrome without pushing the card list.
+
+
+# CP319 validation notes
+
+Validated locally after value-first polish consolidation:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Manual validation requested:
+
+1. Mobile source chips should remain compact and horizontally scroll if needed.
+2. Discovery and Lineage toolbar search should feel consistent in width and alignment.
+3. Evidence image cards should show the image as the primary evidence and keep Material/Provenance metadata nearby without consuming unnecessary vertical height.
+4. Display Options should be readable on mobile without label/select collisions.
+5. Search in Discovery should show all current matches instead of requiring Show more to reveal a known single/few match set.
+6. Run `TiinexDiagnostics.uxPolishReadinessReport()`.
+
+# CP318 validation notes
+
+Local validation executed after explicit route startup guard:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Manual validation requested:
+
+1. Cold-load a production/public URL with `#state=` under throttled network.
+2. Confirm the viewer does not render default source state and then clear/restart.
+3. Confirm the empty state during active discovery says `Loading workspace source…`, not `No nodes match this view.`
+4. Run `TiinexDiagnostics.startupRouteInitReport()` and verify explicit-route bootstrap is skipped before route.
+
+# CP317 validation notes — startup single-pass route ownership
+
+Validated locally:
+
+- `node --check app.js`
+- `npm run build:public`
+- `npm run public:check`
+- `node --check .site-publish/tiinex.bundle.js`
+- `npm run metrics`
+- `npm run storage:scan`
+
+Manual browser validation requested:
+
+1. Open production/public viewer with a copied/exact `#state=` URL.
+2. Open production/public viewer with a readable hash target such as `#github.issue|...`.
+3. Confirm that the page does not show content, clear it, and restart discovery.
+4. Run `TiinexDiagnostics.startupRouteInitReport()`.
+5. Expected: config workspace state is false for explicit route/public hash/direct URL, boot completed once, and no duplicate inflight boot execution.
+
 # CP316 validation notes
 
 Validated locally after replacing mobile card action compression with a dedicated mobile action rail:

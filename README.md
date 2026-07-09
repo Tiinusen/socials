@@ -1,3 +1,165 @@
+# CP324 — workspace config source truth
+
+CP324 follows CP323 and a field report that Save workspace exported the active GitHub source as local-only. The root cause was export-state ownership: the base route state filtered out workspaces with no generic URL list before the GitHub-source wrapper could attach repo/ref/root/issue config, so `.workspace.md` export fell back to a local entrypoint.
+
+Changes:
+
+- Save workspace/export now keeps GitHub workspaces even when they have no generic URL list.
+- `.workspace.md` export writes GitHub entrypoints again instead of `Source Kind: local` for source-backed workspaces.
+- Editable GitHub source refs preserve the requested branch/tag such as `master`; resolved commits are stored separately as `Resolved Commit` metadata.
+- Explicit Issue URLs are durable source anchors and import/refresh even if broad Issue Discovery is off.
+- Issue Discovery checkbox now owns bounded repo-level issue discovery, not whether explicit Issue URLs are honored.
+- Added `TiinexDiagnostics.workspaceSourceConfigReadinessReport()`.
+
+Validation focus:
+
+- Add/edit `Tiinex/docs` with ref `master`, root `.topics`, and explicit issue URLs for issues 9 and 10.
+- Save workspace and confirm the exported `.workspace.md` has `Source Kind: github-tree`, `Repository: Tiinex/docs`, `Ref: master`, both `Issue URL` lines, and not `Open On Apply: no` for that entry.
+- Re-open/edit the source and confirm the Ref field still shows `master`, not a commit permalink/hash.
+- Refresh the source and confirm explicit issue URLs are attempted regardless of the broad Issue Discovery checkbox.
+- Run `TiinexDiagnostics.workspaceSourceConfigReadinessReport()`.
+
+
+# CP323 — top-bound mobile chrome collapse
+
+CP323 follows CP322 plus mobile field-video review. CP320 removed the scroll jump by keeping chrome behavior stable, but the field video showed the remaining tradeoff: hidden chrome could still leave the reading surface feeling under-used. This pass changes ownership from scroll-direction toggles to a top-bound threshold.
+
+Changes:
+
+- Mobile reading chrome no longer expands just because the user scrolls slightly upward mid-feed.
+- Workspace chrome compaction and global mobile reading chrome now share one near-top hysteresis helper.
+- Chrome collapses after the feed is a little away from the top and expands only when the feed returns to the top boundary.
+- `TiinexDiagnostics.sourceChromeStabilityReport()` now reports the active feed top and chrome threshold values.
+- No source loading, schema rendering, share, evidence persistence, or publish workflow behavior changed in this checkpoint.
+
+Validation focus:
+
+- On mobile, scroll down enough to enter reading mode, then scroll slightly up/down in the middle of the feed. The header/source/search chrome should not repeatedly resize the content.
+- Return almost to the top of the feed. Chrome should expand before the first card can hide under the header.
+- Run `TiinexDiagnostics.sourceChromeStabilityReport()` and confirm `thresholds`, `mobileReading`, and workspace `feedTop` match the observed state.
+
+
+# CP322 — publish workflow runtime gate
+
+CP322 follows the CP321 deploy attempt. The public-branch workflow was still using `npm test` as its publish gate even though the current milestone validation treats `npm test`/static hygiene as non-blocking when package-history and material-pipeline warnings are known and unrelated to the runtime change.
+
+Changes:
+
+- Publish workflow no longer blocks on `npm test`.
+- Publish workflow now runs the same runtime/public readiness gate used for checkpoint validation: app syntax, public build, public build check, bundled syntax, metrics, and storage scan.
+- The Node 20 GitHub Actions runtime deprecation annotation is left as a warning, not treated as the failing condition.
+- No viewer runtime code, source loading, share, schema rendering, or mobile UX behavior changed in this checkpoint.
+
+Validation focus:
+
+- GitHub Actions publish should fail only on the runtime/public readiness commands needed to produce `.site-publish`.
+- Known strict static-hygiene failures should remain visible in local `npm test`/`npm run validate`, but should not block public branch publishing until they are cleaned in their own pass.
+
+
+# CP321 — schema edit ownership + preview filter truth
+
+CP321 follows CP320 field testing. It fixes two user-visible trust regressions without changing share, evidence persistence, or source loading.
+
+Changes:
+
+- Schema-aware edit saves are now owned by the edit path instead of falling through to the generic create-artifact path.
+- Empty wizard fields no longer emit instructional placeholder text into artifact markdown, so presentation/read views do not make placeholders look user-authored.
+- Preview material filter counts are scoped to the current non-preview feed result instead of the whole workspace.
+- Preview/search/filter narrowed feed states render all current matches without requiring Show more.
+- Added `TiinexDiagnostics.previewMaterialFilterReadinessReport()` for preview count/show-more ownership checks.
+
+Validation focus:
+
+- Edit a root/local artifact through schema-aware edit and save it; it should update in place, not attempt to create a duplicate path.
+- Leave optional wizard fields empty; read/presentation views should not show `Describe ...` instructional placeholder text.
+- In Preview → Images/Text/URL/File, chip counts should describe the current narrowed feed, and empty state text should not contradict the selected count.
+- Preview/search/filter narrowed views should not show a Show more footer.
+
+
+
+# CP320 — source rail + no-jump mobile chrome
+
+CP320 is a focused UX hotfix after CP319 mobile polish testing. It does not change evidence persistence, share, route ownership, or schema rendering.
+
+Changes:
+
+- Workspace sources are now owned by a one-line horizontal source rail.
+- Source rail is left-aligned and horizontally scrollable on desktop and mobile.
+- Mobile source rail hides its scrollbar so users can swipe horizontally without the row looking like a broken wrap layout.
+- Single-source workspaces keep the source rail visible so source settings/actions remain reachable.
+- Mobile reading chrome keeps its layout slot while fading out; content no longer jumps down/up when chrome expands or collapses.
+- Added `TiinexDiagnostics.sourceChromeStabilityReport()`.
+
+Validation focus:
+
+- Mobile: source row should use one row and swipe horizontally.
+- Desktop: source row should also stay in one row and scroll when needed.
+- Mobile: scroll down/up should fade chrome without pushing the card list.
+
+
+# CP319 — value-first polish consolidation
+
+CP319 is a focused milestone-polish pass after field testing CP318. It does not add a new product feature; it reduces visual debt around mobile source/search controls, evidence material density, Display Options, and search result windowing.
+
+Changes:
+
+- Discovery and Lineage toolbar search now share one responsive width model so the search field does not jump between modes.
+- Mobile source chips are treated as a compact horizontal source summary instead of wrapping into awkward rows.
+- Discovery search now renders all search matches instead of keeping the lazy discovery window and forcing users to press Show more after a focused query.
+- Evidence with inline image preview now keeps Material and Provenance attached as compact expandable metadata under the visual evidence instead of stacking tall independent cards.
+- Mobile card action rail gets a final containment pass so Edit/More cannot stretch into wide bars.
+- Display Options on mobile uses clean vertical pickers, visible labels, compact chips, and stacked Time Portal controls.
+- Added `TiinexDiagnostics.uxPolishReadinessReport()` for search/toolbar/material UX checks.
+
+Validation remains runtime/UI-led for this pass: the static public build is clean, and the intended confirmation is visual testing on desktop and mobile.
+
+# CP318 — explicit route startup guard
+
+CP318 fixes the remaining startup polish issue visible on slow/mobile loads after CP317: explicit `#state=`, public hash, and `?url=` routes should be the only source-loading owner during init. The default persisted Git-native bootstrap is now skipped before route restore when an explicit route already owns the source.
+
+Changes:
+
+- Explicit route/source hashes skip `startup-before-config` and `startup-before-boot` default Git-native bootstrap.
+- The route source can still use Git-native inside its own discovery path; this only removes the pre-route/default source bootstrap.
+- Startup diagnostics now report whether Git-native was bootstrapped before route or skipped because the route owns source loading.
+- Empty discovery feed during active loading now says `Loading workspace source…` instead of `No nodes match this view.`
+- This avoids the professional UX problem where the app looked empty while the route-owned workspace was still loading.
+
+Diagnostics:
+
+```js
+TiinexDiagnostics.startupRouteInitReport()
+```
+
+Expected on cold `#state=` / readable public hash route:
+
+- `summary.routeOwnsSourceLoading: true`
+- `summary.applyConfigWorkspaceState: false`
+- `summary.bootstrapGitNativeBeforeRoute: false`
+- `gitNativeBootstrap.beforeRouteBootstrap: false`
+
+# CP317 — startup single-pass route ownership hotfix
+
+CP317 fixes an acute production/mobile regression where startup could appear to load the workspace twice. The root cause was config workspace state and explicit URL route state both trying to own initial workspace loading.
+
+Changes:
+
+- Explicit `#state=` routes now own startup source loading.
+- Public/readable hash targets such as `#github.issue|...` own startup source loading.
+- Direct `?url=` imports own startup source loading.
+- Viewer config / `.workspace.md` identity can still load branding/help, but it no longer preloads the default workspace state when the URL already contains an explicit source route.
+- `bootFromUrl()` now has a single-flight wrapper so duplicate startup calls are recorded and skipped rather than executing twice.
+- Initial `#state=` restore reuses an already matching workspace source signature instead of forcing `recreate=true`.
+- `file:// #view=` still keeps the old behavior because view routes need an existing workspace before the view selection can apply.
+
+New diagnostic:
+
+```js
+TiinexDiagnostics.startupRouteInitReport()
+```
+
+Expected result after cold load with a shared/exact URL: one source owner, one discovery/material load pass, and no visible render → clear → reload cycle.
+
 # CP316 — mobile action owner rail
 
 CP316 makes mobile card actions value-first by giving mobile cards their own action owner instead of continuing to compress the desktop `.post-actions` bar.

@@ -669,6 +669,7 @@
     githubRepoMaterialProblemTargets: (limit = 80) => githubRepoMaterialProblemTargets(githubRepoFetchCurrentSessionEvents(), limit),
     publicViewerShareUrlFor: (url, adapter = '') => publicViewerShareUrlForTarget(url, adapter),
     parseHashShareTarget: (hash = location.hash) => parseHashShareTarget(hash),
+    startupRouteInitReport: () => startupRouteInitReport(),
     configuredPublicViewerBaseUrl: () => configuredPublicViewerBaseUrl(),
     shareEligibilityForActive: () => shareEligibilityForActive(),
     shareEligibilityForWorkspace: (wsId = '') => shareEligibilityForWorkspaceId(wsId),
@@ -689,6 +690,9 @@
     previewInspectionReadinessReport: () => previewInspectionReadinessReport(),
     displayOptionsMobileReadinessReport: () => displayOptionsMobileReadinessReport(),
     valueFirstUxReadinessReport: () => valueFirstUxReadinessReport(),
+    uxPolishReadinessReport: () => uxPolishReadinessReport(),
+    previewMaterialFilterReadinessReport: () => previewMaterialFilterReadinessReport(),
+    workspaceSourceConfigReadinessReport: () => workspaceSourceConfigReadinessReport(),
     shareSignalPreviewForActive: (reason = '', intent = 'share') => shareSignalRecord(shareEligibilityForActive(), { intent, reason }),
     shareCounterObservationReport: () => shareCounterObservationReport(),
     crossWorkspaceRelationPickerReport: () => crossWorkspaceRelationPickerReport(),
@@ -4474,6 +4478,29 @@
     </section>`;
   }
 
+
+  function renderEvidenceMaterialCompactDetails(material, options = {}) {
+    const clean = cleanObservedMaterialText(material || '');
+    if (!clean) return '';
+    const rendered = renderSafeMarkdown(clean);
+    const summary = options.imagePreview
+      ? '<span><i class="fa-solid fa-list-check"></i> Material details</span><small>metadata and source notes</small>'
+      : '<span><i class="fa-solid fa-list-check"></i> Material</span>';
+    return `<details class="evidence-material-inline-details" ${options.open ? 'open' : ''}>
+      <summary>${summary}</summary>
+      <div class="markdown-rendered compact-markdown evidence-material-inline-list" translate="yes" data-tiinex-language-surface="artifact-material">${rendered}</div>
+    </details>`;
+  }
+
+  function renderEvidenceProvenanceCompactDetails(provenance, options = {}) {
+    const clean = cleanObservedMaterialText(provenance || '');
+    if (!clean) return '';
+    return `<details class="evidence-material-inline-details evidence-provenance-inline-details">
+      <summary><span><i class="fa-solid fa-route"></i> Provenance</span><small>expand for full metadata</small></summary>
+      <div class="markdown-rendered compact-markdown evidence-material-inline-list" translate="yes" data-tiinex-language-surface="artifact-provenance">${renderSafeMarkdown(clean)}</div>
+    </details>`;
+  }
+
   function renderEvidenceSummary(node, options = {}) {
     const map = sectionMap(node.body || node.rawMarkdown);
     const claim = sectionPlainAny(map, ['Supported Claim', 'Supports']) || introPlain(map);
@@ -4486,9 +4513,9 @@
         ${renderPresenterHead('Evidence', 'fa-solid fa-paperclip', node.title || 'Evidence', node.summary || '', options)}
         ${claim ? renderPrimaryReadBlock('Supported claim', listifyPlainMultilineBlock(claim), { compact: options.compact, limit: options.compact ? 280 : 620 }) : ''}
         ${imagePreview}
-        ${material ? renderReadMarkdownSection('Material', cleanObservedMaterialText(material), { compact: options.compact, limit: options.compact ? 280 : 620 }) : ''}
-        ${!options.inline && provenance ? renderReadDetailSections('Provenance', [{ label: 'Provenance', value: provenance, limit: 620 }], { compact: options.compact }) : ''}
-        ${renderBasisLine(map, options)}
+        ${material ? (imagePreview ? renderEvidenceMaterialCompactDetails(material, { imagePreview: true, open: false }) : renderReadMarkdownSection('Material', cleanObservedMaterialText(material), { compact: options.compact, limit: options.compact ? 280 : 620 })) : ''}
+        ${!options.inline && provenance ? renderEvidenceProvenanceCompactDetails(provenance, options) : ''}
+        ${renderBasisLine(map, Object.assign({}, options, { compactEvidence: Boolean(imagePreview) }))}
         ${limits ? renderReadDetailSections('Limits', [{ label: 'Interpretation limits', value: limits, limit: 520 }], { compact: options.compact }) : ''}
       </section>`;
   }
@@ -6123,7 +6150,10 @@
 
   function normalizeGitHubSourceState(source = {}, ws = null) {
     const repo = String(source.repo || ws?.repo || '').trim();
-    const ref = String(source.ref || ws?.ref || '').trim();
+    const resolvedLikeRef = String(source.resolvedCommit || ws?.resolvedCommit || '').trim();
+    const requestedRef = String(source.requestedRef || source.mutableRef || source.sourceRef || '').trim();
+    const rawRef = String(source.ref || ws?.ref || '').trim();
+    const ref = (requestedRef || (rawRef && rawRef !== resolvedLikeRef ? rawRef : '') || rawRef).trim();
     const rootPaths = Array.isArray(source.rootPaths) && source.rootPaths.length
       ? source.rootPaths.map((item) => normalizeRepoPath(item)).filter(Boolean)
       : parseRootPaths(source.rootPath || source.root || '.topics');
@@ -6141,6 +6171,8 @@
       origin: source.origin || (repo ? `https://github.com/${repo}` : ''),
       repo,
       ref,
+      requestedRef: requestedRef || ref,
+      resolvedCommit: source.resolvedCommit || ws?.resolvedCommit || '',
       rootPaths: rootPaths.length ? rootPaths : ['.topics'],
       enabledSurfaces,
       issueUrls,
@@ -6167,6 +6199,32 @@
       `surfaces:repoFiles=${surfaces.repoFiles ? 'on' : 'off'};issues=${surfaces.issues ? 'on' : 'off'}`,
       `issues:${(normalized.issueUrls || []).join('|')}`
     ].join('::');
+  }
+
+
+  function workspaceSourceConfigReadinessReport() {
+    return {
+      workspaces: (app.workspaces || []).map((ws, index) => {
+        const sources = Array.from(ws.sources?.values?.() || []).filter((source) => source?.kind === 'github' && source.repo).map((source) => ({
+          id: source.id || '',
+          repo: source.repo || '',
+          ref: source.ref || '',
+          requestedRef: source.requestedRef || '',
+          resolvedCommit: source.resolvedCommit || ws.resolvedCommit || '',
+          configuredIssueUrls: configuredGitHubIssueUrls(source, source.repo || ''),
+          activeIssueUrls: activeGitHubIssueUrls(source, source.repo || '', ws),
+          surfaces: normalizeGithubSurfaceConfig(source.enabledSurfaces || {})
+        }));
+        return {
+          index,
+          label: ws.label || '',
+          routeStateKept: Boolean((routeState().sources || [])[index]),
+          workspaceSignature: workspaceConfigSignature(ws),
+          sourceCount: sources.length,
+          sources
+        };
+      })
+    };
   }
 
   function githubSourceId(repo) {
@@ -6794,7 +6852,7 @@
       label: ws.label || '',
       urls: '',
       repo: source.repo || '',
-      ref: source.ref || '',
+      ref: source.requestedRef || source.mutableRef || source.sourceRef || source.ref || '',
       root: Array.isArray(source.rootPaths) && source.rootPaths.length ? source.rootPaths.join('\n') : (source.rootPath || '.topics'),
       repoDiscovery: surfaces.repoFiles,
       issueDiscovery: surfaces.issues,
@@ -10341,19 +10399,31 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     for (const source of sources) {
       const canonical = registerGitHubSource(ws, source);
       const surfaces = normalizeGithubSurfaceConfig(canonical.enabledSurfaces || {});
-      if (!surfaces.issues) continue;
       const existingIssueSurface = workspaceHasGitHubIssueSurface(ws, canonical.id);
-      const issueTargets = activeGitHubIssueUrls(canonical, canonical.repo || '', ws);
+      const explicitIssueTargets = configuredGitHubIssueUrls(canonical, canonical.repo || '');
+      const discoveredIssueTargets = (Array.isArray(canonical.discoveredIssueUrls) ? canonical.discoveredIssueUrls : [])
+        .concat(workspaceGitHubIssueUrls(ws, canonical.repo || '').filter((url) => !explicitIssueTargets.includes(url)));
       // GitHub issue/comment material is live social material, not a static repo
-      // snapshot. On browser/local-state refresh, re-read known issue targets so
-      // new untyped comments can appear as unresolved discovery findings instead
-      // of being hidden by a stale runtime/local workspace snapshot.
-      loaded += await discoverGitHubIssuesIntoWorkspace(ws, canonical, issueTargets, {
-        commentLimit: options.commentLimit || 50,
-        refreshExisting: Boolean(options.refreshExisting || existingIssueSurface || issueTargets.length),
-        hardRefresh: Boolean(options.hardRefresh || existingIssueSurface || issueTargets.length),
-        renderStatus: false
-      });
+      // snapshot. Explicit issue URLs are durable source anchors and refresh even
+      // when the broad Issue Discovery surface is off. The checkbox only owns
+      // bounded repo-level discovery.
+      const knownTargets = normalizedGitHubIssueUrls([...explicitIssueTargets, ...discoveredIssueTargets], canonical.repo || '');
+      if (knownTargets.length) {
+        loaded += await discoverGitHubIssuesIntoWorkspace(ws, canonical, knownTargets, {
+          commentLimit: options.commentLimit || 50,
+          refreshExisting: true,
+          hardRefresh: Boolean(options.hardRefresh || existingIssueSurface || knownTargets.length),
+          renderStatus: false
+        });
+      }
+      if (surfaces.issues) {
+        loaded += await discoverGitHubIssuesIntoWorkspace(ws, canonical, [], {
+          commentLimit: options.commentLimit || 50,
+          refreshExisting: Boolean(options.refreshExisting || existingIssueSurface),
+          hardRefresh: Boolean(options.hardRefresh || existingIssueSurface),
+          renderStatus: false
+        });
+      }
     }
     if (loaded && typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
     if (loaded && typeof render === 'function') render();
@@ -10418,17 +10488,30 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       ws.discoverySource = { kind: 'github-tree', repo: normalizedSource.repo, ref: normalizedSource.ref || '', rootPath: rootPaths[0] || '.topics', rootPaths, sourceId: githubSource.id, enabledSurfaces, issueUrls: configuredGitHubIssueUrls(githubSource, normalizedSource.repo), discoveryDirective: githubSource.discoveryDirective || null, sourceAccessMode: githubSource.sourceAccessMode || 'web-surface', sourceResolutionKind: githubSource.sourceResolutionKind || 'github-web-source', sourceBoundary: githubSource.sourceBoundary || null };
       if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
     }
-    if (enabledSurfaces.issues && typeof discoverGitHubIssuesIntoWorkspace === 'function') {
-      const issueTargets = activeGitHubIssueUrls(githubSource, githubSource.repo || '', ws);
-      await discoverGitHubIssuesIntoWorkspace(ws, githubSource, issueTargets, {
-        refreshExisting: Boolean(options.refreshExisting || issueTargets.length),
-        hardRefresh: Boolean(options.hardRefresh),
-        preferCache: !Boolean(options.userInitiated || options.refreshExisting || options.hardRefresh),
-        userInitiated: Boolean(options.userInitiated),
-        discoveryProgress: Boolean(progressScope),
-        sourceProgress: progressScope,
-        renderStatus: true
-      });
+    if (typeof discoverGitHubIssuesIntoWorkspace === 'function') {
+      const explicitIssueTargets = configuredGitHubIssueUrls(githubSource, githubSource.repo || '');
+      if (explicitIssueTargets.length) {
+        await discoverGitHubIssuesIntoWorkspace(ws, githubSource, explicitIssueTargets, {
+          refreshExisting: true,
+          hardRefresh: Boolean(options.hardRefresh || options.userInitiated || options.refreshExisting),
+          preferCache: !Boolean(options.userInitiated || options.refreshExisting || options.hardRefresh),
+          userInitiated: Boolean(options.userInitiated),
+          discoveryProgress: Boolean(progressScope),
+          sourceProgress: progressScope,
+          renderStatus: true
+        });
+      }
+      if (enabledSurfaces.issues) {
+        await discoverGitHubIssuesIntoWorkspace(ws, githubSource, [], {
+          refreshExisting: Boolean(options.refreshExisting),
+          hardRefresh: Boolean(options.hardRefresh),
+          preferCache: !Boolean(options.userInitiated || options.refreshExisting || options.hardRefresh),
+          userInitiated: Boolean(options.userInitiated),
+          discoveryProgress: Boolean(progressScope),
+          sourceProgress: progressScope,
+          renderStatus: true
+        });
+      }
     }
     if (progressScope) {
       ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, { phase: 'source-finalizing', sourceProgress: progressScope, loaded: 1, total: 1, failed: 0 });
@@ -10503,13 +10586,15 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       const old = editingSource || null;
       const oldSourceSnapshot = old ? {
         repo: old.repo || '',
-        ref: old.ref || '',
+        ref: old.requestedRef || old.mutableRef || old.sourceRef || old.ref || '',
         rootPaths: Array.isArray(old.rootPaths) ? old.rootPaths.slice() : []
       } : null;
       githubSource = registerGitHubSource(ws, {
         id: old?.id || githubSourceId(parsedRepo.repo),
         repo: parsedRepo.repo,
-        ref: requestedRef || old?.ref || '',
+        ref: requestedRef || old?.requestedRef || old?.mutableRef || old?.sourceRef || old?.ref || '',
+        requestedRef: requestedRef || old?.requestedRef || old?.mutableRef || old?.sourceRef || old?.ref || '',
+        resolvedCommit: old?.resolvedCommit || '',
         rootPaths: requestedRoots,
         enabledSurfaces,
         configuredIssueUrls: issueUrls,
@@ -10518,7 +10603,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       });
       resetSourceContent = Boolean(oldSourceSnapshot && (
         String(oldSourceSnapshot.repo || '').toLowerCase() !== parsedRepo.repo.toLowerCase()
-        || String(oldSourceSnapshot.ref || '') !== String(githubSource.ref || '')
+        || String(oldSourceSnapshot.ref || '') !== String(githubSource.requestedRef || githubSource.ref || '')
         || JSON.stringify(oldSourceSnapshot.rootPaths || []) !== JSON.stringify(requestedRoots || [])
       ));
       applyGitHubSourceSurfacePruning(ws, githubSource, enabledSurfaces, resetSourceContent);
@@ -10542,8 +10627,14 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         source: githubSource
       });
     }
-    if (githubSource && enabledSurfaces.issues) {
-      await discoverGitHubIssuesIntoWorkspace(ws, githubSource, issueUrls);
+    if (githubSource) {
+      const explicitIssueTargets = configuredGitHubIssueUrls(githubSource, githubSource.repo || '');
+      if (explicitIssueTargets.length) {
+        await discoverGitHubIssuesIntoWorkspace(ws, githubSource, explicitIssueTargets, { userInitiated: true, hardRefresh: true });
+      }
+      if (enabledSurfaces.issues) {
+        await discoverGitHubIssuesIntoWorkspace(ws, githubSource, [], { userInitiated: true, hardRefresh: true });
+      }
     }
     if (urls.length) await loadUrlsIntoWorkspace(ws, urls);
     if (nonConfigFiles.length) await readUploadedFilesIntoWorkspace(ws, nonConfigFiles);
@@ -11949,6 +12040,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         source.kind = 'github-tree';
         source.repo = firstKv(map, ['Repository', 'Repo'], '');
         source.ref = firstKv(map, ['Ref', 'Branch'], '');
+        source.requestedRef = source.ref;
+        source.resolvedCommit = firstKv(map, ['Resolved Commit', 'Resolved Ref', 'Commit'], '');
         source.rootPaths = splitCsv(allKv(map, ['Root Path', 'Root Paths']));
         if (!source.rootPaths.length) source.rootPaths = ['.topics'];
         source.enabledSurfaces = normalizeGithubSurfaceConfig({
@@ -12087,7 +12180,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         const surfaces = normalizeGithubSurfaceConfig(source.enabledSurfaces || {});
         lines.push('- Source Kind: github-tree');
         if (source.repo) lines.push(`- Repository: ${source.repo}`);
-        if (source.ref) lines.push(`- Ref: ${source.ref}`);
+        const exportRef = source.requestedRef || source.ref || '';
+        if (exportRef) lines.push(`- Ref: ${exportRef}`);
+        if (source.resolvedCommit && source.resolvedCommit !== exportRef) lines.push(`- Resolved Commit: ${source.resolvedCommit}`);
         (source.rootPaths || [source.rootPath || '.topics']).filter(Boolean).forEach((root) => lines.push(`- Root Path: ${root}`));
         lines.push(`- Repo Files Discovery: ${surfaces.repoFiles ? 'on' : 'off'}`);
         lines.push(`- Issue Discovery: ${surfaces.issues ? 'on' : 'off'}`);
@@ -13532,7 +13627,7 @@ ${bodySections}
 
     if (shouldUseEmbeddedDefaultWorkspace()) {
       try {
-        await applyEmbeddedDefaultWorkspace({ applyWorkspaceState: !startupHasPublicHashShareTarget() });
+        await applyEmbeddedDefaultWorkspace({ applyWorkspaceState: startupShouldApplyViewerWorkspaceState() });
       } catch (error) {
         app.viewerIdentity.error = error?.message || String(error || '');
         applyViewerCustomCss('');
@@ -13552,7 +13647,7 @@ ${bodySections}
         }
         const markdown = await fetchText(url, 'viewer workspace');
         const parsed = parseViewerConfigMarkdown(markdown, url);
-        await applyParsedViewerConfig(parsed, url, { applyWorkspaceState: true });
+        await applyParsedViewerConfig(parsed, url, { applyWorkspaceState: startupShouldApplyViewerWorkspaceState() });
         return;
       } catch (error) {
         lastError = error;
@@ -14929,7 +15024,7 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
 
       const state = decodeRouteStateFromHash();
       if (state && Array.isArray(state.sources) && state.sources.length) {
-        const restored = await applyRouteState(state, true);
+        const restored = await applyRouteState(state, !routeSourcesMatch(state));
         if (restored) return;
       }
 
@@ -14953,6 +15048,41 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
     } finally {
       app.isBootingFromUrl = false;
     }
+  }
+
+  function startupRouteInitSummary() {
+    let state = null;
+    try { state = staticDiskMode() ? decodeViewRouteFromHash() : decodeRouteStateFromHash(); } catch (_) {}
+    return {
+      hashKind: parseHashShareTarget(location.hash || '') ? 'public-share-target' : (/^#view=/i.test(location.hash || '') ? 'view' : (/^#state=/i.test(location.hash || '') ? 'state' : (location.hash ? 'other' : 'none'))),
+      applyConfigWorkspaceState: startupShouldApplyViewerWorkspaceState(),
+      bootstrapGitNativeBeforeRoute: typeof startupShouldBootstrapGitNativeBeforeRoute === 'function' ? startupShouldBootstrapGitNativeBeforeRoute() : null,
+      routeOwnsSourceLoading: typeof startupRouteOwnsSourceLoading === 'function' ? startupRouteOwnsSourceLoading() : null,
+      routeSources: Array.isArray(state?.sources) ? state.sources.length : 0,
+      currentSources: app.workspaces?.length || 0,
+      routeSourcesMatch: state?.sources ? routeSourcesMatch(state) : false
+    };
+  }
+
+  async function bootFromUrlOnce() {
+    app.startupBoot = app.startupBoot || { calls: 0, skipped: 0, completed: 0, history: [] };
+    app.startupBoot.calls += 1;
+    const summary = startupRouteInitSummary();
+    app.startupBoot.history.push(Object.assign({ event: 'boot-call', at: new Date().toISOString() }, summary));
+    if (app.startupBoot.promise) {
+      app.startupBoot.skipped += 1;
+      routeOwnerRecord('route:boot-skip-inflight', summary);
+      return app.startupBoot.promise;
+    }
+    app.startupBoot.promise = (async () => {
+      routeOwnerRecord('route:boot-once-start', summary);
+      await bootFromUrl();
+      app.startupBoot.completed += 1;
+      app.startupBoot.completedAt = new Date().toISOString();
+      app.startupBoot.history.push(Object.assign({ event: 'boot-complete', at: app.startupBoot.completedAt }, startupRouteInitSummary()));
+      routeOwnerRecord('route:boot-once-complete', startupRouteInitSummary());
+    })().finally(() => { app.startupBoot.promise = null; });
+    return app.startupBoot.promise;
   }
 
   function handleBrowserHistoryNoRoute(reason = 'browser-no-route') {
@@ -20074,10 +20204,14 @@ This removes the imported file and its preserved local asset copy from the curre
     const showOriginCard = traversal?.nonLineageOrigin && visibleCount >= traversal.nodes.length && !searchActive;
     const openBoundary = selected ? firstOpenLineageBoundary(ws, selected) : null;
 
-    const emptyText = temporalLensActive(ws) ? 'No nodes match this temporal view.' : 'No nodes match this view.';
+    const loadingActive = typeof workspaceHasActiveDiscoveryProgress === 'function' ? workspaceHasActiveDiscoveryProgress(ws) : Boolean(ws?.loading || ws?.discoveryProgress);
+    const emptyText = loadingActive
+      ? 'Loading workspace source…'
+      : (temporalLensActive(ws) ? 'No nodes match this temporal view.' : 'No nodes match this view.');
+    const emptyClass = loadingActive ? 'empty-state loading-empty-state' : 'empty-state';
     const bodyHtml = mode === 'discovery' && discoveryView === 'tree'
       ? renderDiscoveryTree(ws, nodes)
-      : (nodes.length ? renderLineageNodeList(ws, nodes, mode, searchActive, lineageQuery) : `<div class="empty-state">${escapeHtml(emptyText)}</div>`);
+      : (nodes.length ? renderLineageNodeList(ws, nodes, mode, searchActive, lineageQuery) : `<div class="${emptyClass}">${escapeHtml(emptyText)}</div>`);
 
     const html = `
       <div class="feed-toolbar feed-toolbar-foundation feed-toolbar-shell feed-toolbar-layout ${mode}">
@@ -21963,7 +22097,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
           lineageSearch: ws.lineageSearch || '',
           expandedPaths: ws.nodes.filter((node) => node.expanded).map((node) => node.path)
         };
-      }).filter((source) => source.urls.length)
+      })
     };
   }
 
@@ -22438,7 +22572,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
       defaults: () => Object.assign({}, defaults),
       bodyFromForm: (f) => sectionNames.map((name) => {
         const key = camelKey(name);
-        return `## ${name}\n\n${paragraph(f[key], `Describe ${name.toLowerCase()}.`)}`;
+        return `## ${name}\n\n${wizardBlank(f[key])}`;
       }).join('\n\n'),
       formStateFromSections: (sections) => Object.fromEntries(sectionNames.map((name) => [camelKey(name), plainBlock(sections[name.toLowerCase()] || '')]))
     };
@@ -22461,11 +22595,11 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
         { key: 'nextArtifacts', label: 'Next artifacts', type: 'list', placeholder: 'One continuation or artifact idea per line' }
       ],
       defaults: () => ({ currentRead: '', designDirection: '', nextArtifacts: '' }),
-      bodyFromForm: (f) => `${paragraph(f.currentRead, 'Describe the present topic state.')}
+      bodyFromForm: (f) => `${wizardBlank(f.currentRead)}
 
 ## Design Direction
 
-${paragraph(f.designDirection, 'State where this topic should move next.')}
+${wizardBlank(f.designDirection)}
 
 ## Next Artifacts
 
@@ -22551,7 +22685,7 @@ ${blocks.limits}`;
 
 ## Feedback Received
 
-${paragraph(f.feedbackReceived, 'Preserve or summarize the feedback.')}
+${wizardBlank(f.feedbackReceived)}
 
 ## Disposition
 
@@ -22560,7 +22694,7 @@ ${paragraph(f.feedbackReceived, 'Preserve or summarize the feedback.')}
 
 ## Limits
 
-${listBlock(f.limits, 'State fidelity, scope, or interpretation limits.')}`,
+${listBlock(f.limits)}`,
       formStateFromSections: (sections) => ({
         feedbackTarget: singleFieldFromBullet(sections['feedback target'] || '', 'Target'),
         feedbackReceived: plainBlock(sections['feedback received'] || ''),
@@ -22588,19 +22722,19 @@ ${listBlock(f.limits, 'State fidelity, scope, or interpretation limits.')}`,
       defaults: () => ({ sourceContext: '', carryForwardState: '', lossAndUncertainty: '', validation: '' }),
       bodyFromForm: (f) => `## Source Context
 
-${paragraph(f.sourceContext, '- Source: ')}
+${wizardBlank(f.sourceContext)}
 
 ## Carry-Forward State
 
-${paragraph(f.carryForwardState, '- State what later work may rely on.')}
+${wizardBlank(f.carryForwardState)}
 
 ## Loss And Uncertainty
 
-${listBlock(f.lossAndUncertainty, 'State what was omitted, compressed, degraded, or remains uncertain.')}
+${listBlock(f.lossAndUncertainty)}
 
 ## Validation
 
-${listBlock(f.validation, 'State human review, runtime validation, source checks, or explicit limits.')}`,
+${listBlock(f.validation)}`,
       formStateFromSections: (sections) => ({
         sourceContext: plainBlock(sections['source context'] || ''),
         carryForwardState: plainBlock(sections['carry-forward state'] || ''),
@@ -22628,7 +22762,7 @@ ${listBlock(f.validation, 'State human review, runtime validation, source checks
       defaults: () => ({ objective: '', doneCriteria: '', inScope: '', outOfScope: '', dependencies: '' }),
       bodyFromForm: (f) => `## Objective
 
-${paragraph(f.objective, 'Describe the concrete work being asked for.')}
+${wizardBlank(f.objective)}
 
 ## Done Criteria
 
@@ -22713,7 +22847,7 @@ ${listBlock(f.consequences)}`,
 
 ## Current Read
 
-${paragraph(f.currentRead, 'Explain what this pointer currently points toward.')}
+${wizardBlank(f.currentRead)}
 
 ## Destinations
 
@@ -22813,7 +22947,7 @@ ${listBlock(f.consequences)}`,
       defaults: () => ({ workspaceScope: '', sources: '', notes: '' }),
       bodyFromForm: (f) => `## Workspace Scope
 
-${paragraph(f.workspaceScope, 'What this workspace contains.')}
+${wizardBlank(f.workspaceScope)}
 
 ## Sources
 
@@ -22821,7 +22955,7 @@ ${listBlock(f.sources)}
 
 ## Notes
 
-${paragraph(f.notes, 'What the next reader should know.')}`,
+${wizardBlank(f.notes)}`,
       formStateFromSections: (sections) => ({
         workspaceScope: plainBlock(sections['workspace scope'] || ''),
         sources: plainBlock(sections.sources || ''),
@@ -23798,14 +23932,55 @@ ${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source findi
     return String(value || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   }
 
+  function wizardInstructionalPlaceholder(value = '', placeholder = '') {
+    const clean = String(value || '').trim().replace(/^[-*]\s+/, '').replace(/\s+/g, ' ');
+    if (!clean) return false;
+    const lower = clean.toLowerCase();
+    const expected = String(placeholder || '').trim().replace(/^[-*]\s+/, '').replace(/\s+/g, ' ').toLowerCase();
+    if (expected && lower === expected) return true;
+    const stripped = lower.replace(/[.!?]+$/g, '');
+    if (/^describe [a-z0-9][a-z0-9\s/_-]{1,80}$/.test(stripped)) return true;
+    return [
+      'describe the present topic state',
+      'state where this topic should move next',
+      'preserve or summarize the feedback',
+      'state fidelity, scope, or interpretation limits',
+      'state what was omitted, compressed, degraded, or remains uncertain',
+      'state human review, runtime validation, source checks, or explicit limits',
+      'describe the concrete work being asked for',
+      'explain what this pointer currently points toward',
+      'what this workspace contains',
+      'what the next reader should know'
+    ].includes(stripped);
+  }
+
+  function wizardContent(value = '', placeholder = '') {
+    const clean = String(value || '').trim();
+    return wizardInstructionalPlaceholder(clean, placeholder) ? '' : clean;
+  }
+
   function listBlock(value, fallback = '') {
-    const lines = formLines(value);
-    if (!lines.length) return fallback ? `- ${fallback}` : '- ';
+    const lines = formLines(value).filter((line) => !wizardInstructionalPlaceholder(line));
+    if (!lines.length) return String(fallback || '').trim() ? `- ${fallback}` : '';
     return lines.map((line) => line.startsWith('- ') ? line : `- ${line}`).join('\n');
   }
 
   function paragraph(value, fallback = '') {
     return String(value || '').trim() || fallback;
+  }
+
+  function wizardBlank(value = '', placeholder = '') {
+    return wizardContent(value, placeholder);
+  }
+
+  function sanitizeWizardFormState(schemaId, state = {}) {
+    const out = Object.assign({}, state || {});
+    const fields = schemaFormFor(schemaId) || [];
+    for (const field of fields) {
+      if (!field?.key || typeof out[field.key] !== 'string') continue;
+      out[field.key] = wizardContent(out[field.key], field.placeholder || '');
+    }
+    return out;
   }
 
   function defaultFormValues(schemaId, modal, option) {
@@ -23825,7 +24000,8 @@ ${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source findi
 
   function bodyFromForm(schemaId, f, context = {}) {
     const def = wizardSchemaDefinition(schemaId);
-    return typeof def.bodyFromForm === 'function' ? def.bodyFromForm(f || {}, context) : '';
+    const cleanState = sanitizeWizardFormState(schemaId, f || {});
+    return typeof def.bodyFromForm === 'function' ? def.bodyFromForm(cleanState, context) : '';
   }
 
   function renderWizardField(field, value) {
@@ -23847,7 +24023,8 @@ ${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source findi
     if (typeof renderer === 'function') return renderer(ws, modal, selected, title, summary, body);
     const fields = schemaFormFor(schemaId);
     ensureWizardFormDefaults(modal, selected);
-    const state = wizardFormState(modal);
+    const state = sanitizeWizardFormState(schemaId, wizardFormState(modal));
+    modal.formFields = state;
     return `<section class="wizard-step wizard-step-page wizard-describe-step schema-aware-describe">
       <div class="wizard-step-head"><span>2</span><div><strong>Describe the leaf</strong><p>${fields ? 'Fill only the fields that matter. The viewer assembles the Tiinex markdown.' : 'Use raw markdown for this not-yet-modeled shape.'}</p></div></div>
       <div class="wizard-selected-type-strip">
@@ -24013,7 +24190,8 @@ ${integrityFooterForPath(parent, path)}`,
     const schemaId = wizardSchemaId(selected);
     ensureWizardFormDefaults(modal, selected);
     ensureEvidenceRelationAttachment(ws, modal, selected, title);
-    const state = wizardFormState(modal);
+    const state = sanitizeWizardFormState(schemaId, wizardFormState(modal));
+    modal.formFields = state;
     return `<section class="wizard-step wizard-step-page wizard-describe-step schema-aware-describe evidence-describe compact polished">
       <div class="wizard-step-head compact polished"><span>2</span><div><strong>Collect evidence</strong><p>State the claim, then attach the material.</p></div></div>
       <div class="wizard-selected-type-strip compact polished">
@@ -24655,6 +24833,7 @@ ${integrityFooterForPath(parent, path)}`,
   registerActionHandler(async function wizardDirectCreateAction(event, next) {
     const action = event.currentTarget?.dataset?.action || '';
     if (action === 'wizard-create-direct') {
+      if (app.modal?.mode === 'edit') return next(event);
       event.preventDefault();
       event.stopPropagation();
       const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || '');
@@ -24703,7 +24882,7 @@ ${integrityFooterForPath(parent, path)}`,
     const schemaId = schemaIdForNode(node);
     const def = wizardSchemaDefinition(schemaId);
     if (typeof def.formStateFromSections !== 'function') return {};
-    return def.formStateFromSections(sectionMap(node?.body || ''));
+    return sanitizeWizardFormState(schemaId, def.formStateFromSections(sectionMap(node?.body || '')));
   }
 
   function openSchemaAwareEditWizard(ws, node) {
@@ -28477,7 +28656,9 @@ ${githubOutboundFileExcerpt(file, 18000)}
       const normalized = normalizeGitHubSourceState(githubSource, ws);
       item.kind = 'github-tree';
       item.repo = normalized.repo;
-      item.ref = normalized.ref || ws.ref || '';
+      item.ref = normalized.requestedRef || normalized.ref || '';
+      item.requestedRef = normalized.requestedRef || item.ref || '';
+      item.resolvedCommit = normalized.resolvedCommit || githubSource.resolvedCommit || ws.resolvedCommit || '';
       item.rootPaths = normalized.rootPaths || ['.topics'];
       item.enabledSurfaces = normalizeGithubSurfaceConfig(normalized.enabledSurfaces || {});
       item.issueUrls = activeGitHubIssueUrls(normalized, normalized.repo || '', ws);
@@ -28553,6 +28734,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       workspaceDisplayOptions(ws).leavesOnly ? 'leaf' : 'all',
       `artifact:${normalizeArtifactDisplayFilterList(workspaceDisplayOptions(ws).artifactKindFilters || workspaceDisplayOptions(ws).artifactKindFilter).join(',') || 'all'}`,
       workspaceDisplayOptions(ws).showAssets ? 'assets' : '',
+      previewMaterialActive(ws) ? `preview:${previewMaterialKind(ws)}` : '',
       temporalLensActive(ws) ? `time:${workspaceDisplayOptions(ws).temporalStart || ''}->${workspaceDisplayOptions(ws).temporalEnd || 'latest'}` : 'latest'
     ].join('|');
   }
@@ -28600,6 +28782,22 @@ ${githubOutboundFileExcerpt(file, 18000)}
       </div>
     </div>`;
   }
+  function discoveryWindowShowsAllMatches(ws) {
+    if (!ws) return false;
+    const opts = workspaceDisplayOptions(ws);
+    const schemaFilters = typeof normalizeDiscoveryFilterListForWorkspace === 'function' ? normalizeDiscoveryFilterListForWorkspace(ws) : [];
+    const artifactFilters = normalizeArtifactDisplayFilterList(opts.artifactKindFilters || opts.artifactKindFilter);
+    return Boolean(
+      normalizeSearchText(ws.discoverySearch || '')
+      || previewMaterialActive(ws)
+      || schemaFilters.length
+      || artifactFilters.length
+      || opts.mismatchesOnly
+      || opts.showAssets
+      || temporalLensActive(ws)
+    );
+  }
+
   registerRenderWorkspaceFeedWrapper(function renderWorkspaceFeedWindowed(ws, selected, next) {
     if (selected || (ws.discoveryView || 'feed') !== 'feed') {
       const html = next(ws, selected);
@@ -28610,13 +28808,14 @@ ${githubOutboundFileExcerpt(file, 18000)}
     }
 
     const all = filteredDiscoveryNodes(ws);
-    const limit = discoveryVisibleCount(ws);
+    const showAllMatches = discoveryWindowShowsAllMatches(ws);
+    const limit = showAllMatches ? all.length : discoveryVisibleCount(ws);
     app.discoveryWindowContext = { wsId: ws.id, limit };
     let html = next(ws, selected);
     app.discoveryWindowContext = null;
 
     const shown = Math.min(limit, all.length);
-    const footer = discoveryLoadMoreFooter(ws, all.length, shown);
+    const footer = showAllMatches ? '' : discoveryLoadMoreFooter(ws, all.length, shown);
     if (footer) html = html.replace(/\s*<\/div>\s*$/, `${footer}</div>`);
     if (workspaceHasActiveDiscoveryProgress(ws) && html.includes('<div class="post-feed')) {
       html = html.replace('<div class="post-feed', `${loadingProgressNotice(ws)}<div class="post-feed`);
@@ -29041,17 +29240,19 @@ ${githubOutboundFileExcerpt(file, 18000)}
       hiddenProxy: false
     });
 
-    const resolvedRef = ref || snapshot.ref || gitNativeOptions.ref || 'master';
+    const requestedRef = gitNativeOptions.ref || ref || snapshot.ref || 'master';
+    const resolvedRef = commit || snapshot.ref || requestedRef;
     const resolvedRootPaths = snapshot.rootPaths || rootPaths;
     const gitNativeBoundary = sourceResolutionBoundaryFor(Object.assign({}, githubSource || {}, { sourceAccessMode: 'git-object-store', sourceResolutionKind: 'git-native-local-object-store' }), 'git-native-local-object-store');
     ws.repo = repo;
-    ws.ref = resolvedRef;
+    ws.ref = requestedRef;
     ws.resolvedCommit = commit;
     ws.sourceAccessMode = 'git-object-store';
     ws.sourceResolutionKind = 'git-native-local-object-store';
     ws.sourceResultBoundary = 'bounded Git object-store snapshot';
     ws.sourceCacheBoundary = 'browser-local-git-object-store';
-    ws.discoverySource.ref = resolvedRef;
+    ws.discoverySource.ref = requestedRef;
+    ws.discoverySource.requestedRef = requestedRef;
     ws.discoverySource.resolvedCommit = commit;
     ws.discoverySource.rootPath = resolvedRootPaths[0] || '.topics';
     ws.discoverySource.rootPaths = resolvedRootPaths;
@@ -29059,7 +29260,8 @@ ${githubOutboundFileExcerpt(file, 18000)}
     ws.discoverySource.sourceResolutionKind = 'git-native-local-object-store';
     ws.discoverySource.sourceBoundary = gitNativeBoundary;
     if (githubSource) {
-      githubSource.ref = githubSource.ref || resolvedRef;
+      githubSource.ref = githubSource.requestedRef || githubSource.ref || requestedRef;
+      githubSource.requestedRef = githubSource.requestedRef || githubSource.ref || requestedRef;
       githubSource.resolvedCommit = commit;
       githubSource.sourceAccessMode = 'git-object-store';
       githubSource.sourceResolutionKind = 'git-native-local-object-store';
@@ -29067,8 +29269,8 @@ ${githubOutboundFileExcerpt(file, 18000)}
     }
     rememberGitNativeRepoMaterialOwner({
       repo,
-      ref: resolvedRef,
-      requestedRef: gitNativeOptions.ref || ref || '',
+      ref: requestedRef,
+      requestedRef,
       commit,
       resolvedCommit: commit,
       rootPaths: resolvedRootPaths,
@@ -29224,11 +29426,16 @@ ${githubOutboundFileExcerpt(file, 18000)}
         noApi: Boolean(options.noApi)
       });
       ws.repo = repo;
-      ws.ref = discovery.ref;
-      ws.discoverySource.ref = discovery.ref;
+      ws.ref = ref || discovery.ref;
+      ws.resolvedCommit = /^[0-9a-f]{7,40}$/i.test(String(discovery.ref || '')) ? discovery.ref : (ws.resolvedCommit || '');
+      ws.discoverySource.ref = ref || discovery.ref;
+      ws.discoverySource.requestedRef = ref || discovery.ref;
+      if (ws.resolvedCommit) ws.discoverySource.resolvedCommit = ws.resolvedCommit;
       ws.discoverySource.rootPath = discovery.rootPath;
       ws.discoverySource.rootPaths = discovery.rootPaths;
-      githubSource.ref = githubSource.ref || discovery.ref;
+      githubSource.ref = githubSource.requestedRef || githubSource.ref || ref || discovery.ref;
+      githubSource.requestedRef = githubSource.requestedRef || githubSource.ref || ref || discovery.ref;
+      if (ws.resolvedCommit) githubSource.resolvedCommit = ws.resolvedCommit;
       githubSource.rootPaths = discovery.rootPaths;
       githubRepoFetchTrace('tree.discovery.complete', { sessionId: repoFetchSessionId, repo, resolvedRef: discovery.ref, rootPaths: discovery.rootPaths, candidateFiles: discovery.tracePaths.length, truncated: Boolean(discovery.truncated), freshnessSupplemented: discovery.freshnessSupplemented || 0, note: discovery.note || '' });
       ws.logs.push(`Tree discovery found ${discovery.tracePaths.length} Tiinex markdown artifact file(s).`);
@@ -29389,9 +29596,31 @@ ${githubOutboundFileExcerpt(file, 18000)}
     return materialRefsForPreview(ws, node).length > 0;
   }
 
-  function previewMaterialKindsForWorkspace(ws) {
+  function previewScopedBaseNodes(ws) {
+    if (!ws) return [];
+    const wasActive = Boolean(ws.previewMaterialMode);
+    const kind = ws.previewMaterialKind;
+    const kinds = Array.isArray(ws.previewMaterialKinds) ? ws.previewMaterialKinds.slice() : null;
+    const context = app.discoveryWindowContext || null;
+    try {
+      ws.previewMaterialMode = false;
+      app.discoveryWindowContext = null;
+      const nodes = filteredDiscoveryNodes(ws) || [];
+      return Array.isArray(nodes) ? nodes : [];
+    } catch (_) {
+      return Array.isArray(ws.nodes) ? ws.nodes : [];
+    } finally {
+      ws.previewMaterialMode = wasActive;
+      ws.previewMaterialKind = kind;
+      if (kinds) ws.previewMaterialKinds = kinds;
+      app.discoveryWindowContext = context;
+    }
+  }
+
+  function previewMaterialKindsForWorkspace(ws, nodes = null) {
     const counts = new Map();
-    for (const node of ws?.nodes || []) {
+    const sourceNodes = Array.isArray(nodes) ? nodes : previewScopedBaseNodes(ws);
+    for (const node of sourceNodes || []) {
       for (const ref of nodeMaterialRefs(ws, node)) {
         const kind = materialKindKey(ref);
         counts.set(kind, (counts.get(kind) || 0) + 1);
@@ -29816,7 +30045,16 @@ ${githubOutboundFileExcerpt(file, 18000)}
     }
   }
 
-  let lastScrollTop = new WeakMap();
+  const MOBILE_CHROME_COMPACT_ENTER_TOP = 52;
+  const MOBILE_CHROME_COMPACT_EXIT_TOP = 12;
+
+  function mobileChromeCompactForTop(currentCompact, top) {
+    const safeTop = Math.max(0, Number(top || 0) || 0);
+    if (safeTop <= MOBILE_CHROME_COMPACT_EXIT_TOP) return false;
+    if (safeTop >= MOBILE_CHROME_COMPACT_ENTER_TOP) return true;
+    return Boolean(currentCompact);
+  }
+
   function onMobileFeedScroll(event) {
     if (!window.matchMedia?.('(max-width: 640px)').matches) return;
     const el = event.target;
@@ -29824,11 +30062,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
     const ws = mobileChromeWorkspaceFromFeed(el);
     if (!ws) return;
     const top = Math.max(0, el.scrollTop || 0);
-    const prev = lastScrollTop.get(el) || 0;
-    lastScrollTop.set(el, top);
-    if (top < 24) return setWorkspaceChromeCompact(ws, false);
-    if (top > prev + 4) return setWorkspaceChromeCompact(ws, true);
-    if (top < prev - 8) return setWorkspaceChromeCompact(ws, false);
+    setWorkspaceChromeCompact(ws, mobileChromeCompactForTop(ws.mobileChromeCompact, top));
   }
 
   document.addEventListener('scroll', onMobileFeedScroll, true);
@@ -30751,22 +30985,20 @@ ${githubOutboundFileExcerpt(file, 18000)}
     return next(event);
   });
 
-  let lastMobileFeedTop = new WeakMap();
+  function setMobileReadingChromeForTop(top, reason = 'scroll') {
+    if (!document.body?.classList) return false;
+    const next = mobileChromeCompactForTop(document.body.classList.contains('mobile-reading'), top);
+    document.body.classList.toggle('mobile-reading', next);
+    document.body.dataset.mobileReadingChromeOwner = next ? `top-threshold:${reason}` : 'near-top';
+    return next;
+  }
+
   function onMobileChromeScroll(event) {
     if (!mobileLensActive()) return;
     const el = event.target;
     if (!el?.classList?.contains('post-feed')) return;
     const top = Math.max(0, el.scrollTop || 0);
-    const prev = lastMobileFeedTop.get(el) || 0;
-    lastMobileFeedTop.set(el, top);
-
-    if (top < 18 || top < prev - 8) {
-      document.body.classList.remove('mobile-reading');
-      return;
-    }
-    if (top > prev + 4 && top > 42) {
-      document.body.classList.add('mobile-reading');
-    }
+    setMobileReadingChromeForTop(top, 'feed-scroll');
   }
 
   document.addEventListener('scroll', onMobileChromeScroll, true);
@@ -31757,6 +31989,58 @@ window.addEventListener('popstate', () => {
     if (params.get('url')) return true;
     if (/^#(?:state|view)=/i.test(location.hash || '')) return true;
     return startupHasPublicHashShareTarget();
+  }
+
+  function startupShouldApplyViewerWorkspaceState() {
+    const params = new URLSearchParams(location.search || '');
+    // A direct URL import or public/readable share target is the workspace owner.
+    // Loading the default .workspace.md state first makes init look like it loads
+    // once, clears, then loads again.
+    if (params.get('url')) return false;
+    if (startupHasPublicHashShareTarget()) return false;
+    // Hosted/public route state carries its own source list. Let bootFromUrl own it.
+    // file:// #view is different: it contains only view selection and still needs
+    // the packaged/default workspace to exist before the view state can apply.
+    if (!staticDiskMode() && /^#state=/i.test(location.hash || '')) return false;
+    return true;
+  }
+
+  function startupRouteOwnsSourceLoading() {
+    const params = new URLSearchParams(location.search || '');
+    if (params.get('url')) return true;
+    if (startupHasPublicHashShareTarget()) return true;
+    return !staticDiskMode() && /^#state=/i.test(location.hash || '');
+  }
+
+  function startupShouldBootstrapGitNativeBeforeRoute() {
+    // Explicit route/source hashes should not trigger a default persisted Git-native
+    // bootstrap before the route owner runs. The route's source discovery can still
+    // use Git-native through its own source options, but skipping pre-route bootstrap
+    // avoids the visible init -> empty -> re-init pattern on slow/mobile networks.
+    return !startupRouteOwnsSourceLoading();
+  }
+
+  function startupGitNativeBootstrapDecision() {
+    return {
+      beforeRouteBootstrap: startupShouldBootstrapGitNativeBeforeRoute(),
+      routeOwnsSourceLoading: startupRouteOwnsSourceLoading(),
+      explicitSharedState: startupHasExplicitSharedState(),
+      hash: location.hash ? location.hash.slice(0, 32) : ''
+    };
+  }
+
+  function startupRouteInitReport() {
+    const boot = app.startupBoot || {};
+    return {
+      schema: 'tiinex.startup.route-init.report.v1',
+      summary: typeof startupRouteInitSummary === 'function' ? startupRouteInitSummary() : {},
+      bootCalls: Number(boot.calls || 0),
+      skippedInflight: Number(boot.skipped || 0),
+      completed: Number(boot.completed || 0),
+      history: Array.isArray(boot.history) ? boot.history.slice(-12) : [],
+      gitNativeBootstrap: typeof startupGitNativeBootstrapDecision === 'function' ? startupGitNativeBootstrapDecision() : {},
+      policy: 'explicit route/public hash/direct url owns workspace init; config identity and default Git-native bootstrap must not pre-load source state when route sources are explicit'
+    };
   }
 
   function startupHashRouteModalState() {
@@ -33260,10 +33544,15 @@ window.addEventListener('popstate', (event) => {
 
   installGitNativeRawFetchGate();
 
-  ensurePersistedGitNativeDiscoveryRuntime('startup-before-config')
+  Promise.resolve()
+    .then(() => startupShouldBootstrapGitNativeBeforeRoute()
+      ? ensurePersistedGitNativeDiscoveryRuntime('startup-before-config')
+      : githubRepoFetchTrace('git-native.bootstrap.skip', { reason: 'startup-before-config', skippedReason: 'explicit-route-owner' }))
     .then(() => loadViewerConfig())
-    .then(() => ensurePersistedGitNativeDiscoveryRuntime('startup-before-boot'))
-    .then(() => bootFromUrl())
+    .then(() => startupShouldBootstrapGitNativeBeforeRoute()
+      ? ensurePersistedGitNativeDiscoveryRuntime('startup-before-boot')
+      : githubRepoFetchTrace('git-native.bootstrap.skip', { reason: 'startup-before-boot', skippedReason: 'explicit-route-owner' }))
+    .then(() => bootFromUrlOnce())
     .then(() => { if (typeof maybeOfferLocalStateRestore === 'function') maybeOfferLocalStateRestore(); })
     .then(() => {
       render();
@@ -34870,6 +35159,51 @@ ${raw.slice(0, 800)}`) || 'en')}">
   }
 
 
+
+  function previewMaterialFilterReadinessReport() {
+    const activeWs = app.workspaces?.[app.activeIndex || 0] || null;
+    const scopedBase = previewScopedBaseNodes(activeWs);
+    const activeKinds = activeWs ? Array.from(previewMaterialKindSet(activeWs)) : [];
+    const scopedKinds = activeWs ? previewMaterialKindsForWorkspace(activeWs, scopedBase) : [];
+    const filtered = activeWs ? scopedBase.filter((node) => nodeHasPreviewMaterial(activeWs, node)) : [];
+    const selectedTotal = activeKinds.length
+      ? scopedKinds.filter((item) => activeKinds.includes(item.kind)).reduce((sum, item) => sum + item.count, 0)
+      : scopedKinds.reduce((sum, item) => sum + item.count, 0);
+    return {
+      schema: 'tiinex.preview-material-filter.readiness.report.v1',
+      policy: 'preview type counts are scoped to the current non-preview feed result; preview/search/filter narrowing renders all matching cards without Show more',
+      workspace: activeWs ? workspaceDisplayLabel(activeWs) : '',
+      previewActive: previewMaterialActive(activeWs),
+      activeKinds,
+      scopedBaseNodes: scopedBase.length,
+      previewMatchedNodes: filtered.length,
+      selectedMaterialCount: selectedTotal,
+      kindCounts: scopedKinds,
+      showMorePresent: Boolean(document.querySelector('[data-action="load-more-discovery"]')),
+      emptyState: String(document.querySelector('.post-feed .empty-state, .empty-state')?.textContent || '').trim().replace(/\s+/g, ' ')
+    };
+  }
+
+  function uxPolishReadinessReport() {
+    const activeWs = app.workspaces?.[app.activeIndex || 0] || null;
+    const searchActive = Boolean(activeWs && normalizeSearchText(activeWs.discoverySearch || activeWs.lineageSearch || ''));
+    const toolbarRows = Array.from(document.querySelectorAll('.feed-toolbar')).slice(0, 8).map((toolbar) => ({
+      mode: toolbar.classList.contains('lineage') ? 'lineage' : toolbar.classList.contains('discovery') ? 'discovery' : 'unknown',
+      searchWidth: Math.round(toolbar.querySelector('.search-box')?.getBoundingClientRect?.().width || 0),
+      controlCount: toolbar.querySelectorAll('button, input, select').length
+    }));
+    return {
+      schema: 'tiinex.ux-polish.readiness.report.v1',
+      sourceStripPolicy: 'compact horizontal source summary on mobile; details remain in chips without breaking layout',
+      toolbarPolicy: 'discovery and lineage search share a consistent responsive width model',
+      discoverySearchShowsAllMatches: activeWs ? discoveryWindowShowsAllMatches(activeWs) : true,
+      previewFilterShowsAllMatches: activeWs ? (previewMaterialActive(activeWs) ? discoveryWindowShowsAllMatches(activeWs) : true) : true,
+      evidenceMaterialPolicy: 'image evidence owns the visual proof; material/provenance metadata collapses under it instead of creating another tall card',
+      searchActive,
+      toolbarRows
+    };
+  }
+
   function mobileActionOwnershipReport() {
     const rows = Array.from(document.querySelectorAll('.lineage-post')).slice(0, 20).map((post) => ({
       title: post.querySelector('.post-title')?.textContent?.trim() || '',
@@ -34900,12 +35234,49 @@ ${raw.slice(0, 800)}`) || 'en')}">
     };
   }
 
+  function sourceChromeStabilityReport() {
+    const strips = Array.from(document.querySelectorAll('.workspace-source-strip')).slice(0, 8).map((strip) => {
+      const rect = strip.getBoundingClientRect?.() || { width: 0, height: 0 };
+      const style = getComputedStyle(strip);
+      return {
+        visible: style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) !== 0,
+        sourceCount: strip.querySelectorAll('.workspace-source-pill, .source-pill, .source-chip').length,
+        width: Math.round(rect.width || 0),
+        height: Math.round(rect.height || 0),
+        scrollWidth: Math.round(strip.scrollWidth || 0),
+        overflowX: style.overflowX,
+        wraps: style.flexWrap,
+        justify: style.justifyContent
+      };
+    });
+    const workspaces = Array.from(document.querySelectorAll('.workspace')).slice(0, 8).map((ws) => ({
+      label: ws.querySelector('.workspace-title')?.textContent?.trim() || '',
+      singleSourceState: ws.classList.contains('single-source-state'),
+      mobileChromeCompact: ws.classList.contains('mobile-chrome-compact'),
+      feedTop: Math.round(ws.querySelector('.post-feed')?.scrollTop || 0),
+      hasSourceStrip: Boolean(ws.querySelector(':scope > .workspace-source-strip, .mobile-source-mode-row .workspace-source-strip')),
+      sourceCount: ws.querySelectorAll('.workspace-source-pill, .source-pill, .source-chip').length
+    }));
+    return {
+      schema: 'tiinex.source-chrome-stability.report.v1',
+      policy: 'source strip remains a one-line horizontal rail; mobile chrome expands/collapses only at the near-top boundary so mid-scroll direction changes do not resize the feed',
+      mobileReading: document.body.classList.contains('mobile-reading'),
+      mobileReadingChromeOwner: document.body.dataset.mobileReadingChromeOwner || '',
+      mobileChrome: document.body.classList.contains('mobile-chrome'),
+      thresholds: { compactEnterTop: MOBILE_CHROME_COMPACT_ENTER_TOP, compactExitTop: MOBILE_CHROME_COMPACT_EXIT_TOP },
+      strips,
+      workspaces
+    };
+  }
+
   window.TiinexDiagnostics = Object.assign(window.TiinexDiagnostics || {}, {
     mobileActionLayoutReadinessReport,
     mobileActionOwnershipReport,
     evidencePreviewReadinessReport,
     routeReuseReadinessReport,
-    publishReadyShareBoundaryReport
+    publishReadyShareBoundaryReport,
+    sourceChromeStabilityReport,
+    previewMaterialFilterReadinessReport
   });
 
 
