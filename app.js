@@ -112,9 +112,9 @@
   };
 
   const TIINEX_APP_BUILD = Object.freeze({
-    release: '329',
-    codename: 'placement-picker-foundation',
-    packageName: 'tiinex-site-329-clean-repo',
+    release: '331',
+    codename: 'mobile-reclaim-parent-scope',
+    packageName: 'tiinex-site-331-clean-repo',
     builtFor: 'Tiinex/site source repo',
     publicBuildOutputExcluded: true
   });
@@ -753,6 +753,8 @@
       schema: 'tiinex.build-identity.report.v1',
       identity: tiinexBuildIdentity(),
       appMarker: `${TIINEX_APP_BUILD.release}:${TIINEX_APP_BUILD.codename}`,
+      documentTitle: document.title || '',
+      configuredBrowserTitle: app.viewerIdentity?.browserTitle || '',
       diagnostics: Object.keys(window.TiinexDiagnostics || {}).sort().filter((key) => /Report$|Summary$|Json$/.test(key)).slice(0, 120),
       requiredDiagnosticsPresent: [
         'buildIdentityReport',
@@ -853,7 +855,7 @@
     const parent = modal ? wizardNodeById(ws, modal.parentNodeId) : null;
     return {
       schema: 'tiinex.artifact-placement-readiness.report.v1',
-      policy: 'continuity edge and storage placement are separate; create defaults to current workspace and parent folder while exposing folder/path before save',
+      policy: 'continuity edge and storage placement are separate; folder and parent are selected through picker workflows instead of raw path editing; hidden parents remain relation state and are not forced visible by rewiring',
       activeWizard: Boolean(modal),
       workspace: ws ? workspaceDisplayLabel(ws) : '',
       mode: modal?.mode || '',
@@ -862,6 +864,7 @@
       folderPath: modal ? defaultArtifactFolder(ws, modal) : '',
       pathPreview: path,
       crossWorkspacePlacementReady: true,
+      parentPickerActive: Boolean(app.parentPicker),
       moveRewireReady: false,
       folderPickerActive: Boolean(app.folderPicker),
       folderPicker: app.folderPicker ? { originWsId: app.folderPicker.originWsId || '', modalWsId: app.folderPicker.modal?.wsId || '', previousViewCount: Array.isArray(app.folderPicker.previousViews) ? app.folderPicker.previousViews.length : 0 } : null
@@ -7759,6 +7762,8 @@
   app.viewerIdentity = Object.assign({
     label: '',
     icon: '',
+    browserTitle: 'Tiinex',
+    documentTitleCurrent: '',
     home: 'https://github.com/Tiinex',
     publicBaseUrl: '',
     viewerBaseUrl: '',
@@ -7855,6 +7860,28 @@
       }
     `;
   }
+
+  function configuredBrowserTitle() {
+    const opts = window.TIINEX_VIEWER_OPTIONS || {};
+    const hostTitle = String(opts.browserTitle || opts.pageTitle || opts.documentTitle || opts.title || '').trim();
+    const cfg = app.viewerIdentity || {};
+    const configured = String(cfg.browserTitle || cfg.pageTitle || cfg.documentTitle || '').trim();
+    const fallback = String(cfg.displayName || cfg.heading || cfg.label || 'Tiinex').trim();
+    const title = cleanWhitespace(hostTitle || configured || fallback || 'Tiinex');
+    return title.slice(0, 90) || 'Tiinex';
+  }
+
+  function syncDocumentTitle(reason = 'config') {
+    const title = configuredBrowserTitle();
+    if (document.title !== title) document.title = title;
+    if (app.viewerIdentity) {
+      app.viewerIdentity.documentTitleCurrent = title;
+      app.viewerIdentity.documentTitleReason = reason;
+    }
+    return title;
+  }
+
+
 
 
 
@@ -8079,6 +8106,7 @@
     }
 
     app.viewerIdentity = merged;
+    syncDocumentTitle('viewer-config');
     applyViewerCustomCss(app.viewerIdentity.customCss || '');
 
     if (parsed?.viewerStateError) {
@@ -13157,6 +13185,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
     const identityLines = linesOrEmpty([
       configLine('Label', cfg.label),
+      configLine('Browser Title', cfg.browserTitle || cfg.documentTitleCurrent),
       configLine('Home', cfg.home, 'https://github.com/Tiinex'),
       configLine('Public Viewer URL', cfg.publicBaseUrl || cfg.viewerBaseUrl || cfg.shareBaseUrl),
       configLine('Workspace Home', cfg.workspaceHome),
@@ -13871,7 +13900,7 @@ ${bodySections}
 
 
 
-  const EMBEDDED_DEFAULT_WORKSPACE_MD = "# Continuity Context\n\n- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.root.v1.schema.md)\n- Current\n  - Current Schema: [tiinex.workspace.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.workspace.v1.schema.md)\n  - Created At: 2026-06-16 00:00:00\n  - Why: Defines a portable multi-lineage workspace entrypoint.\n  - Summary: Opens the Tiinex docs workspace and declares the default viewer discovery lens.\n\n---\n\n# Tiinex Viewer\n\n## Viewer Identity\n\n- Icon: ../../assets/tiinex-logo-white-transparent.png\n- Home: https://github.com/Tiinex\n- Public Viewer URL: https://tiinex.dev/\n- Workspace Home: https://tiinex.dev/\n\n## Empty Stage\n\n- Subtitle: Every handoff starts somewhere\n- Subtitle: Start where the last thread ends\n- Subtitle: Leave enough for the next mind\n- Subtitle: A thread is waiting\n- Subtitle: Nothing starts from nothing\n\n## Workspace Discovery\n\n- [Tiinex docs workspaces](https://github.com/Tiinex/docs)\n  - Kind: github-tree\n  - Ref: master\n  - Root Path: .topics\n  - Match: *.workspace.md\n  - Label: Tiinex docs workspaces\n  - Open Behavior: chooser\n\n## Workspace Entrypoints\n\n### Tiinex docs\n\n- Source Kind: github-tree\n- Repository: Tiinex/docs\n- Ref: master\n- Root Path: .topics\n- Repo Files Discovery: on\n- Issue Discovery: on\n- Issue URL: https://github.com/Tiinex/docs/issues/9\n- Default View: feed\n- Default Filter: all\n\n## Help\n\n### What is this view?\n\nThis workspace opens Tiinex markdown artifacts so an external reviewer and their LLM helpers can inspect continuity, source material, integrity signals, and continuation paths.\n\n### What should I check first?\n\nStart with what is loaded.\n\nCheck the workspace source, then inspect the visible badges. Treat integrity mismatch, missing integrity, unknown schema, and local-only material as review signals, not automatic failure.\n\n### What should I trust?\n\nTrust only what the artifact and its sources actually show.\n\nUse `Source` to inspect where material came from, `Markdown` to read the artifact, `Open` to inspect the selected node, and `Continue` only when the next step is clear enough to preserve.\n\n### What should an LLM preserve?\n\nDo not collapse Parent and Origin.\n\nParent is the declared continuity edge. Origin is provenance for where the material came from. If either is missing or weak, say so rather than filling the gap.\n\n### What should I send back?\n\nA useful validation note names the selected artifact, the source inspected, the observed signal, and the smallest next correction or continuation.\n\n---\n\n# Continuity Integrity\n\n- [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)\n  - Towards: [viewer.workspace.md](viewer.workspace.md)\n  - Value: r45Tk9hmaYpM6B2SUqCHAfNqieAWH5o1DO3_1TGKa0Y\n";
+  const EMBEDDED_DEFAULT_WORKSPACE_MD = "# Continuity Context\n\n- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.root.v1.schema.md)\n- Current\n  - Current Schema: [tiinex.workspace.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.workspace.v1.schema.md)\n  - Created At: 2026-06-16 00:00:00\n  - Why: Defines a portable multi-lineage workspace entrypoint.\n  - Summary: Opens the Tiinex docs workspace and declares the default viewer discovery lens.\n\n---\n\n# Tiinex Viewer\n\n## Viewer Identity\n\n- Icon: ../../assets/tiinex-logo-white-transparent.png\n- Browser Title: Tiinex\n- Home: https://github.com/Tiinex\n- Public Viewer URL: https://tiinex.dev/\n- Workspace Home: https://tiinex.dev/\n\n## Empty Stage\n\n- Subtitle: Every handoff starts somewhere\n- Subtitle: Start where the last thread ends\n- Subtitle: Leave enough for the next mind\n- Subtitle: A thread is waiting\n- Subtitle: Nothing starts from nothing\n\n## Workspace Discovery\n\n- [Tiinex docs workspaces](https://github.com/Tiinex/docs)\n  - Kind: github-tree\n  - Ref: master\n  - Root Path: .topics\n  - Match: *.workspace.md\n  - Label: Tiinex docs workspaces\n  - Open Behavior: chooser\n\n## Workspace Entrypoints\n\n### Tiinex docs\n\n- Source Kind: github-tree\n- Repository: Tiinex/docs\n- Ref: master\n- Root Path: .topics\n- Repo Files Discovery: on\n- Issue Discovery: on\n- Issue URL: https://github.com/Tiinex/docs/issues/9\n- Default View: feed\n- Default Filter: all\n\n## Help\n\n### What is this view?\n\nThis workspace opens Tiinex markdown artifacts so an external reviewer and their LLM helpers can inspect continuity, source material, integrity signals, and continuation paths.\n\n### What should I check first?\n\nStart with what is loaded.\n\nCheck the workspace source, then inspect the visible badges. Treat integrity mismatch, missing integrity, unknown schema, and local-only material as review signals, not automatic failure.\n\n### What should I trust?\n\nTrust only what the artifact and its sources actually show.\n\nUse `Source` to inspect where material came from, `Markdown` to read the artifact, `Open` to inspect the selected node, and `Continue` only when the next step is clear enough to preserve.\n\n### What should an LLM preserve?\n\nDo not collapse Parent and Origin.\n\nParent is the declared continuity edge. Origin is provenance for where the material came from. If either is missing or weak, say so rather than filling the gap.\n\n### What should I send back?\n\nA useful validation note names the selected artifact, the source inspected, the observed signal, and the smallest next correction or continuation.\n\n---\n\n# Continuity Integrity\n\n- [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)\n  - Towards: [viewer.workspace.md](viewer.workspace.md)\n  - Value: r45Tk9hmaYpM6B2SUqCHAfNqieAWH5o1DO3_1TGKa0Y\n";
 
   function shouldUseEmbeddedDefaultWorkspace() {
     // Hash state describes current opened sources; it should not block loading
@@ -13969,6 +13998,8 @@ ${bodySections}
 
     const label = readIdentityField(['Label']);
     if (label) out.label = label;
+    const browserTitle = readIdentityField(['Browser Title', 'Page Title', 'Document Title', 'Tab Title', 'App Title']);
+    if (browserTitle) out.browserTitle = stripMarkdownInline(browserTitle);
     const icon = readIdentityField(['Icon', 'Logo', 'Mark']);
     if (icon) {
       out.iconRaw = icon;
@@ -14056,6 +14087,7 @@ ${bodySections}
     }
 
     app.viewerIdentity.error = lastError?.message || String(lastError || '');
+    syncDocumentTitle('viewer-config-fallback');
     applyViewerCustomCss('');
   }
 
@@ -23740,6 +23772,22 @@ ${wizardBlank(f.notes)}`,
     });
   }
 
+  function enterWizardContinuityParentPicker(ws, modal) {
+    if (!ws || !modal || modal.type !== 'artifact-wizard') return;
+    app.modal = null;
+    app.parentPicker = {
+      wsId: ws.id,
+      originWsId: ws.id,
+      mode: 'wizard-parent',
+      modal: Object.assign({}, modal, { wizardStep: modal.wizardStep || 'describe' }),
+      title: modal.title || '',
+      summary: modal.summary || '',
+      startedAt: Date.now()
+    };
+    render();
+    toast('Select the continuity parent. Storage placement stays separate.', 'ok');
+  }
+
   function parentPickerActiveFor(ws) {
     return Boolean(app.parentPicker);
   }
@@ -23813,14 +23861,17 @@ ${wizardBlank(f.notes)}`,
     const referenced = wizardNodeById(referencedWs, picker.referencedNodeId);
     const basis = wizardNodeById(basisWs, picker.useAsBasisNodeId || picker.referencedNodeId);
     const isUseAs = mode === 'use-as';
-    const icon = isUseAs ? 'fa-wand-magic-sparkles' : 'fa-link';
-    const title = isUseAs ? 'Select parent for use-as artifact' : 'Select parent for reference';
-    const targetLabel = isUseAs ? 'Finding basis' : 'Reference target';
+    const isWizardParent = mode === 'wizard-parent';
+    const icon = isWizardParent ? 'fa-diagram-project' : (isUseAs ? 'fa-wand-magic-sparkles' : 'fa-link');
+    const title = isWizardParent ? 'Select continuity parent' : (isUseAs ? 'Select parent for use-as artifact' : 'Select parent for reference');
+    const targetLabel = isWizardParent ? 'Draft' : (isUseAs ? 'Finding basis' : 'Reference target');
     const targetWs = isUseAs ? basisWs : referencedWs;
     const target = isUseAs ? basis : referenced;
     const originLabel = targetWs && targetWs.id !== ws.id ? ` · from ${workspaceDisplayLabel(targetWs)}` : '';
+    const targetText = isWizardParent ? `${picker.modal?.title || picker.modal?.summary || 'artifact draft'} · storage path remains unchanged` : `${target?.title || target?.path || 'selected artifact'}${originLabel}`;
+    const help = isWizardParent ? 'Choose a visible artifact as the continuity parent. Hidden/unresolved parents are not forced visible; they remain graph state until you reveal or rewire them explicitly.' : 'Choose any visible artifact in any workspace as the destination parent/anchor; using the same artifact is allowed for transition semantics.';
     return `<div class="parent-picker-banner">
-      <div><strong><i class="fa-solid ${icon}"></i>${escapeHtml(title)}</strong><p>${escapeHtml(targetLabel)}: ${escapeHtml(target?.title || target?.path || 'selected artifact')}${escapeHtml(originLabel)}. Choose any visible artifact in any workspace as the destination parent/anchor; using the same artifact is allowed for transition semantics.</p></div>
+      <div><strong><i class="fa-solid ${icon}"></i>${escapeHtml(title)}</strong><p>${escapeHtml(targetLabel)}: ${escapeHtml(targetText)}. ${escapeHtml(help)}</p></div>
       <button class="tv-btn tiny subtle" data-action="cancel-parent-picker" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-xmark"></i>Cancel</button>
     </div>`;
   }
@@ -23836,12 +23887,13 @@ ${wizardBlank(f.notes)}`,
   });
   function parentPickerSelectActionItem(ws, node) {
     const mode = app.parentPicker?.mode || 'reference';
+    const wizardParent = mode === 'wizard-parent';
     return {
-      label: 'Select as parent',
+      label: wizardParent ? 'Set parent' : 'Select as parent',
       icon: 'fa-solid fa-location-crosshairs',
       className: 'select-parent-action constructive',
       dataset: { action: 'select-parent-placement', ws: ws?.id || '', node: node?.id || '' },
-      title: mode === 'use-as' ? 'Select as parent/target for use-as transition' : 'Select as parent/target for reference transition'
+      title: wizardParent ? 'Use this artifact as the draft continuity parent' : (mode === 'use-as' ? 'Select as parent/target for use-as transition' : 'Select as parent/target for reference transition')
     };
   }
 
@@ -23956,6 +24008,25 @@ ${wizardBlank(f.notes)}`,
       const referenced = wizardNodeById(referencedWs, picker.referencedNodeId);
       const basis = wizardNodeById(basisWs, picker.useAsBasisNodeId || picker.referencedNodeId);
       if (!ws || !parent) return toast('Could not resolve selected parent.', 'warn');
+      if (mode === 'wizard-parent') {
+        const sourceModal = picker.modal || null;
+        if (!sourceModal || sourceModal.type !== 'artifact-wizard') return toast('Could not restore the draft after parent selection.', 'warn');
+        if (sourceModal.wsId && ws.id !== sourceModal.wsId) return toast('Cross-workspace parent rewiring belongs to Move/Rewire; choose a parent in the draft workspace for now.', 'warn');
+        const nextFolder = sourceModal.folderPath || normalizedFolderPath(dirname(parent.path || '') || '.topics');
+        app.parentPicker = null;
+        app.modal = Object.assign({}, sourceModal, {
+          wsId: sourceModal.wsId || ws.id,
+          parentNodeId: parent.id,
+          parentPath: parent.path || '',
+          parentTitle: parent.title || parent.path || '',
+          folderPath: nextFolder,
+          wizardStep: sourceModal.wizardStep || 'describe'
+        });
+        updateUrlState({ replace: true });
+        render();
+        toast(`Parent selected: ${parent.title || parent.path}`, 'ok');
+        return;
+      }
       if (mode === 'use-as') {
         if (!basis) return toast('Could not resolve use-as basis.', 'warn');
         const schemaId = schemaIdFromCreate(picker.schemaId || '', '');
@@ -23992,8 +24063,36 @@ ${wizardBlank(f.notes)}`,
     if (action === 'cancel-parent-picker') {
       event.preventDefault();
       event.stopPropagation();
+      const picker = app.parentPicker || {};
+      const modal = picker.mode === 'wizard-parent' ? picker.modal : null;
       app.parentPicker = null;
+      if (modal && modal.type === 'artifact-wizard') {
+        app.modal = modal;
+        updateUrlState({ replace: true });
+      }
       render();
+      return;
+    }
+
+    if (action === 'open-continuity-parent-picker') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || app.activeWorkspaceId || '');
+      if (!ws || !app.modal || app.modal.type !== 'artifact-wizard') return toast('No draft is open for parent selection.', 'warn');
+      enterWizardContinuityParentPicker(ws, app.modal);
+      return;
+    }
+
+    if (action === 'clear-wizard-parent') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'artifact-wizard') return;
+      app.modal.parentNodeId = '';
+      app.modal.parentPath = '';
+      app.modal.parentTitle = '';
+      updateUrlState({ replace: true });
+      render();
+      toast('Continuity parent detached for this draft.', 'ok');
       return;
     }
 
@@ -24530,19 +24629,38 @@ ${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source findi
   }
 
 
+  function wizardContinuityParentPreview(ws, modal) {
+    const parent = wizardNodeById(ws, modal?.parentNodeId || '');
+    const parentPath = parent?.path || modal?.parentPath || '';
+    const state = parent ? 'resolved' : (parentPath ? 'hidden or unresolved' : 'none');
+    const label = parent ? (parent.title || parent.path || 'selected parent') : (parentPath ? parentPath : 'Root leaf / no parent');
+    const icon = parent ? 'fa-diagram-project' : (parentPath ? 'fa-triangle-exclamation' : 'fa-circle-dot');
+    const detach = (parent || parentPath) ? `<button type="button" class="tv-btn tiny subtle wizard-parent-detach" data-action="clear-wizard-parent" data-ws="${escapeAttr(ws?.id || '')}"><i class="fa-solid fa-link-slash"></i>Detach</button>` : '';
+    return `<section class="wizard-parent-preview picker-ready compact" aria-label="Continuity parent">
+      <div class="wizard-parent-scope-label"><i class="fa-solid fa-code-branch"></i><span>Continuity parent</span></div>
+      <div class="wizard-parent-row single-line">
+        <div class="wizard-parent-current ${parent ? 'resolved' : (parentPath ? 'unresolved' : 'none')}"><span>${escapeHtml(state)}</span><strong><i class="fa-solid ${escapeAttr(icon)}"></i>${escapeHtml(label)}</strong></div>
+        <button type="button" class="tv-btn tiny subtle wizard-parent-choose" data-action="open-continuity-parent-picker" data-ws="${escapeAttr(ws?.id || '')}"><i class="fa-solid fa-location-crosshairs"></i>${parent || parentPath ? 'Change parent' : 'Choose parent'}</button>
+        ${detach}
+      </div>
+      <small>Parent is the continuity edge. Storage folder is separate; hidden or filtered parents are not forced visible by changing this edge.</small>
+    </section>`;
+  }
+
   function wizardPlacementPreview(ws, modal, selected, title) {
     const option = selected || schemaOptionById(modal?.schemaId || 'tiinex.topic.v1');
     const folder = defaultArtifactFolder(ws, modal);
     const path = wizardPathFor(ws, modal, option, title || defaultWizardTitle(ws, modal, option));
     const edit = modal?.mode === 'edit';
-    return `<div class="wizard-placement-preview picker-ready" aria-label="Artifact storage placement">
-      <div class="wizard-placement-row">
-        <div class="wizard-placement-current"><span>Folder</span><strong>${escapeHtml(folder)}</strong></div>
-        <button type="button" class="tv-btn tiny subtle" data-action="open-folder-placement-picker" data-ws="${escapeAttr(ws?.id || '')}" ${edit ? 'disabled aria-disabled="true"' : ''}><i class="fa-solid fa-folder-tree"></i>Choose folder</button>
+    return `<section class="wizard-placement-preview picker-ready compact" aria-label="Artifact storage placement">
+      <div class="wizard-placement-scope-label"><i class="fa-solid fa-folder-tree"></i><span>Storage placement</span></div>
+      <div class="wizard-placement-row single-line">
+        <div class="wizard-placement-current folder"><span>Folder</span><strong>${escapeHtml(folder)}</strong></div>
+        <div class="wizard-placement-current path"><span>Path preview</span><strong>${escapeHtml(path)}</strong></div>
+        <button type="button" class="tv-btn tiny subtle wizard-folder-choose" data-action="open-folder-placement-picker" data-ws="${escapeAttr(ws?.id || '')}" ${edit ? 'disabled aria-disabled="true"' : ''}><i class="fa-solid fa-folder-tree"></i>Choose folder</button>
       </div>
-      <label class="field-label path-preview-label">Path preview<input class="form-control tv-input" value="${escapeAttr(path)}" readonly></label>
-      <small>Continuity parent and storage path are separate. Choose a folder from the tree instead of typing a path; new child artifacts still default to the parent folder.</small>
-    </div>`;
+      <small>Placement is separate from schema content. New child artifacts default to the parent folder unless you choose another folder.</small>
+    </section>`;
   }
 
   function wizardDescribeStep(ws, modal, selected, title, summary, body) {
@@ -24561,9 +24679,10 @@ ${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source findi
         <button class="tv-btn tiny subtle" data-action="wizard-set-step" data-step="type"><i class="fa-solid fa-rotate-left"></i>Change</button>
       </div>
       <div class="wizard-fields paged schema-aware-fields">
+        ${wizardPlacementPreview(ws, modal, selected, title)}
+        ${wizardContinuityParentPreview(ws, modal)}
         <label class="field-label">Title<input class="form-control tv-input" data-field="wizardTitle" value="${escapeAttr(title)}"></label>
         <label class="field-label">Summary<input class="form-control tv-input" data-field="wizardSummary" value="${escapeAttr(summary)}"></label>
-        ${wizardPlacementPreview(ws, modal, selected, title)}
         ${fields ? `<div class="schema-aware-form-grid">${fields.map((field) => renderWizardField(field, state[field.key] || '')).join('')}</div>` : `<label class="field-label wizard-body-field">${escapeHtml(selected.bodyLabel || 'Body')}<textarea class="form-control tv-textarea wizard-body-textarea paged" data-field="wizardBody" spellcheck="true">${escapeHtml(body)}</textarea></label>`}
       </div>
     </section>`;
@@ -24590,6 +24709,20 @@ ${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source findi
 `;
   }
 
+  function unresolvedParentContinuityBlock(modal, childPath) {
+    const raw = String(modal?.parentPath || '').trim();
+    if (!raw) return '';
+    const label = displayFileName(raw) || 'parent';
+    const isExternal = /^https?:\/\//i.test(raw);
+    const href = isExternal ? raw : (relativePathFromTo(childPath, canonicalWorkspacePath(raw)) || raw);
+    return `- Parent
+  - Parent Schema: unresolved
+  - Trace: ${linkForPath(label, href)}
+  - Origin:
+    - unresolved: ${raw}
+`;
+  }
+
   function wizardTemplate(ws, modal) {
     const option = schemaOptionById(modal.schemaId || 'tiinex.topic.v1');
     const schema = wizardSchemaId(option);
@@ -24598,7 +24731,7 @@ ${wizardCrossWorkspaceBoundaryLine('Source Finding', basisWs, ws)}- Source findi
     const path = wizardPathFor(ws, modal, option, title);
     const body = wizardBodyForModal(modal, option, { modal, path });
     const parent = wizardNodeById(ws, modal.parentNodeId);
-    const parentBlock = parent ? parentContinuityBlock(parent, path) : '';
+    const parentBlock = parent ? parentContinuityBlock(parent, path) : unresolvedParentContinuityBlock(modal, path);
     const transitionBlock = transitionBoundaryBody(ws, modal, path, option);
     const referenceBlock = modal.mode === 'reference' ? relationReferenceBody(ws, modal, path) : '';
     const useAsBlock = modal.mode === 'use-as' ? useAsBasisBody(ws, modal, path, option) : '';
@@ -24729,9 +24862,10 @@ ${integrityFooterForPath(parent, path)}`,
         <button class="tv-btn tiny subtle" data-action="wizard-set-step" data-step="type"><i class="fa-solid fa-rotate-left"></i>Change</button>
       </div>
       <div class="wizard-fields paged schema-aware-fields evidence-fields compact polished">
+        ${wizardPlacementPreview(ws, modal, selected, title)}
+        ${wizardContinuityParentPreview(ws, modal)}
         <label class="field-label">Title<input class="form-control tv-input compact" data-field="wizardTitle" value="${escapeAttr(title)}"></label>
         <label class="field-label">Summary<input class="form-control tv-input compact" data-field="wizardSummary" value="${escapeAttr(summary)}"></label>
-        ${wizardPlacementPreview(ws, modal, selected, title)}
         <label class="field-label evidence-claim-field compact polished">Supported claim <span class="wizard-required">required</span><textarea class="form-control tv-textarea evidence-claim-textarea compact polished" data-wizard-form-field="supportedClaim" placeholder="What does this evidence show or support?">${escapeHtml(state.supportedClaim || '')}</textarea></label>
         ${renderEvidenceAttachmentCollector(modal)}
       </div>
@@ -25427,6 +25561,8 @@ ${integrityFooterForPath(parent, path)}`,
       summary: node.summary || '',
       path: node.path || node.file?.path || '',
       parentNodeId: node.parentNode?.id || '',
+      parentPath: node.parentNode?.path || node.parentResolvedPath || node.parentHref || '',
+      parentTitle: node.parentNode?.title || node.parentNode?.path || node.parentResolvedPath || node.parentHref || '',
       wizardStep: 'describe',
       formFields: formStateFromNode(node),
       evidenceAttachments: schemaId === 'tiinex.evidence.v1' ? evidenceAttachmentsFromNode(ws, node) : []

@@ -14,6 +14,7 @@
 ## Viewer Identity
 
 - Icon: ../../assets/tiinex-logo-white-transparent.png
+- Browser Title: Tiinex
 - Home: https://github.com/Tiinex
 - Public Viewer URL: https://tiinex.dev/
 - Workspace Home: https://tiinex.dev/
