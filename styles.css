@@ -22791,3 +22791,55 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
     line-height: 1.42 !important;
   }
 }
+
+/* CP334 — mobile action density and lifecycle-responsive surfaces.
+   Keep mobile card action widths stable while reducing vertical boilerplate. */
+@media (max-width: 640px) {
+  .lineage-post > .post-actions {
+    gap: 0.24rem !important;
+    padding: 0.32rem 0.48rem !important;
+  }
+
+  .lineage-post > .post-actions > .icon-action,
+  .lineage-post > .post-actions > .post-action,
+  .lineage-post > .post-actions > button,
+  .lineage-post > .post-actions > a {
+    height: 1.82rem !important;
+    min-height: 1.82rem !important;
+    max-height: 1.82rem !important;
+    min-width: 2.15rem !important;
+    border-radius: 0.58rem !important;
+  }
+
+  .lineage-post > .post-actions > .icon-action i,
+  .lineage-post > .post-actions > .post-action i,
+  .lineage-post > .post-actions > button i,
+  .lineage-post > .post-actions > a i {
+    font-size: 0.78rem !important;
+    line-height: 1 !important;
+  }
+
+  .lineage-post > .post-actions > .icon-action svg,
+  .lineage-post > .post-actions > .post-action svg,
+  .lineage-post > .post-actions > button svg,
+  .lineage-post > .post-actions > a svg {
+    width: 0.82rem !important;
+    height: 0.82rem !important;
+  }
+}
+
+@media (max-width: 380px) {
+  .lineage-post > .post-actions {
+    gap: 0.2rem !important;
+    padding: 0.28rem 0.42rem !important;
+  }
+
+  .lineage-post > .post-actions > .icon-action,
+  .lineage-post > .post-actions > .post-action,
+  .lineage-post > .post-actions > button,
+  .lineage-post > .post-actions > a {
+    height: 1.72rem !important;
+    min-height: 1.72rem !important;
+    max-height: 1.72rem !important;
+  }
+}

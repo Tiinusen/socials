@@ -1,6 +1,6 @@
-# CP333 validation notes
+# CP334 validation notes
 
-Validated after target-aware GitHub issue verification and mobile read/raw modal containment.
+Validated after mobile action density, lifecycle responsiveness, and GitHub issue-body binding updates.
 
 - `node --check app.js`
 - `npm run build:public`
@@ -11,25 +11,8 @@ Validated after target-aware GitHub issue verification and mobile read/raw modal
 
 Manual checks:
 
-1. Export a local draft using Update known issue and verify after updating the issue body.
-2. Export a continuation comment and verify by matching comments.
-3. Open Raw markdown and Schema read view on mobile; the close button must remain visible and content must not collapse into one-character columns.
-4. Change a continuity parent in schema-aware edit, save, refresh, and confirm the parent edge still resolves or remains explicitly unresolved rather than disappearing.
-
-# CP332 validation notes
-
-Validated after GitHub target candidate discovery and mobile raw modal close fixes:
-
-- `node --check app.js`
-- `npm run build:public`
-- `npm run public:check`
-- `node --check .site-publish/tiinex.bundle.js`
-- `npm run metrics`
-- `npm run storage:scan`
-
-Manual checks requested:
-
-1. Open GitHub export for a local draft whose parent/original is a GitHub issue/comment discovery artifact. The target step should offer Create comment / Update known instead of defaulting to Create new when a target can be inferred.
-2. Verify that hidden discovery findings remain hidden in the feed unless the user explicitly reveals them; using their GitHub issue as publication target must not change feed visibility.
-3. Open Raw markdown on a long document in mobile/narrow width. The close button must remain visible/reachable.
-4. Confirm repo zip shape remains replace-ready: root files present, no `.git`, no `.site-publish`, no `.nojekyll`, no `tiinex.bundle.js`.
+1. On a narrow/mobile viewport, feed card action buttons should keep their usable width but take less vertical height.
+2. On mobile Chrome, switching tabs/apps should not pause for several seconds due to Tiinex lifecycle handlers.
+3. Export a local draft with `Update known issue`, update the issue body, verify, and finish; the local draft shadow should be removed or reconciled once the issue body is bound/imported.
+4. `TiinexDiagnostics.lifecycleResponsivenessReport()` should show lightweight flushes and skipped synchronous local saves after tab/app lifecycle events.
+5. `TiinexDiagnostics.githubExportBindingReport()` should show issue-body bindings for known issue updates.

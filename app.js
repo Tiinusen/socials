@@ -112,14 +112,16 @@
   };
 
   const TIINEX_APP_BUILD = Object.freeze({
-    release: '333',
-    codename: 'github-target-aware-verify-mobile-read',
-    packageName: 'tiinex-site-333-clean-repo',
+    release: '334',
+    codename: 'mobile-density-lifecycle-export-binding',
+    packageName: 'tiinex-site-334-clean-repo',
     builtFor: 'Tiinex/site source repo',
     publicBuildOutputExcluded: true
   });
 
   app.routeLoadPresentation = app.routeLoadPresentation || { sessions: [], active: null, renderEvents: [], contentClears: 0 };
+  app.lifecycleResponsiveness = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
+  app.githubExportBinding = app.githubExportBinding || { snapshots: [], issueBodyBindings: 0, commentBindings: 0, removedLocalDrafts: 0 };
 
   function tiinexBuildIdentity() {
     return Object.assign({}, TIINEX_APP_BUILD, {
@@ -132,6 +134,8 @@
 
   function routeLoadPresentationEnsure() {
     app.routeLoadPresentation = app.routeLoadPresentation || { sessions: [], active: null, renderEvents: [], contentClears: 0 };
+  app.lifecycleResponsiveness = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
+  app.githubExportBinding = app.githubExportBinding || { snapshots: [], issueBodyBindings: 0, commentBindings: 0, removedLocalDrafts: 0 };
     app.routeLoadPresentation.sessions = Array.isArray(app.routeLoadPresentation.sessions) ? app.routeLoadPresentation.sessions : [];
     app.routeLoadPresentation.renderEvents = Array.isArray(app.routeLoadPresentation.renderEvents) ? app.routeLoadPresentation.renderEvents : [];
     return app.routeLoadPresentation;
@@ -763,7 +767,9 @@
         'startupRouteInitReport',
         'githubRepoFetchSummary',
         'parentOriginContinuityReport',
-        'artifactPlacementReadinessReport'
+        'artifactPlacementReadinessReport',
+        'lifecycleResponsivenessReport',
+        'githubExportBindingReport'
       ].every((key) => typeof window.TiinexDiagnostics?.[key] === 'function')
     };
   }
@@ -916,6 +922,30 @@
     };
   }
 
+
+  function lifecycleResponsivenessReport() {
+    const state = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
+    return {
+      schema: 'tiinex.lifecycle-responsiveness.report.v1',
+      policy: 'mobile tab/app switches must not synchronously serialize large local workspace state during pagehide/beforeunload; mutation-time saves own durable local edits while lifecycle leave owns lightweight scroll/lens state',
+      skippedSyncLocalSaves: Number(state.skippedSyncLocalSaves || 0),
+      lightweightFlushes: Number(state.lightweightFlushes || 0),
+      recent: Array.isArray(state.events) ? state.events.slice(-20) : []
+    };
+  }
+
+  function githubExportBindingReport() {
+    const state = app.githubExportBinding || { snapshots: [], issueBodyBindings: 0, commentBindings: 0, removedLocalDrafts: 0 };
+    return {
+      schema: 'tiinex.github-export-binding.report.v1',
+      policy: 'Update known issue binds the exported markdown to the issue body and prunes the local draft shadow; comments remain comment targets so hidden discovery/source visibility is not forced into the feed',
+      issueBodyBindings: Number(state.issueBodyBindings || 0),
+      commentBindings: Number(state.commentBindings || 0),
+      removedLocalDrafts: Number(state.removedLocalDrafts || 0),
+      snapshots: Array.isArray(state.snapshots) ? state.snapshots.slice(-20) : []
+    };
+  }
+
   window.TiinexDiagnostics = Object.assign(window.TiinexDiagnostics || {}, {
     buildIdentityReport: () => buildIdentityReport(),
     githubIssueImportTrace: () => githubIssueImportTraceEnsure().slice(),
@@ -937,6 +967,8 @@
     parseHashShareTarget: (hash = location.hash) => parseHashShareTarget(hash),
     startupRouteInitReport: () => startupRouteInitReport(),
     routeLoadPresentationReport: () => routeLoadPresentationReport(),
+    lifecycleResponsivenessReport: () => lifecycleResponsivenessReport(),
+    githubExportBindingReport: () => githubExportBindingReport(),
     parentOriginContinuityReport: () => parentOriginContinuityReport(),
     artifactPlacementReadinessReport: () => artifactPlacementReadinessReport(),
     configuredPublicViewerBaseUrl: () => configuredPublicViewerBaseUrl(),
@@ -28075,7 +28107,9 @@ ${integrityFooterForPath(parent, path)}`,
       updated_at: now
     };
     let comments = Array.isArray(existing?.comments) ? existing.comments.slice() : [];
-    if (snapshot.targetMode === 'create-new' && !spec.commentAnchor) {
+    const targetMode = String(snapshot.targetMode || '').toLowerCase();
+    const updatesIssueBody = !spec.commentAnchor && ['create-new', 'update-known', 'update-existing', 'paste-existing', 'existing-issue'].includes(targetMode);
+    if (updatesIssueBody) {
       issue = Object.assign({}, issue, {
         id: issue.id || spec.issueNumber,
         number: spec.issueNumber,
@@ -28086,6 +28120,11 @@ ${integrityFooterForPath(parent, path)}`,
         updated_at: now,
         created_at: issue.created_at || now
       });
+      try {
+        app.githubExportBinding.issueBodyBindings += 1;
+        app.githubExportBinding.snapshots.push({ at: now, mode: targetMode || 'unknown', target: spec.issueUrl, path: snapshot.path || '', binding: 'issue-body' });
+        while (app.githubExportBinding.snapshots.length > 40) app.githubExportBinding.snapshots.shift();
+      } catch (_) {}
     } else {
       const commentId = spec.commentAnchor ? spec.commentAnchor.replace(/^issuecomment-/i, '') : '';
       const targetUrl = snapshot.targetUrl || githubPublishedResultUrlFromSpec(spec, snapshot.targetUrl || spec.issueUrl);
@@ -28107,6 +28146,13 @@ ${integrityFooterForPath(parent, path)}`,
           updated_at: now
         });
       }
+    }
+    if (!updatesIssueBody) {
+      try {
+        app.githubExportBinding.commentBindings += 1;
+        app.githubExportBinding.snapshots.push({ at: now, mode: targetMode || 'unknown', target: snapshot.targetUrl || spec.issueUrl, path: snapshot.path || '', binding: 'comment' });
+        while (app.githubExportBinding.snapshots.length > 40) app.githubExportBinding.snapshots.shift();
+      } catch (_) {}
     }
     return { issue, comments, truncated: Boolean(existing?.truncated), adapterMode: 'github-export-local-cache' };
   }
@@ -28228,6 +28274,7 @@ ${integrityFooterForPath(parent, path)}`,
     const removedExact = removePublishedLocalDraftsFromRuntime(ws, snapshots);
     const removedDuplicate = pruneLocalDuplicatesNowOwnedBySource(ws);
     const persisted = removePublishedLocalDraftsFromPersistedSnapshot(ws, snapshots);
+    try { app.githubExportBinding.removedLocalDrafts += Number(removedExact || 0) + Number(removedDuplicate || 0) + Number(persisted.removed || 0); } catch (_) {}
     computeWorkspaceIndex(ws);
     if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
     return { attempted: true, loaded, removed: removedExact + removedDuplicate, persistedRemoved: persisted.removed || 0 };
@@ -31151,14 +31198,35 @@ ${githubOutboundFileExcerpt(file, 18000)}
 
   document.addEventListener('scroll', onScrollPersistLens, true);
 
-  function flushBrowserStateBeforeLeave() {
-    try { writeStoredScrollSnapshot('pagehide'); } catch (_) {}
-    persistLensState('replace');
-    if (typeof saveLocalStateNow === 'function') saveLocalStateNow();
+  function lifecycleResponsivenessRecord(event, detail = {}) {
+    try {
+      app.lifecycleResponsiveness = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
+      const entry = { at: new Date().toISOString(), event: String(event || 'event'), detail };
+      app.lifecycleResponsiveness.events.push(entry);
+      while (app.lifecycleResponsiveness.events.length > 60) app.lifecycleResponsiveness.events.shift();
+      return entry;
+    } catch (_) { return null; }
   }
 
-  window.addEventListener('pagehide', flushBrowserStateBeforeLeave);
-  window.addEventListener('beforeunload', flushBrowserStateBeforeLeave);
+  function flushBrowserStateBeforeLeave(reason = 'pagehide') {
+    const started = performance.now?.() || Date.now();
+    try { writeStoredScrollSnapshot(reason); } catch (error) { lifecycleResponsivenessRecord('scroll-snapshot-error', { reason, error: error?.message || String(error) }); }
+    try { persistLensState('replace'); } catch (error) { lifecycleResponsivenessRecord('lens-persist-error', { reason, error: error?.message || String(error) }); }
+    // Mobile Chrome delays app switching/tab changes while synchronous unload
+    // handlers serialize large local workspaces into localStorage. Local edits and
+    // exports already persist at mutation boundaries; lifecycle leave only owns
+    // lightweight scroll/lens state so OS navigation stays responsive.
+    if (typeof saveLocalStateNow === 'function') {
+      app.lifecycleResponsiveness.skippedSyncLocalSaves += 1;
+      clearTimeout(app.localState?.saveTimer);
+      if (!document.hidden) setTimeout(() => { try { scheduleLocalStateSave?.(); } catch (_) {} }, 0);
+    }
+    app.lifecycleResponsiveness.lightweightFlushes += 1;
+    lifecycleResponsivenessRecord('lightweight-flush', { reason, ms: Math.round((performance.now?.() || Date.now()) - started), workspaces: app.workspaces?.length || 0 });
+  }
+
+  window.addEventListener('pagehide', () => flushBrowserStateBeforeLeave('pagehide'));
+  window.addEventListener('beforeunload', () => flushBrowserStateBeforeLeave('beforeunload'));
   registerCopyShareLinkWrapper(function copyShareLinkWithDurableLens(next) {
     persistLensState('replace');
     return next();
@@ -34188,13 +34256,18 @@ window.addEventListener('popstate', () => {
   }
 
   window.addEventListener('pagehide', () => {
-    writeStoredScrollSnapshot('pagehide');
+    lifecycleResponsivenessRecord('scroll-snapshot-skip-duplicate', { reason: 'pagehide', owner: 'flushBrowserStateBeforeLeave' });
   });
   window.addEventListener('beforeunload', () => {
-    writeStoredScrollSnapshot('beforeunload');
+    lifecycleResponsivenessRecord('scroll-snapshot-skip-duplicate', { reason: 'beforeunload', owner: 'flushBrowserStateBeforeLeave' });
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) writeStoredScrollSnapshot('visibilitychange');
+    if (document.hidden) {
+      // Do not synchronously serialize full local state or repeatedly snapshot on
+      // mobile tab/app switches. The pagehide owner performs the lightweight
+      // flush; visibility only records the transition for diagnostics.
+      lifecycleResponsivenessRecord('visibility-hidden', { workspaces: app.workspaces?.length || 0 });
+    }
   });
 
   function scheduleStoredScrollRestore() {
@@ -36064,6 +36137,30 @@ ${raw.slice(0, 800)}`) || 'en')}">
         files: ws.files?.size || 0,
         nodes: ws.nodes?.length || 0
       }))
+    };
+  }
+
+
+  function lifecycleResponsivenessReport() {
+    const state = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
+    return {
+      schema: 'tiinex.lifecycle-responsiveness.report.v1',
+      policy: 'mobile tab/app switches must not synchronously serialize large local workspace state during pagehide/beforeunload; mutation-time saves own durable local edits while lifecycle leave owns lightweight scroll/lens state',
+      skippedSyncLocalSaves: Number(state.skippedSyncLocalSaves || 0),
+      lightweightFlushes: Number(state.lightweightFlushes || 0),
+      recent: Array.isArray(state.events) ? state.events.slice(-20) : []
+    };
+  }
+
+  function githubExportBindingReport() {
+    const state = app.githubExportBinding || { snapshots: [], issueBodyBindings: 0, commentBindings: 0, removedLocalDrafts: 0 };
+    return {
+      schema: 'tiinex.github-export-binding.report.v1',
+      policy: 'Update known issue binds the exported markdown to the issue body and prunes the local draft shadow; comments remain comment targets so hidden discovery/source visibility is not forced into the feed',
+      issueBodyBindings: Number(state.issueBodyBindings || 0),
+      commentBindings: Number(state.commentBindings || 0),
+      removedLocalDrafts: Number(state.removedLocalDrafts || 0),
+      snapshots: Array.isArray(state.snapshots) ? state.snapshots.slice(-20) : []
     };
   }
 

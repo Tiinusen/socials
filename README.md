@@ -1,13 +1,16 @@
-# CP333 — target-aware GitHub verify + mobile read modal containment
+# CP334 — mobile density, lifecycle responsiveness, and GitHub issue binding
 
-CP333 follows CP332 after field testing showed Update known issue targets were detected correctly but verification still scanned issue comments. Verification is now target-aware: known issue targets verify the issue body, comment targets verify comments, and mobile read/raw markdown modals keep their close control reachable.
+CP334 follows CP333 after video review showed three remaining trust/UX gaps:
 
-# CP332 — GitHub target parent binding + raw modal close
+- mobile feed action buttons kept good width but still consumed too much vertical card space;
+- mobile Chrome/tab/app switching could briefly freeze because lifecycle handlers synchronously serialized local workspace state on pagehide/beforeunload;
+- Update known issue verification found the target, but local publication binding still treated non-comment issue updates like comment publication, allowing local draft shadows and imported issue bodies to coexist.
 
-CP332 keeps publication target selection grounded when a local draft is attached to a source-backed or hidden discovery/original artifact. GitHub export now scans the local draft, its continuity parent chain, original-source shadow artifacts, and GitHub issue-style storage paths before falling back to a new issue target.
+Changes:
 
-This pass does not force hidden discovery findings back into the visible feed. Hidden or unresolved parent/original artifacts remain relation state; export may still use their GitHub target as a publication container when that target can be inferred from source URLs, stored markdown, or path shape.
-
-Mobile raw markdown/detail modals also keep their close affordance visible on long documents by giving the modal header an explicit close-button slot and allowing long paths/titles/source lines to wrap on narrow screens.
+- Mobile card action rails keep their current width distribution but reduce height, padding, radius, and icon size.
+- Lifecycle leave now performs only a lightweight scroll/lens flush; durable local edits remain saved at mutation/save boundaries instead of doing a heavy synchronous localStorage serialization during app/tab switches.
+- GitHub export publication binding treats `Update known issue` / existing-issue updates as issue-body bindings, not comment bindings.
+- Added diagnostics: `TiinexDiagnostics.lifecycleResponsivenessReport()` and `TiinexDiagnostics.githubExportBindingReport()`.
 
 Validation signal: `node --check app.js`, `npm run build:public`, `npm run public:check`, `node --check .site-publish/tiinex.bundle.js`, `npm run metrics`, and `npm run storage:scan`.
