@@ -22,3 +22,13 @@ association with any individual or organization.
 This notice is intentionally kept in the root of the repository so that
 the origin, attribution chain, and continuity of the project vision do
 not disappear when the work is copied, forked, or extended.
+
+Tiinex Lineage Notice Addendum
+
+This repository may contain both Apache-2.0 software/tooling and Tiinex lineage material.
+Software source code and build tooling remain governed by LICENSE unless otherwise stated.
+Tiinex lineage artifacts, workspace exports, issue/discussion bodies, attachments, provenance metadata,
+and continuity context may be subject to LINEAGE_POLICY.md.
+
+LINEAGE_POLICY.md is intended as a consent and integrity boundary for lineage material. It does not modify
+Apache-2.0 rights for software source code or other material explicitly licensed under Apache-2.0.
