@@ -1,6 +1,6 @@
-# CP342 validation notes
+# CP344 validation notes
 
-Validated the CP342 workspace drop routing and workspace-share boundary pass.
+Validated global workspace/drop routing and explicit viewer URL source probing.
 
 Commands:
 

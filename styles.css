@@ -22950,3 +22950,105 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
   .workspace-drop-choice-grid { grid-template-columns: 1fr; }
   .workspace-drop-choice-card { min-height: 84px; }
 }
+
+/* CP343 lineage policy share/create boundary */
+.share-policy-clause,
+.share-policy-box,
+.policy-warning-box {
+  border: 1px solid rgba(202, 153, 255, .28);
+  border-radius: 16px;
+  background: rgba(141, 80, 255, .08);
+  padding: 12px 14px;
+  margin-top: 14px;
+}
+.share-policy-clause {
+  display: grid;
+  gap: 6px;
+}
+.share-policy-clause strong,
+.share-policy-box strong {
+  color: #eadbff;
+  letter-spacing: .04em;
+}
+.share-policy-clause span,
+.share-policy-clause a {
+  overflow-wrap: anywhere;
+}
+.policy-create-panel {
+  width: min(880px, calc(100vw - 28px));
+}
+.policy-create-body {
+  display: grid;
+  gap: 14px;
+  padding: 14px 0 0;
+}
+.policy-warning-box {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: start;
+  border-color: rgba(255, 204, 112, .38);
+  background: rgba(255, 190, 90, .08);
+}
+.policy-warning-box i {
+  color: #ffd27c;
+  margin-top: 3px;
+}
+.policy-warning-box p {
+  margin: 4px 0 0;
+  color: var(--muted, #cfc4dc);
+}
+.policy-template-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.policy-template-choice {
+  display: grid;
+  gap: 6px;
+  text-align: left;
+  border: 1px solid rgba(202, 153, 255, .22);
+  border-radius: 16px;
+  padding: 12px;
+  background: rgba(255, 255, 255, .035);
+  color: inherit;
+  cursor: pointer;
+}
+.policy-template-choice.active {
+  border-color: rgba(207, 151, 255, .72);
+  background: rgba(142, 73, 255, .18);
+  box-shadow: 0 0 0 1px rgba(207, 151, 255, .22) inset;
+}
+.policy-template-choice span {
+  color: var(--muted, #cfc4dc);
+  font-size: .86rem;
+  line-height: 1.35;
+}
+.policy-template-preview {
+  display: grid;
+  gap: 8px;
+}
+.policy-template-preview span {
+  color: #dcc7ff;
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  font-size: .76rem;
+}
+.policy-template-preview textarea {
+  width: 100%;
+  min-height: 340px;
+  resize: vertical;
+  border: 1px solid rgba(202, 153, 255, .24);
+  border-radius: 16px;
+  background: rgba(0, 0, 0, .22);
+  color: #f7f0ff;
+  padding: 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: 1.45;
+}
+@media (max-width: 760px) {
+  .policy-template-grid { grid-template-columns: 1fr; }
+  .policy-create-panel { width: min(100vw - 16px, 100%); }
+  .policy-template-preview textarea { min-height: 260px; }
+}

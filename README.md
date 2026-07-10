@@ -1,3 +1,3 @@
-# CP342 — workspace drop routing and share boundary
+# CP344 — global drop and viewer URL source routing
 
-CP342 tightens workspace entrypoint behavior: empty-stage drops open directly, drops outside existing workspaces ask Open/Merge, drops onto a workspace add an entrypoint card, and workspace entrypoint shares route as workspace targets.
+CP344 tightens page-level drag/drop ownership so browser native navigation does not win outside workspace cards, and makes Explicit URL sources resolve Tiinex viewer URLs to their default workspace entrypoint files when possible.

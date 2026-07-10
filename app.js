@@ -112,9 +112,9 @@
   };
 
   const TIINEX_APP_BUILD = Object.freeze({
-    release: '342',
-    codename: 'workspace-drop-routing-share-boundary',
-    packageName: 'tiinex-site-342-clean-repo',
+    release: '344',
+    codename: 'global-drop-viewer-url-source',
+    packageName: 'tiinex-site-344-clean-repo',
     builtFor: 'Tiinex/site source repo',
     publicBuildOutputExcluded: true
   });
@@ -1071,6 +1071,7 @@
     workspaceOpenMergeReport: () => workspaceOpenMergeReport(),
     workspaceDropRoutingReport: () => workspaceDropRoutingReport(),
     workspaceEntrypointShareReport: () => workspaceEntrypointShareReport(),
+    lineagePolicyShareExportReport: () => lineagePolicyShareExportReport(),
     shareSignalPreviewForActive: (reason = '', intent = 'share') => shareSignalRecord(shareEligibilityForActive(), { intent, reason }),
     shareCounterObservationReport: () => shareCounterObservationReport(),
     crossWorkspaceRelationPickerReport: () => crossWorkspaceRelationPickerReport(),
@@ -1586,8 +1587,16 @@
     return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
   }
 
-  function convertSourceUrl(input) {
+  function normalizeExplicitSourceUrlInput(input) {
     const original = String(input || '').trim();
+    if (!original) return '';
+    if (/^[a-z][a-z0-9+.-]*:/iu.test(original)) return original;
+    if (/^(?:localhost|(?:[a-z0-9-]+\.)+[a-z]{2,})(?::\d+)?(?:[/?#].*)?$/iu.test(original)) return `https://${original}`;
+    return original;
+  }
+
+  function convertSourceUrl(input) {
+    const original = normalizeExplicitSourceUrlInput(input);
     if (!original) return null;
     let url;
     try { url = new URL(original); } catch (_) { return { rawUrl: original, browseUrl: original, path: fileNameFromPath(original) }; }
@@ -1626,6 +1635,88 @@
       }
     }
     return { rawUrl: original, browseUrl: original, path: fileNameFromPath(url.pathname) || 'remote.trace.md' };
+  }
+
+  function sourceUrlLooksDirectTiinexMaterial(item) {
+    const value = `${item?.path || ''} ${item?.rawUrl || ''} ${item?.browseUrl || ''}`.toLowerCase();
+    return /\.(?:trace|workspace|schema|adapter|origin|tool|validator|license|policy)\.md(?:$|[?#])/.test(value)
+      || /\.md(?:$|[?#])/.test(value)
+      || /\.json(?:$|[?#])/.test(value);
+  }
+
+  function viewerWorkspaceCandidateUrls(input, converted = null) {
+    const normalized = normalizeExplicitSourceUrlInput(input || converted?.rawUrl || converted?.browseUrl || '');
+    let url;
+    try { url = new URL(normalized, location.href); } catch (_) { return []; }
+    const candidates = [];
+    const add = (candidate) => {
+      try {
+        const href = new URL(candidate, url.href).href;
+        if (!candidates.includes(href)) candidates.push(href);
+      } catch (_) {}
+    };
+
+    const explicit = url.searchParams.get('viewerWorkspace')
+      || url.searchParams.get('workspace')
+      || url.searchParams.get('viewerConfig')
+      || url.searchParams.get('config')
+      || url.searchParams.get('identity');
+    if (explicit) add(explicit);
+
+    const path = url.pathname || '/';
+    if (isWorkspaceFilename(path) || /\.workspace\.md(?:$|[?#])/iu.test(url.href)) add(url.href);
+
+    const base = new URL(url.href);
+    if (!/\/$/.test(base.pathname)) {
+      const parts = base.pathname.split('/');
+      const last = parts[parts.length - 1] || '';
+      if (/\.[a-z0-9]+$/iu.test(last)) parts.pop();
+      else parts[parts.length - 1] = `${last}/`;
+      base.pathname = parts.join('/') || '/';
+      base.search = '';
+      base.hash = '';
+    } else {
+      base.search = '';
+      base.hash = '';
+    }
+    add(new URL('.topics/.workspaces/viewer.workspace.md', base.href).href);
+    add(new URL('viewer.workspace.md', base.href).href);
+    return candidates;
+  }
+
+  async function resolveViewerWorkspaceEntrypointFromUrl(input, converted = null) {
+    const candidates = viewerWorkspaceCandidateUrls(input, converted);
+    const attempts = [];
+    for (const candidate of candidates) {
+      try {
+        const text = await fetchText(candidate, 'viewer workspace probe', { allowRawFallback: true, fallbackPolicy: 'explicit-url-viewer-workspace-probe' });
+        attempts.push({ url: candidate, ok: true, length: text.length });
+        if (looksLikeWorkspaceMarkdown(text)) {
+          let parsed = null;
+          try { parsed = parseViewerConfigMarkdown(text, candidate); } catch (_) { parsed = null; }
+          return {
+            rawUrl: candidate,
+            browseUrl: candidate,
+            path: fileNameFromPath(new URL(candidate, location.href).pathname) || 'viewer.workspace.md',
+            content: text,
+            isWorkspaceEntrypoint: true,
+            title: parsed?.displayName || parsed?.heading || firstBodyH1AfterEnvelope(text) || 'Tiinex Viewer',
+            summary: parsed?.summary || 'Portable workspace entrypoint.',
+            sourceNote: 'Discovered from Tiinex viewer URL',
+            viewerWorkspaceProbe: { input: String(input || ''), attempts }
+          };
+        }
+      } catch (error) {
+        attempts.push({ url: candidate, ok: false, error: error?.message || String(error) });
+      }
+    }
+    if (attempts.length) {
+      app.viewerUrlSourceProbe = app.viewerUrlSourceProbe || { attempts: [], last: null };
+      app.viewerUrlSourceProbe.last = { input: String(input || ''), attempts, at: new Date().toISOString() };
+      app.viewerUrlSourceProbe.attempts.push(app.viewerUrlSourceProbe.last);
+      if (app.viewerUrlSourceProbe.attempts.length > 30) app.viewerUrlSourceProbe.attempts.splice(0, app.viewerUrlSourceProbe.attempts.length - 30);
+    }
+    return null;
   }
 
   function repoPolicyRawUrl(repo, ref, fileName) {
@@ -1975,6 +2066,20 @@
         }
 
         try {
+          const directMaterial = sourceUrlLooksDirectTiinexMaterial(item);
+          if (!directMaterial) {
+            const workspaceEntrypoint = await resolveViewerWorkspaceEntrypointFromUrl(raw, item);
+            if (workspaceEntrypoint) {
+              addFileToWorkspace(ws, workspaceEntrypoint);
+              ws.logs.push(`Tiinex viewer URL resolved to workspace entrypoint ${workspaceEntrypoint.rawUrl}`);
+              count += 1;
+              loaded += 1;
+              ws.discoveryProgress.loaded = loaded;
+              ws.discoveryProgress.total = queue.length;
+              if (typeof progressYield === 'function') await progressYield(ws);
+              continue;
+            }
+          }
           if (/\.json($|[?#])/i.test(item.rawUrl)) {
             const text = await fetchText(item.rawUrl);
             const manifest = JSON.parse(text);
@@ -1987,7 +2092,11 @@
             }
           } else {
             const content = await fetchText(item.rawUrl);
-            addFileToWorkspace(ws, { ...item, content });
+            if (looksLikeWorkspaceMarkdown(content)) {
+              addFileToWorkspace(ws, { ...item, content, isWorkspaceEntrypoint: true, title: firstBodyH1AfterEnvelope(content) || 'Tiinex Viewer' });
+            } else {
+              addFileToWorkspace(ws, { ...item, content });
+            }
             count += 1;
           }
           loaded += 1;
@@ -7827,6 +7936,49 @@
     return path.find((item) => item?.classList?.contains?.('workspace-drop-target')) || null;
   }
 
+  async function handlePageLevelWorkspaceDropFiles(files, options = {}) {
+    const list = Array.from(files || []);
+    if (!list.length) return false;
+    const { workspaceFiles: configFiles, materialFiles } = await partitionWorkspaceDroppedFiles(list);
+    app.workspaceDropRouting = app.workspaceDropRouting || { events: [], last: null };
+    const record = {
+      at: new Date().toISOString(),
+      reason: options.reason || 'page-drop',
+      workspaceFiles: configFiles.length,
+      materialFiles: materialFiles.length,
+      openWorkspaces: app.workspaces?.length || 0
+    };
+    app.workspaceDropRouting.last = record;
+    app.workspaceDropRouting.events.push(record);
+    if (app.workspaceDropRouting.events.length > 60) app.workspaceDropRouting.events.splice(0, app.workspaceDropRouting.events.length - 60);
+
+    if (configFiles.length && !materialFiles.length) {
+      if (!app.workspaces?.length) {
+        record.action = 'empty-stage-auto-open';
+        await openWorkspaceFiles(configFiles, {
+          applyWorkspaceState: true,
+          replaceNonDraftWorkspaces: true,
+          workspaceOpenMode: 'open',
+          reason: 'workspace-drop-empty-stage-auto-open'
+        });
+        if (typeof setRouteState === 'function') setRouteState('replace');
+        else if (typeof updateUrlState === 'function') updateUrlState();
+        return true;
+      }
+      record.action = 'choice-open-merge';
+      openWorkspaceDropChoice(configFiles, { scope: options.scope || 'page-drop' });
+      return true;
+    }
+    if (configFiles.length) {
+      record.action = 'mixed-rejected';
+      toast('Drop workspace files alone outside a workspace, or drop mixed material into a specific workspace.', 'warn');
+      return true;
+    }
+    record.action = 'material-rejected';
+    toast('Drop local material into a workspace or use Add.', 'warn');
+    return true;
+  }
+
   function bindWorkspaceDropDelegation() {
     if (app.workspaceDropDelegationBound) return;
     app.workspaceDropDelegationBound = true;
@@ -7840,10 +7992,19 @@
     };
 
     window.addEventListener('dragover', preventNativeForKnownDrops, true);
-    window.addEventListener('drop', (event) => {
+    window.addEventListener('drop', async (event) => {
       if (app.modal?.type === 'source') return;
       if (!dataTransferLikelyWorkspaceOrMarkdownDrop(event.dataTransfer)) return;
+      const zone = workspaceDropTargetFromEvent(event);
+      if (zone) {
+        event.preventDefault();
+        return;
+      }
       event.preventDefault();
+      event.stopPropagation();
+      event.__tiinexGlobalWorkspaceDropHandled = true;
+      const files = await filesFromDataTransfer(event.dataTransfer);
+      await handlePageLevelWorkspaceDropFiles(files, { reason: 'window-capture-drop', scope: 'page-drop' });
     }, true);
 
     document.addEventListener('dragenter', (event) => {
@@ -7876,6 +8037,7 @@
     });
 
     document.addEventListener('drop', async (event) => {
+      if (event.__tiinexGlobalWorkspaceDropHandled) return;
       if (app.modal?.type === 'source') return;
       const zone = workspaceDropTargetFromEvent(event);
       if (!zone) {
@@ -7883,27 +8045,7 @@
         event.preventDefault();
         event.stopPropagation();
         const files = await filesFromDataTransfer(event.dataTransfer);
-        const { workspaceFiles: configFiles, materialFiles } = await partitionWorkspaceDroppedFiles(files);
-        if (configFiles.length && !materialFiles.length) {
-          if (!app.workspaces?.length) {
-            await openWorkspaceFiles(configFiles, {
-              applyWorkspaceState: true,
-              replaceNonDraftWorkspaces: true,
-              workspaceOpenMode: 'open',
-              reason: 'workspace-drop-empty-stage-auto-open'
-            });
-            if (typeof setRouteState === 'function') setRouteState('replace');
-            else if (typeof updateUrlState === 'function') updateUrlState();
-            return;
-          }
-          openWorkspaceDropChoice(configFiles, { scope: 'page-drop' });
-          return;
-        }
-        if (configFiles.length) {
-          toast('Drop workspace files alone outside a workspace, or drop mixed material into a specific workspace.', 'warn');
-          return;
-        }
-        toast('Drop local material into a workspace or use Add.', 'warn');
+        await handlePageLevelWorkspaceDropFiles(files, { reason: 'document-page-drop', scope: 'page-drop' });
         return;
       }
       const ws = zone.dataset.ws ? getWorkspace(zone.dataset.ws) : null;
@@ -13498,11 +13640,16 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
   function dataTransferLikelyWorkspaceOrMarkdownDrop(dataTransfer) {
     const files = Array.from(dataTransfer?.files || []);
-    if (!files.length) return false;
-    return files.some((file) => {
-      const name = String(file?.name || file?.path || '');
-      return isWorkspaceFilename(name) || /\.md$/iu.test(name) || String(file?.type || '').includes('markdown') || String(file?.type || '').includes('text');
-    });
+    if (files.length) {
+      return files.some((file) => {
+        const name = String(file?.name || file?.path || '');
+        return isWorkspaceFilename(name) || /\.md$/iu.test(name) || String(file?.type || '').includes('markdown') || String(file?.type || '').includes('text') || !name;
+      });
+    }
+    const items = Array.from(dataTransfer?.items || []);
+    // During dragover Chrome often hides file names until drop. Treat file-kind
+    // drags as Tiinex-owned so browser navigation never wins outside a dropzone.
+    return items.some((item) => item?.kind === 'file');
   }
 
   function workspaceDropFileNames(files) {
@@ -15917,6 +16064,7 @@ ${markdownExcerptForOutbound(node, 18000)}
 
   function githubOutboundWorkspaceTransitionBlock(ws, modal, mode = 'issue') {
     const plan = buildExportPlan(ws, modal || {});
+    const policyBoundary = lineagePolicyBoundaryLinesFor(ws, null);
     const result = mode === 'discussion'
       ? 'GitHub discussion draft prepared for the user to publish through GitHub web UI'
       : (mode === 'comment'
@@ -15936,7 +16084,8 @@ ${markdownExcerptForOutbound(node, 18000)}
 - Mutation Policy: loaded workspace and source artifacts unchanged; GitHub publication requires explicit user action outside Tiinex
 - Draft Status: prepared outbound draft only
 - Durable Identity: assigned by the published GitHub URL/comment and by any future Tiinex Continuity Integrity fingerprint, not by a local sequential draft id
-- Does Not Mean: this draft is already published, accepted, validated, evidence, preservation, or canonical Tiinex storage by itself
+- Does Not Mean: this draft is already published, accepted, validated, evidence, preservation, or canonical Tiinex storage by itself${policyBoundary ? `
+${policyBoundary}` : ''}
 `;
   }
 
@@ -15988,7 +16137,7 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
 - Publishing on GitHub creates or mutates GitHub material, not the original Tiinex workspace artifacts.
 - Export/download the workspace if you need a complete local package.
 - Preserve the published URL after posting if it becomes part of the lineage.
-`;
+${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage policy link and root/parent/origin boundaries when publishing.\n' : ''}`;
   }
 
   function githubOutboundDraftsForExportModal(modal) {
@@ -18198,6 +18347,147 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
 
 
 
+
+  function normalizePolicyLookupPath(value = '') {
+    return String(value || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/g, '');
+  }
+
+  function policyLookupDirForPath(value = '') {
+    const path = normalizePolicyLookupPath(value);
+    if (!path || !path.includes('/')) return '';
+    return path.split('/').slice(0, -1).join('/');
+  }
+
+  function policyLookupDepth(value = '') {
+    const path = normalizePolicyLookupPath(value);
+    return path ? path.split('/').filter(Boolean).length : 0;
+  }
+
+  function policyFileRecordFromWorkspaceFile(file = {}) {
+    const path = normalizePolicyLookupPath(file.path || file.name || '');
+    const base = path.split('/').pop() || '';
+    if (!isLineagePolicyKind(base)) return null;
+    return {
+      status: 'found',
+      kind: base,
+      path,
+      text: file.content || file.rawMarkdown || file.body || '',
+      url: file.browseUrl || file.rawUrl || file.sourceOrigin || '',
+      rawUrl: file.rawUrl || '',
+      browseUrl: file.browseUrl || '',
+      note: `Nearest lineage policy file found at ${path}.`
+    };
+  }
+
+  function lineagePolicyForArtifact(ws = null, artifact = null) {
+    if (!ws) return null;
+    const targetPath = normalizePolicyLookupPath(artifact?.path || artifact?.name || artifact?.file?.path || '');
+    const targetDir = policyLookupDirForPath(targetPath);
+    const files = Array.from(ws.files?.values?.() || []);
+    const candidates = files
+      .map(policyFileRecordFromWorkspaceFile)
+      .filter(Boolean)
+      .map((record) => {
+        const dir = policyLookupDirForPath(record.path);
+        const rootPolicy = !dir;
+        const sameTree = rootPolicy || targetDir === dir || targetDir.startsWith(`${dir}/`);
+        return Object.assign(record, { dir, rootPolicy, sameTree, depth: policyLookupDepth(dir) });
+      })
+      .filter((record) => record.sameTree)
+      .sort((a, b) => b.depth - a.depth || String(a.path).localeCompare(String(b.path)));
+    if (candidates[0]) return candidates[0];
+    const policy = ws.policy || null;
+    if (policy && (policy.status === 'found' || policy.status === 'origin-fallback')) {
+      return Object.assign({ path: policy.kind || '', browseUrl: policy.url || '', rawUrl: policy.url || '' }, policy, {
+        note: policy.note || `${policy.kind || 'Policy'} found for workspace origin.`
+      });
+    }
+    return policy || null;
+  }
+
+  function lineagePolicyLink(policy = null) {
+    return safeUrl(policy?.browseUrl || policy?.url || policy?.rawUrl || '') || policy?.browseUrl || policy?.url || policy?.rawUrl || '';
+  }
+
+  function lineagePolicyMarkdownLink(policy = null, fallback = 'Lineage policy') {
+    if (!policy || !(policy.status === 'found' || policy.status === 'origin-fallback')) return '';
+    const label = policy.path || policy.kind || fallback;
+    const href = lineagePolicyLink(policy);
+    return href ? `[${label}](${href})` : label;
+  }
+
+  function lineagePolicyShareClause(item = {}) {
+    const policy = item.policy || null;
+    const link = lineagePolicyMarkdownLink(policy);
+    if (!link) return '';
+    return `Lineage policy: ${link}. Use this Tiinex context with root, parent/origin, provenance, interpretation limits, and Golden Rule boundaries preserved.`;
+  }
+
+  function lineagePolicyShareClauseHtml(item = {}) {
+    const policy = item.policy || null;
+    if (!policy || !(policy.status === 'found' || policy.status === 'origin-fallback')) return '';
+    const href = lineagePolicyLink(policy);
+    const label = policy.path || policy.kind || 'Lineage policy';
+    const link = href
+      ? `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`
+      : escapeHtml(label);
+    return `<div class="share-policy-clause"><strong>Lineage policy</strong><span>${link}</span><p>Use this Tiinex context with root, parent/origin, provenance, interpretation limits, and Golden Rule boundaries preserved.</p></div>`;
+  }
+
+  function lineagePolicyBoundaryLinesFor(ws = null, artifact = null) {
+    const policy = lineagePolicyForArtifact(ws, artifact);
+    const link = lineagePolicyMarkdownLink(policy);
+    if (!link) return '';
+    return `- Lineage Policy: ${link}\n- Policy Boundary: preserve root, parent/origin, provenance, interpretation limits, and Golden Rule boundaries when using this lineage.`;
+  }
+
+  function lineagePolicyCreateTemplate(kind = 'generic', repo = '', options = {}) {
+    const cleanRepo = String(repo || options.repo || 'owner/repo').trim() || 'owner/repo';
+    const label = String(options.label || cleanRepo || 'this lineage').trim();
+    const social = kind === 'social';
+    const subtree = kind === 'subtree';
+    if (social) {
+      return `# Lineage Policy\n\nPolicy scope: ${label}\nRepository: ${cleanRepo}\nPolicy variant: social-restrictive\n\n## Intent\n\nThis lineage is published so people and user-directed tools can read, traverse, translate, interpret, and preserve context truthfully. Publication is not consent for extraction, profiling, targeted advertising, digital fingerprinting, identity graphs, model training, dataset aggregation, data brokerage, or commerce that uses the lineage against the author or subjects.\n\n## Consent boundary\n\nUse beyond human reading, user-directed assistance, accessibility, translation, preservation, and truthful Tiinex traversal requires explicit, revocable consent from the lineage owner. Consent is valid only when it names the actor, purpose, scope, retention period, downstream sharing, and withdrawal path, and when it preserves Tiinex root, parent/origin, provenance, interpretation limits, and the Golden Rule.\n\n## Allowed without additional consent\n\n- Human reading and linking.\n- User-directed LLM assistance where the user provides or selects this lineage for interpretation, accessibility, translation, summarization, or continuity work.\n- Tiinex viewer traversal that preserves source boundaries and does not claim more than the artifacts show.\n\n## Not consented\n\n- Scraping or harvesting for profiling, lead generation, surveillance, targeted advertising, ad ranking, digital fingerprinting, or identity graphs.\n- Training, fine-tuning, benchmarking, evaluation datasets, embeddings stores, or synthetic data generation not explicitly consented to.\n- Aggregation, resale, enrichment, or commercial extraction of personal/social lineage.\n- Use that strips root, parent/origin, provenance, interpretation limits, or policy context.\n\n## Golden Rule\n\nDo not use this lineage in ways you would reasonably reject if the lineage described you, your relationships, your vulnerable context, or your unfinished thoughts.\n`;
+    }
+    if (subtree) {
+      return `# Lineage Policy\n\nPolicy scope: ${label}\nRepository: ${cleanRepo}\nPolicy variant: subtree marker\n\nThis subtree has its own lineage boundary. Use it only with root, parent/origin, provenance, interpretation limits, and Golden Rule context preserved. If this subtree contains personal or social lineage, do not scrape, profile, fingerprint, aggregate, train on, or commercialize it beyond user-directed reading/traversal without explicit revocable consent from the lineage owner.\n`;
+    }
+    return `# Lineage Policy\n\nPolicy scope: ${label}\nRepository: ${cleanRepo}\nPolicy variant: generic-root\n\n## Intent\n\nThis lineage is meant to be read, traversed, learned from, remixed, implemented, and commercialized when use remains truthful to the Tiinex root and preserves provenance. Repository software may remain under Apache-2.0 or another stated software license. This policy is a lineage-use boundary, not a replacement for the software license.\n\n## Golden Rule\n\nUse the lineage in a way that respects the root and does not de-evolve the shared universe it participates in. Preserve parent/origin, provenance, source boundaries, interpretation limits, and material warnings. Do not present derived claims as stronger, more complete, more endorsed, or more canonical than the artifacts support.\n\n## Allowed\n\n- Human reading, traversal, citation, and review.\n- User-directed LLM traversal, explanation, translation, summarization, and continuity assistance.\n- Commercial use of ideas, tools, schemas, and implementations when attribution, source boundaries, and truthfulness are preserved.\n- Forking and adaptation that keeps lineage boundaries visible.\n\n## Not aligned with this policy\n\n- Stripping root, parent/origin, provenance, policy, or interpretation limits.\n- Using lineage to misrepresent people, sources, consent, or continuity.\n- Extractive use that intentionally works against the Golden Rule or the stated boundaries of narrower subtree policies.\n`;
+  }
+
+  function renderPolicyCreateModal(modal = {}) {
+    const ws = getWorkspace(modal.wsId || '') || getActiveWorkspace?.() || null;
+    const repo = ws?.repo || githubOutboundRepoForWorkspace?.(ws) || workspaceDisplayLabel(ws) || 'owner/repo';
+    const kind = modal.policyVariant || 'generic';
+    const text = lineagePolicyCreateTemplate(kind, repo, { label: workspaceDisplayLabel(ws) || ws?.label || repo });
+    const options = [
+      ['generic', 'Generic root', 'Allows traversal, LLM help, learning, and commerce when root/provenance/Golden Rule are preserved.'],
+      ['social', 'Social restrictive', 'For personal/social lineage. Requires explicit revocable consent for scraping, profiling, ads, fingerprinting, training, or extraction.'],
+      ['subtree', 'Subtree marker', 'Short local policy marker for narrower folders.']
+    ].map(([value, title, desc]) => `<button class="policy-template-choice ${value === kind ? 'active' : ''}" data-action="select-policy-template" data-policy-template="${escapeAttr(value)}"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(desc)}</span></button>`).join('');
+    return `<div class="modal-backdrop-custom policy-create-backdrop" role="dialog" aria-modal="true" aria-labelledby="policy-create-title">
+      <div class="modal-panel policy-create-panel">
+        <div class="modal-header-lite" translate="no">
+          <div>
+            <p class="kicker">Lineage policy</p>
+            <h2 class="modal-title-lite" id="policy-create-title"><i class="fa-solid fa-scroll"></i>Create lineage policy</h2>
+            <p class="text-secondary mb-0">${escapeHtml(repo)}</p>
+          </div>
+          <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="policy-create-body">
+          <div class="policy-warning-box"><i class="fa-solid fa-triangle-exclamation"></i><div><strong>Only license or set policy for origins you own or are authorized to govern.</strong><p>For imported lineage, create a policy only at an origin/subtree you control. Do not imply consent for someone else's material.</p></div></div>
+          <div class="policy-template-grid">${options}</div>
+          <label class="policy-template-preview"><span>Preview: LINEAGE_POLICY.md</span><textarea readonly rows="16">${escapeHtml(text)}</textarea></label>
+        </div>
+        <div class="modal-footer-actions" translate="no">
+          <button class="tv-btn subtle" data-action="copy-generated-policy"><i class="fa-regular fa-copy"></i><span>Copy</span></button>
+          <button class="tv-btn primary" data-action="download-generated-policy"><i class="fa-solid fa-download"></i><span>Download LINEAGE_POLICY.md</span></button>
+        </div>
+      </div>
+    </div>`;
+  }
+
   function policySourceUrl(doc) {
     return safeUrl(doc?.url || '') || doc?.url || '';
   }
@@ -18287,7 +18577,7 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
     } else if (p.status === 'origin-fallback') {
       badge = policyBadgeButton(ws, 'warn', 'fa-solid fa-scale-balanced', p.kind || 'Origin policy', p.note || 'Origin license/policy found', 'policy');
     } else if (p.status === 'missing') {
-      badge = policyBadgeButton(ws, 'danger', 'fa-solid fa-triangle-exclamation', 'No origin policy/license', p.note || 'No origin policy/license found', 'policy');
+      badge = policyBadgeButton(ws, 'danger', 'fa-solid fa-triangle-exclamation', 'Create lineage policy', p.note || 'No origin policy/license found', 'policy');
     } else if (p.status === 'lookup-deferred') {
       badge = policyBadgeButton(ws, 'pending', 'fa-solid fa-scale-balanced', 'Policy lookup deferred', p.note || 'Policy/license lookup deferred to avoid unnecessary requests', 'policy');
     } else if (p.status === 'local') {
@@ -18300,6 +18590,7 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
   }
   registerRenderModalWrapper(function renderModalWithPolicyDocument(modal, next) {
     if (modal?.type === 'policy-document') return renderPolicyDocumentModal(modal);
+    if (modal?.type === 'policy-create') return renderPolicyCreateModal(modal);
     return next(modal);
   });
   registerActionHandler(async function policyDocumentAction(event, next) {
@@ -18307,12 +18598,31 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
     if (action === 'open-policy-document') {
       event.preventDefault();
       event.stopPropagation();
-      app.modal = {
-        type: 'policy-document',
-        wsId: event.currentTarget.dataset.ws || '',
-        kind: event.currentTarget.dataset.policyKind || 'policy'
-      };
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '') || getActiveWorkspace?.() || null;
+      const kind = event.currentTarget.dataset.policyKind || 'policy';
+      const status = kind === 'notice' ? ws?.notice?.status : ws?.policy?.status;
+      app.modal = (kind === 'policy' && (status === 'missing' || status === 'local' || !status))
+        ? { type: 'policy-create', wsId: ws?.id || event.currentTarget.dataset.ws || '', policyVariant: 'generic' }
+        : { type: 'policy-document', wsId: event.currentTarget.dataset.ws || '', kind };
       render();
+      return;
+    }
+    if (action === 'select-policy-template' && app.modal?.type === 'policy-create') {
+      event.preventDefault();
+      event.stopPropagation();
+      app.modal.policyVariant = event.currentTarget.dataset.policyTemplate || 'generic';
+      render();
+      return;
+    }
+    if ((action === 'copy-generated-policy' || action === 'download-generated-policy') && app.modal?.type === 'policy-create') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(app.modal.wsId || '') || getActiveWorkspace?.() || null;
+      const repo = ws?.repo || (typeof githubOutboundRepoForWorkspace === 'function' ? githubOutboundRepoForWorkspace(ws) : '') || workspaceDisplayLabel(ws) || 'owner/repo';
+      const text = lineagePolicyCreateTemplate(app.modal.policyVariant || 'generic', repo, { label: workspaceDisplayLabel(ws) || ws?.label || repo });
+      if (action === 'copy-generated-policy') return copyShareText(text, 'Copied LINEAGE_POLICY.md template.', 'Could not copy policy template.');
+      downloadText('LINEAGE_POLICY.md', text, 'text/markdown;charset=utf-8');
+      toast('Downloaded LINEAGE_POLICY.md template.', 'ok');
       return;
     }
     return next(event);
@@ -18458,18 +18768,7 @@ _Additional selected markdown files omitted from this GitHub draft body: ${omitt
     }
 
     if (configFiles.length && !materialFiles.length) {
-      if (!app.workspaces?.length) {
-        await openWorkspaceFiles(configFiles, {
-          applyWorkspaceState: true,
-          replaceNonDraftWorkspaces: true,
-          workspaceOpenMode: 'open',
-          reason: 'workspace-drop-empty-stage-auto-open'
-        });
-        if (typeof setRouteState === 'function') setRouteState('replace');
-        else if (typeof updateUrlState === 'function') updateUrlState();
-        return;
-      }
-      openWorkspaceDropChoice(configFiles, { scope: 'workspace-empty-drop' });
+      await handlePageLevelWorkspaceDropFiles(configFiles, { reason: 'workspace-drop-no-target', scope: 'workspace-empty-drop' });
       return;
     }
 
@@ -29463,13 +29762,15 @@ ${integrityFooterForPath(parent, path)}`,
     const targetLine = targetUrl ? `
 - Target: ${targetUrl}` : '';
     const parentBinding = targetMode === 'create-comment' ? githubContinuationParentBoundaryLines(ws, file) : '';
+    const policyBoundary = lineagePolicyBoundaryLinesFor(ws, file);
     const transitionBlock = `- Transition: continue → ${resultSurface}
 - Publication Intent: ${targetMode === 'create-comment' ? 'create-continuation-comment' : (targetMode === 'reuse-known' ? 'update-existing-comment' : targetMode)}
 - Source: ${sourceUrl ? `[${title}](${sourceUrl})` : title}
 ${parentBinding ? `${parentBinding}
 ` : ''}- Target: ${targetUrl || (targetMode === 'create-new' ? 'new GitHub target after user publish' : (targetMode === 'create-comment' ? 'new GitHub issue comment after user publish' : 'existing GitHub target selected by user'))}
 - Adapter: github-outbound-web-routine
-- Status: draft only until published on GitHub; loaded workspace and source artifact remain unchanged.`;
+- Status: draft only until published on GitHub; loaded workspace and source artifact remain unchanged.${policyBoundary ? `
+${policyBoundary}` : ''}`;
     return `# ${title}
 
 ${summary ? `${summary}\n\n` : ''}> Tiinex ${schemaLabel} · ${workspaceLabel}${sourceLink}
@@ -29497,7 +29798,8 @@ ${githubOutboundFileExcerpt(file, 18000)}
 - Review this draft before publishing on GitHub.
 - Publishing on GitHub creates or mutates GitHub material, not the original Tiinex artifact.
 - The link above opens the public Tiinex viewer through a readable hash target when a public source or known GitHub target exists.
-- Paste the resulting GitHub URL back into Tiinex and verify before continuing to the next artifact.${targetLine}
+- Paste the resulting GitHub URL back into Tiinex and verify before continuing to the next artifact.${targetLine}${policyBoundary ? `
+- This artifact has a lineage policy boundary. Preserve the policy link and root/parent/origin context when publishing.` : ''}
 
 </details>
 `;
@@ -35843,6 +36145,10 @@ window.addEventListener('popstate', (event) => {
       materialState = localCounts.total ? 'mixed-local' : (target ? 'source-backed' : 'local-only');
     }
 
+    const policy = activeWs ? lineagePolicyForArtifact(activeWs, resolvedScope === 'artifact' ? activeNode : null) : null;
+    const policyLink = lineagePolicyMarkdownLink(policy);
+    if (policyLink) warnings.push(`Lineage policy applies: ${policyLink}. Preserve root, parent/origin, provenance, interpretation limits, and Golden Rule boundaries.`);
+
     const publicUrl = sharePublicUrlForTarget(target);
     let status = 'unavailable';
     if (materialState === 'draft-local' || materialState === 'local-only') status = 'draft-local';
@@ -35873,6 +36179,8 @@ window.addEventListener('popstate', (event) => {
       summary,
       audience: shareAudienceForTarget(target),
       target,
+      policy,
+      policyLink,
       publicUrl,
       exactUrl,
       materialState,
@@ -36002,6 +36310,8 @@ window.addEventListener('popstate', (event) => {
     lines.push(`**Origin:** ${originLabel}${href && shareHasViewerHashOrigin(href) ? ' with hash target' : ''}`);
     lines.push(`**Share status:** ${item.statusLabel || item.status}`);
     if (item.audience) lines.push(`**Audience:** ${item.audience}`);
+    const policyClause = lineagePolicyShareClause(item);
+    if (policyClause) lines.push('', `**Lineage policy:** ${policyClause.replace(/^Lineage policy:\s*/i, '')}`);
     if (item.warnings?.length) {
       lines.push('', '<details><summary>Share boundary</summary>', '');
       item.warnings.forEach((warning) => lines.push(`- ${warning}`));
@@ -36021,6 +36331,8 @@ window.addEventListener('popstate', (event) => {
     lines.push('', `Question: ${shareInteractionQuestion()}`);
     lines.push(`Answer: ${reason || 'No context answer was provided yet.'}`);
     if (href) lines.push('', `Open: ${href}`);
+    const policyClause = lineagePolicyShareClause(item);
+    if (policyClause) lines.push('', policyClause);
     lines.push('', `Status: ${item.statusLabel || item.status || 'share candidate'}`);
     lines.push('Boundary: shared as a Tiinex interaction point; not proof or source mutation by itself.');
     return lines.join('\n');
@@ -36055,6 +36367,7 @@ window.addEventListener('popstate', (event) => {
           <div><dt>Destination</dt><dd>${escapeHtml(shareDestinationLabel(item))}</dd></div>
           <div><dt>Origin</dt><dd>${escapeHtml(shareOriginBoundaryLabel(item, href))}${href && shareHasViewerHashOrigin(href) ? ' · hash target' : ''}</dd></div>
         </dl>
+        ${lineagePolicyShareClauseHtml(item)}
         ${warnings ? `<details class="share-rendered-boundary"><summary>Boundary warnings</summary><ul>${warnings}</ul></details>` : ''}
         <p class="share-rendered-limit">Presentation/interaction point. Not evidence, endorsement, source mutation, or proof by itself.</p>
       </article>`;
@@ -36267,6 +36580,7 @@ ${redirectMeta}
                 <div><strong>Audience</strong><span>${escapeHtml(item.audience || '')}</span></div>
                 <div><strong>Target</strong><span>${targetLine}</span></div>
               </div>
+              ${item.policyLink ? `<div class="share-warning-box share-policy-box"><strong>Lineage policy</strong><p>${escapeHtml('Policy applies to this share. Use the link/card clause when sending context so receivers preserve root, parent/origin, provenance, interpretation limits, and Golden Rule boundaries.')}</p></div>` : ''}
               ${warnings ? `<div class="share-warning-box"><strong>Boundary</strong><ul>${warnings}</ul></div>` : ''}
             </details>
           </div>
@@ -36725,6 +37039,29 @@ ${raw.slice(0, 800)}`) || 'en')}">
       serverPolling: false,
       capturedInCurrentWizard: activeAttachments.length,
       attachments: activeAttachments.map((item) => ({ label: item.label || item.name || '', facing: item.cameraFacing || '', type: item.type || '', size: item.size || 0, capturedAt: item.capturedAt || '' }))
+    };
+  }
+
+
+  function lineagePolicyShareExportReport() {
+    const rows = [];
+    for (const ws of app.workspaces || []) {
+      const workspacePolicy = lineagePolicyForArtifact(ws, null);
+      for (const node of (ws.nodes || []).slice(0, 120)) {
+        const policy = lineagePolicyForArtifact(ws, node);
+        if (policy && (policy.status === 'found' || policy.status === 'origin-fallback')) {
+          rows.push({ workspace: workspaceDisplayLabel(ws) || ws.id, title: node.title || node.path || '', path: node.path || '', policy: policy.path || policy.kind || '', url: lineagePolicyLink(policy) });
+        }
+      }
+      if (workspacePolicy && (workspacePolicy.status === 'found' || workspacePolicy.status === 'origin-fallback')) {
+        rows.push({ workspace: workspaceDisplayLabel(ws) || ws.id, title: '(workspace)', path: '', policy: workspacePolicy.path || workspacePolicy.kind || '', url: lineagePolicyLink(workspacePolicy) });
+      }
+    }
+    return {
+      schema: 'tiinex.lineage-policy.share-export.report.v1',
+      policy: 'Share cards and GitHub issue/discussion exports carry lineage policy clauses/links when a root or nearest artifact policy is available; missing policy badge opens a guarded create-policy flow.',
+      rows,
+      count: rows.length
     };
   }
 
