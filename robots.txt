@@ -1,0 +1,5 @@
+# Generic Tiinex lineage surface
+# Machine-readable signal only; see /LINEAGE_POLICY.md for consent and integrity boundary.
+
+User-agent: *
+Allow: /
