@@ -1,0 +1,25 @@
+{
+  "repo": "Tiinex/site",
+  "role": "static client-side viewer/reference implementation",
+  "stableIdentity": "tiinex.orientation.v1.md",
+  "boundedContext": "tiinex.context.v1.md",
+  "repoEntrypoint": "README.md",
+  "appGuidance": "tiinex.app.llm.v1.md",
+  "llmRouter": "llms.txt",
+  "publicEntrypoint": "index.html",
+  "transientReleases": "releases/",
+  "runtimeSurfaces": [
+    "index.html",
+    "app.js",
+    "src/",
+    "styles.css"
+  ],
+  "validationCommands": [
+    "node --check app.js",
+    "npm run build:public",
+    "npm run public:check",
+    "node --check .site-publish/tiinex.bundle.js",
+    "npm run metrics",
+    "npm run storage:scan"
+  ]
+}

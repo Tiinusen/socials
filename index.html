@@ -10,10 +10,12 @@
   <link rel="stylesheet" href="./styles.css">
   <link rel="icon" href="./favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="./assets/tiinex-logo-white-transparent.png">
-  <!-- Tiinex LLM entrypoint: read ./llms.txt and ./tiinex.app.llm.v1.md before interpreting this app. -->
+  <!-- Tiinex LLM entrypoint: read ./llms.txt before repo or runtime-specific guidance. -->
   <link rel="help" type="text/plain" href="./llms.txt" data-tiinex-role="llm-entrypoint">
+  <link rel="help" type="text/markdown" href="./tiinex.orientation.v1.md" data-tiinex-role="llm-identity">
+  <link rel="help" type="text/markdown" href="./tiinex.context.v1.md" data-tiinex-role="llm-context">
   <link rel="help" type="text/markdown" href="./tiinex.app.llm.v1.md" data-tiinex-role="llm-orientation">
-  <meta name="tiinex:llm-entrypoint" content="./tiinex.app.llm.v1.md">
+  <meta name="tiinex:llm-entrypoint" content="./llms.txt">
   <meta name="tiinex:build-id" content="CP345-workspace-drop-choice-polish">
   <script type="application/ld+json" id="tiinex-llm-entrypoint-json">
   {
@@ -37,14 +39,20 @@
 
 </head>
 <body>
+  <header class="container-fluid border-bottom bg-body-tertiary" id="viewer-entrypoint-notice">
+    <div class="container py-2 small text-body-secondary">
+      This is the Tiinex viewer, one reference implementation. Tiinex itself is the broader continuity system for saving AI-assisted work as readable, inspectable Markdown artifacts.
+    </div>
+  </header>
   <section id="tiinex-llm-entrypoint"
     hidden
     data-tiinex-role="llm-orientation"
-    data-tiinex-llm-entrypoint="./tiinex.app.llm.v1.md"
+    data-tiinex-llm-entrypoint="./llms.txt"
     data-tiinex-llms="./llms.txt"
     data-tiinex-origin="https://tiinex.dev">
-    Tiinex Lineage Viewer is a static client-side viewer for portable markdown provenance, lineage, and workspace artifacts.
-    LLMs should read ./llms.txt and ./tiinex.app.llm.v1.md before interpreting or extending the app.
+    This is the Tiinex viewer, one reference implementation.
+    Tiinex itself is the broader continuity system for saving AI-assisted work as readable, inspectable Markdown artifacts.
+    LLMs should read ./llms.txt before interpreting or extending the app.
   </section>
 
 <!--

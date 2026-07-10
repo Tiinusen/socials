@@ -1,37 +1,23 @@
-# Tiinex Lineage Viewer LLM Entry
+# Tiinex/site LLM Router
 
-This package is a static client-side viewer for portable Tiinex markdown artifacts.
+Read files in this order:
 
-Start here:
+1. Read `tiinex.orientation.v1.md` for Tiinex identity.
+2. Read `tiinex.context.v1.md` for bounded LLM context.
+3. Read `README.md` for this repo.
+4. Read `tiinex.app.llm.v1.md` for viewer/runtime guidance.
+5. Read files in `releases/` only for current implementation status.
 
-1. Read `README.md` for product and package context.
-2. Read `tiinex.app.llm.v1.md` for LLM-oriented continuity guidance.
-3. Inspect the actual app files and current user report before making claims about runtime behavior.
+Important boundary:
 
-Important semantics:
+- `Tiinex/site` is the Tiinex viewer and one reference implementation.
+- Tiinex itself is the broader continuity system for saving AI-assisted work as readable, inspectable Markdown artifacts.
+- Do not treat CP-specific release notes as the definition of the repo or the project.
 
-- Parent means continuity lineage.
-- Origin means grounding or provenance.
-- Reference and destination links are not automatically parents.
-- Integrity warnings are provenance signals, not generic UI errors.
-- Schema IDs and checksum methods are domain versions and should remain versioned.
-- Ordinary app helpers, actions, CSS classes, and state fields should stay semantic rather than version-stamped.
+Runtime cautions:
 
-Development guardrails:
-
-- This app remains a static frontend package.
-- `package.json` is maintainer tooling only; it does not imply a build step.
-- Run `node tools/validate-static.mjs` after code or package-shape changes.
-- Run `node tools/collect-metrics.mjs` when checking current size and cleanup metrics.
-- Run `node tools/inspect-storage.mjs` before changing browser storage behavior.
-- Browser testing is still required for UI behavior.
-- Do not add wrapper or override layers as a default fix.
-- Do not collapse Parent, Origin, Reference, Current Schema, or Integrity into one generic relation.
-
-Browser state:
-
-- Local workspace persistence stores local/draft deltas only.
-- Remote/default workspace content should not be duplicated into browser storage.
-- Scroll and lens state are session-scoped and should stay compact, content-aware, and safe to clear.
-- Route, lens, and scroll policy helpers have an owned `src/viewstate/` surface, but browser restore behavior is still an active design surface; verify current runtime behavior before asserting it is settled.
-- `architectureReadyForProductWork: yes` is the metrics signal that the current module boundary baseline is ready for product work.
+- Inspect actual app files before making claims about runtime behavior.
+- Keep Parent and Origin separate.
+- Do not guess local or draft material is GitHub-backed source.
+- Workspace files are entrypoints when opened as workspaces.
+- Use nearest `LINEAGE_POLICY.md` or `LINEAGE_LICENSE.md` when loaded material provides one.
