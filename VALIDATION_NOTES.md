@@ -1,14 +1,3 @@
-# CP344 validation notes
+# CP345 validation notes
 
-Validated global workspace/drop routing and explicit viewer URL source probing.
-
-Commands:
-
-```bash
-node --check app.js
-npm run build:public
-npm run public:check
-node --check .site-publish/tiinex.bundle.js
-npm run metrics
-npm run storage:scan
-```
+Validated the CP345 full-replace package after polishing the workspace drop Open/Merge dialog. The behavioral scope is intentionally narrow: no new drop semantics, only clearer visual hierarchy, spacing, copy, and theme-consistent option cards.

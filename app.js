@@ -112,9 +112,9 @@
   };
 
   const TIINEX_APP_BUILD = Object.freeze({
-    release: '344',
-    codename: 'global-drop-viewer-url-source',
-    packageName: 'tiinex-site-344-clean-repo',
+    release: '345',
+    codename: 'workspace-drop-choice-polish',
+    packageName: 'tiinex-site-345-clean-repo',
     builtFor: 'Tiinex/site source repo',
     publicBuildOutputExcluded: true
   });
@@ -13702,20 +13702,26 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
             <button class="tv-btn small subtle" data-action="cancel-workspace-drop-choice" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
           </div>
           <div class="workspace-drop-choice-summary">
-            <i class="fa-solid fa-diagram-project"></i>
-            <span>Choose before mutating the workspace set. Dropping onto a specific workspace only adds an entrypoint card.</span>
+            <span class="workspace-drop-choice-summary-icon"><i class="fa-solid fa-diagram-project"></i></span>
+            <span>Choose how this workspace file should affect the current view. Dropping onto a specific workspace only adds an entrypoint card.</span>
           </div>
-          <div class="source-choice-grid workspace-drop-choice-grid">
-            <button class="source-choice-card workspace-drop-choice-card selected" data-action="workspace-drop-open">
-              <span class="source-choice-icon"><i class="fa-solid fa-layer-group"></i></span>
-              <span><strong>Open</strong><small>Open as the current workspace set. Non-draft workspaces may close; browser-local drafts are preserved.</small></span>
+          <div class="workspace-drop-choice-grid" role="group" aria-label="Workspace import choices">
+            <button class="workspace-drop-choice-card primary" data-action="workspace-drop-open">
+              <span class="workspace-drop-choice-card-icon"><i class="fa-solid fa-layer-group"></i></span>
+              <span class="workspace-drop-choice-card-copy">
+                <strong>Open</strong>
+                <small>Use this as the workspace set. Safe workspaces may close; browser-local drafts stay protected.</small>
+              </span>
             </button>
-            <button class="source-choice-card workspace-drop-choice-card" data-action="workspace-drop-merge">
-              <span class="source-choice-icon"><i class="fa-solid fa-code-merge"></i></span>
-              <span><strong>Merge</strong><small>Keep open workspaces, then upsert workspaces and sources from this file without duplicating them.</small></span>
+            <button class="workspace-drop-choice-card" data-action="workspace-drop-merge">
+              <span class="workspace-drop-choice-card-icon"><i class="fa-solid fa-code-merge"></i></span>
+              <span class="workspace-drop-choice-card-copy">
+                <strong>Merge</strong>
+                <small>Keep what is open, then add or update workspaces and sources from this file without duplicates.</small>
+              </span>
             </button>
           </div>
-          <div class="modal-footer-actions">
+          <div class="modal-footer-actions workspace-drop-choice-footer">
             <button class="tv-btn subtle" data-action="cancel-workspace-drop-choice">Cancel</button>
           </div>
         </div>
