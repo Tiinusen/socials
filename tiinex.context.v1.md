@@ -1,16 +1,26 @@
 # Tiinex/site Context v1
 
-This file is the bounded LLM context for `Tiinex/site`.
+This file is the bounded reader and LLM context for `Tiinex/site`.
 
 ## Repository Summary
 
 `Tiinex/site` is the static client-side viewer/reference implementation for Tiinex artifacts and workspaces.
-It is the public site surface and browser runtime for loading, inspecting, sharing, continuing, importing, exporting, and reviewing portable Markdown artifacts.
+
+It is the public site surface and browser runtime for loading, inspecting, sharing, importing, exporting, reviewing, and continuing work with portable Markdown artifacts.
 
 ## Not The Whole Project
 
-Tiinex itself is the broader continuity system for saving AI-assisted work as readable, inspectable Markdown artifacts.
-This repo implements one viewer/runtime surface inside that larger system.
+Tiinex itself keeps provenance readable in Markdown artifacts you own.
+
+Provenance means the visible trail around material: where it came from, what changed, what it depends on, what limits apply, and what should not be inferred from it.
+
+This repo implements one viewer/runtime surface inside that larger provenance system.
+
+## AI / LLM Boundary
+
+AI and LLM workflows are important use cases and pressure tests.
+
+They are not the identity boundary of Tiinex, and this repo should not be described as a general-purpose AI runtime.
 
 ## Stable Authority Order
 

@@ -1,6 +1,10 @@
 # Tiinex/site
 
-Tiinex/site is a static client-side viewer for Tiinex artifacts and workspaces. Tiinex artifacts are readable Markdown files that preserve context, origin, parent links, transitions, and enough information for humans or AI tools to continue work later. The viewer helps inspect, share, continue, import, export, and review those artifacts. It is one implementation of Tiinex, not the whole project.
+Tiinex/site is the current static client-side viewer for Tiinex artifacts and workspaces.
+
+Tiinex artifacts are Markdown files that keep provenance readable: where material came from, what changed, what it depends on, what limits apply, and what should not be inferred from it.
+
+The viewer helps inspect, share, import, export, review, and continue working with those artifacts. It is one implementation of Tiinex, not the whole project.
 
 ## What This Repository Is
 
@@ -10,11 +14,17 @@ The app is a static frontend package. It renders artifact and workspace content 
 
 ## What Tiinex Is
 
-Tiinex is the broader continuity system for saving AI-assisted work as readable, inspectable Markdown artifacts.
+Tiinex keeps provenance readable in Markdown artifacts you own.
 
-Those artifacts preserve enough surrounding structure to continue work later without pretending that a single note, screenshot, or generated answer was the whole story. The broader system includes artifact conventions, lineage semantics, policy lookup, continuity metadata, and multiple tools or implementations that can read or produce compatible material.
+Provenance means the visible trail around material: where it came from, what changed, what it depends on, what limits apply, and what should not be inferred from it.
 
-This repo is the viewer for that ecosystem, not the whole definition of it.
+This repo is the viewer for that artifact ecosystem, not the whole definition of it.
+
+## AI / LLM Boundary
+
+AI and LLM workflows are important use cases and pressure tests for Tiinex.
+
+They are not the identity boundary of Tiinex, and this site should not be described as a general-purpose AI runtime.
 
 ## Viewer Boundaries
 
@@ -28,7 +38,7 @@ This repo is the viewer for that ecosystem, not the whole definition of it.
 ## Stable Reading Order
 
 - `tiinex.orientation.v1.md` explains Tiinex identity at the project level.
-- `tiinex.context.v1.md` provides bounded self-contained LLM context for this repo.
+- `tiinex.context.v1.md` provides bounded self-contained context for this repo.
 - `README.md` explains this repository for humans first.
 - `tiinex.app.llm.v1.md` gives viewer/runtime-specific guidance.
 - `releases/CP345.md` and other files in `releases/` are transient implementation notes, not the repo identity surface.
