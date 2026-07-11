@@ -112,9 +112,8 @@
   };
 
   const TIINEX_APP_BUILD = Object.freeze({
-    release: '345',
-    codename: 'workspace-drop-choice-polish',
-    packageName: 'tiinex-site-345-clean-repo',
+    repository: 'Tiinex/site',
+    channel: 'source',
     builtFor: 'Tiinex/site source repo',
     publicBuildOutputExcluded: true
   });
@@ -758,7 +757,7 @@
     return {
       schema: 'tiinex.build-identity.report.v1',
       identity: tiinexBuildIdentity(),
-      appMarker: `${TIINEX_APP_BUILD.release}:${TIINEX_APP_BUILD.codename}`,
+      appMarker: `${TIINEX_APP_BUILD.repository}:${TIINEX_APP_BUILD.channel}`,
       documentTitle: document.title || '',
       configuredBrowserTitle: app.viewerIdentity?.browserTitle || '',
       diagnostics: Object.keys(window.TiinexDiagnostics || {}).sort().filter((key) => /Report$|Summary$|Json$/.test(key)).slice(0, 120),
@@ -5130,9 +5129,49 @@
       </section>`;
   }
 
+  function stripWorkspaceMachineSections(markdown) {
+    const blocked = new Set(['machine state', 'workspace state']);
+    const lines = normalizeNewlines(markdown || '').split('\n');
+    const out = [];
+    let skipping = false;
+    let skipDepth = 0;
+    for (const line of lines) {
+      const heading = String(line || '').match(/^(#{1,6})\s+(.+?)\s*$/);
+      if (heading) {
+        const depth = heading[1].length;
+        const name = heading[2].trim().toLowerCase();
+        if (skipping && depth <= skipDepth) skipping = false;
+        if (!skipping && depth === 2 && blocked.has(name)) {
+          skipping = true;
+          skipDepth = depth;
+          continue;
+        }
+      }
+      if (!skipping) out.push(line);
+    }
+    return out.join('\n').trim();
+  }
+
+  function renderWorkspaceEntrypointSummary(node, options = {}) {
+    const readable = stripWorkspaceMachineSections(node.body || node.rawMarkdown || '');
+    const sections = extractBodySections(readable);
+    const preferred = ['Viewer Identity', 'Workspace Entrypoints', 'Empty Stage', 'Help', 'Custom CSS'];
+    const names = preferred.filter((name) => sections[name] && sections[name].trim());
+    const fallback = Object.keys(sections).filter((name) => !/^(continuity context|continuity integrity|machine state|workspace state)$/i.test(name));
+    const picked = names.length ? names : fallback;
+    const body = picked.length
+      ? renderPreviewSectionsRich(sections, picked, Object.assign({ full: true, noTruncate: true, readMode: true }, options))
+      : renderMarkdownReadBlock('Workspace entrypoint', readable || node.summary || 'Workspace entrypoint.', Object.assign({ full: true, noTruncate: true }, options));
+    return `<section class="${presenterClass('schema-presenter workspace-presenter', options)}">
+      ${renderPresenterHead('Workspace', 'fa-solid fa-layer-group', node.title || 'Workspace', node.summary || '', options)}
+      ${body}
+    </section>`;
+  }
+
   function renderSchemaReadPresenter(ws, node, options = {}) {
     const schema = node.currentSchemaText || node.currentSchema || '';
     const presenterOptions = Object.assign({}, options, { ws });
+    if (isWorkspaceNode(node)) return renderWorkspaceEntrypointSummary(node, presenterOptions);
     if (schema === 'tiinex.discovery.finding.v1') return renderDiscoveryFindingSummary(node, presenterOptions);
     if (schema === 'tiinex.topic.v1') return renderTopicSummary(node, presenterOptions);
     if (schema === 'tiinex.feedback.v1') return renderFeedbackSummary(node, presenterOptions);
@@ -5164,6 +5203,26 @@
   }
 
 
+  function renderDetailReadableBody(ws, node) {
+    if (isWorkspaceNode(node)) {
+      const readable = stripWorkspaceMachineSections(node.body || node.rawMarkdown || '');
+      return `<details class="artifact-body-read workspace-readable-body" ${artifactProseAttrs(node)}>
+        <summary>
+          <span class="schema-read-label">Readable workspace body</span>
+          <small>Machine state is hidden here. Use Markdown for the exact source.</small>
+        </summary>
+        <div class="markdown-rendered artifact-prose" ${artifactProseAttrs(node)}>${renderSafeMarkdown(readable || node.summary || 'Workspace entrypoint.')}</div>
+      </details>`;
+    }
+    return `<details class="artifact-body-read" ${artifactProseAttrs(node)}>
+      <summary>
+        <span class="schema-read-label">Artifact body</span>
+        <small>Exact body rendered from the artifact. Use Markdown for full source.</small>
+      </summary>
+      <div class="markdown-rendered artifact-prose" ${artifactProseAttrs(node)}>${renderSafeMarkdown(node.body || node.rawMarkdown)}</div>
+    </details>`;
+  }
+
   function renderDetailReadView(ws, node) {
     const schema = node.currentSchemaText || (node.hasModernEnvelope ? 'unknown schema' : 'plain markdown');
     const presenter = renderSchemaReadPresenter(ws, node, { compact: false });
@@ -5181,13 +5240,7 @@
       ${presenter || renderContinuityPreview(node, ws)}
       ${renderMaterialSection(ws, node, { compact: false, excludeKinds: evidenceHasInlineImagePreview(ws, node) ? ['image'] : [] })}
       <hr class="soft-rule">
-      <details class="artifact-body-read" ${artifactProseAttrs(node)}>
-        <summary>
-          <span class="schema-read-label">Artifact body</span>
-          <small>Exact body rendered from the artifact. Use Markdown for full source.</small>
-        </summary>
-        <div class="markdown-rendered artifact-prose" ${artifactProseAttrs(node)}>${renderSafeMarkdown(node.body || node.rawMarkdown)}</div>
-      </details>`;
+      ${renderDetailReadableBody(ws, node)}`;
   }
 
 
@@ -14125,22 +14178,37 @@ ${bodySections}
     return out;
   }
 
+  function workspaceConfigEditTarget(ws, node) {
+    if (!ws || !node) return { node: null, original: null, sourceBacked: false, existingDraft: false };
+    if (nodeIsLocalEditableMaterial(ws, node)) return { node, original: null, sourceBacked: false, existingDraft: Boolean(node.localEditDraft || node.localDraftOf || node.shadowSourceKey || node.shadowSourceId || node.shadowSourceOrigin) };
+    const draft = typeof localShadowDraftForOriginal === 'function' ? localShadowDraftForOriginal(ws, node) : null;
+    if (draft) return { node: draft, original: node, sourceBacked: true, existingDraft: true };
+    return { node, original: node, sourceBacked: true, existingDraft: false };
+  }
+
   function openWorkspaceConfigEditor(ws, node) {
     if (!ws || !node) return toast('No workspace card selected.', 'warn');
-    const markdown = workspaceNodeMarkdown(ws, node);
+    const target = workspaceConfigEditTarget(ws, node);
+    const editNode = target.node;
+    if (!editNode) return toast('No workspace card selected.', 'warn');
+    const markdown = workspaceNodeMarkdown(ws, editNode);
     if (!looksLikeWorkspaceMarkdown(markdown)) return toast('This card is not a workspace entrypoint.', 'warn');
-    const configUrl = workspaceNodeConfigUrl(ws, node);
+    const configUrl = workspaceNodeConfigUrl(ws, target.original || editNode);
     app.modal = {
       type: 'workspace-config-editor',
       wsId: ws.id,
-      nodeId: node.id,
+      nodeId: editNode.id,
+      originalNodeId: target.original?.id || '',
       configUrl,
+      sourceBacked: Boolean(target.sourceBacked),
+      existingDraft: Boolean(target.existingDraft),
       originalMarkdown: markdown,
       draft: workspaceConfigDraftFromMarkdown(markdown, configUrl)
     };
     updateUrlState({ replace: true });
     render();
   }
+
 
   function renderWorkspaceConfigEditorModal(modal) {
     const draft = modal.draft || {};
@@ -14150,7 +14218,7 @@ ${bodySections}
           <div>
             <p class="kicker">Workspace config</p>
             <h2 class="modal-title-lite" id="workspace-config-editor-title"><span class="export-title-icon"><i class="fa-solid fa-sliders"></i></span><span>Edit workspace identity</span></h2>
-            <p class="text-secondary mb-0">Brandable settings for this .workspace.md. Source-backed files are downloaded as an updated copy; drafts are not embedded.</p>
+            <p class="text-secondary mb-0">Edit this .workspace.md through the same local draft path as other artifacts. Source-backed workspaces save as browser-local drafts; existing drafts are updated in place until you export or publish.</p>
           </div>
           <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
         </div>
@@ -14158,26 +14226,26 @@ ${bodySections}
           <section class="export-section">
             <h3>Identity</h3>
             <div class="schema-grid two-col">
-              <label>Workspace title<input class="form-control tv-input" data-workspace-config-field="title" value="${escapeAttr(draft.title || '')}" placeholder="Tiinex Viewer"></label>
-              <label>Browser title<input class="form-control tv-input" data-workspace-config-field="browserTitle" value="${escapeAttr(draft.browserTitle || '')}" placeholder="Tiinex"></label>
-              <label>Public viewer URL<input class="form-control tv-input" data-workspace-config-field="publicBaseUrl" value="${escapeAttr(draft.publicBaseUrl || '')}" placeholder="https://tiinex.dev/"></label>
-              <label>Workspace home<input class="form-control tv-input" data-workspace-config-field="workspaceHome" value="${escapeAttr(draft.workspaceHome || '')}" placeholder="https://tiinex.dev/"></label>
-              <label>Icon / favicon path<input class="form-control tv-input" data-workspace-config-field="icon" value="${escapeAttr(draft.icon || '')}" placeholder="assets/tiinex-logo-white-transparent.png"></label>
-              <label>Accent<input class="form-control tv-input" data-workspace-config-field="accent" value="${escapeAttr(draft.accent || '')}" placeholder="purple"></label>
+              <label>Workspace title<input class="form-control tv-input" data-field="workspaceConfig.title" value="${escapeAttr(draft.title || '')}" placeholder="Tiinex Viewer"></label>
+              <label>Browser title<input class="form-control tv-input" data-field="workspaceConfig.browserTitle" value="${escapeAttr(draft.browserTitle || '')}" placeholder="Tiinex"></label>
+              <label>Public viewer URL<input class="form-control tv-input" data-field="workspaceConfig.publicBaseUrl" value="${escapeAttr(draft.publicBaseUrl || '')}" placeholder="https://tiinex.dev/"></label>
+              <label>Workspace home<input class="form-control tv-input" data-field="workspaceConfig.workspaceHome" value="${escapeAttr(draft.workspaceHome || '')}" placeholder="https://tiinex.dev/"></label>
+              <label>Icon / favicon path<input class="form-control tv-input" data-field="workspaceConfig.icon" value="${escapeAttr(draft.icon || '')}" placeholder="assets/tiinex-logo-white-transparent.png"></label>
+              <label>Accent<input class="form-control tv-input" data-field="workspaceConfig.accent" value="${escapeAttr(draft.accent || '')}" placeholder="purple"></label>
             </div>
           </section>
           <section class="export-section">
             <h3>Empty stage subtitles</h3>
-            <textarea class="form-control tv-input" rows="5" data-workspace-config-field="subtitles" placeholder="One subtitle per line">${escapeHtml(draft.subtitles || '')}</textarea>
+            <textarea class="form-control tv-input" rows="5" data-field="workspaceConfig.subtitles" placeholder="One subtitle per line">${escapeHtml(draft.subtitles || '')}</textarea>
           </section>
           <section class="export-section">
             <h3>Custom CSS</h3>
-            <textarea class="form-control tv-input" rows="6" data-workspace-config-field="customCss" placeholder="Optional workspace CSS">${escapeHtml(draft.customCss || '')}</textarea>
+            <textarea class="form-control tv-input" rows="6" data-field="workspaceConfig.customCss" placeholder="Optional workspace CSS">${escapeHtml(draft.customCss || '')}</textarea>
           </section>
         </div>
         <div class="modal-footer-actions export-actions">
-          <button class="tv-btn primary" data-action="workspace-config-download"><i class="fa-solid fa-download"></i>Download updated workspace</button>
-          <button class="tv-btn constructive" data-action="workspace-config-apply"><i class="fa-solid fa-check"></i>Apply preview</button>
+          <button class="tv-btn primary" data-action="workspace-config-save"><i class="fa-solid fa-floppy-disk"></i>Save local draft</button>
+          <button class="tv-btn constructive" data-action="workspace-config-apply"><i class="fa-solid fa-eye"></i>Apply preview</button>
           <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
         </div>
       </div>
@@ -14191,28 +14259,35 @@ ${bodySections}
 
   registerActionHandler(async function workspaceConfigEditorAction(event, next) {
     const action = event.currentTarget?.dataset?.action || '';
-    if (event.target?.dataset?.workspaceConfigField && app.modal?.type === 'workspace-config-editor') {
-      const key = event.target.dataset.workspaceConfigField;
-      app.modal.draft = app.modal.draft || {};
-      app.modal.draft[key] = event.target.value || '';
-      return next(event);
-    }
-    if (action === 'workspace-config-apply' || action === 'workspace-config-download') {
+    if (action === 'workspace-config-save' || action === 'workspace-config-apply') {
       event.preventDefault(); event.stopPropagation();
       if (!app.modal || app.modal.type !== 'workspace-config-editor') return;
-      const markdown = updateWorkspaceConfigMarkdown(app.modal.originalMarkdown || '', app.modal.draft || {});
-      const parsed = parseViewerConfigMarkdown(markdown, app.modal.configUrl || location.href);
-      app.viewerIdentity = Object.assign(app.viewerIdentity || {}, parsed || {}, { loaded: true, configUrl: app.modal.configUrl || app.viewerIdentity?.configUrl || '' });
-      syncDocumentTitle('workspace-config-editor');
-      applyViewerCustomCss(app.viewerIdentity.customCss || '');
-      if (action === 'workspace-config-download') {
-        const filename = workspaceArtifactFilenameSafe(parsed.displayName || app.modal.draft?.title || 'workspace');
-        downloadText(filename, markdown, 'text/markdown;charset=utf-8');
-        toast(`Downloaded updated workspace config ${filename}.`, 'ok');
-      } else {
-        toast('Workspace identity preview applied. Download the workspace to persist these settings.', 'ok');
+      const modal = app.modal;
+      const markdown = updateWorkspaceConfigMarkdown(modal.originalMarkdown || '', modal.draft || {});
+      if (action === 'workspace-config-apply') {
+        const parsed = parseViewerConfigMarkdown(markdown, modal.configUrl || location.href);
+        app.viewerIdentity = Object.assign(app.viewerIdentity || {}, parsed || {}, { loaded: true, configUrl: modal.configUrl || app.viewerIdentity?.configUrl || '' });
+        syncDocumentTitle('workspace-config-editor');
+        applyViewerCustomCss(app.viewerIdentity.customCss || '');
+        toast('Workspace identity preview applied. Save the local draft to keep these settings in the workspace.', 'ok');
+        render();
+        return;
       }
+      const ws = getWorkspace(modal.wsId || '');
+      let node = ws?.nodeById?.get?.(modal.nodeId || '');
+      const original = ws?.nodeById?.get?.(modal.originalNodeId || '') || null;
+      if (original && !nodeIsLocalEditableMaterial(ws, original)) {
+        node = localShadowDraftForOriginal(ws, original) || node || original;
+      }
+      if (!ws || !node) return toast('No workspace artifact selected.', 'warn');
+      const sourceBacked = Boolean(original) || !nodeIsLocalEditableMaterial(ws, node);
+      await saveNodeEdit(ws, node, markdown);
+      app.modal = null;
+      if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
+      if (typeof saveLocalStateNow === 'function') saveLocalStateNow();
+      if (typeof setRouteState === 'function') setRouteState('replace');
       render();
+      toast(sourceBacked ? 'Saved workspace edit as a local draft. The source remains unchanged.' : 'Updated local workspace draft.', 'ok');
       return;
     }
     return next(event);
@@ -16644,13 +16719,25 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     const expanded = Boolean(node.expanded);
     const inLineage = Boolean(opts.lineage);
     const isTarget = ws.selectedNodeId === node.id;
-    const items = [];
+    const readActions = [];
+    const shareActions = [];
+    const editActions = [];
+    const destructiveActions = [];
+    const writeActions = [];
 
-    const readOnly = (action) => Object.assign({ iconOnly: true, className: 'read-only-action' }, action, {
-      className: ['read-only-action', action.className || ''].filter(Boolean).join(' ')
+    const withIntent = (intent, action) => Object.assign({}, action, {
+      actionIntent: intent,
+      className: [`action-intent-${intent}`, action.className || ''].filter(Boolean).join(' ')
     });
+    const readOnly = (action) => withIntent('read', Object.assign({ iconOnly: true, className: 'read-only-action' }, action, {
+      className: ['read-only-action', action.className || ''].filter(Boolean).join(' ')
+    }));
+    const share = (action) => withIntent('share', Object.assign({ iconOnly: true }, action));
+    const edit = (action) => withIntent('edit', Object.assign({ iconOnly: true }, action));
+    const write = (action) => withIntent('write', action);
+    const destructive = (action) => withIntent('destructive', Object.assign({ iconOnly: true, danger: true }, action));
 
-    items.push(readOnly(inLineage
+    readActions.push(readOnly(inLineage
       ? {
         label: 'Anchor',
         icon: 'fa-solid fa-anchor',
@@ -16665,44 +16752,46 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         title: expanded ? 'Collapse continuity preview' : 'Expand continuity preview'
       }));
 
-    items.push(
+    readActions.push(
       readOnly({ label: 'Open', icon: 'fa-regular fa-window-maximize', dataset: Object.assign({ action: 'open-detail-modal' }, base), title: 'Open focused schema read view' }),
-      readOnly({ label: 'Markdown', icon: 'fa-brands fa-markdown', className: 'secondary-action markdown-action', dataset: Object.assign({ action: 'open-markdown-modal' }, base), title: 'Open raw markdown source' }),
-      readOnly({ label: 'Share', icon: 'fa-solid fa-share-nodes', className: 'share-action', dataset: Object.assign({ action: 'open-share-modal', scope: 'artifact' }, base), title: 'Review share eligibility for this artifact' })
+      readOnly({ label: 'Markdown', icon: 'fa-brands fa-markdown', className: 'secondary-action markdown-action', dataset: Object.assign({ action: 'open-markdown-modal' }, base), title: 'Open raw markdown source' })
     );
 
     if (node.browseUrl && !node.isGenerated && !node.localEditDraft && !nodeShowsAuthoringDraftState(ws, node)) {
-      items.push(readOnly({ label: 'Source', icon: 'fa-brands fa-github', className: 'anchor source-action', href: safeUrl(node.browseUrl) || node.browseUrl, title: 'Open original source location' }));
+      readActions.push(readOnly({ label: 'Source', icon: 'fa-brands fa-github', className: 'anchor source-action', href: safeUrl(node.browseUrl) || node.browseUrl, title: 'Open original source location' }));
     }
 
+    shareActions.push(share({ label: 'Share', icon: 'fa-solid fa-share-nodes', className: 'share-action', dataset: Object.assign({ action: 'open-share-modal', scope: 'artifact' }, base), title: 'Review share eligibility for this artifact' }));
+
     if (isWorkspaceNode(node)) {
-      items.push(
-        { label: 'Open', icon: 'fa-solid fa-layer-group', className: 'constructive workspace-open-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'open-workspace-artifact' }, base), title: 'Open this .workspace.md entrypoint as the current workspace set; non-draft workspaces may close' },
-        { label: 'Merge', icon: 'fa-solid fa-code-merge', className: 'constructive workspace-merge-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'merge-workspace-artifact' }, base), title: 'Merge this .workspace.md into the current workspace set without closing existing workspaces' },
-        { label: 'Configure', icon: 'fa-solid fa-sliders', className: 'constructive workspace-config-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'configure-workspace-artifact' }, base), title: 'Edit the brandable workspace settings and download an updated .workspace.md' }
+      editActions.push(edit({ label: 'Edit', icon: 'fa-solid fa-pen-to-square', className: 'workspace-config-action edit-action', dataset: Object.assign({ action: 'configure-workspace-artifact' }, base), title: 'Edit this workspace artifact' }));
+      writeActions.push(
+        write({ label: 'Open', icon: 'fa-solid fa-layer-group', className: 'workspace-open-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'open-workspace-artifact' }, base), title: 'Open this .workspace.md entrypoint as the current workspace set; non-draft workspaces may close' }),
+        write({ label: 'Merge', icon: 'fa-solid fa-code-merge', className: 'workspace-merge-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'merge-workspace-artifact' }, base), title: 'Merge this .workspace.md into the current workspace set without closing existing workspaces' })
       );
     }
 
     if (!isWorkspaceNode(node) && typeof canEditNode === 'function' && canEditNode(ws, node)) {
-      items.push({ label: 'Edit', icon: 'fa-solid fa-pen-to-square', iconOnly: true, className: 'constructive edit-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'open-node-edit' }, base), title: 'Edit this artifact' });
+      editActions.push(edit({ label: 'Edit', icon: 'fa-solid fa-pen-to-square', className: 'edit-action', dataset: Object.assign({ action: 'open-node-edit' }, base), title: 'Edit this artifact' }));
     }
 
-    if (!isWorkspaceNode(node)) items.push(
-      { label: 'Continue', icon: 'fa-solid fa-code-branch', className: 'mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'continue' }, base, transitionDataset('continue')), disabled: node.hasModernEnvelope === false, title: transitionActionTitle('continue', 'Create a continuation leaf from this trace') },
-      { label: 'Reference', icon: 'fa-solid fa-link', className: 'gold mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'reference' }, base, transitionDataset('reference')), title: transitionActionTitle('reference', 'Create a reference leaf pointing at this trace') }
+    if (typeof canRemoveNodeForNow === 'function' && canRemoveNodeForNow(ws, node)) {
+      destructiveActions.push(destructive({ label: 'Remove', icon: 'fa-regular fa-trash-can', className: 'danger remove-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'remove-local-node' }, base), title: 'Remove this local/uploaded node from the current workspace' }));
+    }
+
+    if (!isWorkspaceNode(node)) writeActions.push(
+      write({ label: 'Continue', icon: 'fa-solid fa-code-branch', className: 'mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'continue' }, base, transitionDataset('continue')), disabled: node.hasModernEnvelope === false, title: transitionActionTitle('continue', 'Create a continuation leaf from this trace') }),
+      write({ label: 'Reference', icon: 'fa-solid fa-link', className: 'mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'reference' }, base, transitionDataset('reference')), title: transitionActionTitle('reference', 'Create a reference leaf pointing at this trace') })
     );
 
     if (discoveryFindingHasUseAsTargets(node)) {
-      items.push({ label: 'Use as', icon: 'fa-solid fa-wand-magic-sparkles', className: 'use-as-action mutating-action conditional-mutating-action transition-action', dataset: Object.assign({ action: 'open-use-as-picker' }, base, transitionDataset('use-as')), title: transitionActionTitle('use-as', 'Create a new artifact that explicitly uses this finding as its basis') });
+      writeActions.push(write({ label: 'Use as', icon: 'fa-solid fa-wand-magic-sparkles', className: 'use-as-action mutating-action conditional-mutating-action transition-action', dataset: Object.assign({ action: 'open-use-as-picker' }, base, transitionDataset('use-as')), title: transitionActionTitle('use-as', 'Create a new artifact that explicitly uses this finding as its basis') }));
     }
     if (nodeCanImportLiveGitHubIssue(node)) {
-      items.push({ label: 'Import issue', icon: 'fa-brands fa-github', className: 'constructive mutating-action conditional-mutating-action adapter-action', dataset: Object.assign({ action: 'import-github-issue-material' }, base), title: 'Explicitly import visible GitHub issue body/comments as discovery findings; source artifact remains unchanged' });
-    }
-    if (typeof canRemoveNodeForNow === 'function' && canRemoveNodeForNow(ws, node)) {
-      items.push({ label: 'Remove', icon: 'fa-regular fa-trash-can', className: 'danger remove-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'remove-local-node' }, base), danger: true, title: 'Remove this local/uploaded node from the current workspace' });
+      writeActions.push(write({ label: 'Import issue', icon: 'fa-brands fa-github', className: 'mutating-action conditional-mutating-action adapter-action', dataset: Object.assign({ action: 'import-github-issue-material' }, base), title: 'Explicitly import visible GitHub issue body/comments as discovery findings; source artifact remains unchanged' }));
     }
 
-    return items;
+    return [...readActions, ...shareActions, ...editActions, ...destructiveActions, ...writeActions];
   }
 
   function renderNodeActionItem(action) {
@@ -22257,6 +22346,12 @@ ${integrityFooter()}`;
       if (field === 'wizardSummary') { app.modal.summary = value; return true; }
       if (field === 'wizardFolderPath') { app.modal.folderPath = normalizedFolderPath(value || defaultArtifactFolder(getWorkspace(app.modal.wsId), app.modal)); return true; }
       if (field === 'wizardBody') { app.modal.body = value; return true; }
+    }
+    if (app.modal.type === 'workspace-config-editor' && String(field || '').startsWith('workspaceConfig.')) {
+      const key = String(field).slice('workspaceConfig.'.length);
+      app.modal.draft = app.modal.draft || {};
+      app.modal.draft[key] = value || '';
+      return true;
     }
     if (field === 'editNodeText') {
       app.modal.text = value;

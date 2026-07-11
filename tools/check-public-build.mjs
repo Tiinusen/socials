@@ -38,7 +38,10 @@ try {
 
   if (existsSync(indexPath)) {
     const html = read(indexPath);
-    if (!html.includes('tiinex:build-id') || !html.includes('CP345-workspace-drop-choice-polish')) fail('public index must include CP345 build identity meta.');
+    if (!html.includes('tiinex:build-source') || !html.includes('Tiinex/site')) fail('public index must include stable source identity metadata.');
+    if (html.includes('id="viewer-entrypoint-notice"')) fail('public index must not restore the removed visible viewer entrypoint notice.');
+    if (!/<section\s+id="tiinex-llm-entrypoint"[\s\S]*?\bhidden\b/u.test(html)) fail('public index must preserve the hidden Tiinex LLM entrypoint.');
+    if (!html.includes('data-tiinex-llm-entrypoint="./llms.txt"')) fail('public index hidden Tiinex LLM entrypoint must retain the llms.txt binding.');
     const localScripts = [...html.matchAll(/<script\s+src=["']\.\/[^"']+\.js["']><\/script>/gu)].map((match) => match[0]);
     if (localScripts.length !== 1 || !localScripts[0].includes('tiinex.bundle.js')) {
       fail(`public index must load exactly one local JS bundle, found: ${localScripts.join(', ') || 'none'}`);
@@ -52,7 +55,9 @@ try {
     const syntax = spawnSync(process.execPath, ['--check', bundlePath], { encoding: 'utf8' });
     if (syntax.status !== 0) fail(`node --check public bundle failed:\n${syntax.stderr || syntax.stdout}`.trim());
     const bundle = read(bundlePath);
-    if (!bundle.includes("release: '345'") || !bundle.includes('buildIdentityReport') || !bundle.includes('routeLoadPresentationReport')) fail('public bundle must include release 345 build and route-load diagnostics.');
+    if (!bundle.includes("repository: 'Tiinex/site'") || !bundle.includes("channel: 'source'") || !bundle.includes('buildIdentityReport') || !bundle.includes('routeLoadPresentationReport')) fail('public bundle must include stable source identity and route-load diagnostics.');
+    if (!bundle.includes('workspace-config-save') || bundle.includes('workspace-config-download')) fail('public bundle must save workspace configuration through local draft persistence.');
+    if (!bundle.includes('await saveNodeEdit(ws, node, markdown)')) fail('public bundle workspace configuration save must reuse local artifact draft persistence.');
     const sections = [
       'src/app/core-runtime.js',
       'src/app/services-runtime.js',
@@ -82,7 +87,7 @@ try {
   console.log('✓ public build creates bundled site');
   console.log('✓ public index loads one local app bundle');
   console.log('✓ public bundle syntax and section order are valid');
-  console.log('✓ public build preserves CNAME, favicon, and CP345 build identity');
+  console.log('✓ public build preserves CNAME, favicon, and stable source identity');
 } finally {
   rmSync(tmpRoot, { recursive: true, force: true });
 }

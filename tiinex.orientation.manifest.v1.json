@@ -9,7 +9,7 @@
   "appGuidance": "tiinex.app.llm.v1.md",
   "llmRouter": "llms.txt",
   "publicEntrypoint": "index.html",
-  "transientReleases": "releases/",
+  "implementationChronology": "git-history",
   "runtimeSurfaces": [
     "index.html",
     "app.js",

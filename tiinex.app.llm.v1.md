@@ -51,3 +51,7 @@ Do not describe the viewer as a general-purpose AI runtime unless current runtim
 - `node --check .site-publish/tiinex.bundle.js`
 - `npm run metrics`
 - `npm run storage:scan`
+
+## Architecture Readiness
+
+Treat `architectureReadyForProductWork` as the aggregate readiness signal, while preserving the individual architecture diagnostics and their known limits.

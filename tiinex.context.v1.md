@@ -28,7 +28,7 @@ They are not the identity boundary of Tiinex, and this repo should not be descri
 2. `tiinex.context.v1.md` for bounded repo context.
 3. `README.md` for the human repo entrypoint.
 4. `tiinex.app.llm.v1.md` for viewer/runtime guidance.
-5. `releases/CPxxx.md` only for transient implementation status.
+5. Current source, validation output, and Git history for implementation status.
 
 ## Runtime Boundaries
 

@@ -16393,7 +16393,7 @@ body.mobile-discovery-tree .mobile-global-actions-host {
   }
 }
 
-/* CP152 schema-aware lineage modules */
+/* schema-aware lineage modules */
 .lineage-module-strip {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -16497,7 +16497,7 @@ body.mobile-discovery-tree .mobile-global-actions-host {
   }
 }
 
-/* CP152a4 mobile status-module polish.
+/* mobile status-module polish.
    Module cards are context hints, not primary content. On narrow screens they
    must behave like compact chips and never visually collide with the discovery
    search rail. */
@@ -16652,7 +16652,7 @@ body.mobile-discovery-tree .mobile-global-actions-host {
   }
 }
 
-/* CP152a6: schema badges should communicate known schema families. White/ink is
+/* schema badges should communicate known schema families. White/ink is
    reserved for unknown/plain schemas so known families do not look unresolved. */
 .badge-schema.unknown,
 .post-chips .badge-schema.unknown,
@@ -16754,7 +16754,7 @@ body.mobile-discovery-tree .mobile-global-actions-host {
   border-color: rgba(218, 126, 255, 0.36) !important;
 }
 
-/* CP152b: schema-aware read presenters. Pretty views should surface the
+/* schema-aware read presenters. Pretty views should surface the
    user-relevant interpretation first and leave exact artifact text below. */
 .schema-presenter {
   margin: 0 0 14px;
@@ -16975,7 +16975,7 @@ body.mobile-discovery-tree .mobile-global-actions-host {
   .schema-action-chip { font-size: .76rem; }
 }
 
-/* CP152b7: use-as chips are explicit interpretation actions, not passive badges. */
+/* use-as chips are explicit interpretation actions, not passive badges. */
 .schema-action-button {
   cursor: pointer;
   font: inherit;
@@ -16991,7 +16991,7 @@ body.mobile-discovery-tree .mobile-global-actions-host {
   opacity: .68;
 }
 
-/* CP152b8: Use-as is a primary card action. Detail chips are contextual. */
+/* Use-as is a primary card action. Detail chips are contextual. */
 .use-as-picker-panel {
   width: min(680px, calc(100vw - 28px));
 }
@@ -17071,7 +17071,7 @@ body.mobile-discovery-tree .mobile-global-actions-host {
 .use-as-context-chip strong { color: var(--tv-ink); }
 
 
-/* CP152b9: node action rows must never require horizontal scrolling.
+/* node action rows must never require horizontal scrolling.
    Raw Markdown remains available as a compact secondary action, while Use as
    uses Tiinex accent styling instead of the green constructive/edit color. */
 .lineage-post > .post-actions {
@@ -17153,7 +17153,7 @@ body.mobile-discovery-tree .mobile-global-actions-host {
   }
 }
 
-/* CP152b10: balance action button inner spacing without reintroducing horizontal scroll.
+/* balance action button inner spacing without reintroducing horizontal scroll.
    The row may wrap, but each action keeps symmetric left/right padding; compact
    icon-only actions use a fixed square affordance. */
 .lineage-post > .post-actions {
@@ -17293,7 +17293,7 @@ body.mobile-discovery-tree .mobile-global-actions-host {
   }
 }
 
-/* CP158: Display filters are visible chips; dropdowns only add filters. */
+/* Display filters are visible chips; dropdowns only add filters. */
 .display-filter-picker {
   display: grid;
   gap: 0.55rem;
@@ -17361,7 +17361,7 @@ button.display-filter-chip:focus-visible,
   cursor: not-allowed;
 }
 
-/* CP160: Temporal lens is a shared view option, not a simple date filter. */
+/* Temporal lens is a shared view option, not a simple date filter. */
 .temporal-lens-card {
   border-color: rgba(22, 240, 226, 0.18) !important;
   background: linear-gradient(135deg, rgba(22, 240, 226, 0.035), rgba(168, 85, 247, 0.035)) !important;
@@ -17547,7 +17547,7 @@ button.display-filter-chip:focus-visible,
 }
 
 
-/* CP173 compact source/discovery module rail.
+/* compact source/discovery module rail.
    Source capability cards are context, not content. Keep them one-line so the
    workspace header does not steal vertical room, especially on mobile. */
 .lineage-module-strip {
@@ -17656,7 +17656,7 @@ button.display-filter-chip:focus-visible,
   }
 }
 
-/* CP173 portal resolver: Display Options asks for the desired time only;
+/* portal resolver: Display Options asks for the desired time only;
    source-specific GitHub ref resolution happens in a separate adapter lightbox. */
 .temporal-lens-grid-clean {
   grid-template-columns: minmax(14rem, 1fr) auto auto !important;
@@ -17752,7 +17752,7 @@ button.display-filter-chip:focus-visible,
   }
 }
 
-/* CP174: compact source strip and stable toolbar geometry. */
+/* compact source strip and stable toolbar geometry. */
 .workspace-source-strip {
   flex-wrap: nowrap !important;
   overflow: hidden !important;
@@ -17779,7 +17779,7 @@ button.display-filter-chip:focus-visible,
   flex: 0 0 auto !important;
 }
 
-/* CP174: Time portal range inputs stay on one row on normal panels. */
+/* Time portal range inputs stay on one row on normal panels. */
 .temporal-range-grid {
   grid-template-columns: minmax(11rem, 1fr) minmax(11rem, 1fr) auto auto !important;
 }
@@ -17804,7 +17804,7 @@ button.display-filter-chip:focus-visible,
   }
 }
 
-/* CP175 audit + compact Display Options polish. */
+/* audit + compact Display Options polish. */
 .display-options-panel {
   width: min(860px, calc(100vw - 1.4rem)) !important;
   max-width: min(860px, calc(100vw - 1.4rem)) !important;
@@ -18095,7 +18095,7 @@ button.display-filter-chip:focus-visible,
   }
 }
 
-/* CP176: interval guardrails, mobile filter polish, and unified Lineage toolbar actions. */
+/* interval guardrails, mobile filter polish, and unified Lineage toolbar actions. */
 .feed-toolbar.lineage .lineage-search-wrap.lineage-action-tools {
   display: grid !important;
   grid-template-columns: 2.1rem 2.1rem 2.1rem minmax(0, 280px) !important;
@@ -18219,7 +18219,7 @@ button.display-filter-chip:focus-visible,
   }
 }
 
-/* CP178: route-safe Lineage toolbar and low-emphasis audit action. */
+/* route-safe Lineage toolbar and low-emphasis audit action. */
 .feed-toolbar.lineage,
 .feed-toolbar.lineage.feed-toolbar-foundation,
 .feed-toolbar.lineage.feed-toolbar-shell,
@@ -18325,7 +18325,7 @@ button.display-filter-chip:focus-visible,
   }
 }
 
-/* CP197: adapter-capability export surface */
+/* adapter-capability export surface */
 .export-adapter-panel {
   width: min(94vw, 980px);
   max-height: min(88vh, 920px);
@@ -18551,7 +18551,7 @@ button.display-filter-chip:focus-visible,
   }
 }
 
-/* CP199 staged export adapter workflow */
+/* staged export adapter workflow */
 .staged-export-panel {
   width: min(92vw, 860px);
   max-height: min(88vh, 760px);
@@ -18784,7 +18784,7 @@ button.display-filter-chip:focus-visible,
   }
 }
 
-/* CP200: source/export polish. Keep source rails from jumping during adapter/source state changes. */
+/* source/export polish. Keep source rails from jumping during adapter/source state changes. */
 .workspace-source-strip.source-strip-stable {
   min-height: 2.05rem !important;
   align-items: center !important;
@@ -18826,7 +18826,7 @@ button.display-filter-chip:focus-visible,
   }
 }
 
-/* CP200: compact GitHub export setup. Adapter options are capability rows, not huge cards. */
+/* compact GitHub export setup. Adapter options are capability rows, not huge cards. */
 .github-setup-compact {
   padding: 0.68rem 0.75rem !important;
 }
@@ -19011,7 +19011,7 @@ button.display-filter-chip:focus-visible,
   }
 }
 
-/* CP201: export dialog viewport fit + scroll-state stability. */
+/* export dialog viewport fit + scroll-state stability. */
 .staged-export-panel {
   width: min(97vw, 1120px) !important;
   max-height: min(94dvh, 940px) !important;
@@ -19135,7 +19135,7 @@ button.display-filter-chip:focus-visible,
   }
 }
 
-/* CP202 guided GitHub export routine */
+/* guided GitHub export routine */
 .single-capability-row {
   grid-template-columns: 1fr;
 }
@@ -19208,7 +19208,7 @@ button.display-filter-chip:focus-visible,
   }
 }
 
-/* CP203 GitHub export target resolver + checklist rows */
+/* GitHub export target resolver + checklist rows */
 .github-target-resolver {
   border: 1px solid rgba(100, 230, 190, 0.18);
   background: rgba(50, 160, 140, 0.055);
@@ -19351,7 +19351,7 @@ button.display-filter-chip:focus-visible,
   }
 }
 
-/* CP204 GitHub export checklist action rows */
+/* GitHub export checklist action rows */
 .github-check-step.no-control .github-check-control {
   justify-content: flex-start;
 }
@@ -19419,7 +19419,7 @@ button.display-filter-chip:focus-visible,
   }
 }
 
-/* CP208 compact GitHub export routine */
+/* compact GitHub export routine */
 .github-export-routine-card.compact-routine-card {
   padding: 0.65rem 0.75rem !important;
 }
@@ -19522,7 +19522,7 @@ button.display-filter-chip:focus-visible,
   }
 }
 
-/* CP215: social-feed presenter pass. Expanded cards should read like a concise
+/* social-feed presenter pass. Expanded cards should read like a concise
    activity card: schema/context stays visible, but the user's delta is the focus. */
 .schema-presenter.social-presenter {
   padding: 8px 4px 2px;
@@ -19594,7 +19594,7 @@ button.display-filter-chip:focus-visible,
   .schema-presenter.social-presenter .schema-primary-block { padding: 9px 10px; }
 }
 
-/* CP238: source-aware local edit shadows. */
+/* source-aware local edit shadows. */
 .lineage-original-divider {
   display: grid;
   grid-template-columns: minmax(1.5rem, 1fr) auto minmax(1.5rem, 1fr);
@@ -19643,7 +19643,7 @@ button.display-filter-chip:focus-visible,
   background: rgba(255,255,255,0.012);
 }
 
-/* CP240: preserve markdown list hierarchy in rich editor/preview surfaces. */
+/* preserve markdown list hierarchy in rich editor/preview surfaces. */
 .markdown-rich-editor ul,
 .markdown-rich-editor ol,
 .markdown-preview-rendered ul,
@@ -19697,7 +19697,7 @@ button.display-filter-chip:focus-visible,
   margin: 0;
 }
 
-/* CP290: shared markdown presentation fidelity for preview/detail/share surfaces. */
+/* shared markdown presentation fidelity for preview/detail/share surfaces. */
 .markdown-rendered p { margin: 0 0 .72rem; line-height: 1.55; }
 .markdown-rendered p:last-child { margin-bottom: 0; }
 .markdown-rendered .md-list,
@@ -19714,7 +19714,7 @@ button.display-filter-chip:focus-visible,
 .schema-primary-block.markdown-read-block .compact-markdown p,
 .schema-primary-block.markdown-read-block .compact-markdown li { font-size: .93rem; }
 
-/* CP291: prose rhythm + browser-translate stability. */
+/* prose rhythm + browser-translate stability. */
 .markdown-rendered {
   line-height: 1.64;
   letter-spacing: 0.002em;
@@ -19946,7 +19946,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   }
 }
 
-/* CP295: presenter sections are full-read surfaces; only explicit preview excerpts may truncate. */
+/* presenter sections are full-read surfaces; only explicit preview excerpts may truncate. */
 .markdown-rendered .md-rule {
   display: block;
   height: 1px;
@@ -19981,7 +19981,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   margin-bottom: 8px;
 }
 
-/* CP297: public-ready reasoned share cards. */
+/* public-ready reasoned share cards. */
 .share-context-question {
   display: grid;
   gap: 8px;
@@ -20020,7 +20020,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   background: rgba(255,255,255,.018);
 }
 
-/* CP300: public-ready share modal, rendered cards, bookmark/download destinations. */
+/* public-ready share modal, rendered cards, bookmark/download destinations. */
 .public-share-panel,
 .share-eligibility-panel.public-share-panel {
   width: min(960px, calc(100vw - 32px));
@@ -20178,7 +20178,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   }
 }
 
-/* CP301: compact share modal with in-card reason input and mobile-friendly actions. */
+/* compact share modal with in-card reason input and mobile-friendly actions. */
 .public-share-panel,
 .share-eligibility-panel.public-share-panel {
   width: min(840px, calc(100vw - 24px));
@@ -20293,7 +20293,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   }
 }
 
-/* CP302: share action handoff and manual-step clarity. */
+/* share action handoff and manual-step clarity. */
 .public-share-panel .share-eligibility-actions.share-action-grid .tv-btn,
 .public-share-panel .share-eligibility-actions.share-action-grid .tv-btn.primary,
 .public-share-panel .share-eligibility-actions.share-action-grid .tv-btn.subtle {
@@ -20372,7 +20372,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   min-height: 40px;
 }
 
-/* CP304: mobile share polish and evidence relation visibility. */
+/* mobile share polish and evidence relation visibility. */
 .public-share-panel .share-modal-close,
 .share-eligibility-panel.public-share-panel .share-modal-close {
   width: 2.25rem !important;
@@ -20509,7 +20509,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   }
 }
 
-/* CP305: evidence camera capture */
+/* evidence camera capture */
 .evidence-camera-choice.polished {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, auto));
@@ -20539,7 +20539,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   }
 }
 
-/* CP306: always-visible evidence camera action + graceful fallback */
+/* always-visible evidence camera action + graceful fallback */
 .evidence-collector-actions.polished {
   display: grid !important;
   grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
@@ -20578,7 +20578,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
 }
 
 
-/* CP308: mobile action parity + evidence preview polish */
+/* mobile action parity + evidence preview polish */
 @media (max-width: 640px) {
   .lineage-post > .post-actions {
     display: grid !important;
@@ -20717,7 +20717,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   }
 }
 
-/* CP309 publish-readiness polish: phone cards use a stable compact grid instead
+/* publish-readiness polish: phone cards use a stable compact grid instead
    of squeezed horizontal rows; draft sharing has explicit package flow. */
 @media (max-width: 640px) {
   .lineage-post > .post-actions {
@@ -20805,7 +20805,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   }
 }
 
-/* CP310: field mobile UX cleanup — compact action row + source strip hygiene. */
+/* field mobile UX cleanup — compact action row + source strip hygiene. */
 @media (max-width: 640px) {
   .lineage-post > .post-actions,
   .post-feed.discovery > .lineage-post > .post-actions,
@@ -20949,7 +20949,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   }
 }
 
-/* CP311: value-first mobile cards + hard local asset boundary. */
+/* value-first mobile cards + hard local asset boundary. */
 @media (max-width: 640px) {
   .lineage-post,
   .asset-post {
@@ -21064,7 +21064,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   background: rgba(250, 204, 21, 0.09) !important;
 }
 
-/* CP313: inline evidence image preview + list readability polish */
+/* inline evidence image preview + list readability polish */
 .evidence-inline-preview {
   border: 1px solid rgba(184, 119, 255, 0.22);
   border-radius: 16px;
@@ -21213,7 +21213,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   }
 }
 
-/* CP314: evidence inline preview actually includes local/draft image refs + mobile action containment. */
+/* evidence inline preview actually includes local/draft image refs + mobile action containment. */
 @media (max-width: 820px) {
   .lineage-post > .post-actions,
   .post-feed.discovery > .lineage-post > .post-actions,
@@ -21314,7 +21314,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   list-style-position: outside !important;
 }
 
-/* CP315: value-first mobile actions, image inspection and display-options polish. */
+/* value-first mobile actions, image inspection and display-options polish. */
 .schema-meta-strip .schema-meta-chip:first-child:last-child {
   max-width: 100%;
 }
@@ -21714,7 +21714,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   }
 }
 
-/* CP316: mobile card actions have one owner: a value-first mobile rail. */
+/* mobile card actions have one owner: a value-first mobile rail. */
 @media (max-width: 640px) {
   .lineage-post > .post-actions.desktop-post-actions,
   .post-feed.discovery > .lineage-post > .post-actions.desktop-post-actions,
@@ -21858,7 +21858,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   }
 }
 
-/* CP318: explicit route startup should not look empty while source owner loads. */
+/* explicit route startup should not look empty while source owner loads. */
 .loading-empty-state {
   display: flex;
   align-items: center;
@@ -21879,7 +21879,7 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
   flex: 0 0 auto;
 }
 
-/* CP319: value-first polish consolidation.
+/* value-first polish consolidation.
    This final layer owns the small-screen header, source strip, search sizing,
    evidence metadata density, and Display Options mobile layout. */
 
@@ -22174,7 +22174,7 @@ body.mobile-chrome .source-chip {
   }
 }
 
-/* CP320: source strip ownership + no-jump mobile chrome. */
+/* source strip ownership + no-jump mobile chrome. */
 .workspace > .workspace-source-strip,
 .workspace .mobile-source-mode-row .workspace-source-strip,
 .workspace.single-source-state > .workspace-source-strip,
@@ -22371,7 +22371,7 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
 
 
 @media (max-width: 640px) {
-  /* CP325: lineage is a navigation/read surface, not discovery scrolling chrome.
+  /* lineage is a navigation/read surface, not discovery scrolling chrome.
      Opening/restoring lineage from a compact discovery scroll must keep the
      lineage toolbar/search available instead of inheriting hidden discovery chrome. */
   body.mobile-reading .feed-toolbar.lineage,
@@ -22401,7 +22401,7 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
   }
 }
 
-/* CP330: tree-backed artifact placement picker as a pre-content scope */
+/* tree-backed artifact placement picker as a pre-content scope */
 .wizard-placement-preview.picker-ready {
   grid-column: 1 / -1;
   border: 1px solid rgba(216,180,254,0.14);
@@ -22520,7 +22520,7 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
 }
 
 
-/* CP331: mobile chrome should reclaim real reading space, not leave a hidden spacer. */
+/* mobile chrome should reclaim real reading space, not leave a hidden spacer. */
 @media (max-width: 640px) {
   body.mobile-reading .app-shell,
   body.mobile-reading .app-shell.app-shell-foundation,
@@ -22558,7 +22558,7 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
   }
 }
 
-/* CP331: continuity parent is a separate pre-content scope, parallel to storage. */
+/* continuity parent is a separate pre-content scope, parallel to storage. */
 .wizard-parent-preview.picker-ready {
   grid-column: 1 / -1;
   border: 1px solid rgba(110,231,183,0.14);
@@ -22670,7 +22670,7 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
 }
 
 
-/* CP332: Raw markdown/detail modal headers must remain closeable on narrow screens
+/* Raw markdown/detail modal headers must remain closeable on narrow screens
    and long source documents. Long paths/titles may wrap, but the close affordance
    keeps its own slot instead of being pushed off-canvas by raw content. */
 .read-modal-panel .read-modal-head,
@@ -22721,7 +22721,7 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
   }
 }
 
-/* CP333: mobile read/raw markdown containment. The global mobile button rule makes
+/* mobile read/raw markdown containment. The global mobile button rule makes
    .tv-btn full width; read modal close controls must keep a fixed action slot so
    titles/paths wrap instead of pushing markdown into a one-letter column. */
 .read-modal-panel .read-modal-head,
@@ -22792,7 +22792,7 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
   }
 }
 
-/* CP334 — mobile action density and lifecycle-responsive surfaces.
+/* mobile action density and lifecycle-responsive surfaces.
    Keep mobile card action widths stable while reducing vertical boilerplate. */
 @media (max-width: 640px) {
   .lineage-post > .post-actions {
@@ -22844,8 +22844,8 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
   }
 }
 
-/* CP335: hidden mobile chrome must not leave a blank spacer.
-   Source/mode rows were intentionally stable in CP329, but after Feed/Tree moved
+/* hidden mobile chrome must not leave a blank spacer.
+   Source/mode rows were intentionally stable, but after Feed/Tree moved
    into the workspace title row that stability became empty vertical space while
    reading. Collapse the now-transient rows only in mobile reading/compact state;
    near-top mode still keeps the source/title controls reachable. */
@@ -22911,7 +22911,7 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
   }
 }
 
-/* CP345: workspace drop choice should read as a Tiinex workflow card, not a browser/system prompt. */
+/* Workspace drop choice should read as a Tiinex workflow card, not a browser or system prompt. */
 .workspace-drop-choice-backdrop {
   align-items: center;
   justify-content: center;
@@ -23033,7 +23033,7 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
   .workspace-drop-choice-card { min-height: 0; }
 }
 
-/* CP343 lineage policy share/create boundary */
+/* lineage policy share/create boundary */
 .share-policy-clause,
 .share-policy-box,
 .policy-warning-box {
@@ -23133,4 +23133,62 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
   .policy-template-grid { grid-template-columns: 1fr; }
   .policy-create-panel { width: min(100vw - 16px, 100%); }
   .policy-template-preview textarea { min-height: 260px; }
+}
+
+/* Artifact-card action intent. Scoped to Feed/Lineage card rows so dialogs keep
+   their existing controls and semantics. */
+.lineage-post > .post-actions > .icon-action.action-intent-edit {
+  color: rgba(110, 231, 183, 0.98) !important;
+  border-color: rgba(16, 185, 129, 0.42) !important;
+  background: rgba(6, 78, 59, 0.14) !important;
+}
+
+.lineage-post > .post-actions > .icon-action.action-intent-edit:hover,
+.lineage-post > .post-actions > .icon-action.action-intent-edit:focus-visible {
+  color: rgba(236, 253, 245, 0.98) !important;
+  border-color: rgba(52, 211, 153, 0.62) !important;
+  background: rgba(6, 95, 70, 0.24) !important;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.12) !important;
+}
+
+.lineage-post > .post-actions > .icon-action.action-intent-write {
+  color: rgba(147, 197, 253, 0.98) !important;
+  border-color: rgba(59, 130, 246, 0.4) !important;
+  background: rgba(30, 64, 175, 0.14) !important;
+}
+
+.lineage-post > .post-actions > .icon-action.action-intent-write:hover,
+.lineage-post > .post-actions > .icon-action.action-intent-write:focus-visible {
+  color: rgba(239, 246, 255, 0.98) !important;
+  border-color: rgba(96, 165, 250, 0.64) !important;
+  background: rgba(30, 64, 175, 0.26) !important;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12) !important;
+}
+
+.lineage-post > .post-actions > .icon-action.action-intent-share {
+  color: rgba(216, 180, 254, 0.98) !important;
+  border-color: rgba(168, 85, 247, 0.42) !important;
+  background: rgba(107, 33, 168, 0.14) !important;
+}
+
+.lineage-post > .post-actions > .icon-action.action-intent-share:hover,
+.lineage-post > .post-actions > .icon-action.action-intent-share:focus-visible {
+  color: rgba(250, 245, 255, 0.98) !important;
+  border-color: rgba(192, 132, 252, 0.64) !important;
+  background: rgba(107, 33, 168, 0.27) !important;
+  box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.12) !important;
+}
+
+.lineage-post > .post-actions > .icon-action.action-intent-destructive {
+  color: rgba(252, 165, 165, 0.98) !important;
+  border-color: rgba(239, 68, 68, 0.46) !important;
+  background: rgba(127, 29, 29, 0.15) !important;
+}
+
+.lineage-post > .post-actions > .icon-action.action-intent-destructive:hover,
+.lineage-post > .post-actions > .icon-action.action-intent-destructive:focus-visible {
+  color: rgba(254, 242, 242, 0.98) !important;
+  border-color: rgba(248, 113, 113, 0.68) !important;
+  background: rgba(127, 29, 29, 0.3) !important;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12) !important;
 }

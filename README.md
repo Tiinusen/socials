@@ -41,7 +41,7 @@ They are not the identity boundary of Tiinex, and this site should not be descri
 - `tiinex.context.v1.md` provides bounded self-contained context for this repo.
 - `README.md` explains this repository for humans first.
 - `tiinex.app.llm.v1.md` gives viewer/runtime-specific guidance.
-- `releases/CP345.md` and other files in `releases/` are transient implementation notes, not the repo identity surface.
+- Git history is the implementation chronology; the orientation files above define the current repository identity.
 
 ## Public Surface
 
@@ -63,7 +63,17 @@ Validation commands for this repo:
 - `npm run metrics`
 - `npm run storage:scan`
 
+Repository tooling exposes these architecture readiness markers:
+
+- `architectureScaffoldReady`
+- `coreExtractionReady`
+- `serviceStateExtractionReady`
+- `uiFeatureExtractionReady`
+- `viewStateIsolationReady`
+- `publicBuildReady`
+- `cleanupReadyForProductWork`
+- `architectureReadyForProductWork`
+
 ## Current Implementation Status
 
-Current CP-specific implementation notes live under `releases/`.
-Read those files only when you need time-bound release or validation status.
+Use the current source, validation output, and Git history for implementation status. Git owns change chronology, so do not add separate change-log files, release notes, or versioned implementation comments merely to duplicate commit history.

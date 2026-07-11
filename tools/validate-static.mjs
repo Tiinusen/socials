@@ -200,7 +200,7 @@ function validateRequiredFiles() {
 }
 
 function validateRootMarkdown() {
-  const expected = new Set(['README.md', 'tiinex.app.llm.v1.md', 'VALIDATION_NOTES.md']);
+  const expected = new Set(['README.md', 'tiinex.app.llm.v1.md', 'tiinex.context.v1.md', 'tiinex.orientation.v1.md', 'VALIDATION_NOTES.md']);
   const rootMarkdown = readdirSync(root)
     .filter((entry) => entry.endsWith('.md'))
     .sort();
@@ -1364,7 +1364,19 @@ function validateArchitectureBoundaries() {
   if (!appJs.includes("scheduleRouteHistoryScrollRestore('startup')")) fail('startup route restores must re-apply hash route scroll after render');
   if (!appJs.includes('function startupHasExplicitRouteModal()')) fail('startup local-state restore must not erase explicit route modals');
   if (!appJs.includes('startupHasExplicitRouteModal())) return false')) fail('explicit route modal must suppress local-state startup modal clearing');
+  if (!appJs.includes('data-action="workspace-config-save"')) fail('workspace configuration editor must save through a local draft action.');
+  if (appJs.includes('data-action="workspace-config-download"')) fail('workspace configuration editor must not bypass workspace draft persistence with a direct download action.');
+  if (!appJs.includes("action === 'workspace-config-save'") || !appJs.includes('await saveNodeEdit(ws, node, markdown)')) fail('workspace configuration save must reuse local artifact draft persistence.');
   const indexHtml = read('index.html');
+  if (indexHtml.includes('id="viewer-entrypoint-notice"')) {
+    fail('index.html must not restore the removed visible viewer entrypoint notice.');
+  }
+  if (!/<section\s+id="tiinex-llm-entrypoint"[\s\S]*?\bhidden\b/u.test(indexHtml)) {
+    fail('index.html must preserve the hidden Tiinex LLM entrypoint.');
+  }
+  if (!indexHtml.includes('data-tiinex-llm-entrypoint="./llms.txt"')) {
+    fail('index.html hidden Tiinex LLM entrypoint must retain the llms.txt binding.');
+  }
   const requiredClassicScripts = [
     '<script src="./src/app/core-runtime.js"></script>',
     '<script src="./src/app/services-runtime.js"></script>',
@@ -1478,6 +1490,10 @@ function validateRootPackageShape() {
     'src',
     'styles.css',
     'tiinex.app.llm.v1.md',
+    'tiinex.context.v1.md',
+    'tiinex.orientation.manifest.v1.json',
+    'tiinex.orientation.v1.md',
+    'robots.txt',
     'tools',
     'VALIDATION_NOTES.md'
   ]);

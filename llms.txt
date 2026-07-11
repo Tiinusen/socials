@@ -6,7 +6,7 @@ Read files in this order:
 2. Read `tiinex.context.v1.md` for bounded repo context.
 3. Read `README.md` for this repo.
 4. Read `tiinex.app.llm.v1.md` for viewer/runtime guidance.
-5. Read files in `releases/` only for current implementation status.
+5. Use the current source, validation output, and Git history for implementation status.
 
 Important boundary:
 

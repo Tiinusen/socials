@@ -1,3 +1,16 @@
-# CP345 validation notes
+# Validation Notes
 
-Validated the CP345 full-replace package after polishing the workspace drop Open/Merge dialog. The behavioral scope is intentionally narrow: no new drop semantics, only clearer visual hierarchy, spacing, copy, and theme-consistent option cards.
+Use current command output and Git history as the validation record. This file documents stable expectations rather than point-in-time status.
+
+Run the checks relevant to the changed surface. `npm test` is not the sole pass signal when known static-hygiene findings are unrelated to runtime behavior.
+
+Architecture readiness markers used by repository tooling:
+
+- architectureScaffoldReady
+- coreExtractionReady
+- serviceStateExtractionReady
+- uiFeatureExtractionReady
+- viewStateIsolationReady
+- publicBuildReady
+- cleanupReadyForProductWork
+- architectureReadyForProductWork

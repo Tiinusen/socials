@@ -647,7 +647,7 @@
       hiddenProxy: false,
       hiddenVendorLoad: false,
       guidance: /Missing Buffer dependency|\bBuffer\b/i.test(message)
-        ? 'Load the Buffer dependency explicitly, or use allowDefaultVendorUrls/loadFromUnpkg in CP266+ where Buffer is loaded before isomorphic-git.'
+        ? 'Load the Buffer dependency explicitly, or use allowDefaultVendorUrls/loadFromUnpkg when Buffer is loaded before isomorphic-git.'
         : 'Inspect the error, runtime status, and explicit CORS proxy settings before switching discovery to Git-native.'
     });
   }
