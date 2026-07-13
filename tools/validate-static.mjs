@@ -1329,8 +1329,9 @@ function validateArchitectureBoundaries() {
   if (!appJs.includes('function localShadowDiscardVisibleOriginal(ws, original)')) fail('local shadow draft discard must prefer typed source artifacts over resolved discovery finding wrappers when re-anchoring.');
   if (!appJs.includes('This removes only the local draft from this workspace. The original source artifact is preserved and should take its place again.')) fail('local draft discard confirmation must state source-preserving semantics.');
   if (!appJs.includes("function writeStoredScrollSnapshot(reason = 'snapshot')")) fail('app.js must snapshot stored scroll before page lifecycle exits');
-  if (!appJs.includes("writeStoredScrollSnapshot('pagehide')")) fail('app.js must flush stored scroll on pagehide');
-  if (!appJs.includes("writeStoredScrollSnapshot('beforeunload')")) fail('app.js must flush stored scroll on beforeunload');
+  if (!appJs.includes("flushBrowserStateBeforeLeave('pagehide')")) fail('app.js must own cached-only pagehide lifecycle flush');
+  if (!appJs.includes("flushBrowserStateBeforeLeave('beforeunload')")) fail('app.js must own cached-only beforeunload lifecycle flush');
+  if (!appJs.includes('persistCachedLensStateBeforeLeave') || !appJs.includes('cancelStoredScrollRestoreSchedule?.(`leave:')) fail('app.js lifecycle flush must stay cached-only and cancel restore backlog');
   if (!appJs.includes('TiinexViewState.preferredStoredScrollModes(activeMode)')) fail('app.js must prefer active scroll mode when restoring stored scroll');
   if (!appJs.includes('TiinexViewState.shouldPreserveStoredScrollOnZeroWrite')) fail('app.js must preserve nonzero stored scroll from lifecycle zero-writes');
   if (!appJs.includes('function storedScrollStableKey(ws, identity = null)')) fail('app.js must write a stable stored scroll fallback key for F5 restore');
@@ -1347,7 +1348,8 @@ function validateArchitectureBoundaries() {
   if (!appJs.includes('Complete only once the saved target')) fail('app.js must document stored scroll timing ownership');
   if (!appJs.includes('stored browser scroll is the single F5/session scroll-restore owner')) fail('app.js must document single-owner scroll restore ownership');
   if (!appJs.includes('Durable lens owns route selection/history only')) fail('durable lens must not own F5 scroll restore');
-  if (!appJs.includes('STORED_SCROLL_RESTORE_WINDOW_MS = 45000')) fail('stored scroll restore must keep a content-load window for slow Discovery render');
+  if (!appJs.includes('STORED_SCROLL_RESTORE_WINDOW_MS = 12000') || !appJs.includes('storedScrollRestoreWindowMs(reason =')) fail('stored scroll restore must keep bounded content-load windows without long mobile lifecycle chases');
+  if (!appJs.includes('STORED_SCROLL_RESUME_RESTORE_WINDOW_MS') || !appJs.includes('no-chase-on-resume')) fail('stored scroll restore must not chase on mobile/tab resume');
   if (!appJs.includes('apply:wait-content-ready')) fail('stored scroll restore must wait for the saved target role to become scrollable');
   if (!appJs.includes('STORED_SCROLL_STABLE_COMPLETION_MS') || !appJs.includes('chase:complete-invalidated') || !appJs.includes('chase:complete-stable')) fail('stored scroll restore completion must survive post-apply render resets');
   if (!appJs.includes('Lineage restore must be stable across refresh')) fail('lineage stored scroll signature must avoid runtime source identity churn');

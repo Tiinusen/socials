@@ -926,11 +926,33 @@
 
   function lifecycleResponsivenessReport() {
     const state = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
+    const restore = app.storedScrollRestoreOwner || {};
     return {
       schema: 'tiinex.lifecycle-responsiveness.report.v1',
-      policy: 'mobile tab/app switches must not synchronously serialize large local workspace state during pagehide/beforeunload; mutation-time saves own durable local edits while lifecycle leave owns lightweight scroll/lens state',
+      policy: 'mobile tab/app switches must not synchronously serialize large local workspace state during pagehide/beforeunload; mutation-time saves own durable local edits while lifecycle leave owns cached-only scroll/lens state and cancels deferred restore work',
       skippedSyncLocalSaves: Number(state.skippedSyncLocalSaves || 0),
       lightweightFlushes: Number(state.lightweightFlushes || 0),
+      duplicateLeaveSkips: Number(state.duplicateLeaveSkips || 0),
+      hiddenCancels: Number(state.hiddenCancels || 0),
+      severeEvents: Number(state.severeEvents || 0),
+      maxStepMs: Number(state.maxStepMs || 0),
+      lastLeave: state.lastLeave || null,
+      lastSteps: state.lastSteps || {},
+      restoreOwner: {
+        generation: Number(restore.generation || 0),
+        activeTimers: Array.isArray(restore.timers) ? restore.timers.length : 0,
+        activeRafs: Array.isArray(restore.rafs) ? restore.rafs.length : 0,
+        schedules: Number(restore.schedules || 0),
+        cancelledSchedules: Number(restore.cancelledSchedules || 0),
+        staleCallbacks: Number(restore.staleCallbacks || 0),
+        hiddenSkips: Number(restore.hiddenSkips || 0),
+        restoreRuns: Number(restore.restoreRuns || 0),
+        chaseStarts: Number(restore.chaseStarts || 0),
+        maxRestoreWorkMs: Number(restore.maxRestoreWorkMs || 0),
+        lastSchedule: restore.lastSchedule || null,
+        lastCancel: restore.lastCancel || null,
+        lastRestore: restore.lastRestore || null
+      },
       recent: Array.isArray(state.events) ? state.events.slice(-20) : []
     };
   }
@@ -32495,31 +32517,111 @@ ${githubOutboundFileExcerpt(file, 18000)}
 
   document.addEventListener('scroll', onScrollPersistLens, true);
 
+  function lifecycleResponsivenessState() {
+    app.lifecycleResponsiveness = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
+    app.lifecycleResponsiveness.events = Array.isArray(app.lifecycleResponsiveness.events) ? app.lifecycleResponsiveness.events : [];
+    app.lifecycleResponsiveness.lastSteps = app.lifecycleResponsiveness.lastSteps || {};
+    return app.lifecycleResponsiveness;
+  }
+
   function lifecycleResponsivenessRecord(event, detail = {}) {
     try {
-      app.lifecycleResponsiveness = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
+      const state = lifecycleResponsivenessState();
       const entry = { at: new Date().toISOString(), event: String(event || 'event'), detail };
-      app.lifecycleResponsiveness.events.push(entry);
-      while (app.lifecycleResponsiveness.events.length > 60) app.lifecycleResponsiveness.events.shift();
+      state.events.push(entry);
+      while (state.events.length > 80) state.events.shift();
       return entry;
     } catch (_) { return null; }
   }
 
+  function lifecycleStepMeasure(name, fn, detail = {}) {
+    const started = performance.now?.() || Date.now();
+    try {
+      return fn();
+    } finally {
+      const ms = Math.round((performance.now?.() || Date.now()) - started);
+      const state = lifecycleResponsivenessState();
+      state.lastSteps[name] = { ms, at: new Date().toISOString(), detail };
+      state.maxStepMs = Math.max(Number(state.maxStepMs || 0), ms);
+      if (ms > 150) {
+        state.severeEvents = Number(state.severeEvents || 0) + 1;
+        lifecycleResponsivenessRecord('lifecycle-step-severe', Object.assign({ name, ms }, detail || {}));
+      } else if (ms > 50) {
+        lifecycleResponsivenessRecord('lifecycle-step-warning', Object.assign({ name, ms }, detail || {}));
+      }
+    }
+  }
+
+  function lensStateWithCachedWorkspaceScroll(state) {
+    if (!state || !app.workspaces?.length) return state || null;
+    const key = Array.isArray(state.workspaces) ? 'workspaces' : (Array.isArray(state.sources) ? 'sources' : '');
+    if (!key) return state;
+    const clone = Object.assign({}, state);
+    clone[key] = state[key].map((source, index) => {
+      const ws = app.workspaces[index];
+      if (!ws || !source) return source;
+      const selected = selectedRouteDescriptor(ws);
+      return Object.assign({}, source, {
+        scrollTop: Math.max(0, Math.round(Number(ws.routeScrollTop || 0))),
+        mode: ws.routeScrollMode || selected.mode || source.mode || 'discovery',
+        selectedPath: ws.routeScrollSelectedPath || selected.selectedPath || source.selectedPath || ''
+      });
+    });
+    return clone;
+  }
+
+  function persistCachedLensStateBeforeLeave(reason = 'pagehide') {
+    const state = app.pendingDurableLensState || cachedLensState();
+    if (!state) {
+      lifecycleResponsivenessRecord('cached-lens-skip', { reason, cause: 'no-cached-state' });
+      return false;
+    }
+    const nextState = lensStateWithCachedWorkspaceScroll(state);
+    try {
+      sessionStorage.setItem(lensCacheKey(), JSON.stringify(nextState));
+      lifecycleResponsivenessRecord('cached-lens-flush', {
+        reason,
+        workspaces: app.workspaces?.length || 0,
+        sources: Array.isArray(nextState?.workspaces) ? nextState.workspaces.length : (Array.isArray(nextState?.sources) ? nextState.sources.length : 0)
+      });
+      return true;
+    } catch (error) {
+      lifecycleResponsivenessRecord('cached-lens-error', { reason, error: error?.message || String(error) });
+      return false;
+    }
+  }
+
   function flushBrowserStateBeforeLeave(reason = 'pagehide') {
     const started = performance.now?.() || Date.now();
-    try { writeStoredScrollSnapshot(reason); } catch (error) { lifecycleResponsivenessRecord('scroll-snapshot-error', { reason, error: error?.message || String(error) }); }
-    try { persistLensState('replace'); } catch (error) { lifecycleResponsivenessRecord('lens-persist-error', { reason, error: error?.message || String(error) }); }
-    // Mobile Chrome delays app switching/tab changes while synchronous unload
-    // handlers serialize large local workspaces into localStorage. Local edits and
-    // exports already persist at mutation boundaries; lifecycle leave only owns
-    // lightweight scroll/lens state so OS navigation stays responsive.
+    const state = lifecycleResponsivenessState();
+    const previous = state.lastLeave;
+    if (previous && (Date.now() - Number(previous.atMs || 0)) < 900) {
+      state.duplicateLeaveSkips = Number(state.duplicateLeaveSkips || 0) + 1;
+      lifecycleResponsivenessRecord('leave-flush-skip-duplicate', { reason, previous: previous.reason || '', ageMs: Date.now() - Number(previous.atMs || 0) });
+      return;
+    }
+    state.lastLeave = { reason, atMs: Date.now(), at: new Date().toISOString() };
+
+    // Leave/OS app-switch paths must stay cached-only. Scroll events already write
+    // session scroll incrementally; pagehide/beforeunload must not scan all DOM,
+    // compute discovery signatures, or chase restore while Chrome is being hidden.
+    lifecycleStepMeasure('cancelStoredScrollRestore', () => {
+      try { cancelStoredScrollRestoreSchedule?.(`leave:${reason}`); } catch (error) { lifecycleResponsivenessRecord('restore-cancel-error', { reason, error: error?.message || String(error) }); }
+    }, { reason });
+    lifecycleStepMeasure('cachedLensFlush', () => {
+      clearTimeout(app.persistLensTimer);
+      persistCachedLensStateBeforeLeave(reason);
+    }, { reason });
+
     if (typeof saveLocalStateNow === 'function') {
-      app.lifecycleResponsiveness.skippedSyncLocalSaves += 1;
+      state.skippedSyncLocalSaves = Number(state.skippedSyncLocalSaves || 0) + 1;
       clearTimeout(app.localState?.saveTimer);
       if (!document.hidden) setTimeout(() => { try { scheduleLocalStateSave?.(); } catch (_) {} }, 0);
     }
-    app.lifecycleResponsiveness.lightweightFlushes += 1;
-    lifecycleResponsivenessRecord('lightweight-flush', { reason, ms: Math.round((performance.now?.() || Date.now()) - started), workspaces: app.workspaces?.length || 0 });
+    state.lightweightFlushes = Number(state.lightweightFlushes || 0) + 1;
+    const ms = Math.round((performance.now?.() || Date.now()) - started);
+    state.lastLeave = Object.assign({}, state.lastLeave, { ms, workspaces: app.workspaces?.length || 0 });
+    lifecycleResponsivenessRecord('lightweight-flush', { reason, ms, workspaces: app.workspaces?.length || 0, mode: 'cached-only' });
   }
 
   window.addEventListener('pagehide', () => flushBrowserStateBeforeLeave('pagehide'));
@@ -33567,14 +33669,89 @@ ${githubOutboundFileExcerpt(file, 18000)}
     return app.completedScrollRestores;
   }
 
-  const STORED_SCROLL_RESTORE_WINDOW_MS = 45000;
-  const STORED_SCROLL_CHASE_DURATION_MS = 42000;
+  const STORED_SCROLL_RESTORE_WINDOW_MS = 12000;
+  const STORED_SCROLL_MOBILE_RESTORE_WINDOW_MS = 6500;
+  const STORED_SCROLL_RESUME_RESTORE_WINDOW_MS = 900;
+  const STORED_SCROLL_CHASE_DURATION_MS = 6000;
+  const STORED_SCROLL_MOBILE_CHASE_DURATION_MS = 3200;
+  const STORED_SCROLL_RESUME_CHASE_DURATION_MS = 600;
   const STORED_SCROLL_STABLE_COMPLETION_MS = 350;
+
+  function storedScrollRestoreOwner() {
+    app.storedScrollRestoreOwner = app.storedScrollRestoreOwner || { generation: 0, timers: [], rafs: [] };
+    app.storedScrollRestoreOwner.timers = Array.isArray(app.storedScrollRestoreOwner.timers) ? app.storedScrollRestoreOwner.timers : [];
+    app.storedScrollRestoreOwner.rafs = Array.isArray(app.storedScrollRestoreOwner.rafs) ? app.storedScrollRestoreOwner.rafs : [];
+    return app.storedScrollRestoreOwner;
+  }
+
+  function storedScrollRestoreWindowMs(reason = 'render') {
+    if (/resume|visible/u.test(String(reason || ''))) return STORED_SCROLL_RESUME_RESTORE_WINDOW_MS;
+    return mobileActive() ? STORED_SCROLL_MOBILE_RESTORE_WINDOW_MS : STORED_SCROLL_RESTORE_WINDOW_MS;
+  }
+
+  function storedScrollChaseDurationMs(reason = 'render') {
+    if (/resume|visible/u.test(String(reason || ''))) return STORED_SCROLL_RESUME_CHASE_DURATION_MS;
+    return mobileActive() ? STORED_SCROLL_MOBILE_CHASE_DURATION_MS : STORED_SCROLL_CHASE_DURATION_MS;
+  }
 
   function extendStoredScrollRestoreWindow(durationMs = STORED_SCROLL_RESTORE_WINDOW_MS) {
     const until = performance.now() + durationMs;
     app.storageScrollRestoreUntil = Math.max(app.storageScrollRestoreUntil || 0, until);
     return app.storageScrollRestoreUntil;
+  }
+
+  function cancelStoredScrollRestoreSchedule(reason = 'cancel') {
+    const owner = storedScrollRestoreOwner();
+    const timerCount = owner.timers.length;
+    const rafCount = owner.rafs.length;
+    owner.generation = Number(owner.generation || 0) + 1;
+    owner.timers.forEach((id) => { try { clearTimeout(id); } catch (_) {} });
+    owner.rafs.forEach((id) => { try { cancelAnimationFrame(id); } catch (_) {} });
+    owner.timers = [];
+    owner.rafs = [];
+    owner.cancelledSchedules = Number(owner.cancelledSchedules || 0) + 1;
+    owner.lastCancel = { reason, timerCount, rafCount, at: new Date().toISOString() };
+    if (/hidden|leave/u.test(String(reason || ''))) app.storageScrollRestoreUntil = 0;
+    lifecycleResponsivenessRecord('stored-scroll-restore-cancel', owner.lastCancel);
+    return owner.generation;
+  }
+
+  function scheduleStoredScrollTimer(fn, delayMs, generation, label = 'timer') {
+    const owner = storedScrollRestoreOwner();
+    const id = setTimeout(() => {
+      owner.timers = owner.timers.filter((timerId) => timerId !== id);
+      if (generation !== owner.generation) {
+        owner.staleCallbacks = Number(owner.staleCallbacks || 0) + 1;
+        return;
+      }
+      if (document.hidden) {
+        owner.hiddenSkips = Number(owner.hiddenSkips || 0) + 1;
+        lifecycleResponsivenessRecord('stored-scroll-restore-skip-hidden', { label, delayMs });
+        return;
+      }
+      fn();
+    }, delayMs);
+    owner.timers.push(id);
+    return id;
+  }
+
+  function scheduleStoredScrollRaf(fn, generation, label = 'raf') {
+    const owner = storedScrollRestoreOwner();
+    const id = requestAnimationFrame(() => {
+      owner.rafs = owner.rafs.filter((rafId) => rafId !== id);
+      if (generation !== owner.generation) {
+        owner.staleCallbacks = Number(owner.staleCallbacks || 0) + 1;
+        return;
+      }
+      if (document.hidden) {
+        owner.hiddenSkips = Number(owner.hiddenSkips || 0) + 1;
+        lifecycleResponsivenessRecord('stored-scroll-restore-skip-hidden', { label });
+        return;
+      }
+      fn();
+    });
+    owner.rafs.push(id);
+    return id;
   }
 
 window.addEventListener('popstate', () => {
@@ -35348,15 +35525,27 @@ window.addEventListener('popstate', () => {
     return false;
   }
 
-  function chaseStoredScrollForWorkspace(ws, durationMs = STORED_SCROLL_CHASE_DURATION_MS) {
+  function chaseStoredScrollForWorkspace(ws, durationMs = STORED_SCROLL_CHASE_DURATION_MS, generation = storedScrollRestoreOwner().generation) {
+    const owner = storedScrollRestoreOwner();
     if (!ws) {
       debugScrollRestore('chase:skip', { reason: 'no-workspace' });
+      return;
+    }
+    if (generation !== owner.generation) {
+      owner.staleCallbacks = Number(owner.staleCallbacks || 0) + 1;
+      debugScrollRestore('chase:skip', { reason: 'stale-generation', generation, currentGeneration: owner.generation });
+      return;
+    }
+    if (document.hidden) {
+      owner.hiddenSkips = Number(owner.hiddenSkips || 0) + 1;
+      debugScrollRestore('chase:skip', { reason: 'hidden', workspace: scrollRestoreDebugWorkspaceState(ws) });
       return;
     }
     if (scrollRestoreCancelledByUser()) {
       debugScrollRestore('chase:skip', { reason: 'cancelled', workspace: scrollRestoreDebugWorkspaceState(ws) });
       return;
     }
+    owner.chaseStarts = Number(owner.chaseStarts || 0) + 1;
     const saved = readStoredScroll(ws);
     if (!saved || !Number(saved.top)) {
       debugScrollRestore('chase:no-saved', { workspace: scrollRestoreDebugWorkspaceState(ws), saved: scrollRestoreDebugSummarySaved(saved) });
@@ -35387,8 +35576,16 @@ window.addEventListener('popstate', () => {
     debugScrollRestore('chase:start', { doneKey, durationMs, stableMs: STORED_SCROLL_STABLE_COMPLETION_MS, saved: scrollRestoreDebugSummarySaved(saved), workspace: scrollRestoreDebugWorkspaceState(ws) });
     const tick = () => {
       const now = performance.now();
+      if (generation !== storedScrollRestoreOwner().generation) {
+        storedScrollRestoreOwner().staleCallbacks = Number(storedScrollRestoreOwner().staleCallbacks || 0) + 1;
+        return;
+      }
+      if (document.hidden) {
+        storedScrollRestoreOwner().hiddenSkips = Number(storedScrollRestoreOwner().hiddenSkips || 0) + 1;
+        return;
+      }
       if (now - lastTickAt < 12) {
-        requestAnimationFrame(tick);
+        scheduleStoredScrollRaf(tick, generation, 'chase-throttle');
         return;
       }
       lastTickAt = now;
@@ -35456,7 +35653,7 @@ window.addEventListener('popstate', () => {
           });
         }
       }
-      if (performance.now() - started < durationMs) requestAnimationFrame(tick);
+      if (performance.now() - started < durationMs) scheduleStoredScrollRaf(tick, generation, 'chase');
       else debugScrollRestore('chase:deadline', {
         elapsed,
         doneKey,
@@ -35465,16 +35662,24 @@ window.addEventListener('popstate', () => {
         preferred: scrollRestoreDebugTargetState(preferredStoredScrollCompletionTarget(ws, saved))
       });
     };
-    requestAnimationFrame(tick);
-    setTimeout(tick, 80);
-    setTimeout(tick, 240);
-    setTimeout(tick, 700);
-    setTimeout(tick, 1500);
-    setTimeout(tick, 3200);
-    setTimeout(tick, 6500);
+    scheduleStoredScrollRaf(tick, generation, 'chase-start');
+    [80, 240, 700, 1500, 3200].forEach((delay) => scheduleStoredScrollTimer(tick, delay, generation, 'chase')); 
   }
 
-  function restoreStoredScrollForAll() {
+  function restoreStoredScrollForAll(options = {}) {
+    const owner = storedScrollRestoreOwner();
+    const generation = Number(options.generation || owner.generation || 0);
+    const started = performance.now();
+    if (generation !== owner.generation) {
+      owner.staleCallbacks = Number(owner.staleCallbacks || 0) + 1;
+      debugScrollRestore('restoreAll:skip', { reason: 'stale-generation', generation, currentGeneration: owner.generation });
+      return;
+    }
+    if (document.hidden) {
+      owner.hiddenSkips = Number(owner.hiddenSkips || 0) + 1;
+      debugScrollRestore('restoreAll:skip', { reason: 'hidden' });
+      return;
+    }
     if (performance.now() > (app.storageScrollRestoreUntil || 0)) {
       debugScrollRestore('restoreAll:skip', { reason: 'deadline' });
       return;
@@ -35483,11 +35688,19 @@ window.addEventListener('popstate', () => {
       debugScrollRestore('restoreAll:skip', { reason: 'cancelled' });
       return;
     }
+    owner.restoreRuns = Number(owner.restoreRuns || 0) + 1;
     debugScrollRestore('restoreAll:start', {
+      reason: options.reason || 'restore',
+      generation,
       workspaceCount: (app.workspaces || []).length,
       workspaces: (app.workspaces || []).map(scrollRestoreDebugWorkspaceState)
     });
-    for (const ws of app.workspaces || []) chaseStoredScrollForWorkspace(ws);
+    const durationMs = Number(options.chaseDurationMs || storedScrollChaseDurationMs(options.reason || 'restore'));
+    for (const ws of app.workspaces || []) chaseStoredScrollForWorkspace(ws, durationMs, generation);
+    const ms = Math.round(performance.now() - started);
+    owner.maxRestoreWorkMs = Math.max(Number(owner.maxRestoreWorkMs || 0), ms);
+    owner.lastRestore = { reason: options.reason || 'restore', ms, generation, at: new Date().toISOString(), workspaces: app.workspaces?.length || 0 };
+    if (ms > 50) lifecycleResponsivenessRecord('stored-scroll-restore-work', owner.lastRestore);
   }
 
   extendStoredScrollRestoreWindow();
@@ -35561,46 +35774,66 @@ window.addEventListener('popstate', () => {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       // Do not synchronously serialize full local state or repeatedly snapshot on
-      // mobile tab/app switches. The pagehide owner performs the lightweight
-      // flush; visibility only records the transition for diagnostics.
+      // mobile tab/app switches. Hidden state cancels pending restore/chase work so
+      // suspended timers cannot wake as a backlog in the Android app switcher.
+      lifecycleResponsivenessState().hiddenCancels = Number(lifecycleResponsivenessState().hiddenCancels || 0) + 1;
+      try { cancelStoredScrollRestoreSchedule('visibility-hidden'); } catch (_) {}
       lifecycleResponsivenessRecord('visibility-hidden', { workspaces: app.workspaces?.length || 0 });
+    } else {
+      lifecycleResponsivenessRecord('visibility-visible', { workspaces: app.workspaces?.length || 0, restoreMode: 'no-chase-on-resume' });
     }
   });
 
-  function scheduleStoredScrollRestore() {
-    if (!scrollRestoreCancelledByUser()) extendStoredScrollRestoreWindow();
+  function scheduleStoredScrollRestore(reason = 'render') {
+    if (document.hidden) {
+      storedScrollRestoreOwner().hiddenSkips = Number(storedScrollRestoreOwner().hiddenSkips || 0) + 1;
+      lifecycleResponsivenessRecord('stored-scroll-restore-schedule-skip-hidden', { reason });
+      return;
+    }
+    if (scrollRestoreCancelledByUser()) {
+      debugScrollRestore('schedule:skip', { reason: 'cancelled-by-user' });
+      return;
+    }
+    cancelStoredScrollRestoreSchedule(`reschedule:${reason}`);
+    const owner = storedScrollRestoreOwner();
+    owner.generation = Number(owner.generation || 0) + 1;
+    const generation = owner.generation;
+    const windowMs = storedScrollRestoreWindowMs(reason);
+    const chaseDurationMs = storedScrollChaseDurationMs(reason);
+    extendStoredScrollRestoreWindow(windowMs);
+    owner.schedules = Number(owner.schedules || 0) + 1;
+    owner.lastSchedule = { reason, generation, windowMs, chaseDurationMs, mobile: mobileActive(), at: new Date().toISOString(), workspaces: app.workspaces?.length || 0 };
     debugScrollRestore('schedule', {
+      reason,
+      generation,
+      windowMs,
+      chaseDurationMs,
       workspaceCount: (app.workspaces || []).length,
       workspaces: (app.workspaces || []).map(scrollRestoreDebugWorkspaceState)
     });
-    requestAnimationFrame(restoreStoredScrollForAll);
-    setTimeout(() => { try { maybeRestoreLocalStateAtStartup(); } catch (_) {} }, 120);
-    setTimeout(() => { try { maybeRestoreLocalStateAtStartup(); } catch (_) {} }, 900);
-    setTimeout(() => { try { maybeRestoreLocalStateAtStartup(); } catch (_) {} }, 2400);
-    setTimeout(restoreStoredScrollForAll, 160);
-    setTimeout(restoreStoredScrollForAll, 650);
-    setTimeout(restoreStoredScrollForAll, 1500);
-    setTimeout(restoreStoredScrollForAll, 3200);
-    setTimeout(restoreStoredScrollForAll, 6500);
-    setTimeout(restoreStoredScrollForAll, 12000);
-    setTimeout(restoreStoredScrollForAll, 22000);
-    setTimeout(restoreStoredScrollForAll, 36000);
+    scheduleStoredScrollRaf(() => restoreStoredScrollForAll({ reason, generation, chaseDurationMs }), generation, 'restoreAll');
+    [160, 650, 1500, 3200].forEach((delay) => scheduleStoredScrollTimer(() => restoreStoredScrollForAll({ reason, generation, chaseDurationMs }), delay, generation, 'restoreAll'));
+    [120, 900].forEach((delay) => scheduleStoredScrollTimer(() => { try { maybeRestoreLocalStateAtStartup(); } catch (_) {} }, delay, generation, 'localStateStartup'));
+    if (!mobileActive() && !/resume|visible/u.test(String(reason || ''))) {
+      scheduleStoredScrollTimer(() => restoreStoredScrollForAll({ reason, generation, chaseDurationMs }), 6500, generation, 'restoreAll');
+    }
   }
 
   registerRenderWrapper(function renderWithStoredBrowserState(next) {
     // The stored browser scroll is the single F5/session scroll-restore owner.
     maybeRestoreLocalStateAtStartup();
     const result = next();
-    scheduleStoredScrollRestore();
+    scheduleStoredScrollRestore('render');
     return result;
   });
 
   try {
     let storedScrollMutationTimer = 0;
     const storedScrollObserver = new MutationObserver(() => {
+      if (document.hidden) return;
       if (performance.now() > (app.storageScrollRestoreUntil || 0)) return;
       clearTimeout(storedScrollMutationTimer);
-      storedScrollMutationTimer = setTimeout(scheduleStoredScrollRestore, 40);
+      storedScrollMutationTimer = setTimeout(() => scheduleStoredScrollRestore('mutation'), 120);
     });
     storedScrollObserver.observe(document.body, { childList: true, subtree: true });
   } catch (_) {}
@@ -37478,11 +37711,33 @@ ${raw.slice(0, 800)}`) || 'en')}">
 
   function lifecycleResponsivenessReport() {
     const state = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
+    const restore = app.storedScrollRestoreOwner || {};
     return {
       schema: 'tiinex.lifecycle-responsiveness.report.v1',
-      policy: 'mobile tab/app switches must not synchronously serialize large local workspace state during pagehide/beforeunload; mutation-time saves own durable local edits while lifecycle leave owns lightweight scroll/lens state',
+      policy: 'mobile tab/app switches must not synchronously serialize large local workspace state during pagehide/beforeunload; mutation-time saves own durable local edits while lifecycle leave owns cached-only scroll/lens state and cancels deferred restore work',
       skippedSyncLocalSaves: Number(state.skippedSyncLocalSaves || 0),
       lightweightFlushes: Number(state.lightweightFlushes || 0),
+      duplicateLeaveSkips: Number(state.duplicateLeaveSkips || 0),
+      hiddenCancels: Number(state.hiddenCancels || 0),
+      severeEvents: Number(state.severeEvents || 0),
+      maxStepMs: Number(state.maxStepMs || 0),
+      lastLeave: state.lastLeave || null,
+      lastSteps: state.lastSteps || {},
+      restoreOwner: {
+        generation: Number(restore.generation || 0),
+        activeTimers: Array.isArray(restore.timers) ? restore.timers.length : 0,
+        activeRafs: Array.isArray(restore.rafs) ? restore.rafs.length : 0,
+        schedules: Number(restore.schedules || 0),
+        cancelledSchedules: Number(restore.cancelledSchedules || 0),
+        staleCallbacks: Number(restore.staleCallbacks || 0),
+        hiddenSkips: Number(restore.hiddenSkips || 0),
+        restoreRuns: Number(restore.restoreRuns || 0),
+        chaseStarts: Number(restore.chaseStarts || 0),
+        maxRestoreWorkMs: Number(restore.maxRestoreWorkMs || 0),
+        lastSchedule: restore.lastSchedule || null,
+        lastCancel: restore.lastCancel || null,
+        lastRestore: restore.lastRestore || null
+      },
       recent: Array.isArray(state.events) ? state.events.slice(-20) : []
     };
   }
