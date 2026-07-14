@@ -1065,6 +1065,7 @@
     routeLoadPresentationReport: () => routeLoadPresentationReport(),
     lifecycleResponsivenessReport: () => lifecycleResponsivenessReport(),
     viewportResponsivenessReport: () => viewportResponsivenessReport(),
+    mobileVisualDormancyReport: () => mobileVisualDormancyReport(),
     githubExportBindingReport: () => githubExportBindingReport(),
     parentOriginContinuityReport: () => parentOriginContinuityReport(),
     artifactPlacementReadinessReport: () => artifactPlacementReadinessReport(),
@@ -32837,6 +32838,160 @@ ${githubOutboundFileExcerpt(file, 18000)}
     };
   }
 
+
+  function mobileVisualDormancyState() {
+    app.mobileVisualDormancy = app.mobileVisualDormancy || { events: [], parked: false, previousGridStyle: null };
+    app.mobileVisualDormancy.events = Array.isArray(app.mobileVisualDormancy.events) ? app.mobileVisualDormancy.events : [];
+    return app.mobileVisualDormancy;
+  }
+
+  function mobileVisualDormancyRecord(event, detail = {}) {
+    try {
+      const state = mobileVisualDormancyState();
+      state.events.push({ at: new Date().toISOString(), event, detail });
+      if (state.events.length > 60) state.events.splice(0, state.events.length - 60);
+    } catch (_) {}
+  }
+
+  function coarseViewportActive() {
+    try {
+      if (window.matchMedia?.('(pointer: coarse) and (max-width: 900px)')?.matches) return true;
+    } catch (_) {}
+    try {
+      if (window.matchMedia?.('(max-width: 640px)')?.matches) return true;
+    } catch (_) {}
+    return Boolean(document.body?.classList?.contains('mobile-lens') || document.body?.classList?.contains('mobile-chrome'));
+  }
+
+  function workspaceContentLoadedForDormancy() {
+    return (app.workspaces || []).some((ws) => {
+      if (!ws) return false;
+      if (workspaceHasActiveDiscoveryProgress?.(ws)) return false;
+      return Boolean((Array.isArray(ws.nodes) && ws.nodes.length) || ws.files?.size || ws.assets?.size || (Array.isArray(ws.generated) && ws.generated.length));
+    });
+  }
+
+  function mobileDormancyWorkspaceSummary() {
+    const workspaces = app.workspaces || [];
+    return {
+      workspaces: workspaces.length,
+      nodes: workspaces.reduce((sum, ws) => sum + (Array.isArray(ws?.nodes) ? ws.nodes.length : 0), 0),
+      files: workspaces.reduce((sum, ws) => sum + (ws?.files?.size || 0), 0),
+      assets: workspaces.reduce((sum, ws) => sum + (ws?.assets?.size || 0), 0),
+      loading: workspaces.filter((ws) => workspaceHasActiveDiscoveryProgress?.(ws)).length
+    };
+  }
+
+  function workspaceGridForDormancy() {
+    const root = $('app');
+    if (!root) return null;
+    return root.querySelector('#workspace-grid');
+  }
+
+  function mobileVisualDormancyEligible(reason = 'hidden') {
+    if (!coarseViewportActive()) return { ok: false, reason: 'not-mobile-or-coarse' };
+    if (!workspaceContentLoadedForDormancy()) return { ok: false, reason: 'no-loaded-workspace-content' };
+    const grid = workspaceGridForDormancy();
+    if (!grid) return { ok: false, reason: 'workspace-grid-not-rendered' };
+    const active = document.activeElement;
+    if (active && grid.contains(active) && /^(input|textarea|select)$/iu.test(active.tagName || '')) return { ok: false, reason: 'workspace-input-active' };
+    return { ok: true, reason };
+  }
+
+  function parkMobileVisualTree(reason = 'hidden') {
+    const state = mobileVisualDormancyState();
+    const started = performance.now?.() || Date.now();
+    const eligibility = mobileVisualDormancyEligible(reason);
+    if (!eligibility.ok) {
+      state.skips = Number(state.skips || 0) + 1;
+      state.lastSkip = Object.assign({ at: new Date().toISOString() }, eligibility, mobileDormancyWorkspaceSummary());
+      mobileVisualDormancyRecord('park-skip', state.lastSkip);
+      return false;
+    }
+    const grid = workspaceGridForDormancy();
+    if (!grid) return false;
+    if (!state.parked) {
+      state.previousGridStyle = {
+        contentVisibility: grid.style.contentVisibility || '',
+        contain: grid.style.contain || '',
+        containIntrinsicSize: grid.style.containIntrinsicSize || '',
+        visibility: grid.style.visibility || '',
+        pointerEvents: grid.style.pointerEvents || ''
+      };
+    }
+    grid.style.contentVisibility = 'hidden';
+    grid.style.contain = 'layout paint style';
+    grid.style.containIntrinsicSize = `${Math.max(480, Math.round(window.innerHeight || 720))}px`;
+    grid.style.visibility = 'hidden';
+    grid.style.pointerEvents = 'none';
+    document.body?.classList?.add?.('mobile-visual-dormant');
+    state.parked = true;
+    state.parks = Number(state.parks || 0) + 1;
+    state.lastPark = Object.assign({
+      at: new Date().toISOString(),
+      reason,
+      ms: Math.round((performance.now?.() || Date.now()) - started),
+      gridChildren: grid.children?.length || 0,
+      activeWorkspaceId: app.activeWorkspaceId || ''
+    }, mobileDormancyWorkspaceSummary());
+    state.maxParkMs = Math.max(Number(state.maxParkMs || 0), state.lastPark.ms);
+    mobileVisualDormancyRecord('park', state.lastPark);
+    return true;
+  }
+
+  function restoreMobileVisualTree(reason = 'visible') {
+    const state = mobileVisualDormancyState();
+    if (!state.parked) return false;
+    const started = performance.now?.() || Date.now();
+    const grid = workspaceGridForDormancy();
+    if (grid) {
+      const previous = state.previousGridStyle || {};
+      grid.style.contentVisibility = previous.contentVisibility || '';
+      grid.style.contain = previous.contain || '';
+      grid.style.containIntrinsicSize = previous.containIntrinsicSize || '';
+      grid.style.visibility = previous.visibility || '';
+      grid.style.pointerEvents = previous.pointerEvents || '';
+    }
+    document.body?.classList?.remove?.('mobile-visual-dormant');
+    state.parked = false;
+    state.previousGridStyle = null;
+    state.restores = Number(state.restores || 0) + 1;
+    state.lastRestore = Object.assign({
+      at: new Date().toISOString(),
+      reason,
+      ms: Math.round((performance.now?.() || Date.now()) - started),
+      gridFound: Boolean(grid),
+      activeWorkspaceId: app.activeWorkspaceId || ''
+    }, mobileDormancyWorkspaceSummary());
+    state.maxRestoreMs = Math.max(Number(state.maxRestoreMs || 0), state.lastRestore.ms);
+    mobileVisualDormancyRecord('restore', state.lastRestore);
+    try { scheduleViewportStabilize(`mobile-dormancy:${reason}`, { delayMs: 80 }); } catch (_) {}
+    return true;
+  }
+
+  function mobileVisualDormancyReport() {
+    const state = app.mobileVisualDormancy || { events: [] };
+    const eligibility = (() => {
+      try { return mobileVisualDormancyEligible('report'); } catch (error) { return { ok: false, reason: error?.message || String(error) }; }
+    })();
+    return {
+      schema: 'tiinex.mobile-visual-dormancy.report.v1',
+      policy: 'on mobile/coarse loaded workspaces, app hide/blur parks the heavy workspace visual tree using content-visibility instead of destroying app state, so browser app-switch previews do not repaint the full loaded workspace',
+      parked: Boolean(state.parked),
+      eligible: eligibility,
+      parks: Number(state.parks || 0),
+      restores: Number(state.restores || 0),
+      skips: Number(state.skips || 0),
+      maxParkMs: Number(state.maxParkMs || 0),
+      maxRestoreMs: Number(state.maxRestoreMs || 0),
+      lastPark: state.lastPark || null,
+      lastRestore: state.lastRestore || null,
+      lastSkip: state.lastSkip || null,
+      current: mobileDormancyWorkspaceSummary(),
+      recent: Array.isArray(state.events) ? state.events.slice(-30) : []
+    };
+  }
+
   function lensStateWithCachedWorkspaceScroll(state) {
     if (!state || !app.workspaces?.length) return state || null;
     const key = Array.isArray(state.workspaces) ? 'workspaces' : (Array.isArray(state.sources) ? 'sources' : '');
@@ -36042,12 +36197,27 @@ window.addEventListener('popstate', () => {
       try { cancelStoredScrollRestoreSchedule('visibility-hidden'); } catch (_) {}
       try { cancelViewportRenderSchedule('visibility-hidden'); } catch (_) {}
       try { cancelViewportStabilizeSchedule('visibility-hidden'); } catch (_) {}
+      try { parkMobileVisualTree('visibility-hidden'); } catch (_) {}
       lifecycleResponsivenessRecord('visibility-hidden', { workspaces: app.workspaces?.length || 0 });
     } else {
+      try { restoreMobileVisualTree('visibility-visible'); } catch (_) {}
       lifecycleResponsivenessRecord('visibility-visible', { workspaces: app.workspaces?.length || 0, restoreMode: 'no-chase-on-resume' });
       try { scheduleViewportStabilize('visibility-visible:lightweight'); } catch (_) {}
     }
   });
+  window.addEventListener('blur', () => {
+    try { parkMobileVisualTree('window-blur'); } catch (_) {}
+  }, { passive: true });
+  window.addEventListener('focus', () => {
+    try { restoreMobileVisualTree('window-focus'); } catch (_) {}
+  }, { passive: true });
+  document.addEventListener('freeze', () => {
+    try { parkMobileVisualTree('page-freeze'); } catch (_) {}
+  });
+  document.addEventListener('resume', () => {
+    try { restoreMobileVisualTree('page-resume'); } catch (_) {}
+  });
+
 
   function scheduleStoredScrollRestore(reason = 'render') {
     if (document.hidden) {
