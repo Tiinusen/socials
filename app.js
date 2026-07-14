@@ -120,6 +120,7 @@
 
   app.routeLoadPresentation = app.routeLoadPresentation || { sessions: [], active: null, renderEvents: [], contentClears: 0 };
   app.lifecycleResponsiveness = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
+  app.viewportResponsiveness = app.viewportResponsiveness || { events: [] };
   app.githubExportBinding = app.githubExportBinding || { snapshots: [], issueBodyBindings: 0, commentBindings: 0, removedLocalDrafts: 0 };
   app.workspaceOpenMerge = app.workspaceOpenMerge || { events: [], last: null, duplicateExports: 0, mergeImports: 0, openImports: 0 };
 
@@ -135,6 +136,7 @@
   function routeLoadPresentationEnsure() {
     app.routeLoadPresentation = app.routeLoadPresentation || { sessions: [], active: null, renderEvents: [], contentClears: 0 };
   app.lifecycleResponsiveness = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
+  app.viewportResponsiveness = app.viewportResponsiveness || { events: [] };
   app.githubExportBinding = app.githubExportBinding || { snapshots: [], issueBodyBindings: 0, commentBindings: 0, removedLocalDrafts: 0 };
   app.workspaceOpenMerge = app.workspaceOpenMerge || { events: [], last: null, duplicateExports: 0, mergeImports: 0, openImports: 0 };
     app.routeLoadPresentation.sessions = Array.isArray(app.routeLoadPresentation.sessions) ? app.routeLoadPresentation.sessions : [];
@@ -770,6 +772,7 @@
         'parentOriginContinuityReport',
         'artifactPlacementReadinessReport',
         'lifecycleResponsivenessReport',
+        'viewportResponsivenessReport',
         'githubExportBindingReport'
       ].every((key) => typeof window.TiinexDiagnostics?.[key] === 'function')
     };
@@ -1061,6 +1064,7 @@
     startupRouteInitReport: () => startupRouteInitReport(),
     routeLoadPresentationReport: () => routeLoadPresentationReport(),
     lifecycleResponsivenessReport: () => lifecycleResponsivenessReport(),
+    viewportResponsivenessReport: () => viewportResponsivenessReport(),
     githubExportBindingReport: () => githubExportBindingReport(),
     parentOriginContinuityReport: () => parentOriginContinuityReport(),
     artifactPlacementReadinessReport: () => artifactPlacementReadinessReport(),
@@ -3044,10 +3048,7 @@
     render();
   }
 
-  window.addEventListener('resize', () => {
-    ensureWorkspaceWindow();
-    render();
-  }, { passive: true });
+  window.addEventListener('resize', () => scheduleViewportRender('resize'), { passive: true });
 
 
 
@@ -13583,6 +13584,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   }
 
   function render() {
+    const renderStarted = performance.now?.() || Date.now();
     routeLoadPresentationRender('render');
     const snapshots = typeof snapshotRenderScrolls === 'function' ? snapshotRenderScrolls() : { feed: [], modal: [] };
     const root = $('app');
@@ -13606,6 +13608,21 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (typeof restoreRenderScrolls === 'function') restoreRenderScrolls(snapshots);
     document.body?.classList?.toggle('browser-translate-active', browserTranslateLikelyActive());
     document.body?.setAttribute?.('data-tiinex-translate-active', browserTranslateLikelyActive() ? 'true' : 'false');
+    try {
+      const ms = Math.round((performance.now?.() || Date.now()) - renderStarted);
+      const state = viewportResponsivenessState();
+      const owner = viewportRenderOwner();
+      state.totalRenderRuns = Number(state.totalRenderRuns || 0) + 1;
+      state.maxRenderMs = Math.max(Number(state.maxRenderMs || 0), ms);
+      owner.lastSignature = viewportRenderSignature();
+      owner.lastRender = { at: new Date().toISOString(), ms, patched, visibleCount: count, workspaces: total };
+      if (ms > 150) {
+        state.severeEvents = Number(state.severeEvents || 0) + 1;
+        viewportResponsivenessRecord('render-step-severe', owner.lastRender);
+      } else if (ms > 50) {
+        viewportResponsivenessRecord('render-step-warning', owner.lastRender);
+      }
+    } catch (_) {}
     scheduleLocalStateSave();
   }
 
@@ -32552,6 +32569,274 @@ ${githubOutboundFileExcerpt(file, 18000)}
     }
   }
 
+
+  function viewportResponsivenessState() {
+    app.viewportResponsiveness = app.viewportResponsiveness || { events: [] };
+    app.viewportResponsiveness.events = Array.isArray(app.viewportResponsiveness.events) ? app.viewportResponsiveness.events : [];
+    app.viewportResponsiveness.lastSteps = app.viewportResponsiveness.lastSteps || {};
+    app.viewportResponsiveness.renderOwner = app.viewportResponsiveness.renderOwner || {};
+    app.viewportResponsiveness.stabilizeOwner = app.viewportResponsiveness.stabilizeOwner || {};
+    return app.viewportResponsiveness;
+  }
+
+  function viewportResponsivenessRecord(event, detail = {}) {
+    try {
+      const state = viewportResponsivenessState();
+      const entry = { at: new Date().toISOString(), event: String(event || 'event'), detail };
+      state.events.push(entry);
+      while (state.events.length > 120) state.events.shift();
+      return entry;
+    } catch (_) { return null; }
+  }
+
+  function viewportStepMeasure(name, fn, detail = {}) {
+    const started = performance.now?.() || Date.now();
+    try {
+      return fn();
+    } finally {
+      const ms = Math.round((performance.now?.() || Date.now()) - started);
+      const state = viewportResponsivenessState();
+      state.lastSteps[name] = { ms, at: new Date().toISOString(), detail };
+      state.maxStepMs = Math.max(Number(state.maxStepMs || 0), ms);
+      if (/render/u.test(name)) state.maxRenderMs = Math.max(Number(state.maxRenderMs || 0), ms);
+      if (/stabilize/u.test(name)) state.maxStabilizeMs = Math.max(Number(state.maxStabilizeMs || 0), ms);
+      if (ms > 150) {
+        state.severeEvents = Number(state.severeEvents || 0) + 1;
+        viewportResponsivenessRecord('viewport-step-severe', Object.assign({ name, ms }, detail || {}));
+      } else if (ms > 50) {
+        viewportResponsivenessRecord('viewport-step-warning', Object.assign({ name, ms }, detail || {}));
+      }
+    }
+  }
+
+  function viewportRenderOwner() {
+    const state = viewportResponsivenessState();
+    state.renderOwner = state.renderOwner || {};
+    return state.renderOwner;
+  }
+
+  function viewportStabilizeOwner() {
+    const state = viewportResponsivenessState();
+    state.stabilizeOwner = state.stabilizeOwner || {};
+    return state.stabilizeOwner;
+  }
+
+  function viewportBucket(width = window.innerWidth || document.documentElement.clientWidth || 1920) {
+    if (width < 640) return 'one-mobile';
+    if (width >= 1500) return 'three-wide';
+    if (width >= 980) return 'two-desktop';
+    return 'one-desktop';
+  }
+
+  function viewportRenderSignature() {
+    const width = window.innerWidth || document.documentElement.clientWidth || 1920;
+    let mobile = false;
+    try { mobile = Boolean(window.matchMedia?.('(max-width: 640px)')?.matches); } catch (_) {}
+    let coarse = false;
+    try { coarse = Boolean(window.matchMedia?.('(pointer: coarse)')?.matches); } catch (_) {}
+    return JSON.stringify({
+      bucket: viewportBucket(width),
+      visibleCount: typeof visibleWorkspaceCount === 'function' ? visibleWorkspaceCount() : 1,
+      mobile,
+      coarse
+    });
+  }
+
+  function cancelViewportRenderSchedule(reason = 'cancel') {
+    const owner = viewportRenderOwner();
+    if (owner.timer) {
+      try { clearTimeout(owner.timer); } catch (_) {}
+      owner.timer = 0;
+    }
+    if (owner.raf) {
+      try { cancelAnimationFrame(owner.raf); } catch (_) {}
+      owner.raf = 0;
+    }
+    owner.generation = Number(owner.generation || 0) + 1;
+    owner.cancelled = Number(owner.cancelled || 0) + 1;
+    owner.lastCancel = { reason, at: new Date().toISOString() };
+    viewportResponsivenessRecord('viewport-render-cancel', owner.lastCancel);
+  }
+
+  function cancelViewportStabilizeSchedule(reason = 'cancel') {
+    const owner = viewportStabilizeOwner();
+    if (owner.timer) {
+      try { clearTimeout(owner.timer); } catch (_) {}
+      owner.timer = 0;
+    }
+    if (owner.raf) {
+      try { cancelAnimationFrame(owner.raf); } catch (_) {}
+      owner.raf = 0;
+    }
+    owner.generation = Number(owner.generation || 0) + 1;
+    owner.cancelled = Number(owner.cancelled || 0) + 1;
+    owner.lastCancel = { reason, at: new Date().toISOString() };
+    viewportResponsivenessRecord('viewport-stabilize-cancel', owner.lastCancel);
+  }
+
+  function syncViewportChromeNow(reason = 'stabilize') {
+    viewportStepMeasure('viewport-stabilize', () => {
+      try { if (typeof applyMobileChromeClass === 'function') applyMobileChromeClass(); } catch (_) {}
+      try { if (typeof syncMobileLensChrome === 'function') syncMobileLensChrome(); } catch (_) {}
+      try { if (typeof syncSingleSourceWorkspaces === 'function') syncSingleSourceWorkspaces(); } catch (_) {}
+      try { if (typeof syncMobileTreeChrome === 'function') syncMobileTreeChrome(); } catch (_) {}
+      try { if (typeof markSingleSourceWorkspaces === 'function') markSingleSourceWorkspaces(); } catch (_) {}
+      try { if (typeof compactMobilePostChips === 'function') compactMobilePostChips(); } catch (_) {}
+      try { if (typeof ensureMobileTopRail === 'function') ensureMobileTopRail(); } catch (_) {}
+      try { if (typeof syncMobileSourceModeRows === 'function') syncMobileSourceModeRows(); } catch (_) {}
+      try { if (typeof syncMobileEmptyWorkspaceHintsInitial === 'function') syncMobileEmptyWorkspaceHintsInitial(); } catch (_) {}
+    }, { reason, hidden: Boolean(document.hidden), workspaces: app.workspaces?.length || 0 });
+  }
+
+  function scheduleViewportStabilize(reason = 'stabilize', options = {}) {
+    const state = viewportResponsivenessState();
+    const owner = viewportStabilizeOwner();
+    state.stabilizeSchedules = Number(state.stabilizeSchedules || 0) + 1;
+    owner.lastReason = reason;
+    if (document.hidden) {
+      state.hiddenStabilizeSkips = Number(state.hiddenStabilizeSkips || 0) + 1;
+      viewportResponsivenessRecord('viewport-stabilize-skip-hidden', { reason });
+      return;
+    }
+    if (/mutation/u.test(String(reason || '')) && (performance.now?.() || Date.now()) - Number(app.viewportLastStabilizedAt || 0) < 120) {
+      state.mutationSelfSkips = Number(state.mutationSelfSkips || 0) + 1;
+      return;
+    }
+    if (app.viewportStabilizing) {
+      state.stabilizeSuppressedDuringRun = Number(state.stabilizeSuppressedDuringRun || 0) + 1;
+      return;
+    }
+    const delayMs = Math.max(0, Number(options.delayMs || 0));
+    if (owner.raf || owner.timer) {
+      owner.coalesced = Number(owner.coalesced || 0) + 1;
+      owner.lastCoalescedReason = reason;
+      return;
+    }
+    const generation = Number(owner.generation || 0);
+    const run = () => {
+      owner.timer = 0;
+      owner.raf = requestAnimationFrame(() => {
+        owner.raf = 0;
+        if (generation !== Number(owner.generation || 0)) {
+          owner.stale = Number(owner.stale || 0) + 1;
+          return;
+        }
+        if (document.hidden) {
+          state.hiddenStabilizeSkips = Number(state.hiddenStabilizeSkips || 0) + 1;
+          viewportResponsivenessRecord('viewport-stabilize-skip-hidden', { reason, stage: 'raf' });
+          return;
+        }
+        state.stabilizeRuns = Number(state.stabilizeRuns || 0) + 1;
+        app.viewportStabilizing = true;
+        try {
+          syncViewportChromeNow(reason);
+          app.viewportLastStabilizedAt = performance.now?.() || Date.now();
+        } finally {
+          app.viewportStabilizing = false;
+        }
+      });
+    };
+    if (delayMs > 0) owner.timer = setTimeout(run, delayMs);
+    else run();
+  }
+
+  function scheduleViewportRender(reason = 'resize', options = {}) {
+    const state = viewportResponsivenessState();
+    const owner = viewportRenderOwner();
+    state.resizeEvents = Number(state.resizeEvents || 0) + (/resize/u.test(String(reason || '')) ? 1 : 0);
+    state.renderSchedules = Number(state.renderSchedules || 0) + 1;
+    owner.lastReason = reason;
+    if (document.hidden) {
+      state.hiddenRenderSkips = Number(state.hiddenRenderSkips || 0) + 1;
+      viewportResponsivenessRecord('viewport-render-skip-hidden', { reason });
+      return;
+    }
+    if (owner.timer || owner.raf) {
+      owner.coalesced = Number(owner.coalesced || 0) + 1;
+      owner.lastCoalescedReason = reason;
+      return;
+    }
+    const delayMs = Math.max(0, Number(options.delayMs ?? (mobileActive() ? 120 : 70)));
+    const generation = Number(owner.generation || 0);
+    owner.timer = setTimeout(() => {
+      owner.timer = 0;
+      owner.raf = requestAnimationFrame(() => {
+        owner.raf = 0;
+        if (generation !== Number(owner.generation || 0)) {
+          owner.stale = Number(owner.stale || 0) + 1;
+          return;
+        }
+        if (document.hidden) {
+          state.hiddenRenderSkips = Number(state.hiddenRenderSkips || 0) + 1;
+          viewportResponsivenessRecord('viewport-render-skip-hidden', { reason, stage: 'raf' });
+          return;
+        }
+        const before = owner.lastSignature || '';
+        const after = viewportRenderSignature();
+        const force = Boolean(options.force) || /force/u.test(String(reason || ''));
+        if (!force && before === after) {
+          state.renderSkipsSameSignature = Number(state.renderSkipsSameSignature || 0) + 1;
+          viewportResponsivenessRecord('viewport-render-skip-same-signature', { reason, signature: after });
+          scheduleViewportStabilize(`no-render:${reason}`);
+          return;
+        }
+        state.renderRuns = Number(state.renderRuns || 0) + 1;
+        viewportStepMeasure('viewport-render', () => {
+          try { ensureWorkspaceWindow(); } catch (_) {}
+          render();
+          owner.lastSignature = viewportRenderSignature();
+        }, { reason, before, after, force, workspaces: app.workspaces?.length || 0 });
+      });
+    }, delayMs);
+  }
+
+  function viewportResponsivenessReport() {
+    const state = app.viewportResponsiveness || { events: [] };
+    const renderOwner = state.renderOwner || {};
+    const stabilizeOwner = state.stabilizeOwner || {};
+    return {
+      schema: 'tiinex.viewport-responsiveness.report.v1',
+      policy: 'mobile viewport/app-switch changes must not synchronously full-render workspaces; resize owns debounced render only when workspace-count/mobile signature changes and mobile chrome stabilization is coalesced/cancelable',
+      resizeEvents: Number(state.resizeEvents || 0),
+      renderSchedules: Number(state.renderSchedules || 0),
+      renderRuns: Number(state.renderRuns || 0),
+      renderSkipsSameSignature: Number(state.renderSkipsSameSignature || 0),
+      hiddenRenderSkips: Number(state.hiddenRenderSkips || 0),
+      stabilizeSchedules: Number(state.stabilizeSchedules || 0),
+      stabilizeRuns: Number(state.stabilizeRuns || 0),
+      hiddenStabilizeSkips: Number(state.hiddenStabilizeSkips || 0),
+      stabilizeSuppressedDuringRun: Number(state.stabilizeSuppressedDuringRun || 0),
+      mutationSelfSkips: Number(state.mutationSelfSkips || 0),
+      severeEvents: Number(state.severeEvents || 0),
+      maxStepMs: Number(state.maxStepMs || 0),
+      maxRenderMs: Number(state.maxRenderMs || 0),
+      maxStabilizeMs: Number(state.maxStabilizeMs || 0),
+      renderOwner: {
+        activeTimer: Boolean(renderOwner.timer),
+        activeRaf: Boolean(renderOwner.raf),
+        generation: Number(renderOwner.generation || 0),
+        cancelled: Number(renderOwner.cancelled || 0),
+        coalesced: Number(renderOwner.coalesced || 0),
+        stale: Number(renderOwner.stale || 0),
+        lastReason: renderOwner.lastReason || '',
+        lastSignature: renderOwner.lastSignature || '',
+        lastCancel: renderOwner.lastCancel || null
+      },
+      stabilizeOwner: {
+        activeTimer: Boolean(stabilizeOwner.timer),
+        activeRaf: Boolean(stabilizeOwner.raf),
+        generation: Number(stabilizeOwner.generation || 0),
+        cancelled: Number(stabilizeOwner.cancelled || 0),
+        coalesced: Number(stabilizeOwner.coalesced || 0),
+        stale: Number(stabilizeOwner.stale || 0),
+        lastReason: stabilizeOwner.lastReason || '',
+        lastCancel: stabilizeOwner.lastCancel || null
+      },
+      lastSteps: state.lastSteps || {},
+      recent: Array.isArray(state.events) ? state.events.slice(-30) : []
+    };
+  }
+
   function lensStateWithCachedWorkspaceScroll(state) {
     if (!state || !app.workspaces?.length) return state || null;
     const key = Array.isArray(state.workspaces) ? 'workspaces' : (Array.isArray(state.sources) ? 'sources' : '');
@@ -32806,20 +33091,31 @@ ${githubOutboundFileExcerpt(file, 18000)}
   function activeWorkspace() {
     return getWorkspace(app.activeWorkspaceId) || app.workspaces?.[0] || null;
   }
+
+  function syncMobileLensChrome() {
+    const ws = activeWorkspace();
+    const root = document.querySelector('.app-shell, .viewer-shell, main, body');
+    document.body.classList.toggle('mobile-lens', mobileLensActive());
+    const desiredHtml = ws && root ? mobileGlobalActions(ws) : '';
+    const desiredSig = desiredHtml ? hashFast(`${ws?.id || ''}::${desiredHtml}`) : '';
+    const hosts = Array.from(document.querySelectorAll('.mobile-global-actions-host'));
+    const primary = hosts[0] || null;
+    hosts.slice(1).forEach((el) => el.remove());
+    if (!desiredHtml) {
+      primary?.remove?.();
+      return;
+    }
+    if (primary && primary.dataset.mobileGlobalActionsSignature === desiredSig) return;
+    const host = primary || document.createElement('div');
+    host.className = 'mobile-global-actions-host';
+    host.dataset.mobileGlobalActionsSignature = desiredSig;
+    host.innerHTML = desiredHtml;
+    if (!primary) document.body.appendChild(host);
+  }
+
   registerRenderWrapper(function renderWithMobileLens(next) {
     const result = next();
-    requestAnimationFrame(() => {
-      const ws = activeWorkspace();
-      const root = document.querySelector('.app-shell, .viewer-shell, main, body');
-      document.body.classList.toggle('mobile-lens', mobileLensActive());
-      document.querySelectorAll('.mobile-global-actions-host').forEach((el) => el.remove());
-      if (ws && root) {
-        const host = document.createElement('div');
-        host.className = 'mobile-global-actions-host';
-        host.innerHTML = mobileGlobalActions(ws);
-        document.body.appendChild(host);
-      }
-    });
+    scheduleViewportStabilize('render:mobile-lens');
     return result;
   });
 
@@ -33047,12 +33343,12 @@ ${githubOutboundFileExcerpt(file, 18000)}
   }
   registerRenderWrapper(function renderWithMobileChrome(next) {
     const result = next();
-    requestAnimationFrame(applyMobileChromeClass);
+    scheduleViewportStabilize('render:mobile-chrome-class');
     return result;
   });
 
-  window.addEventListener('resize', applyMobileChromeClass);
-  window.addEventListener('orientationchange', applyMobileChromeClass);
+  window.addEventListener('resize', () => scheduleViewportStabilize('resize:mobile-chrome-class'), { passive: true });
+  window.addEventListener('orientationchange', () => scheduleViewportRender('orientationchange', { force: true, delayMs: 80 }), { passive: true });
 
 
 
@@ -33600,23 +33896,22 @@ ${githubOutboundFileExcerpt(file, 18000)}
 
   registerEnsureMobileTopRailWrapper(function ensureMobileTopRailWithCreateCorrection(next) {
     const result = next();
-    requestAnimationFrame(syncMobileSourceModeRows);
+    scheduleViewportStabilize('ensure-top-rail:source-mode-row');
     return result;
   });
 
   registerScheduleMobileDensityWrapper(function scheduleMobileDensityWithSourceModeRow(next) {
     const result = next();
-    requestAnimationFrame(syncMobileSourceModeRows);
-    setTimeout(syncMobileSourceModeRows, 90);
+    scheduleViewportStabilize('mobile-density:source-mode-row');
     return result;
   });
   registerRenderWrapper(function renderWithMobileSourceMode(next) {
     const result = next();
-    requestAnimationFrame(syncMobileSourceModeRows);
+    scheduleViewportStabilize('render:source-mode-row');
     return result;
   });
 
-  window.addEventListener('resize', () => requestAnimationFrame(syncMobileSourceModeRows), { passive: true });
+  window.addEventListener('resize', () => scheduleViewportStabilize('resize:source-mode-row'), { passive: true });
 
 
   function registerScheduleMobileChromeStabilizeWrapper(wrapper) {
@@ -33626,21 +33921,8 @@ ${githubOutboundFileExcerpt(file, 18000)}
     };
   }
 
-  let mobileChromeRaf = 0;
-  let mobileChromeTimer = 0;
   registerScheduleMobileChromeStabilizeWrapper(function scheduleMobileChromeStabilizeAfterRender(next) {
-    if (mobileChromeRaf) return undefined;
-    mobileChromeRaf = requestAnimationFrame(() => {
-      mobileChromeRaf = 0;
-      try { syncMobileSourceModeRows(); } catch (_) {}
-      try { syncMobileEmptyWorkspaceHintsInitial(); } catch (_) {}
-    });
-    if (mobileChromeTimer) clearTimeout(mobileChromeTimer);
-    mobileChromeTimer = setTimeout(() => {
-      mobileChromeTimer = 0;
-      try { syncMobileSourceModeRows(); } catch (_) {}
-      try { syncMobileEmptyWorkspaceHintsInitial(); } catch (_) {}
-    }, 160);
+    scheduleViewportStabilize('mobile-chrome-stabilize:after-render');
     return undefined;
   });
 
@@ -34021,20 +34303,18 @@ window.addEventListener('popstate', () => {
   }
   registerRenderWrapper(function renderWithMobile(next) {
     const result = next();
-    scheduleMobileDensity();
-    requestAnimationFrame(scheduleMobileDensity);
-    setTimeout(scheduleMobileDensity, 80);
+    scheduleViewportStabilize('render:mobile-density');
     return result;
   });
 
   try {
     const mobileMutationObserver = new MutationObserver(() => {
-      if (mobileActive()) scheduleMobileDensity();
+      if (mobileActive()) scheduleViewportStabilize('mutation:mobile-density');
     });
     mobileMutationObserver.observe(document.body, { childList: true, subtree: true });
   } catch (_) {}
 
-  window.addEventListener('resize', scheduleMobileDensity, { passive: true });
+  window.addEventListener('resize', () => scheduleViewportStabilize('resize:mobile-density'), { passive: true });
 
 
   function syncMobileEmptyWorkspaceHintsInitial() {
@@ -34061,24 +34341,17 @@ window.addEventListener('popstate', () => {
   }
 
   function scheduleMobileChromeStabilizeInitial() {
-    requestAnimationFrame(() => {
-      try { syncMobileSourceModeRows(); } catch (_) {}
-      syncMobileEmptyWorkspaceHintsInitial();
-    });
-    setTimeout(() => {
-      try { syncMobileSourceModeRows(); } catch (_) {}
-      syncMobileEmptyWorkspaceHintsInitial();
-    }, 120);
+    scheduleViewportStabilize('mobile-chrome-stabilize:initial');
   }
 
   registerScheduleMobileDensityWrapper(function scheduleMobileDensityWithChromeStabilize(next) {
     const result = next();
-    scheduleMobileChromeStabilizeInitial();
+    scheduleViewportStabilize('mobile-density:chrome-stabilize');
     return result;
   });
   registerRenderWrapper(function renderWithMobileChromeStabilize(next) {
     const result = next();
-    scheduleMobileChromeStabilizeInitial();
+    scheduleViewportStabilize('render:chrome-stabilize');
     return result;
   });
 
@@ -34086,10 +34359,7 @@ window.addEventListener('popstate', () => {
     if (!mobileActive()) return;
     const target = event.target;
     if (target?.closest?.('.post-feed') || target?.classList?.contains?.('post-feed')) {
-      requestAnimationFrame(() => {
-        try { syncMobileSourceModeRows(); } catch (_) {}
-        syncMobileEmptyWorkspaceHintsInitial();
-      });
+      scheduleViewportStabilize('scroll:post-feed-mobile-chrome');
     }
   }, true);
 
@@ -34121,14 +34391,7 @@ window.addEventListener('popstate', () => {
 
   registerScheduleMobileChromeStabilizeWrapper(function scheduleMobileChromeStabilizeWithTitleMode(next) {
     const result = next();
-    requestAnimationFrame(() => {
-      try { syncMobileSourceModeRows(); } catch (_) {}
-      try { syncMobileEmptyWorkspaceHintsInitial(); } catch (_) {}
-    });
-    setTimeout(() => {
-      try { syncMobileSourceModeRows(); } catch (_) {}
-      try { syncMobileEmptyWorkspaceHintsInitial(); } catch (_) {}
-    }, 140);
+    scheduleViewportStabilize('mobile-chrome-stabilize:title-mode');
     return result;
   });
 
@@ -34200,22 +34463,21 @@ window.addEventListener('popstate', () => {
 
   registerScheduleMobileDensityWrapper(function scheduleMobileDensityWithChromeSync(next) {
     const result = next();
-    requestAnimationFrame(syncChrome);
+    scheduleViewportStabilize('mobile-density:chrome-sync');
     return result;
   });
   registerRenderWrapper(function renderWithMobileChromeSync(next) {
     const result = next();
-    requestAnimationFrame(syncChrome);
-    setTimeout(syncChrome, 90);
+    scheduleViewportStabilize('render:chrome-sync');
     return result;
   });
 
   try {
-    const observer = new MutationObserver(() => requestAnimationFrame(syncChrome));
+    const observer = new MutationObserver(() => scheduleViewportStabilize('mutation:chrome-sync'));
     observer.observe(document.body, { childList: true, subtree: true });
   } catch (_) {}
 
-  window.addEventListener('resize', () => requestAnimationFrame(syncChrome), { passive: true });
+  window.addEventListener('resize', () => scheduleViewportStabilize('resize:chrome-sync'), { passive: true });
 
 
 
@@ -35778,9 +36040,12 @@ window.addEventListener('popstate', () => {
       // suspended timers cannot wake as a backlog in the Android app switcher.
       lifecycleResponsivenessState().hiddenCancels = Number(lifecycleResponsivenessState().hiddenCancels || 0) + 1;
       try { cancelStoredScrollRestoreSchedule('visibility-hidden'); } catch (_) {}
+      try { cancelViewportRenderSchedule('visibility-hidden'); } catch (_) {}
+      try { cancelViewportStabilizeSchedule('visibility-hidden'); } catch (_) {}
       lifecycleResponsivenessRecord('visibility-hidden', { workspaces: app.workspaces?.length || 0 });
     } else {
       lifecycleResponsivenessRecord('visibility-visible', { workspaces: app.workspaces?.length || 0, restoreMode: 'no-chase-on-resume' });
+      try { scheduleViewportStabilize('visibility-visible:lightweight'); } catch (_) {}
     }
   });
 
