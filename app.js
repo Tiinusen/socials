@@ -1990,6 +1990,79 @@
     return cleanIntegrityTowards(target?.href || target?.text || target?.raw || '') || 'missing target';
   }
 
+  function integrityEntryTargetHint(entry) {
+    const target = integrityEntryTargetRef(entry);
+    return {
+      kind: 'integrity.target',
+      role: 'integrity-target',
+      raw: target.raw,
+      value: target.href || target.text || target.raw,
+      href: target.href,
+      label: target.text || target.raw
+    };
+  }
+
+  function integrityTargetLooksLikeLineageArtifact(target) {
+    const value = cleanIntegrityTowards(target?.href || target?.text || target?.raw || '');
+    if (!value || /^self$/i.test(value)) return false;
+    const stripped = stripMarkdownInline(value);
+    if (/\.schema\.md(?:$|[#?])/i.test(stripped) || /\.validator\.md(?:$|[#?])/i.test(stripped)) return false;
+    if (/(?:^|\/)\.schemas\//i.test(stripped) || /(?:^|\/)\.validators\//i.test(stripped)) return false;
+    if (/issuecomment-|\/issues\/comments\//i.test(stripped)) return true;
+    if (/\.trace\.md(?:$|[#?])/i.test(stripped)) return true;
+    const converted = convertSourceUrl(stripped);
+    if (converted?.path && /\.trace\.md$/i.test(converted.path)) return true;
+    return false;
+  }
+
+  function explicitParentHintsForIntegrityRole(node) {
+    const raw = node?.rawMarkdown || node?.file?.text || node?.file?.rawMarkdown || '';
+    return tiinexParentHintDedupe(collectTiinexParentHintsFromText(raw, { includeIntegrity: false }));
+  }
+
+  function integrityEntryRoleForNode(ws, node, entry) {
+    const target = integrityEntryTargetRef(entry);
+    if (integrityTowardsIsSelf(entry?.towards)) {
+      return {
+        role: 'self-seal',
+        roleLabel: 'Self seal',
+        parentScoped: false,
+        reason: 'towards-self'
+      };
+    }
+
+    const parent = node?.parentNode || null;
+    const explicitHints = explicitParentHintsForIntegrityRole(node);
+    const entryHint = integrityEntryTargetHint(entry);
+    const matchesDeclaredParent = explicitHints.some((hint) => tiinexHintsReferenceSameIdentity(hint, entryHint));
+    const matchesCurrentParent = parent && integrityTargetReferencesNode(ws, node, target, parent);
+
+    if (matchesDeclaredParent || matchesCurrentParent) {
+      return {
+        role: 'parent-target',
+        roleLabel: 'Parent target',
+        parentScoped: true,
+        reason: matchesCurrentParent ? 'matches-current-parent' : 'matches-declared-parent'
+      };
+    }
+
+    if (parent && explicitHints.length && integrityTargetLooksLikeLineageArtifact(target)) {
+      return {
+        role: 'parent-target',
+        roleLabel: 'Parent target',
+        parentScoped: true,
+        reason: 'declared-parent-with-lineage-target'
+      };
+    }
+
+    return {
+      role: 'target',
+      roleLabel: 'Target integrity',
+      parentScoped: false,
+      reason: explicitHints.length ? 'not-parent-scoped' : 'no-explicit-parent-declaration'
+    };
+  }
+
   function integrityEntrySummaryFromResults(entries) {
     const list = Array.isArray(entries) ? entries : [];
     const counts = list.reduce((acc, entry) => {
@@ -2043,8 +2116,12 @@
 
   async function evaluateIntegrityEntry(ws, node, detail, entry) {
     const target = integrityEntryTargetRef(entry);
+    const role = integrityEntryRoleForNode(ws, node, entry);
     const base = Object.assign({}, detail, {
       target: entryTargetSummary(target),
+      targetRole: role.role,
+      targetRoleLabel: role.roleLabel,
+      targetRoleReason: role.reason,
       expectedShort: shortHash(entry?.value || ''),
       resultStatus: detail.status,
       resultLabel: detail.label,
@@ -2075,7 +2152,7 @@
     }
 
     const parent = node?.parentNode || null;
-    if (parent && !integrityTowardsIsSelf(entry.towards)) {
+    if (parent && role.parentScoped) {
       const targetsParent = integrityTargetReferencesNode(ws, node, target, parent);
       if (!targetsParent) {
         const currentParent = artifactDisplayTitle(parent) || parent.title || parent.path || 'current parent';
@@ -2085,7 +2162,7 @@
           resultStatus: 'mismatch',
           label: 'Parent target stale',
           resultLabel: 'Parent target stale',
-          resultDetail: `Footer target ${entryTargetSummary(target)} does not match the current lineage parent ${currentParent}${currentPath ? ` (${currentPath})` : ''}.`,
+          resultDetail: `Footer parent target ${entryTargetSummary(target)} does not match the current lineage parent ${currentParent}${currentPath ? ` (${currentPath})` : ''}.`,
           viewerCheck: 'current-lineage-parent'
         });
       }
@@ -2134,8 +2211,8 @@
         return Object.assign(base, {
           status: 'byte-integrity-verified',
           resultStatus: 'byte-integrity-verified',
-          label: integrityTowardsIsSelf(entry.towards) ? 'Self seal verified' : 'Target digest verified',
-          resultLabel: integrityTowardsIsSelf(entry.towards) ? 'Self seal verified' : 'Target digest verified',
+          label: integrityTowardsIsSelf(entry.towards) ? 'Self seal verified' : `${role.roleLabel} verified`,
+          resultLabel: integrityTowardsIsSelf(entry.towards) ? 'Self seal verified' : `${role.roleLabel} verified`,
           resultDetail: `Matched ${match.variant}.`,
           resultVariant: match.variant,
           computedShort: shortHash(match.hash),
@@ -10815,13 +10892,11 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     for (const line of transition.matchAll(/(?:^|\n)-\s+(Parent Artifact|Parent Trace|Parent Artifact Path|Parent Artifact Title|Parent Source URL|Parent Raw URL|Parent Browse URL|Parent Publication Item URL|Parent Publication Item ID|Tiinex Parent Artifact Path|Tiinex Parent Artifact Title|Tiinex Parent Source URL|Tiinex Parent Raw URL|Tiinex Parent Browse URL|Tiinex Parent Publication Item URL|Tiinex Parent Publication Item ID):\s*(.*)$/gim)) {
       addTiinexParentHint(hints, String(line[1] || '').toLowerCase().replace(/\s+/g, '.'), line[2] || '', { source: 'transition.parent' });
     }
-    if (options.includeIntegrity !== false) {
-      for (const entry of parseIntegrityEntries(text)) {
-        if (entry?.towards && !integrityTowardsIsSelf(entry.towards)) {
-          addTiinexParentHint(hints, 'integrity.towards', entry.towards, { source: 'continuity-integrity' });
-        }
-      }
-    }
+    // Integrity entries validate declared targets. They do not declare continuity
+    // parents by themselves. Parent resolution is intentionally limited to the
+    // envelope Parent block and adapter/publication parent boundary fields.
+    // A non-self integrity entry may later be classified as a parent-target
+    // validation only when it is linked to an explicit parent declaration.
     return hints;
   }
 
@@ -10877,7 +10952,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       ...collectTiinexSourceSelfHintsFromText(contextText)
     ];
     const parentHints = tiinexParentHintDedupe([
-      ...collectTiinexParentHintsFromText(embeddedMarkdown, { includeIntegrity: true }),
+      ...collectTiinexParentHintsFromText(embeddedMarkdown, { includeIntegrity: false }),
       ...githubIssueBoundaryParentHints(contextText)
     ]);
     return tiinexParentHintDedupe(removeSourceSelfHintsFromParentHints(parentHints, sourceSelfHints));
@@ -10889,7 +10964,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       ...collectTiinexSourceSelfHintsFromText(contextText)
     ]);
     const rawParentHints = tiinexParentHintDedupe([
-      ...collectTiinexParentHintsFromText(embeddedMarkdown, { includeIntegrity: true }),
+      ...collectTiinexParentHintsFromText(embeddedMarkdown, { includeIntegrity: false }),
       ...githubIssueBoundaryParentHints(contextText)
     ]);
     const parentHints = tiinexParentHintDedupe(removeSourceSelfHintsFromParentHints(rawParentHints, sourceSelfHints));
@@ -10903,7 +10978,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   }
 
   function tiinexEmbeddedMarkdownParentHints(markdown = '') {
-    return tiinexParentHintDedupe(collectTiinexParentHintsFromText(markdown, { includeIntegrity: true }));
+    return tiinexParentHintDedupe(collectTiinexParentHintsFromText(markdown, { includeIntegrity: false }));
   }
 
 
@@ -19121,7 +19196,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     const parentEntries = entries.filter((entry) => {
       if (!entry?.towards || integrityTowardsIsSelf(entry.towards)) return false;
       if (!TIINEX_SUPPORTED_SHA256_C14N_METHOD_IDS.has(entry.method)) return false;
-      return true;
+      return integrityEntryRoleForNode(ws, node, entry).parentScoped;
     });
     const targets = parentEntries.length ? parentEntries.map((entry) => ({
       raw: entry.towards,
@@ -19465,6 +19540,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         </header>
         <dl>
           <div><dt>Method</dt><dd>${methodLink}</dd></div>
+          <div><dt>Role</dt><dd>${escapeHtml(entry.targetRoleLabel || 'Target integrity')}${entry.targetRoleReason ? ` <span class="diag-muted">(${escapeHtml(entry.targetRoleReason)})</span>` : ''}</dd></div>
           <div><dt>Towards</dt><dd>${escapeHtml(entry.towards || 'missing')}</dd></div>
           <div><dt>Expected</dt><dd class="mono">${escapeHtml(entry.expectedShort || entry.valueStatus || 'open')}</dd></div>
           <div><dt>Computed</dt><dd class="mono">${escapeHtml(computed)}</dd></div>
