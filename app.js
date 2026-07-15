@@ -32830,10 +32830,57 @@ ${githubOutboundFileExcerpt(file, 18000)}
   function previewAutoMoreFeedFromTarget(target) {
     if (!target) return null;
     if (target.classList?.contains('preview-material-feed')) return target;
-    return target.closest?.('.preview-material-feed[data-preview-material-surface="true"][data-ws]') || null;
+    const nested = target.closest?.('.preview-material-feed[data-preview-material-surface="true"][data-ws]') || null;
+    if (nested) return nested;
+    if (target.querySelector) {
+      const child = target.querySelector('.preview-material-feed[data-preview-material-surface="true"][data-ws]');
+      if (child) return child;
+    }
+    const active = app.workspaces?.find?.((candidate) => previewMaterialActive(candidate) && (candidate.discoveryView || 'feed') === 'feed') || null;
+    if (!active) return null;
+    return document.querySelector(`.preview-material-feed[data-preview-material-surface="true"][data-ws="${cssEscape(active.id)}"]`);
+  }
+
+  function previewAutoMoreScrollElement(feed, target) {
+    if (!feed) return null;
+    const candidate = target && target !== document && target !== window ? target : null;
+    if (candidate && candidate.contains?.(feed) && Number(candidate.scrollHeight || 0) > Number(candidate.clientHeight || 0)) return candidate;
+    if (candidate === feed || feed.contains?.(candidate)) return feed;
+    return feed;
   }
 
   const previewMaterialAutoMoreState = new WeakMap();
+
+  function previewMaterialScrollSourceForWorkspace(ws) {
+    if (!ws?.id) return null;
+    const feed = document.querySelector(`.preview-material-feed[data-preview-material-surface="true"][data-ws="${cssEscape(ws.id)}"]`);
+    if (!feed) return null;
+    const roleTarget = typeof scrollElementForRole === 'function' ? scrollElementForRole(ws, 'post-feed.discovery', 'discovery') : null;
+    return roleTarget || feed;
+  }
+
+  function schedulePreviewMaterialAutoMoreCheck(ws, reason = 'post-render') {
+    if (!ws || !previewMaterialActive(ws)) return;
+    app.previewMaterialPipeline = app.previewMaterialPipeline || { recent: [] };
+    const owner = app.previewMaterialPipeline.autoOwner || { schedules: 0, runs: 0, coalesced: 0 };
+    if (owner.timer) {
+      clearTimeout(owner.timer);
+      owner.coalesced = Number(owner.coalesced || 0) + 1;
+    }
+    owner.schedules = Number(owner.schedules || 0) + 1;
+    owner.lastReason = reason;
+    owner.activeTimer = true;
+    owner.timer = setTimeout(() => {
+      owner.activeTimer = false;
+      owner.timer = null;
+      const feed = document.querySelector(`.preview-material-feed[data-preview-material-surface="true"][data-ws="${cssEscape(ws.id)}"]`);
+      const source = previewMaterialScrollSourceForWorkspace(ws) || feed;
+      owner.runs = Number(owner.runs || 0) + 1;
+      owner.lastRun = { reason, hasFeed: Boolean(feed), hasSource: Boolean(source), at: new Date().toISOString() };
+      if (feed) maybeAutoGrowPreviewMaterialWindow(feed, reason, source);
+    }, Math.max(20, reason === 'post-render' ? 80 : 40));
+    app.previewMaterialPipeline.autoOwner = owner;
+  }
 
   function growPreviewMaterialWindow(ws, reason = 'manual') {
     if (!ws || !previewMaterialActive(ws)) return false;
@@ -32845,7 +32892,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
     if (afterVisibleCount <= beforeVisibleCount) return false;
     ws.previewMaterialVisibleCount = afterVisibleCount;
     app.previewMaterialPipeline = app.previewMaterialPipeline || { recent: [] };
-    app.previewMaterialPipeline.autoGrows = Number(app.previewMaterialPipeline.autoGrows || 0) + (reason === 'auto-scroll' ? 1 : 0);
+    app.previewMaterialPipeline.autoGrows = Number(app.previewMaterialPipeline.autoGrows || 0) + ((reason === 'auto-scroll' || String(reason || '').startsWith('post-')) ? 1 : 0);
     app.previewMaterialPipeline.manualGrows = Number(app.previewMaterialPipeline.manualGrows || 0) + (reason === 'manual' ? 1 : 0);
     app.previewMaterialPipeline.lastGrow = { reason, beforeVisibleCount, afterVisibleCount, total, at: new Date().toISOString() };
     app.previewMaterialPipeline.recent = (app.previewMaterialPipeline.recent || []).concat([{ event: 'preview-material-window-grow', detail: app.previewMaterialPipeline.lastGrow }]).slice(-20);
@@ -32853,27 +32900,30 @@ ${githubOutboundFileExcerpt(file, 18000)}
     return true;
   }
 
-  function maybeAutoGrowPreviewMaterialWindow(feed, reason = 'auto-scroll') {
+  function maybeAutoGrowPreviewMaterialWindow(feed, reason = 'auto-scroll', scrollSource = null) {
     if (!feed || app.restoringStoredScroll) return false;
     const ws = getWorkspace(feed.dataset?.ws || '');
     if (!ws || !previewMaterialActive(ws)) return false;
     const beforeVisibleCount = previewVisibleCount(ws);
     const total = previewMaterialItemsForWorkspace(ws).length;
     if (beforeVisibleCount >= total) return false;
-    const distanceToEnd = Math.max(0, Math.round((feed.scrollHeight || 0) - (feed.clientHeight || 0) - (feed.scrollTop || 0)));
-    const threshold = discoveryAutoMoreThreshold(feed);
+    const scroller = previewAutoMoreScrollElement(feed, scrollSource) || feed;
+    const distanceToEnd = Math.max(0, Math.round((scroller.scrollHeight || 0) - (scroller.clientHeight || 0) - (scroller.scrollTop || 0)));
+    const threshold = discoveryAutoMoreThreshold(scroller);
+    app.previewMaterialPipeline = app.previewMaterialPipeline || { recent: [] };
+    app.previewMaterialPipeline.lastAutoCheck = { reason, distanceToEnd, threshold, visibleCount: beforeVisibleCount, total, scrollerMatchesFeed: scroller === feed, at: new Date().toISOString() };
     if (distanceToEnd > threshold) return false;
     const now = Date.now();
-    const last = previewMaterialAutoMoreState.get(feed);
-    if (last && last.visibleCount === beforeVisibleCount && now - last.at < 300) return false;
-    previewMaterialAutoMoreState.set(feed, { visibleCount: beforeVisibleCount, at: now });
+    const last = previewMaterialAutoMoreState.get(scroller);
+    if (last && last.visibleCount === beforeVisibleCount && now - last.at < 260) return false;
+    previewMaterialAutoMoreState.set(scroller, { visibleCount: beforeVisibleCount, at: now });
     return growPreviewMaterialWindow(ws, reason);
   }
 
   function onDiscoveryAutoMoreScroll(event) {
     const previewFeed = previewAutoMoreFeedFromTarget(event.target);
     if (previewFeed) {
-      maybeAutoGrowPreviewMaterialWindow(previewFeed, 'auto-scroll');
+      maybeAutoGrowPreviewMaterialWindow(previewFeed, 'auto-scroll', event.target);
       return;
     }
     const feed = discoveryAutoMoreFeedFromTarget(event.target);
@@ -33676,6 +33726,29 @@ ${githubOutboundFileExcerpt(file, 18000)}
     ws.previewMaterialVisibleCount = Number(app.settings.previewMaterialInitialCount || 12);
   }
 
+  function schedulePreviewRouteState(reason = 'preview-route-state', delayMs = 220) {
+    app.previewMaterialPipeline = app.previewMaterialPipeline || { recent: [] };
+    const owner = app.previewMaterialPipeline.routeOwner || { schedules: 0, writes: 0, coalesced: 0 };
+    if (owner.timer) {
+      clearTimeout(owner.timer);
+      owner.coalesced = Number(owner.coalesced || 0) + 1;
+    }
+    owner.schedules = Number(owner.schedules || 0) + 1;
+    owner.lastReason = reason;
+    owner.activeTimer = true;
+    owner.timer = setTimeout(() => {
+      owner.activeTimer = false;
+      owner.timer = null;
+      const started = performance.now ? performance.now() : Date.now();
+      if (typeof setRouteState === 'function') setRouteState('replace');
+      const writeMs = Math.round(((performance.now ? performance.now() : Date.now()) - started) * 10) / 10;
+      owner.writes = Number(owner.writes || 0) + 1;
+      owner.lastWrite = { reason, writeMs, at: new Date().toISOString() };
+      app.previewMaterialPipeline.recent = (app.previewMaterialPipeline.recent || []).concat([{ event: 'preview-material-route-state', detail: owner.lastWrite }]).slice(-20);
+    }, Math.max(0, Number(delayMs || 0)));
+    app.previewMaterialPipeline.routeOwner = owner;
+  }
+
   function schedulePreviewMaterialRefresh(ws, reason = 'preview-interaction', options = {}) {
     if (!ws) return;
     app.previewMaterialPipeline = app.previewMaterialPipeline || { recent: [] };
@@ -33710,8 +33783,10 @@ ${githubOutboundFileExcerpt(file, 18000)}
           return;
         }
         const started = performance.now ? performance.now() : Date.now();
-        if (options.route !== false && typeof setRouteState === 'function') setRouteState('replace');
+        if (options.routeBeforeRender && typeof setRouteState === 'function') setRouteState('replace');
         render();
+        if (previewMaterialActive(ws)) schedulePreviewMaterialAutoMoreCheck(ws, reason === 'preview-window-auto-scroll' ? 'post-grow' : 'post-render');
+        if (options.route !== false && !options.routeBeforeRender) schedulePreviewRouteState(reason);
         const elapsed = Math.round(((performance.now ? performance.now() : Date.now()) - started) * 10) / 10;
         owner.renders = Number(owner.renders || 0) + 1;
         owner.lastRender = { reason, workspace: ws.id || '', renderMs: elapsed, delayMs: Math.round(((performance.now ? performance.now() : Date.now()) - scheduledAt) * 10) / 10, at: new Date().toISOString() };
@@ -33837,6 +33912,15 @@ ${githubOutboundFileExcerpt(file, 18000)}
       coalescedRefreshes: Number(p.refreshOwner?.coalesced || 0),
       activeRefreshTimer: Boolean(p.refreshOwner?.activeTimer),
       activeRefreshRaf: Boolean(p.refreshOwner?.activeRaf),
+      routeSchedules: Number(p.routeOwner?.schedules || 0),
+      routeWrites: Number(p.routeOwner?.writes || 0),
+      routeCoalesced: Number(p.routeOwner?.coalesced || 0),
+      activeRouteTimer: Boolean(p.routeOwner?.activeTimer),
+      autoCheckSchedules: Number(p.autoOwner?.schedules || 0),
+      autoCheckRuns: Number(p.autoOwner?.runs || 0),
+      autoCheckCoalesced: Number(p.autoOwner?.coalesced || 0),
+      activeAutoCheckTimer: Boolean(p.autoOwner?.activeTimer),
+      lastAutoCheck: p.lastAutoCheck || null,
       autoGrows: Number(p.autoGrows || 0),
       manualGrows: Number(p.manualGrows || 0),
       lastGrow: p.lastGrow || null,
@@ -33930,7 +34014,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       ws.previewMaterialMode = !ws.previewMaterialMode;
       if (!ws.previewMaterialKind) ws.previewMaterialKind = 'all';
       resetPreviewMaterialWindow(ws);
-      schedulePreviewMaterialRefresh(ws, 'toggle-preview', { route: true, delayMs: 40 });
+      schedulePreviewMaterialRefresh(ws, 'toggle-preview', { route: true, delayMs: 0 });
       return;
     }
 
@@ -33942,7 +34026,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       ws.previewMaterialKind = event.currentTarget.dataset.kind || 'all';
       ws.previewMaterialMode = true;
       resetPreviewMaterialWindow(ws);
-      schedulePreviewMaterialRefresh(ws, 'set-preview-kind', { route: true, delayMs: 90 });
+      schedulePreviewMaterialRefresh(ws, 'set-preview-kind', { route: true, delayMs: 0 });
       return;
     }
 
@@ -34055,7 +34139,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       ws.previewMaterialKinds = kind === 'all' ? [] : [kind];
       ws.previewMaterialKind = kind;
       resetPreviewMaterialWindow(ws);
-      schedulePreviewMaterialRefresh(ws, 'set-preview-kind', { route: true, delayMs: 90 });
+      schedulePreviewMaterialRefresh(ws, 'set-preview-kind', { route: true, delayMs: 0 });
       return;
     }
 
