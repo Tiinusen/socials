@@ -31348,21 +31348,48 @@ ${integrityFooterForPath(parent, path)}`,
     return '';
   }
 
-  function githubExportParentFromMarkdown(ws, markdown = '', currentNode = null) {
+  function githubExportEffectiveMarkdown(file = {}, node = null) {
+    return normalizeNewlines(
+      file?.text
+      || file?.content
+      || file?.rawMarkdown
+      || file?.body
+      || node?.rawMarkdown
+      || node?.body
+      || node?.file?.text
+      || node?.file?.content
+      || ''
+    );
+  }
+
+  function githubExportParentFromMarkdown(ws, markdown = '', currentNode = null, currentPath = '') {
     if (!ws || !markdown) return null;
     const resolved = resolveGitHubIssueParentNodeForRecoveredArtifact(ws, markdown, null, null, markdown).node || null;
-    return resolved && resolved !== currentNode ? resolved : null;
+    if (!resolved || resolved === currentNode) return null;
+    const parentPath = canonicalWorkspacePath(resolved.path || resolved.file?.path || '');
+    const selfPath = canonicalWorkspacePath(currentPath || currentNode?.path || currentNode?.file?.path || '');
+    if (parentPath && selfPath && sameImportedPath(parentPath, selfPath)) return null;
+    return resolved;
   }
 
   function githubContinuationParentContext(ws, file = {}) {
     const node = githubExportFileNode(ws, file);
-    const raw = normalizeNewlines(file?.content || file?.rawMarkdown || file?.body || node?.rawMarkdown || node?.body || '');
+    const raw = githubExportEffectiveMarkdown(file, node);
+    const currentPath = canonicalWorkspacePath(file?.path || file?.name || node?.path || node?.file?.path || '');
     const declaresParent = markdownDeclaresContinuityParent(raw);
-    // Export boundary follows the artifact markdown. If the current draft/root
-    // declares no Parent block, do not resurrect stale graph parents from an
-    // imported publication container or previous source snapshot.
-    const resolvedParent = declaresParent ? (githubExportParentFromMarkdown(ws, raw, node) || node?.parentNode || null) : null;
-    const parent = isGitHubIssueContainerRootNode(resolvedParent, node?.path || file?.path || file?.name || '') ? null : resolvedParent;
+    // Export boundary follows the current artifact markdown. If a local draft
+    // was explicitly detached/rooted, prefer the draft text and never resurrect
+    // stale graph parents from the imported publication container or previous
+    // source snapshot.
+    let resolvedParent = declaresParent ? (githubExportParentFromMarkdown(ws, raw, node, currentPath) || node?.parentNode || null) : null;
+    if (resolvedParent) {
+      const parentPath = canonicalWorkspacePath(resolvedParent.path || resolvedParent.file?.path || '');
+      if ((parentPath && currentPath && sameImportedPath(parentPath, currentPath))
+        || isGitHubIssueContainerRootNode(resolvedParent, currentPath)) {
+        resolvedParent = null;
+      }
+    }
+    const parent = resolvedParent;
     const parentUrl = githubNodeIssueCommentUrl(parent) || (!parent ? '' : githubFirstIssueCommentUrlFromText(raw));
     const parentPath = parent?.path || '';
     const parentTitle = parent?.title || markdownTitleFromFile(parent?.file || parent || {}) || '';
@@ -32061,7 +32088,7 @@ ${integrityFooterForPath(parent, path)}`,
     const storageKey = String(file.storageKey || file.file?.storageKey || '').trim();
     const raw = String(file.rawUrl || file.file?.rawUrl || '').trim();
     const browse = String(file.browseUrl || file.file?.browseUrl || '').trim();
-    const content = normalizeNewlines(file.content || file.rawMarkdown || file.body || '').trim();
+    const content = normalizeNewlines(file.text || file.content || file.rawMarkdown || file.body || '').trim();
     let best = null;
     let bestScore = 0;
     for (const node of Array.from(ws.nodeById?.values?.() || [])) {
@@ -32073,7 +32100,7 @@ ${integrityFooterForPath(parent, path)}`,
       if (raw && (node.rawUrl === raw || node.file?.rawUrl === raw)) score += 180;
       if (browse && (node.browseUrl === browse || node.file?.browseUrl === browse)) score += 180;
       if (content) {
-        const nodeContent = normalizeNewlines(node.rawMarkdown || node.body || node.file?.content || '').trim();
+        const nodeContent = normalizeNewlines(node.rawMarkdown || node.body || node.file?.text || node.file?.content || '').trim();
         if (nodeContent && nodeContent === content) score += 420;
       }
       if (!score) continue;
