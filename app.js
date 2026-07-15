@@ -11989,7 +11989,11 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         const parentContext = issue?.body || '';
         const parentHints = tiinexIssueParentHintsForResolution(embeddedIssue, parentContext);
         const parentResolution = resolveGitHubIssueParentNodeForRecoveredArtifact(ws, embeddedIssue, rootNode, null, parentContext);
-        let recoveredParentNode = parentResolution.node || (parentResolution.bindingMode === 'fallback' ? rootNode : null);
+        // For embedded Tiinex Source Markdown, absence of an explicit parent
+        // is meaningful: the embedded artifact is a root. The adapter may
+        // parent shell/findings to the issue container for navigation, but it
+        // must not invent a continuity parent for recovered typed artifacts.
+        let recoveredParentNode = parentResolution.bindingMode === 'resolved' ? parentResolution.node : null;
         if (isGitHubIssueContainerRootNode(recoveredParentNode, recoveredPath)) recoveredParentNode = null;
         const recoveredIssueMarkdown = recoveredParentNode
           ? await reparentRecoveredTiinexArtifactForWorkspace(embeddedIssue, recoveredParentNode, recoveredPath)
@@ -12016,7 +12020,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           githubParentExplicit: Boolean(parentResolution.explicit),
           githubParentBindingMode: parentResolution.bindingMode || '',
           githubParentUnresolvedHint: parentResolution.unresolvedHint || '',
-          githubParentFallbackReason: parentResolution.bindingMode === 'fallback' ? 'no explicit parent hint was present' : '',
+          githubParentFallbackReason: parentResolution.bindingMode === 'fallback' ? 'adapter container fallback suppressed for embedded root artifact' : '',
+          githubParentFallbackSuppressed: parentResolution.bindingMode === 'fallback',
           embeddedSourcePath: tiinexEmbeddedMarkdownSourcePath(embeddedIssue),
           embeddedSelfIntegrity: tiinexEmbeddedMarkdownSelfIntegrityValue(embeddedIssue),
           githubParentHintCount: parentHints.length,
@@ -12091,7 +12096,11 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         const parentContext = comment?.body || '';
         const parentHints = tiinexIssueParentHintsForResolution(embedded, parentContext);
         const parentResolution = resolveGitHubIssueParentNodeForRecoveredArtifact(ws, embedded, issueWorkingParentNode || rootNode, comment, parentContext);
-        const recoveredParentNode = parentResolution.node || (parentResolution.bindingMode === 'fallback' ? (issueWorkingParentNode || rootNode) : null);
+        // Same rule for comment-embedded Tiinex artifacts: the GitHub
+        // comment/thread is the publication container, not an implicit
+        // continuity parent. Only explicit parent bindings from the payload
+        // or GitHub boundary may reparent the recovered artifact.
+        const recoveredParentNode = parentResolution.bindingMode === 'resolved' ? parentResolution.node : null;
         const recoveredCommentMarkdown = await reparentRecoveredTiinexArtifactForWorkspace(embedded, recoveredParentNode, recoveredPath);
         addFileToWorkspace(ws, {
           path: recoveredPath,
@@ -12115,7 +12124,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           githubParentExplicit: Boolean(parentResolution.explicit),
           githubParentBindingMode: parentResolution.bindingMode || '',
           githubParentUnresolvedHint: parentResolution.unresolvedHint || '',
-          githubParentFallbackReason: parentResolution.bindingMode === 'fallback' ? 'no explicit parent hint was present' : '',
+          githubParentFallbackReason: parentResolution.bindingMode === 'fallback' ? 'adapter container fallback suppressed for embedded root artifact' : '',
+          githubParentFallbackSuppressed: parentResolution.bindingMode === 'fallback',
           embeddedSourcePath: tiinexEmbeddedMarkdownSourcePath(embedded),
           embeddedSelfIntegrity: tiinexEmbeddedMarkdownSelfIntegrityValue(embedded),
           githubParentHintCount: parentHints.length,
@@ -12140,7 +12150,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           githubParentExplicit: Boolean(parentResolution.explicit),
           githubParentBindingMode: parentResolution.bindingMode || '',
           githubParentUnresolvedHint: parentResolution.unresolvedHint || '',
-          githubParentFallbackReason: parentResolution.bindingMode === 'fallback' ? 'no explicit parent hint was present' : '',
+          githubParentFallbackReason: parentResolution.bindingMode === 'fallback' ? 'adapter container fallback suppressed for embedded root artifact' : '',
+          githubParentFallbackSuppressed: parentResolution.bindingMode === 'fallback',
           embeddedSourcePath: tiinexEmbeddedMarkdownSourcePath(embedded),
           embeddedSelfIntegrity: tiinexEmbeddedMarkdownSelfIntegrityValue(embedded),
           githubParentHintCount: parentHints.length,
