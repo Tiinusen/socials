@@ -8494,6 +8494,7 @@
         ws = createWorkspace(source.label || 'Config workspace', importMode === 'duplicate' ? 'Duplicated from .workspace.md workspace state.' : 'Loaded from .workspace.md workspace state.');
         opened += 1;
         if (source.kind === 'github-tree' || source.kind === 'github') {
+          if (!firstWs) maybePrewarmStaticViewRouteHash(source, ws, sources, 'source-created-before-github-load');
           await loadGitHubStateSourceIntoWorkspace(ws, source);
         } else {
           await loadUrlsIntoWorkspace(ws, source.urls || []);
@@ -16623,6 +16624,60 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     }
   }
 
+  function routeHashPrewarmState() {
+    app.routeHashPrewarm = app.routeHashPrewarm || { attempts: 0, writes: 0, skips: 0, events: [] };
+    app.routeHashPrewarm.events = Array.isArray(app.routeHashPrewarm.events) ? app.routeHashPrewarm.events : [];
+    return app.routeHashPrewarm;
+  }
+
+  function routeHashPrewarmRecord(event, detail = {}) {
+    try {
+      const state = routeHashPrewarmState();
+      state.events.push({ at: new Date().toISOString(), event, detail: routeHashSanitize(detail || {}) });
+      if (state.events.length > 40) state.events.splice(0, state.events.length - 40);
+    } catch (_) {}
+  }
+
+  function maybePrewarmStaticViewRouteHash(source, ws, sources = [], reason = 'workspace-source-pending') {
+    const state = routeHashPrewarmState();
+    state.attempts = Number(state.attempts || 0) + 1;
+    const skip = (skipReason, extra = {}) => {
+      state.skips = Number(state.skips || 0) + 1;
+      routeHashPrewarmRecord('route-hash-prewarm-skip', Object.assign({ reason: skipReason, sourceKind: source?.kind || '', workspaces: app.workspaces?.length || 0, hashLength: String(location.hash || '').length }, extra));
+      return false;
+    };
+    if (!staticDiskMode()) return skip('not-static-disk');
+    if (location.hash) return skip('hash-present');
+    if (app.routing?.restoring) return skip('routing-restoring');
+    if (app.isBootingFromUrl) return skip('booting-from-url');
+    if (!ws || !source) return skip('missing-workspace-or-source');
+    if (!Array.isArray(sources) || sources.length !== 1) return skip('multi-source-or-empty', { sourceCount: Array.isArray(sources) ? sources.length : 0 });
+    if (state.writes) return skip('already-written');
+
+    const started = performance.now?.() || Date.now();
+    try {
+      app.activeWorkspaceId = ws.id || app.activeWorkspaceId;
+      app.workspaceOffset = 0;
+      if (typeof applyViewStateToWorkspace === 'function') applyViewStateToWorkspace(ws, source);
+      setRouteState('replace');
+      const ms = Math.round((performance.now?.() || Date.now()) - started);
+      state.writes = Number(state.writes || 0) + 1;
+      state.lastWrite = {
+        at: new Date().toISOString(),
+        reason,
+        ms,
+        hashLength: String(location.hash || '').length,
+        workspaceLabel: ws.label || '',
+        sourceKind: source.kind || '',
+        discoveryView: source.discoveryView || ws.discoveryView || 'feed'
+      };
+      routeHashPrewarmRecord('route-hash-prewarm-write', state.lastWrite);
+      return true;
+    } catch (error) {
+      return skip('write-failed', { error: error?.message || String(error || '') });
+    }
+  }
+
   function routeHashResponsivenessReport() {
     const state = routeHashResponsivenessState();
     let current = null;
@@ -16639,6 +16694,13 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       maxJsonLength: Number(state.maxJsonLength || 0),
       currentHashLength: String(location.hash || '').length,
       current,
+      prewarm: app.routeHashPrewarm ? {
+        attempts: Number(app.routeHashPrewarm.attempts || 0),
+        writes: Number(app.routeHashPrewarm.writes || 0),
+        skips: Number(app.routeHashPrewarm.skips || 0),
+        lastWrite: app.routeHashPrewarm.lastWrite || null,
+        recent: Array.isArray(app.routeHashPrewarm.events) ? app.routeHashPrewarm.events.slice(-12) : []
+      } : null,
       lastWrite: state.lastWrite || null,
       recent: state.events.slice(-20)
     };
@@ -33049,7 +33111,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
 
 
   function mobileVisualDormancyState() {
-    app.mobileVisualDormancy = app.mobileVisualDormancy || { events: [], parked: false, previousGridStyle: null };
+    app.mobileVisualDormancy = app.mobileVisualDormancy || { events: [], parked: false, previousGridStyle: null, previewSummary: null, previewHtml: '' };
     app.mobileVisualDormancy.events = Array.isArray(app.mobileVisualDormancy.events) ? app.mobileVisualDormancy.events : [];
     return app.mobileVisualDormancy;
   }
@@ -33089,6 +33151,121 @@ ${githubOutboundFileExcerpt(file, 18000)}
       assets: workspaces.reduce((sum, ws) => sum + (ws?.assets?.size || 0), 0),
       loading: workspaces.filter((ws) => workspaceHasActiveDiscoveryProgress?.(ws)).length
     };
+  }
+
+  function mobileDormancyActiveWorkspace() {
+    return getWorkspace(app.activeWorkspaceId) || app.workspaces?.[0] || null;
+  }
+
+  function mobileDormancySourceLabel(ws = null) {
+    if (!ws) return 'No workspace loaded';
+    const githubSource = Array.from(ws.sources?.values?.() || []).find((source) => source?.kind === 'github' && source.repo);
+    if (githubSource?.repo) {
+      const ref = githubSource.requestedRef || githubSource.ref || ws.ref || '';
+      return ref ? `${githubSource.repo}@${ref}` : githubSource.repo;
+    }
+    if (ws.discoverySource?.repo) {
+      const ref = ws.discoverySource.ref || ws.ref || '';
+      return ref ? `${ws.discoverySource.repo}@${ref}` : ws.discoverySource.repo;
+    }
+    if (Array.from(ws.sources?.values?.() || []).some((source) => source?.kind === 'local')) return 'Local workspace';
+    return ws.sourceNote || 'Workspace';
+  }
+
+  function mobileDormancyViewLabel(ws = null) {
+    if (!ws) return 'No view';
+    const selected = selectedNode(ws);
+    if (selected) return 'Lineage view';
+    if ((ws.discoveryView || 'feed') === 'tree') return 'Tree view';
+    return 'Feed view';
+  }
+
+  function mobileDormancyPreviewSummary() {
+    const ws = mobileDormancyActiveWorkspace();
+    const counts = mobileDormancyWorkspaceSummary();
+    const loading = workspaceHasActiveDiscoveryProgress?.(ws) ? true : false;
+    return {
+      title: ws ? (workspaceDisplayLabel?.(ws) || ws.label || 'Workspace') : (app.viewerIdentity?.displayName || app.viewerIdentity?.heading || 'Tiinex'),
+      source: mobileDormancySourceLabel(ws),
+      view: mobileDormancyViewLabel(ws),
+      filter: ws ? ((typeof currentDiscoveryFilterLabel === 'function' && currentDiscoveryFilterLabel(ws)) || ws.discoveryFilterSchema || ws.filterSchema || 'all') : '',
+      nodes: counts.nodes,
+      files: counts.files,
+      assets: counts.assets,
+      workspaces: counts.workspaces,
+      loading
+    };
+  }
+
+  function mobileDormancyPreviewHtml(summary = {}) {
+    const countBits = [];
+    if (summary.nodes) countBits.push(`${summary.nodes} artifacts`);
+    if (summary.assets) countBits.push(`${summary.assets} assets`);
+    if (summary.files && !summary.nodes) countBits.push(`${summary.files} files`);
+    const counts = countBits.length ? countBits.join(' · ') : 'Workspace loaded';
+    const filter = summary.filter && summary.filter !== 'all' ? ` · ${summary.filter}` : '';
+    return `<section id="mobile-dormancy-preview" class="mobile-dormancy-preview" aria-label="Workspace preview while Tiinex is parked">
+      <div class="mobile-dormancy-preview-kicker"><i class="fa-solid fa-moon" aria-hidden="true"></i><span>${summary.loading ? 'Loading workspace' : 'Preview mode'}</span></div>
+      <h2>${escapeHtml(summary.title || 'Tiinex workspace')}</h2>
+      <p class="mobile-dormancy-preview-source">${escapeHtml(summary.source || 'Workspace')}</p>
+      <div class="mobile-dormancy-preview-meta">
+        <span>${escapeHtml(summary.view || 'View')}</span>
+        <span>${escapeHtml(counts)}</span>
+        ${filter ? `<span>${escapeHtml(filter.replace(/^ · /, ''))}</span>` : ''}
+      </div>
+    </section>`;
+  }
+
+  function ensureMobileDormancyPreviewHost() {
+    const root = $('app');
+    if (!root) return null;
+    let host = root.querySelector('#mobile-dormancy-preview');
+    if (host) return host;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = mobileDormancyPreviewHtml(mobileVisualDormancyState().previewSummary || mobileDormancyPreviewSummary());
+    host = wrap.firstElementChild;
+    if (!host) return null;
+    host.hidden = true;
+    const grid = workspaceGridForDormancy();
+    if (grid?.parentNode === root) root.insertBefore(host, grid);
+    else root.appendChild(host);
+    return host;
+  }
+
+  function refreshMobileDormancyPreview(reason = 'render') {
+    const state = mobileVisualDormancyState();
+    const summary = mobileDormancyPreviewSummary();
+    state.previewSummary = summary;
+    state.previewHtml = mobileDormancyPreviewHtml(summary);
+    state.lastPreviewRefresh = { at: new Date().toISOString(), reason, summary };
+    const host = ensureMobileDormancyPreviewHost();
+    if (host) {
+      const wasHidden = host.hidden;
+      host.outerHTML = state.previewHtml;
+      const nextHost = ensureMobileDormancyPreviewHost();
+      if (nextHost) nextHost.hidden = wasHidden && !state.parked;
+    }
+    return summary;
+  }
+
+  function syncMobileDormancyPreviewVisibility(visible) {
+    const state = mobileVisualDormancyState();
+    const root = $('app');
+    let host = root?.querySelector?.('#mobile-dormancy-preview') || null;
+    if (!host && (visible || state.previewHtml)) {
+      const wrap = document.createElement('div');
+      wrap.innerHTML = state.previewHtml || mobileDormancyPreviewHtml(state.previewSummary || mobileDormancyPreviewSummary());
+      host = wrap.firstElementChild;
+      if (host && root) {
+        const grid = workspaceGridForDormancy();
+        if (grid?.parentNode === root) root.insertBefore(host, grid);
+        else root.appendChild(host);
+      }
+    }
+    if (host) {
+      host.hidden = !visible;
+      host.setAttribute('aria-hidden', visible ? 'false' : 'true');
+    }
   }
 
   function workspaceGridForDormancy() {
@@ -33133,6 +33310,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
     grid.style.containIntrinsicSize = `${Math.max(480, Math.round(window.innerHeight || 720))}px`;
     grid.style.visibility = 'hidden';
     grid.style.pointerEvents = 'none';
+    syncMobileDormancyPreviewVisibility(true);
     document.body?.classList?.add?.('mobile-visual-dormant');
     state.parked = true;
     state.parks = Number(state.parks || 0) + 1;
@@ -33162,6 +33340,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       grid.style.pointerEvents = previous.pointerEvents || '';
     }
     document.body?.classList?.remove?.('mobile-visual-dormant');
+    syncMobileDormancyPreviewVisibility(false);
     state.parked = false;
     state.previousGridStyle = null;
     state.restores = Number(state.restores || 0) + 1;
@@ -33196,10 +33375,17 @@ ${githubOutboundFileExcerpt(file, 18000)}
       lastPark: state.lastPark || null,
       lastRestore: state.lastRestore || null,
       lastSkip: state.lastSkip || null,
+      preview: state.previewSummary || null,
       current: mobileDormancyWorkspaceSummary(),
       recent: Array.isArray(state.events) ? state.events.slice(-30) : []
     };
   }
+
+  registerRenderWrapper(function renderWithMobileDormancyPreview(next) {
+    const result = next();
+    try { refreshMobileDormancyPreview('render'); } catch (_) {}
+    return result;
+  });
 
   function lensStateWithCachedWorkspaceScroll(state) {
     if (!state || !app.workspaces?.length) return state || null;
