@@ -8494,7 +8494,7 @@
         ws = createWorkspace(source.label || 'Config workspace', importMode === 'duplicate' ? 'Duplicated from .workspace.md workspace state.' : 'Loaded from .workspace.md workspace state.');
         opened += 1;
         if (source.kind === 'github-tree' || source.kind === 'github') {
-          if (!firstWs) maybePrewarmStaticViewRouteHash(source, ws, sources, 'source-created-before-github-load');
+          if (!firstWs) maybePrewarmInitialRouteHash(source, ws, sources, 'source-created-before-github-load');
           await loadGitHubStateSourceIntoWorkspace(ws, source);
         } else {
           await loadUrlsIntoWorkspace(ws, source.urls || []);
@@ -16638,7 +16638,81 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     } catch (_) {}
   }
 
-  function maybePrewarmStaticViewRouteHash(source, ws, sources = [], reason = 'workspace-source-pending') {
+  function routeHashPrewarmInitialSource(source = {}, ws = null) {
+    const selected = ws ? selectedNodeRouteDescriptor(ws) : {};
+    const out = {
+      label: source.label || ws?.label || 'Workspace',
+      selectedNodeId: source.selectedNodeId || selected.selectedNodeId || '',
+      selectedPath: source.selectedPath || selected.selectedPath || '',
+      selectedTitle: source.selectedTitle || selected.selectedTitle || '',
+      mode: source.mode || selected.mode || 'discovery',
+      layoutMode: source.layoutMode || ws?.layoutMode || 'expanded',
+      discoveryView: source.discoveryView || ws?.discoveryView || 'feed',
+      discoveryFilterSchema: source.discoveryFilterSchema || source.filterSchema || ws?.discoveryFilterSchema || ws?.filterSchema || 'all',
+      discoveryFilterSchemas: Array.isArray(source.discoveryFilterSchemas)
+        ? source.discoveryFilterSchemas.slice()
+        : (typeof normalizeDiscoveryFilterListForWorkspace === 'function' && ws ? normalizeDiscoveryFilterListForWorkspace(ws) : []),
+      discoverySearch: source.discoverySearch || ws?.discoverySearch || '',
+      lineageSearch: source.lineageSearch || ws?.lineageSearch || '',
+      expandedPaths: []
+    };
+    if (!out.discoveryFilterSchemas.length && out.discoveryFilterSchema) out.discoveryFilterSchemas = [out.discoveryFilterSchema];
+
+    if (source.kind === 'github-tree' || source.kind === 'github') {
+      const normalized = normalizeGitHubSourceState(source, ws);
+      out.kind = 'github-tree';
+      out.repo = normalized.repo || source.repo || '';
+      out.ref = normalized.requestedRef || normalized.ref || source.requestedRef || source.ref || '';
+      out.requestedRef = normalized.requestedRef || out.ref || '';
+      out.resolvedCommit = normalized.resolvedCommit || source.resolvedCommit || '';
+      out.rootPaths = normalized.rootPaths || source.rootPaths || [source.rootPath || '.topics'];
+      out.enabledSurfaces = normalizeGithubSurfaceConfig(normalized.enabledSurfaces || source.enabledSurfaces || {});
+      out.configuredIssueUrls = configuredGitHubIssueUrls(normalized, normalized.repo || out.repo || '');
+      out.issueUrls = out.configuredIssueUrls.slice();
+      out.discoveryDirective = normalized.discoveryDirective || source.discoveryDirective || { kind: 'implicit-workspace-inline', source: 'workspace.md', status: 'bootstrap' };
+      return out;
+    }
+
+    const urls = Array.isArray(source.urls) ? source.urls.slice() : [];
+    if (!urls.length) return null;
+    out.urls = urls;
+    return out;
+  }
+
+  function routeHashPrewarmInitialState(source, ws) {
+    const initialSource = routeHashPrewarmInitialSource(source, ws);
+    if (!initialSource) return null;
+    if (staticDiskMode()) {
+      return {
+        v: 156,
+        kind: 'view',
+        activeIndex: 0,
+        workspaceOffset: 0,
+        modal: null,
+        workspaces: [{
+          label: initialSource.label,
+          selectedNodeId: initialSource.selectedNodeId || '',
+          selectedPath: initialSource.selectedPath || '',
+          selectedTitle: initialSource.selectedTitle || '',
+          mode: initialSource.mode || 'discovery',
+          discoveryView: initialSource.discoveryView || 'feed',
+          discoveryFilterSchema: initialSource.discoveryFilterSchema || 'all',
+          discoveryFilterSchemas: initialSource.discoveryFilterSchemas || [],
+          discoverySearch: initialSource.discoverySearch || '',
+          lineageSearch: initialSource.lineageSearch || ''
+        }]
+      };
+    }
+    return {
+      v: 156,
+      activeIndex: 0,
+      workspaceOffset: 0,
+      modal: null,
+      sources: [initialSource]
+    };
+  }
+
+  function maybePrewarmInitialRouteHash(source, ws, sources = [], reason = 'workspace-source-pending') {
     const state = routeHashPrewarmState();
     state.attempts = Number(state.attempts || 0) + 1;
     const skip = (skipReason, extra = {}) => {
@@ -16646,7 +16720,6 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       routeHashPrewarmRecord('route-hash-prewarm-skip', Object.assign({ reason: skipReason, sourceKind: source?.kind || '', workspaces: app.workspaces?.length || 0, hashLength: String(location.hash || '').length }, extra));
       return false;
     };
-    if (!staticDiskMode()) return skip('not-static-disk');
     if (location.hash) return skip('hash-present');
     if (app.routing?.restoring) return skip('routing-restoring');
     if (app.isBootingFromUrl) return skip('booting-from-url');
@@ -16659,18 +16732,30 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       app.activeWorkspaceId = ws.id || app.activeWorkspaceId;
       app.workspaceOffset = 0;
       if (typeof applyViewStateToWorkspace === 'function') applyViewStateToWorkspace(ws, source);
-      setRouteState('replace');
+      const rawState = routeHashPrewarmInitialState(source, ws);
+      if (!rawState) return skip('state-unavailable');
+      const compactState = compactRouteStateForUrl(rawState);
+      const next = staticDiskMode() ? viewRouteUrl(compactState) : routeUrl(compactState);
+      const current = `${location.pathname}${location.search}${location.hash}`;
+      if (next === current) return skip('same-url');
+      const historyState = routeHistoryState(compactState, 'replace');
+      const historyStarted = performance.now?.() || Date.now();
+      history.replaceState(historyState, '', next);
+      const historyMs = Math.round((performance.now?.() || Date.now()) - historyStarted);
       const ms = Math.round((performance.now?.() || Date.now()) - started);
       state.writes = Number(state.writes || 0) + 1;
       state.lastWrite = {
         at: new Date().toISOString(),
         reason,
         ms,
+        historyMs,
+        protocol: location.protocol,
         hashLength: String(location.hash || '').length,
         workspaceLabel: ws.label || '',
         sourceKind: source.kind || '',
         discoveryView: source.discoveryView || ws.discoveryView || 'feed'
       };
+      noteRouteHashWrite('prewarm', rawState, compactState, { stateMs: Math.max(0, ms - historyMs), encodeMs: 0, historyMs, totalMs: ms, prewarm: true });
       routeHashPrewarmRecord('route-hash-prewarm-write', state.lastWrite);
       return true;
     } catch (error) {
@@ -33204,8 +33289,8 @@ ${githubOutboundFileExcerpt(file, 18000)}
     if (summary.files && !summary.nodes) countBits.push(`${summary.files} files`);
     const counts = countBits.length ? countBits.join(' · ') : 'Workspace loaded';
     const filter = summary.filter && summary.filter !== 'all' ? ` · ${summary.filter}` : '';
-    return `<section id="mobile-dormancy-preview" class="mobile-dormancy-preview" aria-label="Workspace preview while Tiinex is parked">
-      <div class="mobile-dormancy-preview-kicker"><i class="fa-solid fa-moon" aria-hidden="true"></i><span>${summary.loading ? 'Loading workspace' : 'Preview mode'}</span></div>
+    return `<section id="mobile-dormancy-preview" class="mobile-dormancy-preview" aria-label="Active workspace snapshot while Tiinex is parked">
+      <div class="mobile-dormancy-preview-kicker"><i class="fa-solid fa-moon" aria-hidden="true"></i><span>${summary.loading ? 'Loading workspace' : 'Active workspace'}</span></div>
       <h2>${escapeHtml(summary.title || 'Tiinex workspace')}</h2>
       <p class="mobile-dormancy-preview-source">${escapeHtml(summary.source || 'Workspace')}</p>
       <div class="mobile-dormancy-preview-meta">
