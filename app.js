@@ -2829,13 +2829,13 @@
   }
 
   function toast(text, type) {
-    const item = { id: uid('toast'), text, type: type || '' };
-    app.toasts.push(item);
-    render();
-    setTimeout(() => {
-      app.toasts = app.toasts.filter((t) => t.id !== item.id);
-      render();
-    }, 4200);
+    const message = String(text || '').trim();
+    if (!message) return;
+    const level = String(type || 'info').toLowerCase();
+    try {
+      if (level === 'error') console.error(`[Tiinex] ${message}`);
+      else console.warn(`[Tiinex:${level || 'info'}] ${message}`);
+    } catch (_) {}
   }
 
   function reportRuntimeError(context, error) {
@@ -8495,7 +8495,7 @@
         opened += 1;
         if (source.kind === 'github-tree' || source.kind === 'github') {
           if (!firstWs) maybePrewarmInitialRouteHash(source, ws, sources, 'source-created-before-github-load');
-          await loadGitHubStateSourceIntoWorkspace(ws, source);
+          await loadGitHubStateSourceIntoWorkspace(ws, source, { startupProgress: true });
         } else {
           await loadUrlsIntoWorkspace(ws, source.urls || []);
         }
@@ -11326,7 +11326,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     // Source refresh/reconcile must not be a destructive config owner. Explicit
     // Save/source-edit owns disabling surfaces and has its own pruning path.
     if (options.allowSurfaceDisable) applyGitHubSourceSurfacePruning(ws, githubSource, enabledSurfaces, false);
-    const progressScope = options.userInitiated || options.refreshExisting || options.hardRefresh || options.routeOwnedStartup ? 'github-source-refresh' : '';
+    const progressScope = options.userInitiated || options.refreshExisting || options.hardRefresh || options.routeOwnedStartup
+      ? 'github-source-refresh'
+      : (options.startupProgress ? 'github-source-load' : '');
     const routeOwnedProgress = Boolean(options.routeOwnedStartup);
     const issueRenderStatus = !routeOwnedProgress;
     const keepProgressForIssueStage = Boolean(progressScope && enabledSurfaces.repoFiles && enabledSurfaces.issues && typeof discoverGitHubIssuesIntoWorkspace === 'function');
@@ -13503,7 +13505,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   }
 
   function renderToastsHtml() {
-    return `<div id="toasts" class="toasts">${app.toasts.map((t) => `<div class="toast-item ${t.type || 'info'}">${escapeHtml(t.text)}</div>`).join('')}</div>`;
+    return '<div id="toasts" class="toasts" hidden></div>';
   }
 
   function renderModalRootHtml() {
@@ -20958,7 +20960,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     const displayTitle = displayCount ? `${displayCount} display option${displayCount === 1 ? '' : 's'} active` : 'Display options';
 
     return `
-      <section class="workspace workspace-foundation workspace-shell workspace-drop-target ${active ? 'active' : ''}" data-ws="${escapeAttr(ws.id)}">
+      <section class="workspace workspace-foundation workspace-shell workspace-drop-target ${active ? 'active' : ''} ${ws.mobileChromeCompact ? 'mobile-chrome-compact' : ''}" data-ws="${escapeAttr(ws.id)}">
         <div class="workspace-strip workspace-shell-strip" translate="no">
           <div class="workspace-identity" title="${escapeAttr(ws.sourceNote || ws.label || '')}">
             <h2 class="workspace-title">${escapeHtml(displayLabel)} ${workspaceRefBadge(ws)} ${localName} ${active ? '<span class="badge-soft active-chip"><i class="fa-solid fa-circle-dot"></i>active</span>' : ''}</h2>
@@ -31429,7 +31431,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
     // request ratio. Discovery has several differently expensive phases; showing
     // 96-99% while integrity verification still owns many markdown requests feels
     // false, so verification now gets a meaningful part of the bar.
-    const sourceRefresh = p.sourceProgress === 'github-source-refresh';
+    const sourceRefresh = p.sourceProgress === 'github-source-refresh' || p.sourceProgress === 'github-source-load';
     const scale = (value, start, end) => Math.max(start, Math.min(end, Math.round(start + (end - start) * Math.max(0, Math.min(1, value)))));
     const repoPhasePct = () => {
       if (phase === 'source-refresh-start' || phase === 'source-reset-start') return 2;
@@ -32532,12 +32534,50 @@ ${githubOutboundFileExcerpt(file, 18000)}
 
   const MOBILE_CHROME_COMPACT_ENTER_TOP = 52;
   const MOBILE_CHROME_COMPACT_EXIT_TOP = 12;
+  const MOBILE_CHROME_COMPACT_MIN_CARDS = 4;
 
-  function mobileChromeCompactForTop(currentCompact, top) {
+  function mobileChromeFeedCardCount(feed) {
+    if (!feed || typeof feed.querySelectorAll !== 'function') return 0;
+    return feed.querySelectorAll('.lineage-post[data-node], .post-card[data-node], .node-card[data-node], article.lineage-post').length;
+  }
+
+  function mobileChromeCanCompactFeed(feed) {
+    if (!feed) return false;
+    const count = mobileChromeFeedCardCount(feed);
+    if (count < MOBILE_CHROME_COMPACT_MIN_CARDS) return false;
+    return true;
+  }
+
+  function mobileChromeCanCompactWorkspace(ws, feed = null) {
+    if (feed) return mobileChromeCanCompactFeed(feed);
+    const count = Array.isArray(ws?.nodes) ? ws.nodes.length : 0;
+    return count >= MOBILE_CHROME_COMPACT_MIN_CARDS;
+  }
+
+  function mobileChromeCompactForTop(currentCompact, top, feed = null) {
+    if (feed && !mobileChromeCanCompactFeed(feed)) return false;
     const safeTop = Math.max(0, Number(top || 0) || 0);
     if (safeTop <= MOBILE_CHROME_COMPACT_EXIT_TOP) return false;
     if (safeTop >= MOBILE_CHROME_COMPACT_ENTER_TOP) return true;
     return Boolean(currentCompact);
+  }
+
+  function applyMobileChromeCompactFromRoute(ws, reason = 'route-restore') {
+    if (!ws || !mobileActive()) return false;
+    const top = Math.max(0, Number(ws.routeScrollTop || 0) || 0);
+    const compact = mobileChromeCanCompactWorkspace(ws) && mobileChromeCompactForTop(ws.mobileChromeCompact, top);
+    if (ws.mobileChromeCompact === compact) return false;
+    ws.mobileChromeCompact = compact;
+    if (typeof viewportResponsivenessRecord === 'function') {
+      viewportResponsivenessRecord('mobile-chrome-route-compact', {
+        reason,
+        workspace: ws.label || ws.id || '',
+        top: Math.round(top),
+        compact,
+        count: Array.isArray(ws.nodes) ? ws.nodes.length : 0
+      });
+    }
+    return true;
   }
 
   function expandMobileChromeForLineage(ws, reason = 'lineage-open') {
@@ -32554,7 +32594,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
     const ws = mobileChromeWorkspaceFromFeed(el);
     if (!ws) return;
     const top = Math.max(0, el.scrollTop || 0);
-    setWorkspaceChromeCompact(ws, mobileChromeCompactForTop(ws.mobileChromeCompact, top));
+    setWorkspaceChromeCompact(ws, mobileChromeCompactForTop(ws.mobileChromeCompact, top, el));
   }
 
   document.addEventListener('scroll', onMobileFeedScroll, true);
@@ -32709,6 +32749,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
     ws.routeScrollTop = Number(source.scrollTop || source.feedScrollTop || ws.routeScrollTop || 0) || 0;
     ws.routeScrollMode = source.scrollMode || (wantsLineage ? 'lineage' : 'discovery');
     ws.routeScrollSelectedPath = source.scrollSelectedPath || source.selectedPath || '';
+    if (typeof applyMobileChromeCompactFromRoute === 'function') applyMobileChromeCompactFromRoute(ws, 'apply-lens-source');
     scrollFlightRecord('lens:apply-source', {
       source: scrollFlightRouteSourceSummary(source),
       wantsLineage,
@@ -38587,6 +38628,8 @@ ${raw.slice(0, 800)}`) || 'en')}">
       singleSourceState: ws.classList.contains('single-source-state'),
       mobileChromeCompact: ws.classList.contains('mobile-chrome-compact'),
       feedTop: Math.round(ws.querySelector('.post-feed')?.scrollTop || 0),
+      mobileChromeCardCount: mobileChromeFeedCardCount(ws.querySelector('.post-feed')),
+      mobileChromeCanCompact: mobileChromeCanCompactFeed(ws.querySelector('.post-feed')),
       hasSourceStrip: Boolean(ws.querySelector(':scope > .workspace-source-strip, .mobile-source-mode-row .workspace-source-strip')),
       sourceCount: ws.querySelectorAll('.workspace-source-pill, .source-pill, .source-chip').length
     }));
@@ -38596,7 +38639,8 @@ ${raw.slice(0, 800)}`) || 'en')}">
       mobileReading: document.body.classList.contains('mobile-reading'),
       mobileReadingChromeOwner: document.body.dataset.mobileReadingChromeOwner || '',
       mobileChrome: document.body.classList.contains('mobile-chrome'),
-      thresholds: { compactEnterTop: MOBILE_CHROME_COMPACT_ENTER_TOP, compactExitTop: MOBILE_CHROME_COMPACT_EXIT_TOP },
+      thresholds: { compactEnterTop: MOBILE_CHROME_COMPACT_ENTER_TOP, compactExitTop: MOBILE_CHROME_COMPACT_EXIT_TOP, compactMinCards: MOBILE_CHROME_COMPACT_MIN_CARDS },
+      statusbar: { enabled: false, policy: 'toast/status messages are routed to console instead of rendering bottom-left UX chrome' },
       strips,
       workspaces
     };
