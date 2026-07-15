@@ -30624,7 +30624,8 @@ ${integrityFooterForPath(parent, path)}`,
     if (!state || !url) return state;
     const spec = surface === 'discussion' ? parseGitHubDiscussionSpec(url) : parseGitHubIssueSpec(url);
     if (!spec) return state;
-    state.targetUrl = state.targetUrl || spec.targetUrl || spec.issueUrl || spec.discussionUrl || url;
+    const publicationUrl = githubPublishedResultUrlFromSpec(spec, url);
+    state.targetUrl = state.targetUrl || publicationUrl || spec.targetUrl || spec.issueUrl || spec.discussionUrl || url;
     state.resolvedTitle = candidate?.label || spec.targetLabel || (surface === 'discussion' ? `GitHub Discussion #${spec.number}` : `GitHub Issue #${spec.number}`);
     state.resolvedState = candidate ? 'known source target' : 'URL shape accepted';
     state.resolvedRepo = spec.repo || '';
@@ -31600,9 +31601,17 @@ ${integrityFooterForPath(parent, path)}`,
   }
 
   function githubTargetUrlForMode(state, mode, candidates) {
-    if (mode === 'reuse-known') return state.targetUrl || candidates?.[0]?.url || '';
-    if (mode === 'create-comment') return state.targetUrl || githubFirstIssueCandidate(candidates, true)?.url || '';
-    if (mode === 'paste-existing') return state.targetUrl || '';
+    if (mode === 'reuse-known') {
+      const selected = state?.targetUrl || '';
+      const candidate = githubExportKnownTargetCandidate(candidates || [], selected) || candidates?.[0] || null;
+      return candidate?.permalinkUrl || selected || candidate?.url || '';
+    }
+    if (mode === 'create-comment') {
+      const selected = state?.targetUrl || '';
+      const candidate = githubExportKnownTargetCandidate(candidates || [], selected) || githubFirstIssueCandidate(candidates, true);
+      return candidate?.permalinkUrl || selected || candidate?.url || '';
+    }
+    if (mode === 'paste-existing') return state?.targetUrl || '';
     return '';
   }
 
@@ -31785,7 +31794,12 @@ ${githubOutboundFileExcerpt(file, 18000)}
     const surfaceLabel = surface === 'discussion' ? 'discussion' : 'issue';
     const ws = getWorkspace(modal?.wsId || '');
     const isContinuation = surface === 'issue' && githubExportItemIsContinuation(ws, item);
-    const candidateOptions = candidates.slice(0, 8).map((candidate) => `<option value="${escapeAttr(candidate.url)}" ${normalizeGitHubUrlForComparison(candidate.url) === normalizeGitHubUrlForComparison(targetUrl) ? 'selected' : ''}>${escapeHtml(candidate.label)} · ${escapeHtml(candidate.reason)}</option>`).join('');
+    const candidateOptions = candidates.slice(0, 8).map((candidate) => {
+      const optionUrl = candidate.permalinkUrl || candidate.url || '';
+      const selected = normalizeGitHubUrlForComparison(optionUrl) === normalizeGitHubUrlForComparison(targetUrl)
+        || normalizeGitHubUrlForComparison(candidate.url || '') === normalizeGitHubUrlForComparison(targetUrl);
+      return `<option value="${escapeAttr(optionUrl)}" ${selected ? 'selected' : ''}>${escapeHtml(candidate.label)} · ${escapeHtml(candidate.reason)}</option>`;
+    }).join('');
     const contextCandidate = githubFirstIssueCandidate(candidates, true);
     const batchParentUrl = githubExportBatchParentPublicationUrl(modal, item);
     const batchParentLabel = githubExportBatchParentLabel(modal, item);
@@ -32210,8 +32224,11 @@ ${githubOutboundFileExcerpt(file, 18000)}
       const candidates = githubExportTargetCandidates(ctx.ws, ctx.item, ctx.surface);
       ctx.state.targetMode = ['create-new', 'create-comment', 'reuse-known', 'paste-existing'].includes(mode) ? mode : 'create-new';
       githubResetRoutineState(ctx.state);
-      if (ctx.state.targetMode === 'reuse-known') ctx.state.targetUrl = candidates[0]?.url || '';
-      if (ctx.state.targetMode === 'create-comment') ctx.state.targetUrl = githubFirstIssueCandidate(candidates, true)?.url || '';
+      if (ctx.state.targetMode === 'reuse-known') ctx.state.targetUrl = candidates[0]?.permalinkUrl || candidates[0]?.url || '';
+      if (ctx.state.targetMode === 'create-comment') {
+        const firstIssue = githubFirstIssueCandidate(candidates, true);
+        ctx.state.targetUrl = firstIssue?.permalinkUrl || firstIssue?.url || '';
+      }
       if (ctx.state.targetMode === 'create-new') ctx.state.targetUrl = '';
       render();
       return;
