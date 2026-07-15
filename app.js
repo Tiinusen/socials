@@ -10492,14 +10492,33 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return `${String(hint.kind || '').toLowerCase()}|${String(hint.role || '').toLowerCase()}|${String(hint.value || '').trim().toLowerCase()}`;
   }
 
+  function tiinexParentHintCandidateValues(rawValue = '') {
+    const raw = String(rawValue || '').trim();
+    if (!raw) return [];
+    const link = parseMarkdownLink(raw);
+    const href = String(link.href || '').trim();
+    const label = String(link.text || raw).trim();
+    const values = [raw, href, label];
+    const add = (value) => {
+      const clean = stripMarkdownInline(String(value || '').trim());
+      if (!clean || /^self$/i.test(clean)) return;
+      values.push(clean);
+      for (const match of clean.matchAll(/\(([^()]+?\.trace\.md)\)/gim)) values.push(match[1]);
+      for (const match of clean.matchAll(/(?:^|\s)([^\s()<>]+?\.trace\.md)(?=$|\s|[),.;])/gim)) values.push(match[1]);
+    };
+    add(raw);
+    add(href);
+    add(label);
+    return tiinexDedupeStrings(values);
+  }
+
   function addTiinexParentHint(hints, kind, value, meta = {}) {
     const raw = String(value || '').trim();
     if (!raw || /^self$/i.test(raw)) return;
     const link = parseMarkdownLink(raw);
     const href = String(link.href || '').trim();
     const label = String(link.text || raw).trim();
-    const values = [raw, href, label].filter(Boolean);
-    for (const candidate of values) {
+    for (const candidate of tiinexParentHintCandidateValues(raw)) {
       const normalized = stripMarkdownInline(candidate).trim();
       if (!normalized || /^self$/i.test(normalized)) continue;
       hints.push(Object.assign({ kind, role: 'parent', raw, value: normalized, href, label }, meta));
