@@ -10468,6 +10468,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       for (const match of String(slice || '').matchAll(/#issuecomment-(\d+)/gi)) ids.add(match[1]);
       for (const match of String(slice || '').matchAll(/\/issues\/comments\/(\d+)(?:$|[/?#)\s])/gi)) ids.add(match[1]);
       for (const match of String(slice || '').matchAll(/Tiinex Parent Comment ID:\s*issuecomment-(\d+)/gi)) ids.add(match[1]);
+      for (const match of String(slice || '').matchAll(/Tiinex Parent Publication Item ID:\s*issuecomment-(\d+)/gi)) ids.add(match[1]);
+      for (const match of String(slice || '').matchAll(/Tiinex Parent Publication Item URL:\s*https:\/\/github\.com\/[^\s)<>"']+\/[^\s)<>"']+\/issues\/\d+#issuecomment-(\d+)/gi)) ids.add(match[1]);
     };
     scan(parentIndex >= 0 ? envelope.slice(parentIndex) : envelope);
     const transition = text.match(/(?:^|\n)##\s+(?:Tiinex\s+)?(?:Transition|Tiinex)\s+Boundary\s*(?:\n|$)[\s\S]*?(?=\n##\s+Source Markdown\s*$|\n##\s+Publication Notes\s*$|\n#\s+Continuity Integrity\s*$|\n---\s*$|$)/im)?.[0] || '';
@@ -10556,7 +10558,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     // resolution. Source Artifact / Source Path describe the embedded child or
     // publication identity and must never become parent candidates across an
     // adapter boundary.
-    for (const line of transition.matchAll(/(?:^|\n)-\s+(Parent Artifact|Parent Trace|Parent Artifact Path|Parent Artifact Title|Parent Source URL|Parent Raw URL|Parent Browse URL|Tiinex Parent Artifact Path|Tiinex Parent Artifact Title|Tiinex Parent Source URL|Tiinex Parent Raw URL|Tiinex Parent Browse URL):\s*(.*)$/gim)) {
+    for (const line of transition.matchAll(/(?:^|\n)-\s+(Parent Artifact|Parent Trace|Parent Artifact Path|Parent Artifact Title|Parent Source URL|Parent Raw URL|Parent Browse URL|Parent Publication Item URL|Parent Publication Item ID|Tiinex Parent Artifact Path|Tiinex Parent Artifact Title|Tiinex Parent Source URL|Tiinex Parent Raw URL|Tiinex Parent Browse URL|Tiinex Parent Publication Item URL|Tiinex Parent Publication Item ID):\s*(.*)$/gim)) {
       addTiinexParentHint(hints, String(line[1] || '').toLowerCase().replace(/\s+/g, '.'), line[2] || '', { source: 'transition.parent' });
     }
     if (options.includeIntegrity !== false) {
@@ -10587,7 +10589,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   function githubIssueBoundaryParentHints(body = '') {
     const text = normalizeNewlines(body || '');
     const hints = collectTiinexParentHintsFromText(text, { includeIntegrity: false });
-    for (const line of text.matchAll(/(?:^|\n)-\s+(Tiinex Parent GitHub Comment|Tiinex Parent Comment ID|Tiinex Parent Artifact Path|Tiinex Parent Artifact Title|Tiinex Parent Source URL|Tiinex Parent Raw URL|Tiinex Parent Browse URL|Parent Artifact Path|Parent Artifact Title|Parent Source URL|Parent Raw URL|Parent Browse URL|Parent Artifact|Parent Trace):\s*(.*)$/gim)) {
+    for (const line of text.matchAll(/(?:^|\n)-\s+(Tiinex Parent GitHub Comment|Tiinex Parent Comment ID|Tiinex Parent Publication Item Kind|Tiinex Parent Publication Item URL|Tiinex Parent Publication Item ID|Tiinex Parent Artifact Path|Tiinex Parent Artifact Title|Tiinex Parent Source URL|Tiinex Parent Raw URL|Tiinex Parent Browse URL|Parent Publication Item URL|Parent Publication Item ID|Parent Artifact Path|Parent Artifact Title|Parent Source URL|Parent Raw URL|Parent Browse URL|Parent Artifact|Parent Trace):\s*(.*)$/gim)) {
       addTiinexParentHint(hints, String(line[1] || '').toLowerCase().replace(/\s+/g, '.'), line[2] || '', { source: 'github-boundary.parent' });
     }
     for (const line of text.matchAll(/(?:^|\n)>\s*Continuity parent:\s*(.*)$/gim)) addTiinexParentHint(hints, 'presentation.continuity.parent', line[1] || '', { source: 'presentation' });
@@ -10860,6 +10862,57 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return best;
   }
 
+
+  function githubIssueCommentNodeMatchScore(node = {}, id = '') {
+    if (!node || !id) return 0;
+    const values = [
+      node.recoveredFromUrl, node.sourceOrigin, node.rawUrl, node.browseUrl,
+      node.file?.recoveredFromUrl, node.file?.sourceOrigin, node.file?.rawUrl, node.file?.browseUrl,
+      node.publishedOriginUrl, node.file?.publishedOriginUrl
+    ].filter(Boolean).join(' ');
+    if (!values.includes(`issuecomment-${id}`) && !values.includes(`/issues/comments/${id}`)) return 0;
+    const schema = schemaKey(node.currentSchemaText || node.currentSchema || node.file?.currentSchema || '');
+    const recovered = /github-comment-embedded-tiinex-artifact/i.test(node.recoveryKind || node.file?.recoveryKind || '') || /comment-\d+-.*-recovered-/i.test(node.path || node.file?.path || '');
+    const shell = /github issue comment/i.test(node.title || '') || /comment-\d+-\d+\.trace\.md$/i.test(node.path || node.file?.path || '');
+    let score = 0;
+    if (recovered) score += 500;
+    if (schema && schema !== 'discovery.finding') score += 300;
+    if (node.resolvedEnvelope || node.file?.resolvedEnvelope) score += 120;
+    if (shell) score += 40;
+    return score || 90;
+  }
+
+  function githubIssueCommentParentNodeForIds(ws, ids = [], newComment = null) {
+    const newId = String(newComment?.id || '').trim();
+    const nodes = Array.from(ws?.nodeById?.values?.() || []);
+    let best = null;
+    let bestScore = 0;
+    let bestId = '';
+    for (const rawId of ids || []) {
+      const id = String(rawId || '').trim();
+      if (!id || id === newId) continue;
+      for (const node of nodes) {
+        const score = githubIssueCommentNodeMatchScore(node, id);
+        if (score > bestScore) {
+          best = node;
+          bestScore = score;
+          bestId = id;
+        }
+      }
+    }
+    return best ? { node: best, id: bestId, score: bestScore } : null;
+  }
+
+  function githubIssueCommentParentNodeFromHints(ws, parentHints = [], newComment = null) {
+    const ids = [];
+    for (const hint of parentHints || []) {
+      const values = [hint?.value, hint?.raw, hint?.href, hint?.label].filter(Boolean).join('\n');
+      for (const match of values.matchAll(/issuecomment-(\d+)/gi)) ids.push(match[1]);
+      for (const match of values.matchAll(/\/issues\/comments\/(\d+)(?:$|[/?#)\s])/gi)) ids.push(match[1]);
+    }
+    return githubIssueCommentParentNodeForIds(ws, tiinexDedupeStrings(ids), newComment);
+  }
+
   function resolveGitHubIssueParentNodeForRecoveredArtifact(ws, embeddedMarkdown = '', fallbackParent = null, newComment = null, contextText = '') {
     const newId = String(newComment?.id || '').trim();
     const resolutionText = [contextText, embeddedMarkdown].filter(Boolean).join('\n\n');
@@ -10886,20 +10939,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       return fallback();
     }
     const result = { node: null, mode: 'unresolved', bindingMode: 'unresolved', hint: '', score: 0, explicit: false, hintCount: parentHints.length + ids.length, unresolvedHint: '', hintKinds: parentDiagnostics.parentHintKinds || [], sourceSelfHintCount: (parentDiagnostics.sourceSelfHints || []).length, filteredSelfHintCount: parentDiagnostics.filteredSelfHintCount || 0 };
-    const scoreCommentNode = (node, id) => {
-      if (!node) return 0;
-      const values = [node.recoveredFromUrl, node.sourceOrigin, node.rawUrl, node.browseUrl, node.file?.recoveredFromUrl, node.file?.sourceOrigin, node.file?.rawUrl, node.file?.browseUrl].filter(Boolean).join(' ');
-      if (!values.includes(`issuecomment-${id}`) && !values.includes(`/issues/comments/${id}`)) return 0;
-      const schema = schemaKey(node.currentSchemaText || node.currentSchema || node.file?.currentSchema || '');
-      if (schema && schema !== 'discovery.finding') return 300;
-      if (node.resolvedEnvelope || node.file?.resolvedEnvelope) return 180;
-      return 90;
-    };
-    for (const id of ids) {
-      for (const node of nodes) {
-        const score = scoreCommentNode(node, id);
-        if (score > result.score) Object.assign(result, { node, mode: 'explicit-comment-id', bindingMode: 'resolved', hint: `issuecomment-${id}`, score, explicit: true, unresolvedHint: '' });
-      }
+    const commentParent = githubIssueCommentParentNodeForIds(ws, ids, newComment) || githubIssueCommentParentNodeFromHints(ws, parentHints, newComment);
+    if (commentParent?.node) {
+      Object.assign(result, { node: commentParent.node, mode: 'explicit-publication-item-comment', bindingMode: 'resolved', hint: `issuecomment-${commentParent.id}`, score: commentParent.score, explicit: true, unresolvedHint: '' });
     }
     for (const hint of parentHints) {
       for (const node of nodes) {
@@ -11488,6 +11530,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           parentBindingMode,
           unresolvedParentHint,
           parentHintKinds: node.githubParentHintKinds || node.file?.githubParentHintKinds || '',
+          parentPublicationCommentUrl: githubNodeIssueCommentUrl(parent) || '',
+          sourcePublicationCommentUrl: githubNodeIssueCommentUrl(node) || '',
           sourceSelfHintCount: Number(node.githubParentSourceSelfHintCount || node.file?.githubParentSourceSelfHintCount || 0),
           filteredSelfHintCount: Number(node.githubParentFilteredSelfHintCount || node.file?.githubParentFilteredSelfHintCount || 0)
         };
@@ -30726,12 +30770,19 @@ ${integrityFooterForPath(parent, path)}`,
   function githubContinuationParentBoundaryLines(ws, file = {}) {
     const ctx = githubContinuationParentContext(ws, file);
     const lines = [];
-    if (ctx.parentUrl) lines.push(`- Tiinex Parent GitHub Comment: ${ctx.parentUrl}`);
+    if (ctx.parentUrl) {
+      lines.push(`- Tiinex Parent GitHub Comment: ${ctx.parentUrl}`);
+      lines.push(`- Tiinex Parent Publication Item Kind: github.issue.comment`);
+      lines.push(`- Tiinex Parent Publication Item URL: ${ctx.parentUrl}`);
+    }
     if (ctx.parentSourceUrl) lines.push(`- Tiinex Parent Source URL: ${ctx.parentSourceUrl}`);
     if (ctx.parentRawUrl) lines.push(`- Tiinex Parent Raw URL: ${ctx.parentRawUrl}`);
     if (ctx.parentPath) lines.push(`- Tiinex Parent Artifact Path: ${ctx.parentPath}`);
     if (ctx.parentTitle) lines.push(`- Tiinex Parent Artifact Title: ${ctx.parentTitle}`);
-    if (ctx.parentCommentId) lines.push(`- Tiinex Parent Comment ID: issuecomment-${ctx.parentCommentId}`);
+    if (ctx.parentCommentId) {
+      lines.push(`- Tiinex Parent Comment ID: issuecomment-${ctx.parentCommentId}`);
+      lines.push(`- Tiinex Parent Publication Item ID: issuecomment-${ctx.parentCommentId}`);
+    }
     if (lines.length) lines.push('- Parent Binding Meaning: use the Tiinex parent artifact above as continuation parent; the GitHub issue is only the publication container.');
     return lines.join('\n');
   }
