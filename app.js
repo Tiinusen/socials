@@ -31319,6 +31319,9 @@ ${integrityFooterForPath(parent, path)}`,
   }
 
   function githubNodeIssueCommentUrl(node = {}) {
+    if (!node) return '';
+    if (typeof node === 'string') return githubFirstIssueCommentUrlFromText(node);
+    if (typeof node !== 'object') return '';
     const fields = [
       node.recoveredFromUrl, node.sourceOrigin, node.publishedOriginUrl,
       node.rawUrl, node.browseUrl, node.originUrl, node.parentOriginBrowse,
