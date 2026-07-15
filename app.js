@@ -10693,24 +10693,68 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   }
 
 
-  function tiinexHintPathCandidates(hint = {}) {
-    const out = [];
-    for (const needle of gitHubIssueParentHintNeedle(hint)) {
-      const clean = stripUrlDecorations(String(needle || '').trim()).replace(/^(?:\.\.\/|\.\/)+/, '').replace(/^\/+/, '');
-      if (!clean || /^https?:\/\//i.test(clean)) continue;
-      const canonical = canonicalWorkspacePath(clean);
-      if (!canonical) continue;
-      out.push(canonical);
-      out.push(canonical.replace(/^\.topics\//i, 'topics/'));
-      out.push(canonical.replace(/^topics\//i, '.topics/'));
-    }
+  function tiinexDedupeStrings(values = []) {
     const seen = new Set();
-    return out.filter((item) => {
+    return (Array.isArray(values) ? values : [values]).map((item) => String(item || '').trim()).filter((item) => {
       const key = item.toLowerCase();
       if (!key || seen.has(key)) return false;
       seen.add(key);
       return true;
     });
+  }
+
+  function stripLeadingRelativePathSegments(value = '') {
+    let clean = String(value || '').trim().replace(/\\/g, '/').replace(/^\/+/, '');
+    while (/^(?:\.\.\/|\.\/)/.test(clean)) clean = clean.replace(/^(?:\.\.\/|\.\/)/, '');
+    return clean.replace(/^\/+/, '');
+  }
+
+  function tiinexPathTopologyVariants(path = '') {
+    const canonical = canonicalWorkspacePath(String(path || '').trim().replace(/\\/g, '/').replace(/^\/+/, ''));
+    if (!canonical) return [];
+    const out = [canonical];
+    const add = (value) => {
+      const clean = canonicalWorkspacePath(value || '');
+      if (clean) out.push(clean);
+    };
+    if (/^\.topics\//i.test(canonical)) add(canonical.replace(/^\.topics\//i, 'topics/'));
+    if (/^topics\//i.test(canonical)) add(canonical.replace(/^topics\//i, '.topics/'));
+
+    // Adapter publication paths may insert an external-source namespace such as
+    // .topics/.github/.issues.  Parent hints are continuity paths, not adapter
+    // container paths, so also try the same path without the adapter namespace.
+    add(canonical.replace(/^\.topics\/\.github\//i, '.topics/'));
+    add(canonical.replace(/^topics\/\.github\//i, 'topics/'));
+    add(canonical.replace(/^\.topics\/github\//i, '.topics/'));
+    add(canonical.replace(/^topics\/github\//i, 'topics/'));
+
+    const withoutTopics = canonical.replace(/^\.topics\//i, '').replace(/^topics\//i, '');
+    const first = withoutTopics.split('/')[0] || '';
+    const rest = withoutTopics.split('/').slice(1).join('/');
+    if (first && !/^\.github$/i.test(first) && !/^github$/i.test(first)) {
+      const bareFirst = first.replace(/^\./, '');
+      const hiddenFirst = first.startsWith('.') ? first : `.${first}`;
+      const bare = [bareFirst, rest].filter(Boolean).join('/');
+      const hidden = [hiddenFirst, rest].filter(Boolean).join('/');
+      add(bare);
+      add(hidden);
+      add(`.topics/${bare}`);
+      add(`.topics/${hidden}`);
+      add(`topics/${bare}`);
+      add(`topics/${hidden}`);
+    }
+    return tiinexDedupeStrings(out.map(normalizeRepoPath));
+  }
+
+  function tiinexHintPathCandidates(hint = {}) {
+    const out = [];
+    for (const needle of gitHubIssueParentHintNeedle(hint)) {
+      const clean = stripUrlDecorations(String(needle || '').trim()).replace(/^['"]|['"]$/g, '');
+      if (!clean || /^https?:\/\//i.test(clean)) continue;
+      out.push(...tiinexPathTopologyVariants(clean));
+      out.push(...tiinexPathTopologyVariants(stripLeadingRelativePathSegments(clean)));
+    }
+    return tiinexDedupeStrings(out);
   }
 
   function scoreNodePathForExplicitParentHint(nodePath = '', hint = {}) {
@@ -10962,12 +11006,38 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return { repo, refs, source };
   }
 
-  function githubTraversalPlainPathCandidates(rawValue = '', sourceSelfPath = '') {
+  function githubTraversalSourceSelfBasePaths(node = {}, diagnostics = null) {
+    const values = [
+      node.embeddedSourcePath,
+      node.file?.embeddedSourcePath,
+      tiinexEmbeddedMarkdownSourcePath(node.rawMarkdown || node.file?.content || ''),
+      node.shadowSourcePath,
+      node.file?.shadowSourcePath,
+      node.path,
+      node.file?.path
+    ];
+    for (const hint of diagnostics?.sourceSelfHints || []) {
+      for (const value of gitHubIssueParentHintNeedle(hint)) values.push(value);
+    }
+    const out = [];
+    for (const value of values) {
+      const raw = stripUrlDecorations(stripMarkdownInline(String(value || '').trim()));
+      if (!raw || /^https?:\/\//i.test(raw)) continue;
+      for (const item of tiinexPathTopologyVariants(raw)) out.push(item);
+    }
+    return tiinexDedupeStrings(out);
+  }
+
+  function githubTraversalPlainPathCandidates(rawValue = '', sourceBasePaths = []) {
     const raw = String(rawValue || '').trim();
     if (!raw || /^https?:\/\//i.test(raw)) return [];
     const link = parseMarkdownLink(raw);
     const values = [link.href, link.text, raw].filter(Boolean);
+    const basePaths = tiinexDedupeStrings(Array.isArray(sourceBasePaths) ? sourceBasePaths : [sourceBasePaths]);
     const out = [];
+    const addPath = (value) => {
+      for (const item of tiinexPathTopologyVariants(value)) out.push(item);
+    };
     const add = (value) => {
       let clean = stripUrlDecorations(stripMarkdownInline(String(value || '').trim()))
         .replace(/^<|>$/g, '')
@@ -10975,30 +11045,30 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       if (!clean || /^https?:\/\//i.test(clean) || /^self$/i.test(clean)) return;
       clean = clean.replace(/^blob\//i, '').replace(/^raw\//i, '');
       if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/blob\//i.test(clean)) return;
-      const rel = clean;
-      if ((/^\.\.\//.test(rel) || /^\.\//.test(rel)) && sourceSelfPath) {
-        const joined = canonicalWorkspacePath(joinPath(dirname(sourceSelfPath), rel));
-        if (joined) out.push(joined);
+
+      const rel = clean.replace(/\\/g, '/');
+      if (/^\.\.\//.test(rel) || /^\.\//.test(rel)) {
+        for (const base of basePaths) {
+          const joined = canonicalWorkspacePath(joinPath(dirname(base), rel));
+          if (joined) addPath(joined);
+        }
+        // When an adapter snapshot path is the only base, the relative hint is
+        // still a continuity path authored in the source repository.  Preserve a
+        // root-relative interpretation so ../../.odysseus/foo can become
+        // .topics/.odysseus/foo instead of being trapped below .github/.issues.
+        addPath(stripLeadingRelativePathSegments(rel));
+      } else {
+        addPath(rel.replace(/^(?:\.\/)+/, ''));
       }
-      const canonical = canonicalWorkspacePath(rel.replace(/^(?:\.\/)+/, ''));
-      if (canonical) out.push(canonical);
-      if (canonical && /^topics\//i.test(canonical)) out.push(canonical.replace(/^topics\//i, '.topics/'));
-      if (canonical && /^\.topics\//i.test(canonical)) out.push(canonical.replace(/^\.topics\//i, 'topics/'));
     };
     values.forEach(add);
-    const seen = new Set();
-    return out.map(normalizeRepoPath).filter((item) => {
-      const key = item.toLowerCase();
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+    return tiinexDedupeStrings(out.map(normalizeRepoPath));
   }
 
   function githubParentTraversalCandidatesForNode(ws, node = {}, contextText = '', options = {}) {
-    const sourceSelfPath = canonicalWorkspacePath(node.embeddedSourcePath || node.file?.embeddedSourcePath || tiinexEmbeddedMarkdownSourcePath(node.rawMarkdown || node.file?.content || '') || '');
     const diagnostics = tiinexIssueParentHintDiagnostics(node.rawMarkdown || node.file?.content || '', contextText || '');
     const hints = diagnostics.parentHints || [];
+    const sourceBasePaths = githubTraversalSourceSelfBasePaths(node, diagnostics);
     const { repo, refs } = githubTraversalSourceContextForNode(ws, node, options);
     const specs = [];
     const addSpec = (spec, hint = {}) => {
@@ -11011,7 +11081,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         const exact = parseGitHubExactFileSpec(value);
         if (exact) addSpec(exact, hint);
       }
-      for (const path of githubTraversalPlainPathCandidates(values.find((v) => !/^https?:\/\//i.test(String(v || ''))) || hint.value || '', sourceSelfPath)) {
+      for (const path of githubTraversalPlainPathCandidates(values.find((v) => !/^https?:\/\//i.test(String(v || ''))) || hint.value || '', sourceBasePaths)) {
         for (const ref of refs) addSpec({ repo, ref, path, rawUrl: repo && ref ? githubRawUrl(repo, ref, path) : '', browseUrl: repo && ref ? githubBrowseUrl(repo, ref, path) : '', source: 'parent-path-hint' }, hint);
       }
     }
