@@ -10901,11 +10901,17 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     };
   }
 
+  function githubRefLooksAdapterSnapshot(ref = '') {
+    return /^issue-\d+$/i.test(String(ref || '').trim())
+      || /^discussion-\d+$/i.test(String(ref || '').trim())
+      || /^adapter-/i.test(String(ref || '').trim());
+  }
+
   function normalizeGitHubTraversalRefCandidates(values = []) {
     const out = [];
     const add = (value) => {
       const ref = String(value || '').trim();
-      if (!ref || /^issue-\d+$/i.test(ref)) return false;
+      if (!ref || githubRefLooksAdapterSnapshot(ref)) return false;
       if (!out.includes(ref)) out.push(ref);
       return true;
     };
@@ -11018,6 +11024,39 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     });
   }
 
+
+  function adapterParentFetchCandidate(ws, node = {}, contextText = '') {
+    if (!ws || !node) return null;
+    const hintCount = Number(node.githubParentHintCount || node.file?.githubParentHintCount || 0);
+    const bindingMode = node.githubParentBindingMode || node.file?.githubParentBindingMode || '';
+    const kind = String(node.recoveryKind || node.file?.recoveryKind || '').toLowerCase();
+    const adapterRecovered = kind.includes('github') && kind.includes('embedded');
+    if (!adapterRecovered && !hintCount && bindingMode !== 'unresolved-known') return null;
+    const spec = parseGitHubSocialTargetSpec(node.sourceOrigin || node.recoveredFromUrl || node.rawUrl || node.browseUrl || node.file?.sourceOrigin || node.file?.recoveredFromUrl || '') || null;
+    const context = contextText || githubRecoveredContextTextForNode(ws, node);
+    const specs = githubParentTraversalCandidatesForNode(ws, node, context, { spec });
+    for (const item of specs) {
+      if (githubRefLooksAdapterSnapshot(item.ref)) {
+        recordPublicLinkOpenEvent('parent-traversal-skip-issue-ref', { repo: item.repo, ref: item.ref, path: item.path, reason: 'adapter-parent-fetch-candidate' });
+        continue;
+      }
+      if (!candidateLooksTrace(item)) continue;
+      return {
+        key: `adapter-parent-traversal:${item.repo}:${item.ref}:${item.path}`,
+        rawUrl: item.rawUrl,
+        browseUrl: item.browseUrl || githubBrowseUrl(item.repo, item.ref, item.path),
+        repo: item.repo,
+        ref: item.ref,
+        path: item.path,
+        reason: 'adapter parent traversal',
+        adapterParentTraversal: true,
+        hintKind: item.hintKind || '',
+        hintValue: item.hintValue || ''
+      };
+    }
+    return null;
+  }
+
   function githubRecoveredContextTextForNode(ws, node = {}) {
     const recoveredFromPath = node.recoveredFromPath || node.file?.recoveredFromPath || '';
     const sourceId = node.sourceId || node.file?.sourceId || '';
@@ -11036,7 +11075,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
   async function fetchGitHubParentTraversalFile(ws, spec = {}, options = {}) {
     if (!spec?.repo || !spec.ref || !spec.path || !spec.rawUrl) return null;
-    if (/^issue-\d+$/i.test(spec.ref)) {
+    if (githubRefLooksAdapterSnapshot(spec.ref)) {
       recordPublicLinkOpenEvent('parent-traversal-skip-issue-ref', { repo: spec.repo, ref: spec.ref, path: spec.path, reason: options.reason || '' });
       return null;
     }
@@ -17244,6 +17283,14 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     return Boolean(parseHashShareTarget(location.hash || '') || app.activePublicShareTarget || app.viewerIdentity?.publicShareTarget);
   }
 
+  function publicReadableRouteHash() {
+    const current = String(location.hash || '');
+    if (parseHashShareTarget(current)) return current;
+    const target = app.activePublicShareTarget || app.viewerIdentity?.publicShareTarget || null;
+    const rebuilt = target?.url ? shareHashTarget(target.url, target.adapter || defaultAdapterForShareTarget(target.url)) : '';
+    return rebuilt || '';
+  }
+
   function shouldSuppressRouteUrlMutationForTranslate() {
     return Boolean(staticDiskMode() && browserTranslateLikelyActive());
   }
@@ -17599,18 +17646,21 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         routeOwnerRecord('route:write-skip', { kind, reason: 'same-url', state: routeOwnerStateSummary(state) });
         return;
       }
-      const preserveReadableHash = shouldPreserveReadableRouteHash();
+      const readableHash = publicReadableRouteHash();
+      const preserveReadableHash = Boolean(readableHash);
       const suppressTranslateChurn = shouldSuppressRouteUrlMutationForTranslate();
+      const preservedUrl = preserveReadableHash ? `${location.pathname}${location.search}${readableHash}` : current;
       const historyState = routeHistoryState(Object.assign({}, state, {
         __tiinexReadableShareTarget: activeReadableShareHashTarget(),
-        __tiinexRouteUrlPreserved: preserveReadableHash || suppressTranslateChurn ? (location.hash || '') : ''
+        __tiinexRouteUrlPreserved: preserveReadableHash || suppressTranslateChurn ? preservedUrl : ''
       }), kind);
       if (preserveReadableHash || suppressTranslateChurn) {
         const preserveReason = preserveReadableHash ? 'preserve-readable-share-hash' : 'browser-translate-active';
-        routeOwnerRecord('route:write-preserve-url', { kind, reason: preserveReason, current, next, state: routeOwnerStateSummary(state) });
+        const visibleUrl = preserveReadableHash ? preservedUrl : current;
+        routeOwnerRecord('route:write-preserve-url', { kind, reason: preserveReason, current, next, preservedUrl: visibleUrl, state: routeOwnerStateSummary(state) });
         const historyStarted = performance.now?.() || Date.now();
-        if (kind === 'replace') history.replaceState(historyState, '', current);
-        else history.pushState(historyState, '', current);
+        if (kind === 'replace') history.replaceState(historyState, '', visibleUrl);
+        else history.pushState(historyState, '', visibleUrl);
         const historyMs = Math.round((performance.now?.() || Date.now()) - historyStarted);
         noteRouteHashWrite(kind, rawState, state, { stateMs: stateComputedMs, encodeMs, historyMs, totalMs: Math.round((performance.now?.() || Date.now()) - routeWriteStarted), preservedUrl: true });
         routeOwnerRecord('route:write-after', { kind, historyIndex: historyState.__tiinexRouteIndex || 0, urlPreserved: true });
@@ -17644,7 +17694,23 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       routeOwnerRecord('route:write-skip', { kind, reason: 'same-url', state: routeOwnerStateSummary(state) });
       return;
     }
-    const historyState = routeHistoryState(state, kind);
+    const readableHash = publicReadableRouteHash();
+    const preserveReadableHash = Boolean(readableHash);
+    const preservedUrl = preserveReadableHash ? `${location.pathname}${location.search}${readableHash}` : '';
+    const historyState = routeHistoryState(Object.assign({}, state, {
+      __tiinexReadableShareTarget: activeReadableShareHashTarget(),
+      __tiinexRouteUrlPreserved: preserveReadableHash ? preservedUrl : ''
+    }), kind);
+    if (preserveReadableHash) {
+      routeOwnerRecord('route:write-preserve-url', { kind, reason: 'preserve-readable-share-hash', current, next, preservedUrl, state: routeOwnerStateSummary(state) });
+      const historyStarted = performance.now?.() || Date.now();
+      if (kind === 'replace') history.replaceState(historyState, '', preservedUrl);
+      else history.pushState(historyState, '', preservedUrl);
+      const historyMs = Math.round((performance.now?.() || Date.now()) - historyStarted);
+      noteRouteHashWrite(kind, rawState, state, { stateMs: stateComputedMs, encodeMs, historyMs, totalMs: Math.round((performance.now?.() || Date.now()) - routeWriteStarted), preservedUrl: true });
+      routeOwnerRecord('route:write-after', { kind, historyIndex: historyState.__tiinexRouteIndex || 0, urlPreserved: true });
+      return;
+    }
     routeOwnerRecord('route:write-before', { kind, current, next, state: routeOwnerStateSummary(state) });
     const historyStarted = performance.now?.() || Date.now();
     if (kind === 'replace') history.replaceState(historyState, '', next);
@@ -20090,8 +20156,16 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     const absoluteOrigin = originValueUrl(node.parentOrigin?.absolute || '');
 
     function done(candidate) {
-      return candidateLooksTrace(candidate) ? candidate : null;
+      if (!candidateLooksTrace(candidate)) return null;
+      if (githubRefLooksAdapterSnapshot(candidate.ref)) {
+        recordPublicLinkOpenEvent('parent-traversal-skip-issue-ref', { repo: candidate.repo || '', ref: candidate.ref || '', path: candidate.path || '', reason: candidate.reason || 'parent-fetch-candidate' });
+        return null;
+      }
+      return candidate;
     }
+
+    const adapterCandidate = adapterParentFetchCandidate(ws, node);
+    if (adapterCandidate) return done(adapterCandidate);
 
     function remoteCandidate(url, reason, keyPrefix) {
       if (!url) return null;
