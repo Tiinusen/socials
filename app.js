@@ -32039,9 +32039,22 @@ ${githubOutboundFileExcerpt(file, 18000)}
     const all = filteredDiscoveryNodes(ws);
     const showAllMatches = discoveryWindowShowsAllMatches(ws);
     const limit = showAllMatches ? all.length : discoveryVisibleCount(ws);
-    app.discoveryWindowContext = { wsId: ws.id, limit };
-    let html = next(ws, selected);
-    app.discoveryWindowContext = null;
+    const priorWindowContext = app.discoveryWindowContext || null;
+    // Search/filter/preview modes intentionally render all matches. Do not set
+    // discoveryWindowContext for those paths: the window wrapper sits inside
+    // later filter wrappers, so slicing there would cut the raw feed before the
+    // active filter runs and can produce non-empty counts with an empty view.
+    if (showAllMatches) {
+      app.discoveryWindowContext = null;
+    } else {
+      app.discoveryWindowContext = { wsId: ws.id, limit };
+    }
+    let html = '';
+    try {
+      html = next(ws, selected);
+    } finally {
+      app.discoveryWindowContext = priorWindowContext;
+    }
 
     const shown = Math.min(limit, all.length);
     const footer = showAllMatches ? '' : discoveryLoadMoreFooter(ws, all.length, shown);
