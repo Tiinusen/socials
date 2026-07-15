@@ -1053,6 +1053,7 @@
     adapterPublicationBindingReport: () => adapterPublicationBindingReport(),
     adapterPublicationBatchReport: () => adapterPublicationBatchReport(),
     adapterParentTraversalAudit: () => adapterParentTraversalAudit(),
+    publicLinkOpenReport: () => publicLinkOpenReport(),
     markdownRendererSmokeTest: () => markdownRendererSmokeTest(),
     translationStabilityReport: () => translationStabilityReport(),
     activeLanguageSurfaceReport: () => activeLanguageSurfaceReport(),
@@ -3883,8 +3884,12 @@
     const cleanUrl = String(url || '').trim();
     if (!/^https?:\/\//i.test(cleanUrl)) return '';
     const cleanAdapter = normalizeShareAdapter(adapter) || defaultAdapterForShareTarget(cleanUrl);
-    if (!cleanAdapter || cleanAdapter === 'web.url') return `#${cleanUrl}`;
-    return `#${cleanAdapter}|${cleanUrl}`;
+    const payload = (!cleanAdapter || cleanAdapter === 'web.url') ? cleanUrl : `${cleanAdapter}|${cleanUrl}`;
+    // GitHub markdown treats raw hash payloads containing another URL and `|`
+    // poorly in edit/preview surfaces. Keep the entrypoint compact, but encode
+    // the hash payload so the single Open in Tiinex link remains absolute and
+    // unambiguous without embedding more workspace state.
+    return `#${encodeURIComponent(payload)}`;
   }
 
   function publicViewerShareUrlForTarget(url = '', adapter = '') {
@@ -4023,9 +4028,13 @@
     ws.publicShareTarget = { adapter, url: target.url };
     app.activeWorkspaceId = ws.id;
     if (spec?.kind === 'issue') {
+      recordPublicLinkOpenEvent('open-start', { adapter, url: target.url, hashLength: String(location.hash || '').length, encodedHash: /%[0-9A-F]{2}/i.test(String(location.hash || '')), reason: options.reason || 'boot-hash-target' });
       await loadUrlsIntoWorkspace(ws, [target.url]);
       computeWorkspaceIndex(ws);
       selectPublicHashTargetNode(ws, target, spec, options.reason || 'boot-hash-target');
+      await resolveAdapterParentTraversalForWorkspace(ws, { reason: options.reason || 'public-link-open', spec, hardRefresh: false });
+      computeWorkspaceIndex(ws);
+      selectPublicHashTargetNode(ws, target, spec, options.reason || 'boot-hash-target-after-parent-traversal');
       render();
       return true;
     }
@@ -7206,6 +7215,12 @@
       githubParentResolutionHint: file.githubParentResolutionHint || '',
       githubParentResolutionScore: Number(file.githubParentResolutionScore || 0),
       githubParentExplicit: Boolean(file.githubParentExplicit),
+      githubParentBindingMode: file.githubParentBindingMode || '',
+      githubParentUnresolvedHint: file.githubParentUnresolvedHint || '',
+      githubParentFallbackReason: file.githubParentFallbackReason || '',
+      githubParentHintKinds: file.githubParentHintKinds || '',
+      githubParentSourceSelfHintCount: Number(file.githubParentSourceSelfHintCount || 0),
+      githubParentFilteredSelfHintCount: Number(file.githubParentFilteredSelfHintCount || 0),
       storageKey: key,
       name: fileNameFromPath(path),
       content,
@@ -7336,6 +7351,12 @@
       githubParentResolutionHint: file.githubParentResolutionHint || '',
       githubParentResolutionScore: Number(file.githubParentResolutionScore || 0),
       githubParentExplicit: Boolean(file.githubParentExplicit),
+      githubParentBindingMode: file.githubParentBindingMode || '',
+      githubParentUnresolvedHint: file.githubParentUnresolvedHint || '',
+      githubParentFallbackReason: file.githubParentFallbackReason || '',
+      githubParentHintKinds: file.githubParentHintKinds || '',
+      githubParentSourceSelfHintCount: Number(file.githubParentSourceSelfHintCount || 0),
+      githubParentFilteredSelfHintCount: Number(file.githubParentFilteredSelfHintCount || 0),
       shadowSourceKey: file.shadowSourceKey || '',
       shadowSourceId: file.shadowSourceId || '',
       shadowSourcePath: file.shadowSourcePath || '',
@@ -10825,6 +10846,335 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (result.node) return result;
     if (ids.length || parentHints.length) return { node: null, mode: 'unresolved-known', bindingMode: 'unresolved-known', hint: firstHint, score: 0, explicit: false, hintCount: parentHints.length + ids.length, unresolvedHint: firstHint, hintKinds: parentDiagnostics.parentHintKinds || [], sourceSelfHintCount: (parentDiagnostics.sourceSelfHints || []).length, filteredSelfHintCount: parentDiagnostics.filteredSelfHintCount || 0 };
     return fallback();
+  }
+
+  function publicLinkOpenOwner() {
+    app.publicLinkOpenDiagnostics = app.publicLinkOpenDiagnostics || {
+      schema: 'tiinex.public-link-open.report.v1',
+      events: [],
+      openings: 0,
+      parentTraversalRequests: 0,
+      parentTraversalFetches: 0,
+      resolvedParents: 0,
+      unresolvedKnown: 0,
+      badIssueRefAttempts: 0,
+      last: null
+    };
+    if (!Array.isArray(app.publicLinkOpenDiagnostics.events)) app.publicLinkOpenDiagnostics.events = [];
+    return app.publicLinkOpenDiagnostics;
+  }
+
+  function recordPublicLinkOpenEvent(event, detail = {}) {
+    const owner = publicLinkOpenOwner();
+    const entry = { at: new Date().toISOString(), event: String(event || 'event'), detail: githubIssueImportTraceSanitize(detail || {}) };
+    owner.events.push(entry);
+    while (owner.events.length > 80) owner.events.shift();
+    owner.last = entry;
+    if (event === 'open-start') owner.openings = Number(owner.openings || 0) + 1;
+    if (event === 'parent-traversal-request') owner.parentTraversalRequests = Number(owner.parentTraversalRequests || 0) + 1;
+    if (event === 'parent-traversal-fetch-ok') owner.parentTraversalFetches = Number(owner.parentTraversalFetches || 0) + 1;
+    if (event === 'parent-traversal-resolved') owner.resolvedParents = Number(owner.resolvedParents || 0) + 1;
+    if (event === 'parent-traversal-unresolved') owner.unresolvedKnown = Number(owner.unresolvedKnown || 0) + 1;
+    if (event === 'parent-traversal-skip-issue-ref') owner.badIssueRefAttempts = Number(owner.badIssueRefAttempts || 0) + 1;
+    return entry;
+  }
+
+  function publicLinkOpenReport() {
+    const owner = publicLinkOpenOwner();
+    const target = app.activePublicShareTarget || app.viewerIdentity?.publicShareTarget || null;
+    return {
+      schema: 'tiinex.public-link-open.report.v1',
+      policy: 'Public viewer links are compact entrypoints; missing explicit parents are resolved at runtime by adapter-assisted exact-file traversal, not by embedding workspace state in the URL.',
+      entryAdapter: target?.adapter || '',
+      entryUrl: target?.url || '',
+      currentHashLength: String(location.hash || '').length,
+      hashWasEncoded: /%[0-9A-F]{2}/i.test(String(location.hash || '')),
+      openings: Number(owner.openings || 0),
+      parentTraversalRequests: Number(owner.parentTraversalRequests || 0),
+      parentTraversalFetches: Number(owner.parentTraversalFetches || 0),
+      resolvedParents: Number(owner.resolvedParents || 0),
+      unresolvedKnown: Number(owner.unresolvedKnown || 0),
+      badIssueRefAttempts: Number(owner.badIssueRefAttempts || 0),
+      activeWorkspace: getActiveWorkspace() ? { label: workspaceDisplayLabel(getActiveWorkspace()), nodes: getActiveWorkspace().nodes?.length || 0, files: getActiveWorkspace().files?.size || 0 } : null,
+      last: owner.last || null,
+      recent: Array.isArray(owner.events) ? owner.events.slice(-30) : []
+    };
+  }
+
+  function normalizeGitHubTraversalRefCandidates(values = []) {
+    const out = [];
+    const add = (value) => {
+      const ref = String(value || '').trim();
+      if (!ref || /^issue-\d+$/i.test(ref)) return false;
+      if (!out.includes(ref)) out.push(ref);
+      return true;
+    };
+    (Array.isArray(values) ? values : [values]).forEach(add);
+    add('master');
+    add('main');
+    return out;
+  }
+
+  function parseGitHubExactFileSpec(value = '') {
+    const raw = stripMarkdownInline(String(value || '').trim());
+    if (!/^https?:\/\//i.test(raw)) return null;
+    let url;
+    try { url = new URL(raw); } catch (_) { return null; }
+    const host = url.hostname.toLowerCase();
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (host === 'github.com' && parts.length >= 5 && parts[2] === 'blob') {
+      const repo = `${parts[0]}/${parts[1]}`;
+      const ref = parts[3];
+      const path = normalizeRepoPath(parts.slice(4).join('/'));
+      if (!repo || !ref || !path) return null;
+      return { repo, ref, path, rawUrl: githubRawUrl(repo, ref, path), browseUrl: githubBrowseUrl(repo, ref, path), source: 'github-blob-url' };
+    }
+    if (host === 'raw.githubusercontent.com' && parts.length >= 4) {
+      const repo = `${parts[0]}/${parts[1]}`;
+      const ref = parts[2];
+      const path = normalizeRepoPath(parts.slice(3).join('/'));
+      if (!repo || !ref || !path) return null;
+      return { repo, ref, path, rawUrl: githubRawUrl(repo, ref, path), browseUrl: githubBrowseUrl(repo, ref, path), source: 'github-raw-url' };
+    }
+    return null;
+  }
+
+  function githubTraversalSourceContextForNode(ws, node = {}, options = {}) {
+    const source = sourceById(ws, node.sourceId || node.file?.sourceId || '') || null;
+    const spec = options.spec || parseGitHubSocialTargetSpec(node.sourceOrigin || node.recoveredFromUrl || node.rawUrl || node.browseUrl || node.file?.sourceOrigin || node.file?.recoveredFromUrl || '') || null;
+    const repo = spec?.repo || node.repo || node.file?.repo || source?.repo || ws?.repo || '';
+    const refs = normalizeGitHubTraversalRefCandidates([
+      node.parentOrigin?.ref,
+      node.file?.parentOrigin?.ref,
+      node.ref,
+      node.file?.ref,
+      source?.requestedRef,
+      source?.ref,
+      ws?.ref,
+      ws?.requestedRef
+    ]);
+    return { repo, refs, source };
+  }
+
+  function githubTraversalPlainPathCandidates(rawValue = '', sourceSelfPath = '') {
+    const raw = String(rawValue || '').trim();
+    if (!raw || /^https?:\/\//i.test(raw)) return [];
+    const link = parseMarkdownLink(raw);
+    const values = [link.href, link.text, raw].filter(Boolean);
+    const out = [];
+    const add = (value) => {
+      let clean = stripUrlDecorations(stripMarkdownInline(String(value || '').trim()))
+        .replace(/^<|>$/g, '')
+        .replace(/^['"]|['"]$/g, '');
+      if (!clean || /^https?:\/\//i.test(clean) || /^self$/i.test(clean)) return;
+      clean = clean.replace(/^blob\//i, '').replace(/^raw\//i, '');
+      if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/blob\//i.test(clean)) return;
+      const rel = clean;
+      if ((/^\.\.\//.test(rel) || /^\.\//.test(rel)) && sourceSelfPath) {
+        const joined = canonicalWorkspacePath(joinPath(dirname(sourceSelfPath), rel));
+        if (joined) out.push(joined);
+      }
+      const canonical = canonicalWorkspacePath(rel.replace(/^(?:\.\/)+/, ''));
+      if (canonical) out.push(canonical);
+      if (canonical && /^topics\//i.test(canonical)) out.push(canonical.replace(/^topics\//i, '.topics/'));
+      if (canonical && /^\.topics\//i.test(canonical)) out.push(canonical.replace(/^\.topics\//i, 'topics/'));
+    };
+    values.forEach(add);
+    const seen = new Set();
+    return out.map(normalizeRepoPath).filter((item) => {
+      const key = item.toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function githubParentTraversalCandidatesForNode(ws, node = {}, contextText = '', options = {}) {
+    const sourceSelfPath = canonicalWorkspacePath(node.embeddedSourcePath || node.file?.embeddedSourcePath || tiinexEmbeddedMarkdownSourcePath(node.rawMarkdown || node.file?.content || '') || '');
+    const diagnostics = tiinexIssueParentHintDiagnostics(node.rawMarkdown || node.file?.content || '', contextText || '');
+    const hints = diagnostics.parentHints || [];
+    const { repo, refs } = githubTraversalSourceContextForNode(ws, node, options);
+    const specs = [];
+    const addSpec = (spec, hint = {}) => {
+      if (!spec?.repo || !spec?.ref || !spec?.path || !spec.rawUrl) return;
+      specs.push(Object.assign({}, spec, { hintKind: hint.kind || '', hintValue: hint.value || '', hintSource: hint.source || spec.source || '' }));
+    };
+    for (const hint of hints) {
+      const values = [hint.href, hint.value, hint.raw, hint.label].filter(Boolean);
+      for (const value of values) {
+        const exact = parseGitHubExactFileSpec(value);
+        if (exact) addSpec(exact, hint);
+      }
+      for (const path of githubTraversalPlainPathCandidates(values.find((v) => !/^https?:\/\//i.test(String(v || ''))) || hint.value || '', sourceSelfPath)) {
+        for (const ref of refs) addSpec({ repo, ref, path, rawUrl: repo && ref ? githubRawUrl(repo, ref, path) : '', browseUrl: repo && ref ? githubBrowseUrl(repo, ref, path) : '', source: 'parent-path-hint' }, hint);
+      }
+    }
+    const seen = new Set();
+    return specs.filter((spec) => {
+      const key = `${spec.repo}@${spec.ref}:${spec.path}`.toLowerCase();
+      if (!spec.repo || !spec.ref || !spec.path || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function githubRecoveredContextTextForNode(ws, node = {}) {
+    const recoveredFromPath = node.recoveredFromPath || node.file?.recoveredFromPath || '';
+    const sourceId = node.sourceId || node.file?.sourceId || '';
+    if (!recoveredFromPath || !ws?.files) return '';
+    const canonical = canonicalWorkspacePath(recoveredFromPath);
+    for (const file of ws.files.values()) {
+      if (sourceId && file.sourceId !== sourceId) continue;
+      if (canonicalWorkspacePath(file.path || '') === canonical) return file.content || '';
+    }
+    return '';
+  }
+
+  function githubParentTraversalSourceId(spec = {}) {
+    return makeSourceId('github-parent-traversal', `${spec.repo || 'repo'}@${spec.ref || 'ref'}:${spec.path || 'path'}`);
+  }
+
+  async function fetchGitHubParentTraversalFile(ws, spec = {}, options = {}) {
+    if (!spec?.repo || !spec.ref || !spec.path || !spec.rawUrl) return null;
+    if (/^issue-\d+$/i.test(spec.ref)) {
+      recordPublicLinkOpenEvent('parent-traversal-skip-issue-ref', { repo: spec.repo, ref: spec.ref, path: spec.path, reason: options.reason || '' });
+      return null;
+    }
+    const existing = Array.from(ws?.nodeById?.values?.() || []).find((node) => {
+      const path = canonicalWorkspacePath(node.path || '');
+      return path === canonicalWorkspacePath(spec.path) || node.rawUrl === spec.rawUrl || node.file?.rawUrl === spec.rawUrl;
+    });
+    if (existing) return existing;
+    try {
+      const content = await adapterFetchText(spec.rawUrl, {
+        adapter: 'github-raw',
+        label: 'GitHub parent traversal file',
+        rateLimitKey: `github-parent-traversal:${spec.repo}`,
+        hardRefresh: Boolean(options.hardRefresh)
+      });
+      const sourceId = githubParentTraversalSourceId(spec);
+      registerGitHubSource(ws, {
+        id: sourceId,
+        repo: spec.repo,
+        ref: spec.ref,
+        requestedRef: spec.ref,
+        rootPaths: [dirname(spec.path) || '.topics'],
+        enabledSurfaces: { repoFiles: true, issues: false },
+        label: `GitHub parent ${spec.repo}@${spec.ref}`,
+        origin: `https://github.com/${spec.repo}`,
+        sourceAccessMode: 'web-surface',
+        sourceResolutionKind: 'adapter-parent-traversal',
+        discoveryDirective: { kind: 'adapter-parent-traversal', status: 'exact-file-only', path: spec.path }
+      });
+      addFileToWorkspace(ws, {
+        path: spec.path,
+        content,
+        rawUrl: spec.rawUrl,
+        browseUrl: spec.browseUrl || githubBrowseUrl(spec.repo, spec.ref, spec.path),
+        repo: spec.repo,
+        ref: spec.ref,
+        sourceId,
+        sourceKind: 'github',
+        sourceLabel: `GitHub parent ${spec.repo}@${spec.ref}`,
+        sourceOrigin: spec.browseUrl || githubBrowseUrl(spec.repo, spec.ref, spec.path),
+        sourceAccessMode: 'web-surface',
+        sourceResolutionKind: 'adapter-parent-traversal',
+        sourceSurface: 'repoFiles',
+        rootPaths: [dirname(spec.path) || '.topics'],
+        enabledSurfaces: { repoFiles: true, issues: false },
+        preserveAsAsset: true
+      });
+      computeWorkspaceIndex(ws);
+      const loaded = sameWorkspacePathLookup(ws, spec.path, sourceId)
+        || Array.from(ws.nodeById?.values?.() || []).find((node) => node.rawUrl === spec.rawUrl || node.file?.rawUrl === spec.rawUrl)
+        || null;
+      recordPublicLinkOpenEvent('parent-traversal-fetch-ok', { repo: spec.repo, ref: spec.ref, path: spec.path, rawUrl: spec.rawUrl, loaded: Boolean(loaded) });
+      return loaded;
+    } catch (error) {
+      recordPublicLinkOpenEvent('parent-traversal-fetch-error', { repo: spec.repo, ref: spec.ref, path: spec.path, rawUrl: spec.rawUrl, error: error?.message || String(error) });
+      return null;
+    }
+  }
+
+  function shouldAttemptAdapterParentTraversal(node = {}) {
+    const bindingMode = node.githubParentBindingMode || node.file?.githubParentBindingMode || '';
+    const hintCount = Number(node.githubParentHintCount || node.file?.githubParentHintCount || 0);
+    const kind = String(node.recoveryKind || node.file?.recoveryKind || '').toLowerCase();
+    return kind.includes('github') && kind.includes('embedded') && (bindingMode === 'unresolved-known' || (hintCount > 0 && !node.parentResolvedPath));
+  }
+
+  async function resolveAdapterParentTraversalForWorkspace(ws, options = {}) {
+    if (!ws) return { attempted: 0, fetched: 0, resolved: 0, unresolved: 0, skipped: 0 };
+    const spec = options.spec || null;
+    const rows = [];
+    const candidates = Array.from(ws.nodeById?.values?.() || []).filter(shouldAttemptAdapterParentTraversal);
+    let attempted = 0;
+    let fetched = 0;
+    let resolved = 0;
+    let unresolved = 0;
+    let skipped = 0;
+    for (const node of candidates) {
+      const contextText = githubRecoveredContextTextForNode(ws, node);
+      const specs = githubParentTraversalCandidatesForNode(ws, node, contextText, { spec });
+      if (!specs.length) {
+        skipped += 1;
+        rows.push({ path: node.path || '', title: artifactDisplayTitle(node) || node.title || '', status: 'no-fetchable-parent-hint', hint: node.githubParentUnresolvedHint || node.githubParentResolutionHint || '' });
+        continue;
+      }
+      attempted += 1;
+      recordPublicLinkOpenEvent('parent-traversal-request', { path: node.path || '', title: artifactDisplayTitle(node) || node.title || '', candidateCount: specs.length, reason: options.reason || '' });
+      let loadedParent = null;
+      let loadedSpec = null;
+      for (const candidate of specs) {
+        loadedParent = await fetchGitHubParentTraversalFile(ws, candidate, options);
+        if (loadedParent) {
+          loadedSpec = candidate;
+          fetched += 1;
+          break;
+        }
+      }
+      if (!loadedParent) {
+        unresolved += 1;
+        recordPublicLinkOpenEvent('parent-traversal-unresolved', { path: node.path || '', candidateCount: specs.length, firstCandidate: specs[0] || null });
+        rows.push({ path: node.path || '', title: artifactDisplayTitle(node) || node.title || '', status: 'unresolved-known', candidateCount: specs.length, firstCandidate: specs[0] || null });
+        continue;
+      }
+      computeWorkspaceIndex(ws);
+      const refreshedNode = sameWorkspacePathLookup(ws, node.path, node.sourceId || node.file?.sourceId || '') || node;
+      const refreshedContext = githubRecoveredContextTextForNode(ws, refreshedNode) || contextText;
+      const parentResolution = resolveGitHubIssueParentNodeForRecoveredArtifact(ws, refreshedNode.rawMarkdown || refreshedNode.file?.content || '', null, null, refreshedContext);
+      if (parentResolution.node) {
+        const file = refreshedNode.file || ws.files?.get(refreshedNode.storageKey) || null;
+        const childPath = refreshedNode.path || file?.path || '';
+        const reparented = await reparentRecoveredTiinexArtifactForWorkspace(refreshedNode.rawMarkdown || file?.content || '', parentResolution.node, childPath);
+        if (file && reparented) {
+          addFileToWorkspace(ws, Object.assign({}, file, {
+            content: reparented,
+            githubParentResolutionMode: parentResolution.mode || 'adapter-parent-traversal',
+            githubParentResolutionHint: parentResolution.hint || loadedSpec?.path || '',
+            githubParentResolutionScore: parentResolution.score || 0,
+            githubParentExplicit: true,
+            githubParentBindingMode: 'resolved',
+            githubParentUnresolvedHint: '',
+            githubParentFallbackReason: '',
+            githubParentHintKinds: (parentResolution.hintKinds || []).join(', '),
+            githubParentSourceSelfHintCount: parentResolution.sourceSelfHintCount || 0,
+            githubParentFilteredSelfHintCount: parentResolution.filteredSelfHintCount || 0
+          }));
+          computeWorkspaceIndex(ws);
+        }
+        resolved += 1;
+        recordPublicLinkOpenEvent('parent-traversal-resolved', { childPath, parentPath: parentResolution.node.path || '', parentTitle: artifactDisplayTitle(parentResolution.node) || parentResolution.node.title || '', fetchPath: loadedSpec?.path || '' });
+        rows.push({ path: childPath, status: 'resolved', parentPath: parentResolution.node.path || '', fetchPath: loadedSpec?.path || '' });
+      } else {
+        unresolved += 1;
+        recordPublicLinkOpenEvent('parent-traversal-unresolved', { path: refreshedNode.path || '', loadedParentPath: loadedParent.path || '', reason: 'fetched-parent-did-not-match-hints' });
+        rows.push({ path: refreshedNode.path || '', status: 'fetched-but-unresolved', loadedParentPath: loadedParent.path || '' });
+      }
+    }
+    const summary = { attempted, fetched, resolved, unresolved, skipped, rows };
+    recordPublicLinkOpenEvent('parent-traversal-complete', summary);
+    return summary;
   }
 
   function preferredGitHubParentNodeForRecoveredArtifact(ws, embeddedMarkdown = '', fallbackParent = null, newComment = null, contextText = '') {
@@ -30963,8 +31313,8 @@ ${integrityFooterForPath(parent, path)}`,
 
   function githubTiinexBridgeLine(ws, file, options = {}) {
     const viewerUrl = githubTiinexViewerUrl(ws, file, options);
-    if (viewerUrl) return `**Open in Tiinex:** [view artifact](${viewerUrl})\n> Tiinex URL: ${viewerUrl}`;
-    return `**Open in Tiinex:** publish this GitHub item, then paste its URL back into Tiinex to bind the source.`;
+    if (viewerUrl) return `[Open in Tiinex](${viewerUrl})`;
+    return `Open in Tiinex: publish this GitHub item, then paste its URL back into Tiinex to bind the source.`;
   }
 
   function githubSingleArtifactBody(ws, modal, file, surface = 'issue', options = {}) {
