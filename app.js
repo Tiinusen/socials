@@ -11014,9 +11014,12 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   function tiinexEmbeddedMarkdownSourcePath(markdown = '') {
     const text = normalizeNewlines(markdown || '').trim();
     const transition = text.match(/(?:^|\n)##\s+(?:Tiinex\s+)?(?:Transition|Tiinex)\s+Boundary\s*(?:\n|$)[\s\S]*?(?=\n##\s+Source Markdown\s*$|\n##\s+Publication Notes\s*$|\n#\s+Continuity Integrity\s*$|\n---\s*$|$)/im)?.[0] || '';
-    const sourcePath = transition.match(/(?:^|\n)-\s+Source Path:\s*(.*)$/im)?.[1] || '';
-    const parentTrace = (text.split(/\n---/)[0] || '').match(/(?:^|\n)\s*-\s+Trace:\s*(.*)$/im)?.[1] || '';
-    return stripMarkdownInline(sourcePath || parentTrace || '').trim();
+    const sourcePath = transition.match(/(?:^|\n)-\s+(?:Tiinex\s+)?Source(?:\s+Artifact)?\s+Path:\s*(.*)$/im)?.[1] || '';
+    // The envelope Parent/Trace field belongs to the continuity parent, not to
+    // the embedded artifact identity. Treating it as a source-self path filters
+    // out valid parent hints for previously published/new-issue payloads such as
+    // `001-2-the-stack-remembers.trace.md` and breaks continuation traversal.
+    return stripMarkdownInline(sourcePath || '').trim();
   }
 
   function tiinexEmbeddedMarkdownSelfIntegrityValue(markdown = '') {
