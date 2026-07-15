@@ -1867,15 +1867,16 @@
 
   function preferredIntegrityEntry(entries) {
     const list = Array.isArray(entries) ? entries : [];
-    return list.find((entry) => entry.method === TIINEX_SHA256_C14N_METHOD_ID && entry.towards && entry.value && !entry.placeholderValue)
+    return list.find((entry) => entry.method === TIINEX_SHA256_C14N_V2_METHOD_ID && integrityTowardsIsSelf(entry.towards) && entry.value && !entry.placeholderValue)
+      || list.find((entry) => entry.method === TIINEX_SHA256_C14N_V2_METHOD_ID && entry.towards && entry.value && !entry.placeholderValue)
+      || list.find((entry) => entry.method === TIINEX_SHA256_C14N_V1_METHOD_ID && entry.towards && entry.value && !entry.placeholderValue)
       || list.find((entry) => entry.method || entry.towards || entry.value)
       || null;
   }
-
   function integrityEntryCountLabel(integrity) {
     const entries = Array.isArray(integrity?.entries) ? integrity.entries : [];
     if (!entries.length) return 'No method entries';
-    const supported = entries.filter((entry) => entry.method === TIINEX_SHA256_C14N_METHOD_ID).length;
+    const supported = entries.filter((entry) => TIINEX_SUPPORTED_SHA256_C14N_METHOD_IDS.has(entry.method)).length;
     if (entries.length === 1) return supported ? '1 entry · byte-integrity method' : '1 entry · unsupported method';
     return `${entries.length} entries · ${supported} byte-integrity ${supported === 1 ? 'entry' : 'entries'}`;
   }
@@ -1891,7 +1892,7 @@
 
     const details = entries.map((entry, index) => {
       const method = entry?.method || entry?.methodLabel || 'unknown method';
-      const supported = method === TIINEX_SHA256_C14N_METHOD_ID;
+      const supported = TIINEX_SUPPORTED_SHA256_C14N_METHOD_IDS.has(method);
       const missing = [];
       if (!entry?.method) missing.push('method');
       if (!entry?.towards) missing.push('Towards');
@@ -1971,8 +1972,8 @@
       entries,
       entryCount: entries.length,
       activeEntryIndex: active ? active.index : -1,
-      supportedEntryCount: entries.filter((entry) => entry.method === TIINEX_SHA256_C14N_METHOD_ID).length,
-      unsupportedEntryCount: entries.filter((entry) => entry.method && entry.method !== TIINEX_SHA256_C14N_METHOD_ID).length,
+      supportedEntryCount: entries.filter((entry) => TIINEX_SUPPORTED_SHA256_C14N_METHOD_IDS.has(entry.method)).length,
+      unsupportedEntryCount: entries.filter((entry) => entry.method && !TIINEX_SUPPORTED_SHA256_C14N_METHOD_IDS.has(entry.method)).length,
       footerPresent: true,
       noClaim: !entries.length && !method && !towards && !value,
       placeholderValue: active ? active.placeholderValue : placeholderIntegrityValue(value)
@@ -1987,7 +1988,7 @@
     const integrity = node?.integrity || null;
     if (!integrityHasClaim(integrity)) return 'draft-pending';
     if (integrity.placeholderValue || !integrity.method || !integrity.towards || !integrity.value) return 'malformed-claim';
-    if (integrity.method !== TIINEX_SHA256_C14N_METHOD_ID) return 'method-unsupported';
+    if (!TIINEX_SUPPORTED_SHA256_C14N_METHOD_IDS.has(integrity.method)) return 'method-unsupported';
     return 'pending';
   }
 
@@ -11735,8 +11736,11 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         const parentContext = issue?.body || '';
         const parentHints = tiinexIssueParentHintsForResolution(embeddedIssue, parentContext);
         const parentResolution = resolveGitHubIssueParentNodeForRecoveredArtifact(ws, embeddedIssue, rootNode, null, parentContext);
-        const recoveredParentNode = parentResolution.node || (parentResolution.bindingMode === 'fallback' ? rootNode : null);
-        const recoveredIssueMarkdown = await reparentRecoveredTiinexArtifactForWorkspace(embeddedIssue, recoveredParentNode, recoveredPath);
+        let recoveredParentNode = parentResolution.node || (parentResolution.bindingMode === 'fallback' ? rootNode : null);
+        if (isGitHubIssueContainerRootNode(recoveredParentNode, recoveredPath)) recoveredParentNode = null;
+        const recoveredIssueMarkdown = recoveredParentNode
+          ? await reparentRecoveredTiinexArtifactForWorkspace(embeddedIssue, recoveredParentNode, recoveredPath)
+          : await markdownWithSelfIntegrity(stripContinuityParentBlock(embeddedIssue));
         addFileToWorkspace(ws, {
           path: recoveredPath,
           content: recoveredIssueMarkdown,
@@ -13273,8 +13277,11 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   const TIINEX_ROOT_SCHEMA_URL = tiinexSchemaPermalinkForId('tiinex.root.v1');
   const TIINEX_VALIDATOR_PERMALINK_COMMIT = '3466e50d739a9ba65319297cef79c6b09844b1d7';
   const TIINEX_VALIDATOR_PERMALINK_BASE = `https://github.com/Tiinex/docs/blob/${TIINEX_VALIDATOR_PERMALINK_COMMIT}/.topics/.validators/`;
-  const TIINEX_SHA256_C14N_METHOD_ID = 'sha256-base64url-c14n-v1';
+  const TIINEX_SHA256_C14N_V1_METHOD_ID = 'sha256-base64url-c14n-v1';
+  const TIINEX_SHA256_C14N_V2_METHOD_ID = 'sha256-base64url-c14n-v2';
+  const TIINEX_SHA256_C14N_METHOD_ID = TIINEX_SHA256_C14N_V2_METHOD_ID;
   const TIINEX_SHA256_C14N_VALIDATOR_URL = `${TIINEX_VALIDATOR_PERMALINK_BASE}${TIINEX_SHA256_C14N_METHOD_ID}.validator.md`;
+  const TIINEX_SUPPORTED_SHA256_C14N_METHOD_IDS = new Set([TIINEX_SHA256_C14N_V1_METHOD_ID, TIINEX_SHA256_C14N_V2_METHOD_ID]);
 
   function validationMethodIdFromLabel(label) {
     const parsed = parseMarkdownLink(label || '');
@@ -13287,20 +13294,20 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
   function validationMethodEntryLabel(methodId = TIINEX_SHA256_C14N_METHOD_ID) {
     const id = String(methodId || TIINEX_SHA256_C14N_METHOD_ID).trim();
-    if (id === TIINEX_SHA256_C14N_METHOD_ID) return `[${id}](${TIINEX_SHA256_C14N_VALIDATOR_URL})`;
+    if (id === TIINEX_SHA256_C14N_V1_METHOD_ID || id === TIINEX_SHA256_C14N_V2_METHOD_ID) return `[${id}](${TIINEX_VALIDATOR_PERMALINK_BASE}${id}.validator.md)`;
     return id;
   }
 
   function validationMethodDefinitionUrl(methodId, methodHref = '') {
     const id = validationMethodIdFromLabel(methodId || '');
     if (methodHref) return methodHref;
-    if (id === TIINEX_SHA256_C14N_METHOD_ID) return TIINEX_SHA256_C14N_VALIDATOR_URL;
+    if (id === TIINEX_SHA256_C14N_V1_METHOD_ID || id === TIINEX_SHA256_C14N_V2_METHOD_ID) return `${TIINEX_VALIDATOR_PERMALINK_BASE}${id}.validator.md`;
     return '';
   }
 
   function methodDefinitionDisplayLabel(methodId, definitionUrl = '') {
     const id = validationMethodIdFromLabel(methodId || '');
-    if (id === TIINEX_SHA256_C14N_METHOD_ID) return 'sha256-base64url-c14n-v1.validator.md';
+    if (id === TIINEX_SHA256_C14N_V1_METHOD_ID || id === TIINEX_SHA256_C14N_V2_METHOD_ID) return `${id}.validator.md`;
     if (definitionUrl) return fileNameFromPath(stripUrlDecorations(definitionUrl)) || id || 'method definition';
     return id || 'method definition';
   }
@@ -13421,11 +13428,13 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   }
 
   async function appendContinuityIntegrity(markdown, towards) {
-    const base = String(markdown || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trimEnd()
-      + '\n\n---\n\n# Continuity Integrity\n\n';
-    const value = await continuitySha256Base64Url(base);
-    if (!value) return base;
-    return base + `- ${validationMethodEntryLabel()}\n  - Towards: ${towards || 'this config document'}\n  - Value: ${value}\n`;
+    const target = String(towards || '').trim();
+    if (target && /^self$/i.test(target)) return markdownWithSelfIntegrity(markdown);
+    // New generated artifacts use the v2 footer-continuity self seal. The prior
+    // `towards` label is intentionally not converted into a non-self checksum here;
+    // non-self v2 entries must compare against the target artifact's primary v2
+    // self digest and are written only by explicit parent-target generation.
+    return markdownWithSelfIntegrity(markdown);
   }
 
 
@@ -18844,14 +18853,28 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
   function parentEdgeIntegrityMismatch(ws, node, target) {
     const parent = node?.parentNode || null;
     if (!parent || !integrityHasClaim(node?.integrity)) return null;
-    if (!target?.raw) return null;
-    if (integrityTargetReferencesNode(ws, node, target, parent)) return null;
+    const entries = Array.isArray(node?.integrity?.entries) ? node.integrity.entries : [];
+    const parentEntries = entries.filter((entry) => {
+      if (!entry?.towards || integrityTowardsIsSelf(entry.towards)) return false;
+      if (!TIINEX_SUPPORTED_SHA256_C14N_METHOD_IDS.has(entry.method)) return false;
+      return true;
+    });
+    const targets = parentEntries.length ? parentEntries.map((entry) => ({
+      raw: entry.towards,
+      text: cleanIntegrityTowards(parseMarkdownLink(entry.towards).text || entry.towards),
+      href: cleanIntegrityTowards(parseMarkdownLink(entry.towards).href || '')
+    })) : (target && !isSelfIntegrityTarget(target) ? [target] : []);
+    if (!targets.length) return null;
 
-    const declared = target.raw || target.href || target.text || 'declared target';
+    for (const item of targets) {
+      if (integrityTargetReferencesNode(ws, node, item, parent)) return null;
+    }
+
+    const declaredTarget = targets[0]?.raw || targets[0]?.href || targets[0]?.text || 'declared parent target';
     const currentParent = artifactDisplayTitle(parent) || parent.title || parent.path || 'current parent';
     const currentPath = parent.path || parent.rawUrl || parent.browseUrl || '';
     const loaded = (() => {
-      try { return loadedIntegrityTarget(ws, node, target, remoteIntegrityTarget(ws, node, target)); } catch (_) { return null; }
+      try { return loadedIntegrityTarget(ws, node, targets[0], remoteIntegrityTarget(ws, node, targets[0])); } catch (_) { return null; }
     })();
     const loadedLabel = loaded && loaded !== parent
       ? `${artifactDisplayTitle(loaded) || loaded.title || loaded.path || 'declared target'}${loaded.path ? ` (${loaded.path})` : ''}`
@@ -18859,13 +18882,14 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     return {
       status: 'mismatch',
       reason: 'parent-edge-target-stale',
-      declaredTarget: declared,
+      declaredTarget,
       declaredTargetLabel: loadedLabel,
       currentParent,
       currentParentPath: currentPath,
-      label: `parent checksum stale: footer targets ${loadedLabel || declared}, but the current lineage parent is ${currentParent}${currentPath ? ` (${currentPath})` : ''}. Save this leaf again to refresh the parent checksum.`
+      label: `parent checksum stale: footer targets ${loadedLabel || declaredTarget}, but the current lineage parent is ${currentParent}${currentPath ? ` (${currentPath})` : ''}. Save this leaf again to refresh the parent checksum.`
     };
   }
+
 
   function markWorkspaceIntegrityDirty(ws, reason = 'workspace mutation') {
     if (!ws) return;
@@ -19659,15 +19683,70 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     return canonicalizeTraceableContinuityChecksumSource(markdown);
   }
 
+  function canonicalizeTiinexMarkdownForV2(markdown, activeEntryIndex = -1) {
+    const normalized = String(markdown || '').replace(/\r\n?/gu, '\n').replace(/[ \t]+$/gmu, '').trimEnd();
+    const lines = normalized.split('\n');
+    const headingIndex = lines.findIndex((line) => line.trim() === '# Continuity Integrity');
+    if (headingIndex < 0) return normalized;
+
+    let entryIndex = -1;
+    let inActive = false;
+    let neutralized = false;
+    const out = lines.map((line, index) => {
+      if (index <= headingIndex) return line;
+      if (/^#\s+/.test(line.trim())) {
+        inActive = false;
+        return line;
+      }
+      if (/^-\s+[^\n]+?\s*$/.test(line)) {
+        entryIndex += 1;
+        inActive = entryIndex === activeEntryIndex;
+        neutralized = false;
+        return line;
+      }
+      if (inActive && !neutralized) {
+        const match = line.match(/^(\s+-\s+Value:\s*).*/);
+        if (match) {
+          neutralized = true;
+          return match[1].trimEnd();
+        }
+      }
+      return line;
+    });
+    return out.join('\n');
+  }
+
+  function primaryV2SelfIntegrityEntry(markdownOrIntegrity) {
+    const integrity = typeof markdownOrIntegrity === 'string' ? parseIntegrity(markdownOrIntegrity) : markdownOrIntegrity;
+    const entries = Array.isArray(integrity?.entries) ? integrity.entries : [];
+    return entries.find((entry) => entry.method === TIINEX_SHA256_C14N_V2_METHOD_ID && integrityTowardsIsSelf(entry.towards) && entry.value && !entry.placeholderValue)
+      || null;
+  }
+
+  async function v2SelfDigestForMarkdown(markdown) {
+    const entry = primaryV2SelfIntegrityEntry(markdown);
+    if (!entry) return '';
+    return sha256Base64Url(canonicalizeTiinexMarkdownForV2(markdown, entry.index));
+  }
+
   async function traceableContinuityChecksumSha256(markdown) {
     return sha256Base64Url(canonicalizeTraceableContinuityChecksumSource(markdown));
   }
 
   async function integrityHashesForMarkdown(markdown) {
-    return [{
-      variant: 'sha256-base64url-c14n-v1',
+    const entries = parseIntegrity(markdown || []) || [];
+    const hashes = [{
+      variant: TIINEX_SHA256_C14N_V1_METHOD_ID,
       hash: await traceableContinuityChecksumSha256(markdown)
     }];
+    for (const entry of entries) {
+      if (entry.method !== TIINEX_SHA256_C14N_V2_METHOD_ID || !integrityTowardsIsSelf(entry.towards)) continue;
+      hashes.push({
+        variant: `${TIINEX_SHA256_C14N_V2_METHOD_ID}${entry.index === primaryV2SelfIntegrityEntry({ entries })?.index ? ':self-primary' : ':self'}`,
+        hash: await sha256Base64Url(canonicalizeTiinexMarkdownForV2(markdown, entry.index))
+      });
+    }
+    return hashes;
   }
 
   async function hashLoadedTarget(loaded) {
@@ -19681,7 +19760,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
 
   async function hashRemoteTarget(remote) {
     if (!remote?.rawUrl) return null;
-    const cacheKey = `integrity-target:${remote.rawUrl}:sha256-base64url-c14n-v1`;
+    const cacheKey = `integrity-target:${remote.rawUrl}:sha256-base64url-c14n-v1-v2`;
     if (!app.integrityTargetHashCache[cacheKey]) {
       app.integrityTargetHashCache[cacheKey] = (async () => {
         const parts = rawGithubSourceParts(remote.rawUrl);
@@ -19697,7 +19776,6 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     }
     return app.integrityTargetHashCache[cacheKey];
   }
-
 
   async function verifyNodeIntegrity(node, ws = null) {
     const initialStatus = initialIntegrityStatusForNode(node);
@@ -24995,17 +25073,20 @@ ${created ? `  - Created At: ${created}\n` : ''}  - Trace: ${trace}
 ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
   }
 
-  function integrityFooter(towards = '', value = '') {
-    if (!String(value || '').trim()) {
-      return `# Continuity Integrity
-`;
-    }
-    return `# Continuity Integrity
-
-- ${validationMethodEntryLabel()}
+  function integrityFooterEntry(methodId, towards = '', value = '') {
+    return `- ${validationMethodEntryLabel(methodId)}
   - Towards: ${towards || 'self'}
-  - Value: ${value}
-`;
+  - Value: ${value || ''}`;
+  }
+
+  function integrityFooterFromEntries(entries = []) {
+    const rows = (entries || []).filter(Boolean).join('\n\n');
+    return `# Continuity Integrity${rows ? `\n\n${rows}` : '\n'}`;
+  }
+
+  function integrityFooter(towards = '', value = '') {
+    if (!String(value || '').trim()) return integrityFooterFromEntries([]);
+    return integrityFooterFromEntries([integrityFooterEntry(TIINEX_SHA256_C14N_METHOD_ID, towards || 'self', value)]);
   }
 
   function markdownWithIntegrityFooter(markdown, footer) {
@@ -25017,10 +25098,15 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
   }
 
   async function markdownWithSelfIntegrity(markdown) {
-    const draft = markdownWithIntegrityFooter(markdown, integrityFooter());
-    const value = await traceableContinuityChecksumSha256(draft);
+    const draft = markdownWithIntegrityFooter(markdown, integrityFooterFromEntries([
+      integrityFooterEntry(TIINEX_SHA256_C14N_V2_METHOD_ID, 'self', '')
+    ]));
+    const entry = parseIntegrity(draft)?.entries?.find((item) => item.method === TIINEX_SHA256_C14N_V2_METHOD_ID && integrityTowardsIsSelf(item.towards));
+    const value = entry ? await sha256Base64Url(canonicalizeTiinexMarkdownForV2(draft, entry.index)) : '';
     if (!value) return draft;
-    return markdownWithIntegrityFooter(draft, integrityFooter('self', value));
+    return markdownWithIntegrityFooter(draft, integrityFooterFromEntries([
+      integrityFooterEntry(TIINEX_SHA256_C14N_V2_METHOD_ID, 'self', value)
+    ]));
   }
 
   function markdownDeclaresContinuityParent(markdown) {
@@ -25044,13 +25130,76 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     return value === 'self';
   }
 
+
+  function stripContinuityParentBlock(markdown) {
+    const normalized = normalizeNewlines(markdown || '').trim();
+    const separatorIndex = normalized.indexOf('\n---');
+    if (separatorIndex < 0) return normalized;
+    const envelope = normalized.slice(0, separatorIndex).trimEnd();
+    const rest = normalized.slice(separatorIndex).trimStart();
+    const lines = envelope.split('\n');
+    const kept = [];
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      const indent = line.search(/\S/);
+      if (indent <= 1 && /^-\s+Parent(?:\s*$|\s|:)/i.test(trimmed)) {
+        i += 1;
+        while (i < lines.length) {
+          const nextLine = lines[i];
+          const nextTrimmed = nextLine.trim();
+          const nextIndent = nextLine.search(/\S/);
+          if (nextIndent <= 1 && /^-\s+/i.test(nextTrimmed)) { i -= 1; break; }
+          i += 1;
+        }
+        continue;
+      }
+      kept.push(line);
+    }
+    return `${kept.join('\n').trimEnd()}\n\n${rest}`;
+  }
+
+  function isGitHubIssueContainerRootNode(node = {}, childPath = '') {
+    const path = canonicalWorkspacePath(node?.path || node?.file?.path || '');
+    if (!path || !/\/.github\/\.issues\//i.test(path) && !/\/github-issues\//i.test(path)) return false;
+    if (!/\/issue-root\.trace\.md$/i.test(path)) return false;
+    const child = canonicalWorkspacePath(childPath || '');
+    if (!child) return true;
+    const dir = dirname(path);
+    return child === path || child.startsWith(`${dir}/`);
+  }
+
+  function meaningfulContinuityParentForIntegrity(ws, childPath, markdown, context = {}) {
+    const explicit = context.parentNodeId ? ws?.nodeById?.get?.(context.parentNodeId) : null;
+    if (explicit) return explicit;
+    const existing = context.existingNode || null;
+    const parent = existing?.parentNode || null;
+    if (!parent) return null;
+    if (isGitHubIssueContainerRootNode(parent, childPath)) return null;
+    if (sameImportedPath(parent.path || '', childPath || '')) return null;
+    return parent;
+  }
+
+  async function primaryV2SelfDigestForNode(parent) {
+    const markdown = nodeMarkdownForIntegrity(parent);
+    if (!markdown) return '';
+    return v2SelfDigestForMarkdown(markdown);
+  }
+
   async function markdownWithParentTargetIntegrity(parent, childPath, markdown) {
     const parentMarkdown = nodeMarkdownForIntegrity(parent);
-    if (!parent || !parentMarkdown) return markdownWithIntegrityFooter(markdown, integrityFooter());
+    if (!parent || !parentMarkdown) return markdownWithSelfIntegrity(markdown);
     const towards = parentTraceReferenceForPath(parent, childPath);
-    const value = await traceableContinuityChecksumSha256(parentMarkdown);
-    if (!value) return markdownWithIntegrityFooter(markdown, integrityFooter());
-    return markdownWithIntegrityFooter(markdown, integrityFooter(towards, value));
+    const parentDigest = await primaryV2SelfDigestForNode(parent);
+    const entries = [];
+    if (towards && parentDigest) entries.push(integrityFooterEntry(TIINEX_SHA256_C14N_V2_METHOD_ID, towards, parentDigest));
+    entries.push(integrityFooterEntry(TIINEX_SHA256_C14N_V2_METHOD_ID, 'self', ''));
+    const draft = markdownWithIntegrityFooter(markdown, integrityFooterFromEntries(entries));
+    const selfEntry = parseIntegrity(draft)?.entries?.find((item) => item.method === TIINEX_SHA256_C14N_V2_METHOD_ID && integrityTowardsIsSelf(item.towards));
+    const selfValue = selfEntry ? await sha256Base64Url(canonicalizeTiinexMarkdownForV2(draft, selfEntry.index)) : '';
+    if (!selfValue) return draft;
+    const finalEntries = entries.slice(0, -1).concat(integrityFooterEntry(TIINEX_SHA256_C14N_V2_METHOD_ID, 'self', selfValue));
+    return markdownWithIntegrityFooter(draft, integrityFooterFromEntries(finalEntries));
   }
 
   async function finalizeCreatedArtifactIntegrity(ws, artifact, modal) {
@@ -25063,23 +25212,19 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
   }
 
   async function finalizeSavedLocalIntegrity(ws, path, markdown, context = {}) {
-    const text = normalizeNewlines(markdown || '');
+    let text = normalizeNewlines(markdown || '');
     if (!markdownLooksAuthorableTiinexArtifact(text)) return text;
 
-    const parent = context.parentNodeId ? ws?.nodeById?.get?.(context.parentNodeId) : null;
+    const parent = meaningfulContinuityParentForIntegrity(ws, path, text, context);
     if (parent) return markdownWithParentTargetIntegrity(parent, path, text);
 
-    const integrity = parseIntegrity(text);
-    if (!integrityHasClaim(integrity)) {
-      return markdownDeclaresContinuityParent(text) ? markdownWithIntegrityFooter(text, integrityFooter()) : markdownWithSelfIntegrity(text);
-    }
-
-    if ((integrity.entryCount || 0) > 1) return text;
-    if (integrity.placeholderValue || !integrity.method || !integrity.towards || !integrity.value) return text;
-    if (integrity.method !== TIINEX_SHA256_C14N_METHOD_ID) return text;
-    if (!integrityTowardsIsSelf(integrity.towards)) return text;
+    // Root artifacts seal only themselves. If an imported/publication container
+    // previously inserted a Parent block, saving as a root removes that adapter
+    // container edge rather than preserving a false lineage parent.
+    if (markdownDeclaresContinuityParent(text)) text = stripContinuityParentBlock(text);
     return markdownWithSelfIntegrity(text);
   }
+
 
 
 
@@ -29435,7 +29580,7 @@ ${integrityFooterForPath(parent, path)}`,
         note: 'malformed claim preserved for review'
       };
     }
-    if (integrity.method !== TIINEX_SHA256_C14N_METHOD_ID) {
+    if (!TIINEX_SUPPORTED_SHA256_C14N_METHOD_IDS.has(integrity.method)) {
       return {
         state: 'unsupported-claim',
         claimLifecycle: 'unsupported claim',
@@ -30912,8 +31057,9 @@ ${integrityFooterForPath(parent, path)}`,
   function githubContinuationParentContext(ws, file = {}) {
     const node = githubExportFileNode(ws, file);
     const raw = normalizeNewlines(file?.content || file?.rawMarkdown || file?.body || node?.rawMarkdown || node?.body || '');
-    const parent = githubExportParentFromMarkdown(ws, raw, node) || node?.parentNode || null;
-    const parentUrl = githubNodeIssueCommentUrl(parent) || githubFirstIssueCommentUrlFromText(raw);
+    const resolvedParent = githubExportParentFromMarkdown(ws, raw, node) || node?.parentNode || null;
+    const parent = isGitHubIssueContainerRootNode(resolvedParent, node?.path || file?.path || file?.name || '') ? null : resolvedParent;
+    const parentUrl = githubNodeIssueCommentUrl(parent) || (!parent ? '' : githubFirstIssueCommentUrlFromText(raw));
     const parentPath = parent?.path || '';
     const parentTitle = parent?.title || markdownTitleFromFile(parent?.file || parent || {}) || '';
     const parentSourceUrl = parent?.browseUrl || parent?.sourceOrigin || parent?.file?.browseUrl || parent?.file?.sourceOrigin || '';

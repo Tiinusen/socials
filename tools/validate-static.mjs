@@ -1125,8 +1125,8 @@ function validateIntegrityLifecycleUxContract() {
   if (!js.includes('renderIntegrityValidationEntries(diagnostics)') || !js.includes('entry.active') || !js.includes('entry.duplicateMethod')) {
     fail('Integrity diagnostics must render per-entry audit rows and mark active/duplicate validation entries.');
   }
-  if (!js.includes('if ((integrity.entryCount || 0) > 1) return text;')) {
-    fail('Local save integrity refresh must not collapse multiple integrity method entries into a single generated footer.');
+  if (!js.includes('meaningfulContinuityParentForIntegrity(ws, path, text, context)') || !js.includes("integrityFooterEntry(TIINEX_SHA256_C14N_V2_METHOD_ID, 'self'")) {
+    fail('Local save integrity refresh must use v2 self seals and explicit parent-target generation instead of preserving stale multi-entry footers blindly.');
   }
   if (!js.includes('exportFileWithIntegrityRefresh(ws, file)') || !js.includes('integrityRefresh') || !js.includes('refreshed-self-target')) {
     fail('Workspace export must run a non-mutating integrity refresh pass and report export integrity outcomes.');
