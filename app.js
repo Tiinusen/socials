@@ -25453,9 +25453,21 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     return child === path || child.startsWith(`${dir}/`);
   }
 
+  function contextExplicitlyDeclaresRoot(context = {}) {
+    if (!context || typeof context !== 'object') return false;
+    const hasParentNodeId = Object.prototype.hasOwnProperty.call(context, 'parentNodeId');
+    const hasParentPath = Object.prototype.hasOwnProperty.call(context, 'parentPath');
+    if (!hasParentNodeId && !hasParentPath) return false;
+    return !String(context.parentNodeId || '').trim() && !String(context.parentPath || '').trim();
+  }
+
   function meaningfulContinuityParentForIntegrity(ws, childPath, markdown, context = {}) {
     const explicit = context.parentNodeId ? ws?.nodeById?.get?.(context.parentNodeId) : null;
     if (explicit) return explicit;
+    // Schema-aware edits can explicitly detach the continuity parent. In that
+    // case the current markdown is authoritative and stale graph parents from
+    // imported sources must not be reused for footer target entries.
+    if (contextExplicitlyDeclaresRoot(context)) return null;
     const existing = context.existingNode || null;
     const parent = existing?.parentNode || null;
     if (!parent) return null;
@@ -25499,13 +25511,14 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     let text = normalizeNewlines(markdown || '');
     if (!markdownLooksAuthorableTiinexArtifact(text)) return text;
 
+    const explicitRoot = contextExplicitlyDeclaresRoot(context);
     const parent = meaningfulContinuityParentForIntegrity(ws, path, text, context);
     if (parent) return markdownWithParentTargetIntegrity(parent, path, text);
 
-    // Root artifacts seal only themselves. If an imported/publication container
-    // previously inserted a Parent block, saving as a root removes that adapter
-    // container edge rather than preserving a false lineage parent.
-    if (markdownDeclaresContinuityParent(text)) text = stripContinuityParentBlock(text);
+    // Only an explicit root/detach action removes a Parent block. Unresolved
+    // explicit parents should remain visible as unresolved-known continuity,
+    // not be silently rewritten into roots.
+    if (explicitRoot && markdownDeclaresContinuityParent(text)) text = stripContinuityParentBlock(text);
     return markdownWithSelfIntegrity(text);
   }
 
@@ -31344,7 +31357,11 @@ ${integrityFooterForPath(parent, path)}`,
   function githubContinuationParentContext(ws, file = {}) {
     const node = githubExportFileNode(ws, file);
     const raw = normalizeNewlines(file?.content || file?.rawMarkdown || file?.body || node?.rawMarkdown || node?.body || '');
-    const resolvedParent = githubExportParentFromMarkdown(ws, raw, node) || node?.parentNode || null;
+    const declaresParent = markdownDeclaresContinuityParent(raw);
+    // Export boundary follows the artifact markdown. If the current draft/root
+    // declares no Parent block, do not resurrect stale graph parents from an
+    // imported publication container or previous source snapshot.
+    const resolvedParent = declaresParent ? (githubExportParentFromMarkdown(ws, raw, node) || node?.parentNode || null) : null;
     const parent = isGitHubIssueContainerRootNode(resolvedParent, node?.path || file?.path || file?.name || '') ? null : resolvedParent;
     const parentUrl = githubNodeIssueCommentUrl(parent) || (!parent ? '' : githubFirstIssueCommentUrlFromText(raw));
     const parentPath = parent?.path || '';
