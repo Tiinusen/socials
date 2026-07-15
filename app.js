@@ -10846,15 +10846,44 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return tiinexDedupeStrings(values);
   }
 
+  function tiinexParentHintKindIsTitle(kind = '') {
+    return /(?:^|\.)title$/i.test(String(kind || '').trim()) || /artifact\.title$/i.test(String(kind || '').trim());
+  }
+
+  function tiinexParentHintValueLooksConcrete(value = '') {
+    const clean = stripMarkdownInline(String(value || '').trim());
+    if (!clean || /^self$/i.test(clean)) return false;
+    if (/^https?:\/\//i.test(clean)) return true;
+    if (/#issuecomment-\d+/i.test(clean) || /issuecomment-\d+/i.test(clean)) return true;
+    if (/\.trace\.md(?:$|[)\s,.;])/i.test(clean)) return true;
+    if (/^(?:\.{1,2}\/|\.topics\/|topics\/|\.github\/)/i.test(clean) && /\.md(?:$|[)\s,.;])/i.test(clean)) return true;
+    return false;
+  }
+
+  function tiinexParentHintValueIsGenericPlaceholder(value = '') {
+    const clean = stripMarkdownInline(String(value || '').trim()).toLowerCase();
+    return clean === 'artifact.trace.md'
+      || clean === 'artifact.md'
+      || clean === 'workspace artifact'
+      || clean === 'parent artifact'
+      || clean === 'selected parent';
+  }
+
   function addTiinexParentHint(hints, kind, value, meta = {}) {
     const raw = String(value || '').trim();
     if (!raw || /^self$/i.test(raw)) return;
     const link = parseMarkdownLink(raw);
     const href = String(link.href || '').trim();
     const label = String(link.text || raw).trim();
+    const titleKind = tiinexParentHintKindIsTitle(kind);
     for (const candidate of tiinexParentHintCandidateValues(raw)) {
       const normalized = stripMarkdownInline(candidate).trim();
       if (!normalized || /^self$/i.test(normalized)) continue;
+      if (tiinexParentHintValueIsGenericPlaceholder(normalized)) continue;
+      // Title fields describe a parent reference; by themselves they are not a
+      // safe continuity edge. Only concrete paths, URLs, or publication-item ids
+      // from title-bearing presentation/boundary text may become parent hints.
+      if (titleKind && !tiinexParentHintValueLooksConcrete(normalized)) continue;
       hints.push(Object.assign({ kind, role: 'parent', raw, value: normalized, href, label }, meta));
     }
   }
@@ -29046,8 +29075,15 @@ ${integrityFooterForPath(parent, path)}`,
     return sanitizeWizardFormState(schemaId, def.formStateFromSections(sectionMap(node?.body || '')));
   }
 
+  function effectiveEditContinuityParentForNode(node) {
+    const markdown = nodeMarkdownForIntegrity(node);
+    if (!markdownDeclaresContinuityParent(markdown)) return null;
+    return node?.parentNode || null;
+  }
+
   function openSchemaAwareEditWizard(ws, node) {
     const schemaId = schemaIdForNode(node);
+    const editParent = effectiveEditContinuityParentForNode(node);
     app.modal = {
       type: 'artifact-wizard',
       mode: 'edit',
@@ -29057,9 +29093,9 @@ ${integrityFooterForPath(parent, path)}`,
       title: node.title || node.bodyTitle || node.topHeading || '',
       summary: node.summary || '',
       path: node.path || node.file?.path || '',
-      parentNodeId: node.parentNode?.id || '',
-      parentPath: node.parentNode?.path || node.parentResolvedPath || node.parentHref || '',
-      parentTitle: node.parentNode?.title || node.parentNode?.path || node.parentResolvedPath || node.parentHref || '',
+      parentNodeId: editParent?.id || '',
+      parentPath: editParent?.path || '',
+      parentTitle: editParent?.title || editParent?.path || '',
       wizardStep: 'describe',
       formFields: formStateFromNode(node),
       evidenceAttachments: schemaId === 'tiinex.evidence.v1' ? evidenceAttachmentsFromNode(ws, node) : []
@@ -31477,11 +31513,11 @@ ${integrityFooterForPath(parent, path)}`,
       }
     }
     const parent = resolvedParent;
-    const parentUrl = githubNodeIssueCommentUrl(parent) || (!parent ? '' : githubFirstIssueCommentUrlFromText(raw));
+    const parentUrl = parent ? (githubNodeIssueCommentUrl(parent) || githubFirstIssueCommentUrlFromText(raw)) : '';
     const parentPath = parent?.path || '';
-    const parentTitle = parent?.title || markdownTitleFromFile(parent?.file || parent || {}) || '';
-    const parentSourceUrl = parent?.browseUrl || parent?.sourceOrigin || parent?.file?.browseUrl || parent?.file?.sourceOrigin || '';
-    const parentRawUrl = parent?.rawUrl || parent?.file?.rawUrl || '';
+    const parentTitle = parent ? (parent.title || markdownTitleFromFile(parent.file || parent || {}) || '') : '';
+    const parentSourceUrl = parent ? (parent.browseUrl || parent.sourceOrigin || parent.file?.browseUrl || parent.file?.sourceOrigin || '') : '';
+    const parentRawUrl = parent ? (parent.rawUrl || parent.file?.rawUrl || '') : '';
     return {
       node,
       parent,
