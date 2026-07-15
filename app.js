@@ -11047,11 +11047,48 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return tiinexDedupeStrings(out);
   }
 
+  function githubTraversalTracePathFragments(rawValue = '') {
+    const raw = String(rawValue || '').trim();
+    if (!raw) return [];
+    const out = [];
+    const add = (value) => {
+      const clean = stripUrlDecorations(stripMarkdownInline(String(value || '').trim()))
+        .replace(/^<|>$/g, '')
+        .replace(/^['"]|['"]$/g, '');
+      if (!clean || /^https?:\/\//i.test(clean) || /^self$/i.test(clean)) return;
+      if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/blob\//i.test(clean)) return;
+      // Parent labels such as
+      // "Odysseus / Minimum Observable Reduction Surface (.topics/odysseus/001.trace.md)"
+      // carry both a human title and a machine path.  Only the path fragment is
+      // fetchable; the full label must never be treated as a repository path.
+      for (const match of clean.matchAll(/(?:^|[\s(])([^\s()<>]+?\.trace\.md)(?=$|[\s),.;])/gim)) out.push(match[1]);
+      if (/\.trace\.md$/i.test(clean) && !/\s/.test(clean)) out.push(clean);
+    };
+    const link = parseMarkdownLink(raw);
+    [link.href, link.text, raw].filter(Boolean).forEach(add);
+    return tiinexDedupeStrings(out.map((item) => item.replace(/\\/g, '/')));
+  }
+
+  function githubTraversalValueLooksPathish(rawValue = '') {
+    const raw = stripUrlDecorations(stripMarkdownInline(String(rawValue || '').trim()));
+    if (!raw || /^https?:\/\//i.test(raw)) return false;
+    if (/\s/.test(raw)) return false;
+    if (/\.trace\.md/i.test(raw)) return true;
+    if (/^\.\.?\//.test(raw)) return true;
+    if (/^(?:\.topics|topics)\//i.test(raw)) return true;
+    return /^[^\s()<>]+\/[^\s()<>]+/.test(raw);
+  }
+
   function githubTraversalPlainPathCandidates(rawValue = '', sourceBasePaths = []) {
     const raw = String(rawValue || '').trim();
     if (!raw || /^https?:\/\//i.test(raw)) return [];
     const link = parseMarkdownLink(raw);
-    const values = [link.href, link.text, raw].filter(Boolean);
+    const rawValues = [link.href, link.text, raw].filter(Boolean);
+    const values = [];
+    for (const value of rawValues) {
+      values.push(...githubTraversalTracePathFragments(value));
+      if (githubTraversalValueLooksPathish(value)) values.push(value);
+    }
     const basePaths = tiinexDedupeStrings(Array.isArray(sourceBasePaths) ? sourceBasePaths : [sourceBasePaths]);
     const out = [];
     const addPath = (value) => {
@@ -11064,6 +11101,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       if (!clean || /^https?:\/\//i.test(clean) || /^self$/i.test(clean)) return;
       clean = clean.replace(/^blob\//i, '').replace(/^raw\//i, '');
       if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/blob\//i.test(clean)) return;
+      if (!githubTraversalValueLooksPathish(clean)) return;
 
       const rel = clean.replace(/\\/g, '/');
       if (/^\.\.\//.test(rel) || /^\.\//.test(rel)) {
@@ -11072,7 +11110,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           if (joined) addPath(joined);
         }
         // When an adapter snapshot path is the only base, the relative hint is
-        // still a continuity path authored in the source repository.  Preserve a
+        // still a continuity path authored in the source repository. Preserve a
         // root-relative interpretation so ../../.odysseus/foo can become
         // .topics/.odysseus/foo instead of being trapped below .github/.issues.
         addPath(stripLeadingRelativePathSegments(rel));
