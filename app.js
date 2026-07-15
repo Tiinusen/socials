@@ -1097,6 +1097,7 @@
     valueFirstUxReadinessReport: () => valueFirstUxReadinessReport(),
     uxPolishReadinessReport: () => uxPolishReadinessReport(),
     previewMaterialFilterReadinessReport: () => previewMaterialFilterReadinessReport(),
+    previewMaterialPipelineReport: () => previewMaterialPipelineReport(),
     workspaceSourceConfigReadinessReport: () => workspaceSourceConfigReadinessReport(),
     workspaceExportTopologyReport: () => workspaceExportTopologyReport(),
     workspaceOpenBoundaryReport: () => workspaceOpenBoundaryReport(),
@@ -22059,8 +22060,8 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
             <button class="tv-btn small subtle display-options-action ${displayCount ? 'active' : ''}" data-action="open-display-options" data-ws="${escapeAttr(ws.id)}" title="${escapeAttr(displayTitle)}" aria-label="Display options"><i class="fa-solid fa-sliders"></i>${displayCount ? `<small>${displayCount}</small>` : ''}</button>
             <button class="tv-btn small subtle workspace-share-action" data-action="open-share-modal" data-scope="workspace" data-ws="${escapeAttr(ws.id)}" title="Review share eligibility for this workspace" aria-label="Share workspace"><i class="fa-solid fa-share-nodes"></i></button>
             ${renderPolicyBadge(ws)}
-            <button class="tv-btn small" data-action="save-workspace" data-ws="${escapeAttr(ws.id)}" ${generatedCount || (ws.assets && ws.assets.size) ? '' : 'disabled'} title="Save workspace bundle"><i class="fa-solid fa-download"></i></button>
-            <button class="tv-btn small primary workspace-add-btn icon-only" data-action="open-source-modal" data-ws="${escapeAttr(ws.id)}" title="Add material, source, or local root node to this workspace" aria-label="Add material, source, or local root node to this workspace"><i class="fa-solid fa-plus"></i></button>
+            <button class="tv-btn small workspace-export-action" data-action="save-workspace" data-ws="${escapeAttr(ws.id)}" ${generatedCount || (ws.assets && ws.assets.size) ? '' : 'disabled'} title="Save workspace bundle"><i class="fa-solid fa-download"></i></button>
+            <button class="tv-btn small workspace-add-btn icon-only action-intent-write" data-action="open-source-modal" data-ws="${escapeAttr(ws.id)}" title="Add material, source, or local root node to this workspace" aria-label="Add material, source, or local root node to this workspace"><i class="fa-solid fa-plus"></i></button>
             <button class="tv-btn small subtle" data-action="toggle-workspace-mode" data-mode="compact" data-ws="${escapeAttr(ws.id)}" title="Collapse workspace into a narrow board column"><i class="fa-solid fa-down-left-and-up-right-to-center"></i></button>
             <button class="tv-btn small subtle" data-action="remove-workspace" data-ws="${escapeAttr(ws.id)}" title="Remove workspace"><i class="fa-solid fa-xmark"></i></button>
           </div>
@@ -23368,6 +23369,9 @@ This removes the imported file and its preserved local asset copy from the curre
 
   function renderWorkspaceFeed(ws, selected) {
     const mode = selected ? 'lineage' : 'discovery';
+    if (!selected && previewMaterialActive(ws) && (ws?.discoveryView || 'feed') === 'feed') {
+      return renderPreviewMaterialWorkspaceFeed(ws);
+    }
     const traversal = selected ? lineageTraversal(selected) : null;
     const windowState = selected ? ensureLineageWindow(ws, selected.id) : null;
     const lineageQuery = ws.lineageSearch || '';
@@ -32608,7 +32612,9 @@ ${githubOutboundFileExcerpt(file, 18000)}
     discoveryFeedGrowCount: 48,
     discoveryFeedAutoGrowMinPx: 240,
     discoveryFeedAutoGrowMaxPx: 720,
-    discoveryFeedAutoGrowViewportRatio: 0.65
+    discoveryFeedAutoGrowViewportRatio: 0.65,
+    previewMaterialInitialCount: 12,
+    previewMaterialGrowCount: 12
   }, app.settings || {});
 
   function microYield() {
@@ -32688,6 +32694,13 @@ ${githubOutboundFileExcerpt(file, 18000)}
   }
 
   registerRenderWorkspaceFeedWrapper(function renderWorkspaceFeedWindowed(ws, selected, next) {
+    if (!selected && previewMaterialActive(ws) && (ws?.discoveryView || 'feed') === 'feed') {
+      const html = next(ws, selected);
+      if (workspaceHasActiveDiscoveryProgress(ws) && html.includes('<div class="post-feed')) {
+        return html.replace('<div class="post-feed', `${loadingProgressNotice(ws)}<div class="post-feed`);
+      }
+      return html;
+    }
     if (selected || (ws.discoveryView || 'feed') !== 'feed') {
       const html = next(ws, selected);
       if (workspaceHasActiveDiscoveryProgress(ws) && html.includes('<div class="post-feed')) {
@@ -33520,12 +33533,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
   }
 
   function previewMaterialKindsForWorkspace(ws, nodes = null) {
-    const counts = new Map();
-    const sourceNodes = Array.isArray(nodes) ? nodes : previewScopedBaseNodes(ws);
-    for (const node of sourceNodes || []) {
-      const kinds = new Set(nodeMaterialRefs(ws, node).map((ref) => materialKindKey(ref)).filter(Boolean));
-      for (const kind of kinds) counts.set(kind, (counts.get(kind) || 0) + 1);
-    }
+    const counts = previewMaterialKindCounts(ws, nodes);
     const order = ['image', 'text', 'url', 'file'];
     return Array.from(counts.entries())
       .sort((a, b) => {
@@ -33537,12 +33545,184 @@ ${githubOutboundFileExcerpt(file, 18000)}
   }
 
   function previewMaterialCardTotalForWorkspace(ws, nodes = null) {
+    const index = buildPreviewMaterialIndex(ws, Array.isArray(nodes) ? nodes : null);
+    return index.items?.length || 0;
+  }
+
+  function previewMaterialIndexSignature(ws, nodes) {
+    const sourceNodes = Array.isArray(nodes) ? nodes : [];
+    const bits = [sourceNodes.length, ws?.files?.size || 0, ws?.assets?.size || 0, previewMaterialKind(ws), ws?.discoverySearch || ''];
+    for (const node of sourceNodes) bits.push(node.id || '', node.path || '', node.storageKey || '', String(node.body || node.rawMarkdown || '').length);
+    return bits.join('|');
+  }
+
+  function previewMaterialImageUrl(ref) {
+    return ref?.localUrl || ref?.rawUrl || ref?.sourceUrl || ref?.href || '';
+  }
+
+  function buildPreviewMaterialIndex(ws, nodes = null) {
     const sourceNodes = Array.isArray(nodes) ? nodes : previewScopedBaseNodes(ws);
-    let total = 0;
+    const signature = previewMaterialIndexSignature(ws, sourceNodes);
+    const cached = ws?.previewMaterialIndexCache;
+    if (cached?.signature === signature && Array.isArray(cached.items)) return cached;
+    const started = performance.now ? performance.now() : Date.now();
+    const items = [];
+    const counts = new Map();
     for (const node of sourceNodes || []) {
-      if (nodeMaterialRefs(ws, node).length) total += 1;
+      const refs = nodeMaterialRefs(ws, node) || [];
+      refs.forEach((ref, refIndex) => {
+        const kind = materialKindKey(ref);
+        const key = `${node.id || node.path || ''}|${refIndex}|${kind}|${ref.path || ref.href || ref.rawUrl || ref.sourceUrl || ''}`;
+        const item = {
+          key,
+          kind,
+          ref,
+          refIndex,
+          node,
+          nodeId: node.id,
+          nodeTitle: node.title || fileNameFromPath(node.path || '') || 'Artifact',
+          nodePath: node.path || '',
+          label: ref.label || fileNameFromPath(ref.path || ref.href || ref.rawUrl || ref.sourceUrl || '') || attachmentPreviewMaterialKindLabel(kind),
+          url: previewMaterialImageUrl(ref),
+          sourceLabel: node.sourceLabel || ws?.label || '',
+          available: Boolean(ref.localUrl || ref.rawUrl || ref.sourceUrl || ref.href)
+        };
+        items.push(item);
+        counts.set(kind, (counts.get(kind) || 0) + 1);
+      });
     }
-    return total;
+    const buildMs = Math.round(((performance.now ? performance.now() : Date.now()) - started) * 10) / 10;
+    const result = { signature, items, counts, buildMs, nodeCount: sourceNodes.length, at: new Date().toISOString() };
+    if (ws) ws.previewMaterialIndexCache = result;
+    app.previewMaterialPipeline = app.previewMaterialPipeline || { recent: [] };
+    app.previewMaterialPipeline.lastIndex = { workspace: ws?.id || '', items: items.length, nodes: sourceNodes.length, buildMs };
+    return result;
+  }
+
+  function previewMaterialItemsForWorkspace(ws, nodes = null) {
+    const index = buildPreviewMaterialIndex(ws, nodes);
+    const set = previewMaterialKindSet(ws);
+    if (!set.size) return index.items || [];
+    return (index.items || []).filter((item) => set.has(item.kind));
+  }
+
+  function previewVisibleCount(ws) {
+    const fallback = Number(app.settings.previewMaterialInitialCount || 12);
+    return Math.max(4, Number(ws?.previewMaterialVisibleCount || fallback));
+  }
+
+  function resetPreviewMaterialWindow(ws) {
+    if (!ws) return;
+    ws.previewMaterialVisibleCount = Number(app.settings.previewMaterialInitialCount || 12);
+  }
+
+  function previewMaterialKindCounts(ws, nodes = null) {
+    const index = buildPreviewMaterialIndex(ws, nodes);
+    return index.counts || new Map();
+  }
+
+  function renderPreviewMaterialImageWidget(ws, item) {
+    const url = item.url || '';
+    const refAttr = escapeAttr(item.refIndex);
+    const unavailable = !url || item.ref?.localMissingAsset;
+    const image = !unavailable
+      ? `<img src="${escapeAttr(url)}" alt="${escapeAttr(item.label)}" loading="lazy" onerror="this.closest('.preview-media-frame').classList.add('broken')">`
+      : `<div class="preview-media-placeholder"><i class="fa-regular fa-image"></i><span>${escapeHtml(item.ref?.localMissingAsset ? 'Local image unavailable' : 'Image preview unavailable')}</span></div>`;
+    return `<article class="preview-material-card preview-material-card-image" data-kind="image" data-node="${escapeAttr(item.nodeId)}">
+      <button type="button" class="preview-media-frame" data-action="open-material-lightbox" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(item.nodeId)}" data-ref="${refAttr}" title="Preview ${escapeAttr(item.label)}">
+        ${image}
+      </button>
+      <div class="preview-material-meta">
+        <strong>${escapeHtml(item.label)}</strong>
+        <span>${escapeHtml(item.nodeTitle)}</span>
+        <small>${escapeHtml(item.nodePath)}</small>
+      </div>
+    </article>`;
+  }
+
+  function renderPreviewMaterialGenericWidget(ws, item) {
+    const icon = materialIcon(item.ref?.kind || item.kind || 'file');
+    const canPreview = item.ref?.kind === 'text' || item.ref?.kind === 'markdown';
+    const canOpen = item.ref?.sourceUrl || item.ref?.browseUrl || item.ref?.rawUrl || item.ref?.href;
+    return `<article class="preview-material-card preview-material-card-generic" data-kind="${escapeAttr(item.kind)}" data-node="${escapeAttr(item.nodeId)}">
+      <div class="preview-material-icon"><i class="${escapeAttr(icon)}"></i></div>
+      <div class="preview-material-meta">
+        <strong>${escapeHtml(item.label)}</strong>
+        <span>${escapeHtml(item.nodeTitle)}</span>
+        <small>${escapeHtml(item.nodePath)}</small>
+      </div>
+      <div class="preview-material-actions">
+        ${canPreview ? `<button class="mini-action primary" data-action="open-material-preview" data-ws="${escapeAttr(ws.id)}" data-node="${escapeAttr(item.nodeId)}" data-ref="${escapeAttr(item.refIndex)}">Preview</button>` : ''}
+        ${canOpen ? `<a class="mini-action" href="${escapeAttr(safeUrl(canOpen) || canOpen)}" target="_blank" rel="noopener">Open</a>` : ''}
+      </div>
+    </article>`;
+  }
+
+  function renderPreviewMaterialWidget(ws, item) {
+    if (item.kind === 'image') return renderPreviewMaterialImageWidget(ws, item);
+    return renderPreviewMaterialGenericWidget(ws, item);
+  }
+
+  function renderPreviewMaterialWorkspaceFeed(ws) {
+    const started = performance.now ? performance.now() : Date.now();
+    const nodes = previewScopedBaseNodes(ws);
+    const items = previewMaterialItemsForWorkspace(ws, nodes);
+    const visible = previewVisibleCount(ws);
+    const shown = items.slice(0, visible);
+    const total = items.length;
+    const bodyHtml = shown.length
+      ? `<div class="preview-material-grid">${shown.map((item) => renderPreviewMaterialWidget(ws, item)).join('')}</div>${visible < total ? `<div class="lineage-loader preview-material-loader"><button class="tv-btn small" data-action="preview-material-load-more" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-arrow-down"></i>Show more</button><span>${Math.min(visible, total)} / ${total} shown</span></div>` : ''}`
+      : `<div class="empty-state">No ${escapeHtml(previewMaterialKind(ws) === 'all' ? 'attachments' : attachmentPreviewMaterialKindLabel(previewMaterialKind(ws)).toLowerCase())} match this view.</div>`;
+    const html = `
+      <div class="feed-toolbar feed-toolbar-foundation feed-toolbar-shell feed-toolbar-layout discovery">
+        <div class="feed-mode view-toggle">
+          <span class="kicker-inline">Discovery mode</span>
+          ${renderDiscoveryViewToggle(ws)}
+        </div>
+        <div class="discovery-tools discovery-tools-foundation discovery-tools-layout display-filter-in-dialog tree-toolbar-tools">
+          ${renderTreeAllControl(ws, nodes)}
+          ${renderPreviewToggle(ws)}
+          ${renderSearchInput(ws, 'discovery')}
+        </div>
+      </div>
+      ${temporalLensNotice(ws)}
+      ${renderPreviewFilterBar(ws)}
+      <div class="post-feed discovery view-feed preview-feed preview-material-feed" data-preview-material-surface="true" data-ws="${escapeAttr(ws.id)}" data-selected="">
+        ${renderDiscoverySearchLegend(ws, nodes, ws.discoverySearch || '')}
+        ${bodyHtml}
+      </div>`;
+    const renderMs = Math.round(((performance.now ? performance.now() : Date.now()) - started) * 10) / 10;
+    app.previewMaterialPipeline = app.previewMaterialPipeline || { recent: [] };
+    app.previewMaterialPipeline.lastRender = { workspace: ws.id, filterKind: previewMaterialKind(ws), filteredItems: total, renderedItems: shown.length, windowSize: visible, renderMs, at: new Date().toISOString() };
+    app.previewMaterialPipeline.maxRenderMs = Math.max(Number(app.previewMaterialPipeline.maxRenderMs || 0), renderMs);
+    app.previewMaterialPipeline.recent = (app.previewMaterialPipeline.recent || []).concat([{ event: 'preview-material-render', detail: app.previewMaterialPipeline.lastRender }]).slice(-20);
+    return html;
+  }
+
+  function previewMaterialPipelineReport() {
+    const p = app.previewMaterialPipeline || {};
+    const active = app.workspaces?.find?.((ws) => previewMaterialActive(ws)) || app.workspaces?.[0] || null;
+    const nodes = active ? previewScopedBaseNodes(active) : [];
+    const index = active ? buildPreviewMaterialIndex(active, nodes) : null;
+    const items = active ? previewMaterialItemsForWorkspace(active, nodes) : [];
+    return {
+      schema: 'tiinex.preview-material-pipeline.report.v1',
+      policy: 'Preview is a material-first surface: build material items, filter them, window after filtering, and avoid rendering the full artifact feed.',
+      workspace: active ? (active.label || active.id || '') : '',
+      previewActive: Boolean(active && previewMaterialActive(active)),
+      filterKind: active ? previewMaterialKind(active) : 'all',
+      materialIndexItems: index?.items?.length || 0,
+      materialIndexBuildMs: index?.buildMs || 0,
+      filteredItems: items.length,
+      renderedItems: Math.min(items.length, active ? previewVisibleCount(active) : 0),
+      windowSize: active ? previewVisibleCount(active) : 0,
+      maxRenderMs: Number(p.maxRenderMs || 0),
+      lastRender: p.lastRender || null,
+      imageItemsWithPreviewUrl: items.filter((item) => item.kind === 'image' && item.url).length,
+      imageItemsUnavailable: items.filter((item) => item.kind === 'image' && !item.url).length,
+      fullFeedRenderAvoided: Boolean(active && previewMaterialActive(active)),
+      recent: p.recent || []
+    };
   }
 
   function renderPreviewToggle(ws) {
@@ -33598,6 +33778,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
   });
   registerRenderWorkspaceFeedWrapper(function renderWorkspaceFeedWithPreviewMode(ws, selected, next) {
     let html = next(ws, selected);
+    if (html.includes('data-preview-material-surface="true"')) return html;
     if (selected || (ws?.discoveryView || 'feed') !== 'feed') return html;
 
     const toggle = renderPreviewToggle(ws);
@@ -33624,6 +33805,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       ws.discoveryView = 'feed';
       ws.previewMaterialMode = !ws.previewMaterialMode;
       if (!ws.previewMaterialKind) ws.previewMaterialKind = 'all';
+      resetPreviewMaterialWindow(ws);
       if (typeof setRouteState === 'function') setRouteState('replace');
       render();
       return;
@@ -33636,6 +33818,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       if (!ws) return;
       ws.previewMaterialKind = event.currentTarget.dataset.kind || 'all';
       ws.previewMaterialMode = true;
+      resetPreviewMaterialWindow(ws);
       if (typeof setRouteState === 'function') setRouteState('replace');
       render();
       return;
@@ -33725,7 +33908,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
   });
   registerRenderWorkspaceFeedWrapper(function renderWorkspaceFeedWithPreviewLineage(ws, selected, next) {
     let html = next(ws, selected);
-    if (!ws) return html;
+    if (!ws || html.includes('data-preview-material-surface="true"')) return html;
 
     if (selected) {
       const toggle = renderPreviewToggle(ws);
@@ -33766,6 +33949,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       ws.previewMaterialMode = true;
       ws.previewMaterialKinds = Array.from(set);
       ws.previewMaterialKind = ws.previewMaterialKinds.length ? ws.previewMaterialKinds.join(',') : 'all';
+      resetPreviewMaterialWindow(ws);
       if (typeof setRouteState === 'function') setRouteState('replace');
       render();
       return;
@@ -33880,6 +34064,20 @@ ${githubOutboundFileExcerpt(file, 18000)}
       ${open ? `<div class="preview-filter-tray">${renderPreviewAllTypeOptions(ws)}</div>` : ''}
     </div>`;
   }
+  registerActionHandler(async function previewMaterialWindowAction(event, next) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'preview-material-load-more') {
+      event.preventDefault();
+      event.stopPropagation();
+      const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+      if (!ws) return;
+      const growth = Number(app.settings.previewMaterialGrowCount || 12);
+      ws.previewMaterialVisibleCount = previewVisibleCount(ws) + Math.max(4, growth);
+      render();
+      return;
+    }
+    return next(event);
+  });
   registerActionHandler(async function previewTrayAction(event, next) {
     const action = event.currentTarget?.dataset?.action || '';
     if (action === 'toggle-preview-filter-tray') {
