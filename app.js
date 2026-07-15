@@ -10536,7 +10536,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     // resolution. Source Artifact / Source Path describe the embedded child or
     // publication identity and must never become parent candidates across an
     // adapter boundary.
-    for (const line of transition.matchAll(/(?:^|\n)-\s+(Parent Artifact|Parent Trace|Parent Artifact Path|Parent Artifact Title|Tiinex Parent Artifact Path|Tiinex Parent Artifact Title):\s*(.*)$/gim)) {
+    for (const line of transition.matchAll(/(?:^|\n)-\s+(Parent Artifact|Parent Trace|Parent Artifact Path|Parent Artifact Title|Parent Source URL|Parent Raw URL|Parent Browse URL|Tiinex Parent Artifact Path|Tiinex Parent Artifact Title|Tiinex Parent Source URL|Tiinex Parent Raw URL|Tiinex Parent Browse URL):\s*(.*)$/gim)) {
       addTiinexParentHint(hints, String(line[1] || '').toLowerCase().replace(/\s+/g, '.'), line[2] || '', { source: 'transition.parent' });
     }
     if (options.includeIntegrity !== false) {
@@ -10567,7 +10567,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   function githubIssueBoundaryParentHints(body = '') {
     const text = normalizeNewlines(body || '');
     const hints = collectTiinexParentHintsFromText(text, { includeIntegrity: false });
-    for (const line of text.matchAll(/(?:^|\n)-\s+(Tiinex Parent GitHub Comment|Tiinex Parent Comment ID|Tiinex Parent Artifact Path|Tiinex Parent Artifact Title|Parent Artifact Path|Parent Artifact Title|Parent Artifact|Parent Trace):\s*(.*)$/gim)) {
+    for (const line of text.matchAll(/(?:^|\n)-\s+(Tiinex Parent GitHub Comment|Tiinex Parent Comment ID|Tiinex Parent Artifact Path|Tiinex Parent Artifact Title|Tiinex Parent Source URL|Tiinex Parent Raw URL|Tiinex Parent Browse URL|Parent Artifact Path|Parent Artifact Title|Parent Source URL|Parent Raw URL|Parent Browse URL|Parent Artifact|Parent Trace):\s*(.*)$/gim)) {
       addTiinexParentHint(hints, String(line[1] || '').toLowerCase().replace(/\s+/g, '.'), line[2] || '', { source: 'github-boundary.parent' });
     }
     for (const line of text.matchAll(/(?:^|\n)>\s*Continuity parent:\s*(.*)$/gim)) addTiinexParentHint(hints, 'presentation.continuity.parent', line[1] || '', { source: 'presentation' });
@@ -11065,6 +11065,112 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return tiinexDedupeStrings(out.map(normalizeRepoPath));
   }
 
+  function githubParentTraversalPathKey(path = '') {
+    return normalizeRepoPath(String(path || '')
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '')
+      .replace(/^(?:\.topics|topics)\//i, '')
+      .split('/')
+      .filter(Boolean)
+      .map((segment) => segment.replace(/^\.+/, '').toLowerCase())
+      .join('/'));
+  }
+
+  function githubParentTraversalTitleSlugs(hints = []) {
+    const out = [];
+    const add = (value) => {
+      const slug = slugifyTitle(stripMarkdownInline(String(value || '')).replace(/\([^)]*\)\s*$/g, '').trim());
+      if (slug && slug !== 'new-artifact') out.push(slug);
+    };
+    for (const hint of hints || []) {
+      const kind = String(hint.kind || '').toLowerCase();
+      if (/title|continuity\.parent|presentation/.test(kind)) {
+        add(hint.label || hint.value || hint.raw || '');
+      }
+    }
+    return tiinexDedupeStrings(out);
+  }
+
+  function githubParentTraversalCandidateAliasMatches(manifestPath = '', specs = [], titleSlugs = []) {
+    const manifestKey = githubParentTraversalPathKey(manifestPath);
+    const manifestLower = normalizeRepoPath(manifestPath).toLowerCase();
+    if (!manifestKey || !/\.trace\.md$/i.test(manifestPath)) return false;
+    for (const spec of specs || []) {
+      const candidateKey = githubParentTraversalPathKey(spec.path || '');
+      if (!candidateKey) continue;
+      if (manifestKey === candidateKey) return true;
+      if (manifestKey.endsWith(`/${candidateKey}`)) return true;
+      const parts = candidateKey.split('/').filter(Boolean);
+      const tail = parts.slice(-2).join('/');
+      if (tail && manifestKey.endsWith(`/${tail}`)) return true;
+    }
+    for (const slug of titleSlugs || []) {
+      if (!slug) continue;
+      if (manifestLower.includes(slug.toLowerCase())) return true;
+    }
+    return false;
+  }
+
+  function githubParentTraversalManifestRoots(specs = []) {
+    const roots = ['.topics', 'topics'];
+    for (const spec of specs || []) {
+      const path = normalizeRepoPath(spec.path || '');
+      const first = path.split('/').filter(Boolean)[0] || '';
+      if (!first) continue;
+      roots.push(first);
+      if (first.startsWith('.')) roots.push(first.slice(1));
+      else roots.push(`.${first}`);
+      roots.push(`.topics/${first}`);
+      roots.push(`topics/${first.replace(/^\./, '')}`);
+    }
+    return tiinexDedupeStrings(roots.map(normalizeRepoPath));
+  }
+
+  async function githubParentTraversalManifestAliasSpecs(ws, specs = [], hints = [], options = {}) {
+    const first = (specs || []).find((spec) => spec?.repo && spec?.ref);
+    if (!first) return [];
+    const titleSlugs = githubParentTraversalTitleSlugs(hints);
+    const candidateSpecs = (specs || []).filter((spec) => spec?.repo === first.repo && spec?.ref === first.ref);
+    if (!candidateSpecs.length && !titleSlugs.length) return [];
+    try {
+      const discovery = await discoverGitHubTracePathsViaJsdelivr(first.repo, first.ref, githubParentTraversalManifestRoots(candidateSpecs), { hardRefresh: Boolean(options.hardRefresh) });
+      const paths = Array.isArray(discovery?.tracePaths) ? discovery.tracePaths : [];
+      const aliases = [];
+      for (const path of paths) {
+        if (!githubParentTraversalCandidateAliasMatches(path, candidateSpecs, titleSlugs)) continue;
+        aliases.push({
+          repo: first.repo,
+          ref: first.ref,
+          path,
+          rawUrl: githubRawUrl(first.repo, first.ref, path),
+          browseUrl: githubBrowseUrl(first.repo, first.ref, path),
+          source: 'parent-manifest-alias',
+          hintKind: 'manifest.alias',
+          hintValue: path,
+          manifestAlias: true
+        });
+        if (aliases.length >= 8) break;
+      }
+      if (aliases.length) recordPublicLinkOpenEvent('parent-traversal-manifest-alias', { repo: first.repo, ref: first.ref, aliases: aliases.map((item) => item.path), requested: candidateSpecs.map((item) => item.path).slice(0, 8), titleSlugs });
+      return aliases;
+    } catch (error) {
+      recordPublicLinkOpenEvent('parent-traversal-manifest-alias-error', { repo: first.repo, ref: first.ref, error: error?.message || String(error || '') });
+      return [];
+    }
+  }
+
+  function githubParentTraversalDedupeSpecs(specs = []) {
+    const out = [];
+    const seen = new Set();
+    for (const spec of specs || []) {
+      const key = `${spec.repo || ''}@${spec.ref || ''}:${spec.path || ''}`.toLowerCase();
+      if (!spec.repo || !spec.ref || !spec.path || seen.has(key)) continue;
+      seen.add(key);
+      out.push(spec);
+    }
+    return out;
+  }
+
   function githubParentTraversalCandidatesForNode(ws, node = {}, contextText = '', options = {}) {
     const diagnostics = tiinexIssueParentHintDiagnostics(node.rawMarkdown || node.file?.content || '', contextText || '');
     const hints = diagnostics.parentHints || [];
@@ -11085,13 +11191,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         for (const ref of refs) addSpec({ repo, ref, path, rawUrl: repo && ref ? githubRawUrl(repo, ref, path) : '', browseUrl: repo && ref ? githubBrowseUrl(repo, ref, path) : '', source: 'parent-path-hint' }, hint);
       }
     }
-    const seen = new Set();
-    return specs.filter((spec) => {
-      const key = `${spec.repo}@${spec.ref}:${spec.path}`.toLowerCase();
-      if (!spec.repo || !spec.ref || !spec.path || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+    return githubParentTraversalDedupeSpecs(specs);
   }
 
 
@@ -11224,7 +11324,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     let skipped = 0;
     for (const node of candidates) {
       const contextText = githubRecoveredContextTextForNode(ws, node);
-      const specs = githubParentTraversalCandidatesForNode(ws, node, contextText, { spec });
+      const diagnostics = tiinexIssueParentHintDiagnostics(node.rawMarkdown || node.file?.content || '', contextText || '');
+      const baseSpecs = githubParentTraversalCandidatesForNode(ws, node, contextText, { spec });
+      const aliasSpecs = await githubParentTraversalManifestAliasSpecs(ws, baseSpecs, diagnostics.parentHints || [], options);
+      const specs = githubParentTraversalDedupeSpecs([...(aliasSpecs || []), ...(baseSpecs || [])]);
       if (!specs.length) {
         skipped += 1;
         rows.push({ path: node.path || '', title: artifactDisplayTitle(node) || node.title || '', status: 'no-fetchable-parent-hint', hint: node.githubParentUnresolvedHint || node.githubParentResolutionHint || '' });
@@ -30545,13 +30648,17 @@ ${integrityFooterForPath(parent, path)}`,
     const parentUrl = githubNodeIssueCommentUrl(parent) || githubFirstIssueCommentUrlFromText(raw);
     const parentPath = parent?.path || '';
     const parentTitle = parent?.title || markdownTitleFromFile(parent?.file || parent || {}) || '';
+    const parentSourceUrl = parent?.browseUrl || parent?.sourceOrigin || parent?.file?.browseUrl || parent?.file?.sourceOrigin || '';
+    const parentRawUrl = parent?.rawUrl || parent?.file?.rawUrl || '';
     return {
       node,
       parent,
       parentUrl,
       parentCommentId: githubIssueCommentIdFromUrl(parentUrl),
       parentPath,
-      parentTitle
+      parentTitle,
+      parentSourceUrl,
+      parentRawUrl
     };
   }
 
@@ -30559,6 +30666,8 @@ ${integrityFooterForPath(parent, path)}`,
     const ctx = githubContinuationParentContext(ws, file);
     const lines = [];
     if (ctx.parentUrl) lines.push(`- Tiinex Parent GitHub Comment: ${ctx.parentUrl}`);
+    if (ctx.parentSourceUrl) lines.push(`- Tiinex Parent Source URL: ${ctx.parentSourceUrl}`);
+    if (ctx.parentRawUrl) lines.push(`- Tiinex Parent Raw URL: ${ctx.parentRawUrl}`);
     if (ctx.parentPath) lines.push(`- Tiinex Parent Artifact Path: ${ctx.parentPath}`);
     if (ctx.parentTitle) lines.push(`- Tiinex Parent Artifact Title: ${ctx.parentTitle}`);
     if (ctx.parentCommentId) lines.push(`- Tiinex Parent Comment ID: issuecomment-${ctx.parentCommentId}`);
