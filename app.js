@@ -1066,6 +1066,7 @@
     lifecycleResponsivenessReport: () => lifecycleResponsivenessReport(),
     viewportResponsivenessReport: () => viewportResponsivenessReport(),
     mobileVisualDormancyReport: () => mobileVisualDormancyReport(),
+    routeHashResponsivenessReport: () => routeHashResponsivenessReport(),
     githubExportBindingReport: () => githubExportBindingReport(),
     parentOriginContinuityReport: () => parentOriginContinuityReport(),
     artifactPlacementReadinessReport: () => artifactPlacementReadinessReport(),
@@ -16463,6 +16464,186 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
   }
 
 
+  function routeHashResponsivenessState() {
+    app.routeHashResponsiveness = app.routeHashResponsiveness || {
+      events: [],
+      writes: 0,
+      compactedWrites: 0,
+      severeEvents: 0,
+      maxWriteMs: 0,
+      maxHistoryMs: 0,
+      maxHashLength: 0,
+      maxJsonLength: 0
+    };
+    app.routeHashResponsiveness.events = Array.isArray(app.routeHashResponsiveness.events) ? app.routeHashResponsiveness.events : [];
+    app.routeHashResponsiveness.lastSteps = app.routeHashResponsiveness.lastSteps || {};
+    return app.routeHashResponsiveness;
+  }
+
+  function routeHashSanitize(value, depth = 0) {
+    if (depth > 4) return '[depth-limit]';
+    if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
+    if (typeof value === 'string') return value.length > 900 ? `${value.slice(0, 900)}…[${value.length} chars]` : value;
+    if (Array.isArray(value)) return value.slice(0, 40).map((item) => routeHashSanitize(item, depth + 1));
+    if (typeof value === 'object') {
+      const out = {};
+      Object.keys(value).slice(0, 60).forEach((key) => { out[key] = routeHashSanitize(value[key], depth + 1); });
+      return out;
+    }
+    return String(value);
+  }
+
+  function routeHashRecord(event, detail = {}) {
+    const state = routeHashResponsivenessState();
+    const entry = { at: new Date().toISOString(), event: String(event || 'event'), detail: routeHashSanitize(detail || {}) };
+    state.events.push(entry);
+    while (state.events.length > 80) state.events.shift();
+    return entry;
+  }
+
+  function routeStringifyLength(value) {
+    try { return JSON.stringify(value || {}).length; } catch (_) { return 0; }
+  }
+
+  function routeSourceWeightSummary(source = {}) {
+    const urls = Array.isArray(source.urls) ? source.urls : [];
+    const issueCache = source.issueThreadCache && typeof source.issueThreadCache === 'object' ? source.issueThreadCache : {};
+    return {
+      kind: source.kind || '',
+      repo: source.repo || '',
+      urls: urls.length,
+      urlsChars: urls.join('\n').length,
+      issueCacheEntries: Object.keys(issueCache).length,
+      issueCacheChars: routeStringifyLength(issueCache),
+      rootPaths: Array.isArray(source.rootPaths) ? source.rootPaths.length : 0,
+      discoveredIssueUrls: Array.isArray(source.discoveredIssueUrls) ? source.discoveredIssueUrls.length : 0,
+      configuredIssueUrls: Array.isArray(source.configuredIssueUrls || source.issueUrls) ? (source.configuredIssueUrls || source.issueUrls).length : 0
+    };
+  }
+
+  function routeStateWeightSummary(state = {}) {
+    const sources = Array.isArray(state.sources) ? state.sources : (Array.isArray(state.workspaces) ? state.workspaces : []);
+    const jsonLength = routeStringifyLength(state || {});
+    return {
+      kind: state.kind || (Array.isArray(state.sources) ? 'state' : ''),
+      jsonLength,
+      encodedLength: Math.ceil(jsonLength * 4 / 3),
+      hashLength: location.hash ? String(location.hash).length : 0,
+      sourceCount: sources.length,
+      sources: sources.map(routeSourceWeightSummary)
+    };
+  }
+
+  function routeUrlBelongsToGithubSource(url = '', source = {}) {
+    const repo = String(source.repo || '').trim().toLowerCase();
+    if (!repo) return false;
+    let parsed;
+    try { parsed = new URL(String(url || ''), location.href); } catch (_) { return false; }
+    const host = parsed.hostname.toLowerCase();
+    const path = parsed.pathname.replace(/^\/+/, '');
+    const rootPaths = (Array.isArray(source.rootPaths) && source.rootPaths.length ? source.rootPaths : [source.rootPath || '.topics'])
+      .map((item) => normalizeRepoPath(item).toLowerCase())
+      .filter(Boolean);
+    if (host === 'raw.githubusercontent.com') {
+      const parts = path.split('/');
+      const urlRepo = `${parts[0] || ''}/${parts[1] || ''}`.toLowerCase();
+      const filePath = parts.slice(3).join('/').toLowerCase();
+      return urlRepo === repo && (!rootPaths.length || rootPaths.some((root) => filePath === root || filePath.startsWith(`${root}/`)));
+    }
+    if (host === 'github.com') {
+      const parts = path.split('/');
+      const urlRepo = `${parts[0] || ''}/${parts[1] || ''}`.toLowerCase();
+      const marker = parts[2] || '';
+      const filePath = marker === 'blob' || marker === 'tree' ? parts.slice(4).join('/').toLowerCase() : '';
+      return urlRepo === repo && (!filePath || !rootPaths.length || rootPaths.some((root) => filePath === root || filePath.startsWith(`${root}/`)));
+    }
+    return false;
+  }
+
+  function compactRouteSourceForUrl(source = {}) {
+    if (!source || typeof source !== 'object') return source;
+    const out = Object.assign({}, source);
+    const github = out.kind === 'github-tree' || out.kind === 'github';
+    if (github) {
+      const urls = Array.isArray(out.urls) ? out.urls.filter((url) => !routeUrlBelongsToGithubSource(url, out)) : [];
+      if (urls.length) out.urls = urls;
+      else delete out.urls;
+      if (out.issueThreadCache && typeof out.issueThreadCache === 'object') delete out.issueThreadCache;
+      // Discovered issue URLs are observations from this loaded workspace. The
+      // route only needs configured issue targets; discovered material remains in
+      // the workspace and can be rediscovered from the source if needed.
+      if (Array.isArray(out.discoveredIssueUrls) && out.discoveredIssueUrls.length > 12) out.discoveredIssueUrls = out.discoveredIssueUrls.slice(0, 12);
+    }
+    return out;
+  }
+
+  function compactRouteStateForUrl(state = {}) {
+    if (!state || typeof state !== 'object') return state;
+    const out = Object.assign({}, state);
+    if (Array.isArray(out.sources)) out.sources = out.sources.map(compactRouteSourceForUrl);
+    if (Array.isArray(out.workspaces)) out.workspaces = out.workspaces.map(compactRouteSourceForUrl);
+    return out;
+  }
+
+  function routeHashWriteSummary(kind, rawState, compactState, timing = {}) {
+    const raw = routeStateWeightSummary(rawState || {});
+    const compact = routeStateWeightSummary(compactState || {});
+    return {
+      kind,
+      protocol: location.protocol,
+      hidden: Boolean(document.hidden),
+      mobile: typeof mobileActive === 'function' ? mobileActive() : false,
+      rawJsonLength: raw.jsonLength,
+      compactJsonLength: compact.jsonLength,
+      reducedChars: Math.max(0, raw.jsonLength - compact.jsonLength),
+      currentHashLength: String(location.hash || '').length,
+      timing,
+      rawSources: raw.sources,
+      compactSources: compact.sources
+    };
+  }
+
+  function noteRouteHashWrite(kind, rawState, compactState, timing = {}) {
+    const state = routeHashResponsivenessState();
+    const summary = routeHashWriteSummary(kind, rawState, compactState, timing);
+    state.writes = Number(state.writes || 0) + 1;
+    if (summary.reducedChars > 0) state.compactedWrites = Number(state.compactedWrites || 0) + 1;
+    state.lastWrite = Object.assign({ at: new Date().toISOString() }, summary);
+    state.maxWriteMs = Math.max(Number(state.maxWriteMs || 0), Number(timing.totalMs || 0));
+    state.maxHistoryMs = Math.max(Number(state.maxHistoryMs || 0), Number(timing.historyMs || 0));
+    state.maxHashLength = Math.max(Number(state.maxHashLength || 0), Number(summary.currentHashLength || 0));
+    state.maxJsonLength = Math.max(Number(state.maxJsonLength || 0), Number(summary.compactJsonLength || 0));
+    if (timing.totalMs > 150 || timing.historyMs > 80 || summary.compactJsonLength > 60000) {
+      state.severeEvents = Number(state.severeEvents || 0) + 1;
+      routeHashRecord('route-hash-write-severe', summary);
+    } else if (timing.totalMs > 50 || timing.historyMs > 25 || summary.compactJsonLength > 24000) {
+      routeHashRecord('route-hash-write-warning', summary);
+    } else {
+      routeHashRecord('route-hash-write', summary);
+    }
+  }
+
+  function routeHashResponsivenessReport() {
+    const state = routeHashResponsivenessState();
+    let current = null;
+    try { current = routeStateWeightSummary(compactRouteStateForUrl(staticDiskMode() ? viewRouteState() : routeState())); } catch (_) {}
+    return {
+      schema: 'tiinex.route-hash-responsiveness.report.v1',
+      policy: 'route URL state must stay compact; source-backed GitHub routes use source configuration instead of serializing every material URL or issue cache into the hash/history entry',
+      writes: Number(state.writes || 0),
+      compactedWrites: Number(state.compactedWrites || 0),
+      severeEvents: Number(state.severeEvents || 0),
+      maxWriteMs: Number(state.maxWriteMs || 0),
+      maxHistoryMs: Number(state.maxHistoryMs || 0),
+      maxHashLength: Number(state.maxHashLength || 0),
+      maxJsonLength: Number(state.maxJsonLength || 0),
+      currentHashLength: String(location.hash || '').length,
+      current,
+      lastWrite: state.lastWrite || null,
+      recent: state.events.slice(-20)
+    };
+  }
+
   function setRouteState(kind = 'push') {
     if (app.routing?.restoring || app.isBootingFromUrl) {
       routeOwnerRecord('route:write-skip', { kind, reason: app.routing?.restoring ? 'restoring' : 'booting' });
@@ -16475,8 +16656,13 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         routeOwnerRecord('route:write-skip', { kind, reason: 'static-no-workspaces' });
         return;
       }
-      const state = viewRouteState();
+      const routeWriteStarted = performance.now?.() || Date.now();
+      const rawState = viewRouteState();
+      const stateComputedMs = Math.round((performance.now?.() || Date.now()) - routeWriteStarted);
+      const state = compactRouteStateForUrl(rawState);
+      const encodeStarted = performance.now?.() || Date.now();
       const next = viewRouteUrl(state);
+      const encodeMs = Math.round((performance.now?.() || Date.now()) - encodeStarted);
       const current = `${location.pathname}${location.search}${location.hash}`;
       if (next === current) {
         routeOwnerRecord('route:write-skip', { kind, reason: 'same-url', state: routeOwnerStateSummary(state) });
@@ -16491,26 +16677,37 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       if (preserveReadableHash || suppressTranslateChurn) {
         const preserveReason = preserveReadableHash ? 'preserve-readable-share-hash' : 'browser-translate-active';
         routeOwnerRecord('route:write-preserve-url', { kind, reason: preserveReason, current, next, state: routeOwnerStateSummary(state) });
+        const historyStarted = performance.now?.() || Date.now();
         if (kind === 'replace') history.replaceState(historyState, '', current);
         else history.pushState(historyState, '', current);
+        const historyMs = Math.round((performance.now?.() || Date.now()) - historyStarted);
+        noteRouteHashWrite(kind, rawState, state, { stateMs: stateComputedMs, encodeMs, historyMs, totalMs: Math.round((performance.now?.() || Date.now()) - routeWriteStarted), preservedUrl: true });
         routeOwnerRecord('route:write-after', { kind, historyIndex: historyState.__tiinexRouteIndex || 0, urlPreserved: true });
         return;
       }
       routeOwnerRecord('route:write-before', { kind, current, next, state: routeOwnerStateSummary(state) });
+      const historyStarted = performance.now?.() || Date.now();
       if (kind === 'replace') history.replaceState(historyState, '', next);
       else history.pushState(historyState, '', next);
+      const historyMs = Math.round((performance.now?.() || Date.now()) - historyStarted);
+      noteRouteHashWrite(kind, rawState, state, { stateMs: stateComputedMs, encodeMs, historyMs, totalMs: Math.round((performance.now?.() || Date.now()) - routeWriteStarted) });
       routeOwnerRecord('route:write-after', { kind, historyIndex: historyState.__tiinexRouteIndex || 0 });
       return;
     }
 
-    const state = routeState();
+    const routeWriteStarted = performance.now?.() || Date.now();
+    const rawState = routeState();
+    const stateComputedMs = Math.round((performance.now?.() || Date.now()) - routeWriteStarted);
+    const state = compactRouteStateForUrl(rawState);
     if (!app.workspaces.length || !state.sources?.length) {
       routeOwnerRecord('route:clean-url', { kind, reason: !app.workspaces.length ? 'no-workspaces' : 'no-sources', state: routeOwnerStateSummary(state) });
       replaceWithCleanViewerUrl();
       return;
     }
 
+    const encodeStarted = performance.now?.() || Date.now();
     const next = routeUrl(state);
+    const encodeMs = Math.round((performance.now?.() || Date.now()) - encodeStarted);
     const current = `${location.pathname}${location.search}${location.hash}`;
     if (next === current) {
       routeOwnerRecord('route:write-skip', { kind, reason: 'same-url', state: routeOwnerStateSummary(state) });
@@ -16518,8 +16715,11 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     }
     const historyState = routeHistoryState(state, kind);
     routeOwnerRecord('route:write-before', { kind, current, next, state: routeOwnerStateSummary(state) });
+    const historyStarted = performance.now?.() || Date.now();
     if (kind === 'replace') history.replaceState(historyState, '', next);
     else history.pushState(historyState, '', next);
+    const historyMs = Math.round((performance.now?.() || Date.now()) - historyStarted);
+    noteRouteHashWrite(kind, rawState, state, { stateMs: stateComputedMs, encodeMs, historyMs, totalMs: Math.round((performance.now?.() || Date.now()) - routeWriteStarted) });
     routeOwnerRecord('route:write-after', { kind, historyIndex: historyState.__tiinexRouteIndex || 0 });
   }
 
@@ -23826,6 +24026,13 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     return true;
   }
 
+  function workspaceRouteSourceUrls(ws) {
+    if (!ws) return [];
+    const githubSource = Array.from(ws.sources?.values?.() || []).find((source) => source.kind === 'github' && source.repo);
+    if (githubSource || ws.discoverySource?.kind === 'github-tree') return [];
+    return workspaceSourceUrls(ws);
+  }
+
   function routeState() {
     return {
       v: 156,
@@ -23836,7 +24043,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
         const selected = selectedNodeRouteDescriptor(ws);
         return {
           label: ws.label,
-          urls: workspaceSourceUrls(ws),
+          urls: workspaceRouteSourceUrls(ws),
           selectedNodeId: selected.selectedNodeId,
           selectedPath: selected.selectedPath,
           selectedTitle: selected.selectedTitle,
@@ -30794,7 +31001,8 @@ ${githubOutboundFileExcerpt(file, 18000)}
       // configuredIssueUrls/issueUrls; discovered URLs stay in workspace material.
       item.issueUrls = item.configuredIssueUrls.slice();
       item.discoveredIssueUrls = normalized.discoveredIssueUrls || [];
-      item.issueThreadCache = githubIssueThreadCacheSubsetForUrls(activeGitHubIssueUrls(normalized, normalized.repo || '', ws) || []);
+      delete item.urls;
+      delete item.issueThreadCache;
       item.discoveryDirective = normalized.discoveryDirective || { kind: 'implicit-workspace-inline', source: 'workspace.md', status: 'bootstrap' };
     });
     return state;
@@ -32388,9 +32596,10 @@ ${githubOutboundFileExcerpt(file, 18000)}
   });
 
   function currentLensState() {
-    return staticDiskMode()
+    const state = staticDiskMode()
       ? viewRouteState()
       : routeState();
+    return compactRouteStateForUrl(state);
   }
 
   function currentLensUrl(state) {
@@ -33184,7 +33393,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
     } catch (_) {
       state = {};
     }
-    const clone = JSON.parse(JSON.stringify(state || {}));
+    const clone = JSON.parse(JSON.stringify(compactRouteStateForUrl(state || {}) || {}));
     return TiinexViewState.stripVolatileLensState(clone);
   }
 
