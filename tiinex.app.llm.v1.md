@@ -43,6 +43,23 @@ AI and LLM workflows are possible use cases and pressure tests.
 
 Do not describe the viewer as a general-purpose AI runtime unless current runtime code explicitly implements that behavior.
 
+## Adapter Implementation Contract
+
+Do not implement adapters by guessing parents from containers. Build adapters around explicit target descriptors and parent traversal results.
+
+Target descriptors should separate:
+
+- operation: create, update, or bind-existing;
+- target kind: issue body, issue comment, discussion body, discussion comment, reddit post, reddit comment, etc.;
+- container kind: issue thread, discussion thread, post thread, forum thread;
+- publication URL and item URL.
+
+Parent traversal should return resolved, unresolved-known, or fallback. Fallback to an external container is valid only when no explicit parent binding exists. Source/self paths must never become parent candidates.
+
+For batch exports, build a selection graph before drafting targets. If a selected child has a selected parent, do not silently create a separate external container for the child; publish it as a nested item when the adapter supports nesting, or emit an explicit cross-publication binding.
+
+GitHub issue imports should write new source material under `.topics/.github/.issues/...`; discussion adapters should use `.topics/.github/.discussions/...`. Keep compatibility read support for older `.topics/github-issues/...` material.
+
 ## Validation
 
 - `node --check app.js`

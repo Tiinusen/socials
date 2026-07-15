@@ -1051,6 +1051,7 @@
     githubIssueNestedContinuityReport: () => githubIssueNestedContinuityReport(),
     githubIssueParentBindingAudit: () => githubIssueParentBindingAudit(),
     adapterPublicationBindingReport: () => adapterPublicationBindingReport(),
+    adapterPublicationBatchReport: () => adapterPublicationBatchReport(),
     adapterParentTraversalAudit: () => adapterParentTraversalAudit(),
     markdownRendererSmokeTest: () => markdownRendererSmokeTest(),
     translationStabilityReport: () => translationStabilityReport(),
@@ -1069,6 +1070,7 @@
     viewportResponsivenessReport: () => viewportResponsivenessReport(),
     mobileVisualDormancyReport: () => mobileVisualDormancyReport(),
     routeHashResponsivenessReport: () => routeHashResponsivenessReport(),
+    searchResponsivenessReport: () => searchResponsivenessReport(),
     githubExportBindingReport: () => githubExportBindingReport(),
     parentOriginContinuityReport: () => parentOriginContinuityReport(),
     artifactPlacementReadinessReport: () => artifactPlacementReadinessReport(),
@@ -3085,7 +3087,23 @@
 
 
 
+  const SEARCH_INPUT_COMMIT_DELAY_MS = 320;
   app.searchDebounceTimers = app.searchDebounceTimers || {};
+  app.searchInteraction = app.searchInteraction || {
+    drafts: {},
+    timers: {},
+    inputEvents: 0,
+    schedules: 0,
+    commits: 0,
+    renderCommits: 0,
+    skippedNoChange: 0,
+    cancelled: 0,
+    flushedBeforeAction: 0,
+    duplicateInputSkips: 0,
+    maxCommitDelayMs: 0,
+    last: null,
+    events: []
+  };
 
   function normalizeSearchText(value) {
     return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -3284,7 +3302,7 @@
   }
 
   function renderSearchInput(ws, mode) {
-    const value = mode === 'lineage' ? (ws.lineageSearch || '') : (ws.discoverySearch || '');
+    const value = searchValueForRender(ws, mode);
     const placeholder = mode === 'lineage' ? 'Search lineage title/body/schema…' : 'Search title/body/schema…';
     const help = searchScopeHelpText(mode);
     return `<label class="search-box ${value ? 'active' : ''}" title="${escapeAttr(help)}">
@@ -5492,8 +5510,7 @@
       const ws = getWorkspace(wsId);
       const mode = event.currentTarget.dataset.mode || 'discovery';
       if (ws) {
-        if (mode === 'lineage') ws.lineageSearch = '';
-        else ws.discoverySearch = '';
+        clearSearchForWorkspace(ws, mode, { render: false });
         setRouteState('replace');
         render();
       }
@@ -9980,11 +9997,37 @@ ${fence}`;
     return `${kind}-${number}`;
   }
 
+  function gitHubAdapterSurfaceRoot(kind = 'issue') {
+    return kind === 'discussion' ? '.topics/.github/.discussions' : '.topics/.github/.issues';
+  }
+
+  function gitHubAdapterLegacySurfaceRoot(kind = 'issue') {
+    return kind === 'discussion' ? '.topics/github-discussions' : '.topics/github-issues';
+  }
+
+  function isGitHubIssueSurfacePath(value = '') {
+    const path = canonicalWorkspacePath(value || '').toLowerCase();
+    return /(?:^|\/)\.github\/\.issues\//.test(path) || /(?:^|\/)github-issues\//.test(path);
+  }
+
+  function isGitHubDiscussionSurfacePath(value = '') {
+    const path = canonicalWorkspacePath(value || '').toLowerCase();
+    return /(?:^|\/)\.github\/\.discussions\//.test(path) || /(?:^|\/)github-discussions\//.test(path);
+  }
+
+  function isGitHubSocialSurfacePath(value = '') {
+    return isGitHubIssueSurfacePath(value) || isGitHubDiscussionSurfacePath(value);
+  }
+
+  function gitHubIssueSurfacePathPattern() {
+    return /(?:^|\/)(?:\.github\/\.issues|github-issues)\/([^\/]+?)-(\d+)(?:-[^\/]*)?(?:\/|$)/i;
+  }
+
   function gitHubSocialTargetPath(spec) {
     const kind = spec?.kind === 'discussion' ? 'discussion' : 'issue';
-    const folder = kind === 'discussion' ? 'github-discussions' : 'github-issues';
+    const folder = gitHubAdapterSurfaceRoot(kind);
     const slug = `${spec.owner || 'owner'}-${spec.repoName || 'repo'}-${gitHubSocialTargetSlug(spec)}-target`;
-    return normalizeAssetPath(`.topics/${folder}/${slug}/target.trace.md`);
+    return normalizeAssetPath(`${folder}/${slug}/target.trace.md`);
   }
 
 
@@ -10330,7 +10373,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   function githubRecoveredEmbeddedArtifactPath(ws, base, item, ordinal, markdown, sourceKind = 'comment') {
     const schema = schemaIdFromText(markdown, 'tiinex.topic.v1');
     const title = markdownTitleFromFile({ content: markdown, currentSchema: schema });
-    const folder = normalizeAssetPath(base || '.topics/github-issues');
+    const folder = normalizeAssetPath(base || gitHubAdapterSurfaceRoot('issue'));
     const id = String(item?.id || ordinal || sourceKind || 'source').replace(/[^A-Za-z0-9_.-]+/g, '-');
     const slug = slugifyTitle(title || schema || 'artifact').slice(0, 52) || 'artifact';
     if (sourceKind === 'issue') return `${folder}/issue-root-recovered-${slug}.trace.md`;
@@ -10593,8 +10636,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   function gitHubIssueNodeSameThread(node, fallbackParent = null) {
     const a = [node?.path, node?.recoveredFromPath, node?.recoveredFromUrl, node?.sourceOrigin, node?.rawUrl, node?.browseUrl, node?.file?.path, node?.file?.recoveredFromPath, node?.file?.recoveredFromUrl, node?.file?.sourceOrigin, node?.file?.rawUrl, node?.file?.browseUrl].filter(Boolean).join(' ');
     const b = [fallbackParent?.path, fallbackParent?.recoveredFromPath, fallbackParent?.recoveredFromUrl, fallbackParent?.sourceOrigin, fallbackParent?.rawUrl, fallbackParent?.browseUrl, fallbackParent?.file?.path, fallbackParent?.file?.recoveredFromPath, fallbackParent?.file?.recoveredFromUrl, fallbackParent?.file?.sourceOrigin, fallbackParent?.file?.rawUrl, fallbackParent?.file?.browseUrl].filter(Boolean).join(' ');
-    const issueA = a.match(/github-issues\/([^\/]+)\//i)?.[1] || a.match(/github\.com\/([^\s#]+\/[^\s#]+)\/issues\/(\d+)/i)?.slice(1, 3).join('-') || '';
-    const issueB = b.match(/github-issues\/([^\/]+)\//i)?.[1] || b.match(/github\.com\/([^\s#]+\/[^\s#]+)\/issues\/(\d+)/i)?.slice(1, 3).join('-') || '';
+    const issueA = a.match(gitHubIssueSurfacePathPattern())?.[1] || a.match(/github\.com\/([^\s#]+\/[^\s#]+)\/issues\/(\d+)/i)?.slice(1, 3).join('-') || '';
+    const issueB = b.match(gitHubIssueSurfacePathPattern())?.[1] || b.match(/github\.com\/([^\s#]+\/[^\s#]+)\/issues\/(\d+)/i)?.slice(1, 3).join('-') || '';
     return !issueA || !issueB || issueA === issueB;
   }
 
@@ -10796,7 +10839,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       const nodes = Array.isArray(ws?.nodes) ? ws.nodes : [];
       for (const node of nodes) {
         const text = [node?.path, node?.recoveredFromPath, node?.recoveredFromUrl, node?.sourceOrigin, node?.rawUrl, node?.browseUrl].filter(Boolean).join(' ');
-        if (!/\.topics\/github-issues\//.test(text) && !/github\.com\/[^\s]+\/issues\//.test(text)) continue;
+        if (!isGitHubIssueSurfacePath(text) && !/github\.com\/[^\s]+\/issues\//.test(text)) continue;
         const parent = node?.parentNode || null;
         const recovered = Boolean(node?.recoveredFromPath || node?.recoveredFromUrl || node?.recoveryKind || node?.file?.recoveryKind);
         const resolutionMode = node.githubParentResolutionMode || node.file?.githubParentResolutionMode || '';
@@ -10939,7 +10982,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       if (repo && entry.repo && String(entry.repo || '').toLowerCase() !== repo) return false;
       if (githubIssueEntryCommentId(Object.assign({}, entry, { storageKey: key })) !== commentId) return false;
       const urlText = [entry.sourceOrigin, entry.publishedOriginUrl, entry.recoveredFromUrl, entry.rawUrl, entry.browseUrl].filter(Boolean).join(' ');
-      if (issueBase && urlText && !urlText.includes(issueBase) && !String(entry.path || key || '').includes(`/github-issues/`)) return false;
+      if (issueBase && urlText && !urlText.includes(issueBase) && !isGitHubIssueSurfacePath(entry.path || key || '')) return false;
       return true;
     };
     for (const [key, file] of Array.from(ws.files?.entries?.() || [])) {
@@ -10967,7 +11010,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const { issue, comments, truncated, adapterMode } = thread || {};
     githubIssueImportTrace('issue-thread-loader.start', { workspace: { id: ws?.id || '', label: ws?.label || '', beforeFiles, beforeNodes }, spec: { repo: spec?.repo || '', issueNumber: spec?.issueNumber || '', issueUrl: spec?.issueUrl || '' }, thread: githubIssueThreadTraceSummary(thread || {}), options: { includeBody: options.includeBody !== false, hardRefresh: Boolean(options.hardRefresh), sourceId: options.source?.id || '' } });
     const issueSlug = slugify(issue?.title || `issue-${spec.issueNumber}`) || `issue-${spec.issueNumber}`;
-    const base = normalizeAssetPath(`.topics/github-issues/${spec.owner}-${spec.repoName}-${spec.issueNumber}-${issueSlug}`);
+    const base = normalizeAssetPath(`${gitHubAdapterSurfaceRoot('issue')}/${spec.owner}-${spec.repoName}-${spec.issueNumber}-${issueSlug}`);
     githubIssueImportTrace('issue-thread-loader.paths', { base, issueSlug });
     const existingSource = options.source || gitHubSourceForRepo(ws, spec.repo);
     const source = existingSource || registerGitHubSource(ws, {
@@ -11248,7 +11291,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (explicit) return explicit;
     const kind = String(entry?.sourceKind || entry?.source || '').toLowerCase();
     const path = String(entry?.path || entry?.name || '').toLowerCase();
-    if (kind.includes('issue') || kind.includes('discussion') || path.includes('/github-issues/') || path.includes('/github-discussions/')) return 'issues';
+    if (kind.includes('issue') || kind.includes('discussion') || isGitHubSocialSurfacePath(path)) return 'issues';
     return 'repoFiles';
   }
 
@@ -12886,7 +12929,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   function bindEvents(root) {
     hideCreateWorkspaceButtons(root);
     root.querySelectorAll('[data-action]').forEach((el) => {
-      el.addEventListener('click', handleAction);
+      el.addEventListener('click', (event) => {
+        flushPendingSearchBeforeAction(event.currentTarget);
+        return handleAction(event);
+      });
     });
     root.querySelectorAll('select[data-action="github-export-select-known-target"]').forEach((el) => {
       el.addEventListener('change', handleAction);
@@ -12972,7 +13018,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (!app.delegatedViewerInputBound) {
       document.addEventListener('input', (event) => {
         const target = event.target;
-        if (targetLooksSearchInput(target)) onSearchInput({ currentTarget: target });
+        if (targetLooksSearchInput(target)) onSearchInput(event);
       });
       document.addEventListener('change', (event) => {
         const target = event.target;
@@ -15493,6 +15539,44 @@ ${bodySections}
 
 
 
+  function searchInteractionOwner() {
+    app.searchInteraction = app.searchInteraction || {};
+    app.searchInteraction.drafts = app.searchInteraction.drafts || {};
+    app.searchInteraction.timers = app.searchInteraction.timers || {};
+    app.searchInteraction.events = app.searchInteraction.events || [];
+    return app.searchInteraction;
+  }
+
+  function searchDraftKey(wsId, mode) {
+    return `${wsId || ''}:${mode || 'discovery'}`;
+  }
+
+  function workspaceSearchValue(ws, mode) {
+    if (!ws) return '';
+    return mode === 'lineage' ? (ws.lineageSearch || '') : (ws.discoverySearch || '');
+  }
+
+  function setWorkspaceSearchValue(ws, mode, value) {
+    if (!ws) return;
+    if (mode === 'lineage') ws.lineageSearch = value || '';
+    else ws.discoverySearch = value || '';
+  }
+
+  function searchValueForRender(ws, mode) {
+    const owner = searchInteractionOwner();
+    const key = searchDraftKey(ws?.id || '', mode);
+    const draft = owner.drafts[key];
+    return draft ? (draft.value || '') : workspaceSearchValue(ws, mode);
+  }
+
+  function recordSearchResponsiveness(event, detail = {}) {
+    const owner = searchInteractionOwner();
+    const row = { at: new Date().toISOString(), event, detail };
+    owner.last = row;
+    owner.events.push(row);
+    if (owner.events.length > 40) owner.events.splice(0, owner.events.length - 40);
+  }
+
   function activeSearchSnapshot(input) {
     if (!input) return null;
     return {
@@ -15500,7 +15584,8 @@ ${bodySections}
       mode: input.dataset.search || input.dataset.mode || input.dataset.searchMode || 'discovery',
       value: input.value || '',
       start: Number(input.selectionStart ?? (input.value || '').length),
-      end: Number(input.selectionEnd ?? (input.value || '').length)
+      end: Number(input.selectionEnd ?? (input.value || '').length),
+      inputAt: Date.now()
     };
   }
 
@@ -15520,17 +15605,106 @@ ${bodySections}
     });
   }
 
-  function scheduleSearchRender(snapshot) {
-    const key = `${snapshot.wsId}:${snapshot.mode}`;
-    app.searchDebounceTimers = app.searchDebounceTimers || {};
-    clearTimeout(app.searchDebounceTimers[key]);
-    app.searchDebounceTimers[key] = setTimeout(() => {
+  function clearSearchCommitTimer(key) {
+    const owner = searchInteractionOwner();
+    const timer = owner.timers[key] || app.searchDebounceTimers?.[key];
+    if (timer) {
+      clearTimeout(timer);
+      owner.cancelled = Number(owner.cancelled || 0) + 1;
+    }
+    delete owner.timers[key];
+    if (app.searchDebounceTimers) delete app.searchDebounceTimers[key];
+  }
+
+  function commitSearchDraft(key, options = {}) {
+    const owner = searchInteractionOwner();
+    const draft = owner.drafts[key];
+    if (!draft) return false;
+    clearSearchCommitTimer(key);
+    const ws = getWorkspace(draft.wsId);
+    if (!ws) {
+      delete owner.drafts[key];
+      recordSearchResponsiveness('commit-skip-missing-workspace', { key });
+      return false;
+    }
+    const previous = workspaceSearchValue(ws, draft.mode);
+    const value = draft.value || '';
+    delete owner.drafts[key];
+    const delay = Math.max(0, Date.now() - Number(draft.inputAt || Date.now()));
+    owner.maxCommitDelayMs = Math.max(Number(owner.maxCommitDelayMs || 0), delay);
+    if (previous === value) {
+      owner.skippedNoChange = Number(owner.skippedNoChange || 0) + 1;
+      recordSearchResponsiveness('commit-skip-no-change', { wsId: draft.wsId, mode: draft.mode, valueLength: value.length, delay });
+      return false;
+    }
+    setWorkspaceSearchValue(ws, draft.mode, value);
+    owner.commits = Number(owner.commits || 0) + 1;
+    recordSearchResponsiveness('commit', {
+      wsId: draft.wsId,
+      mode: draft.mode,
+      valueLength: value.length,
+      previousLength: previous.length,
+      delay,
+      render: Boolean(options.render),
+      reason: options.reason || ''
+    });
+    if (options.render) {
+      owner.renderCommits = Number(owner.renderCommits || 0) + 1;
       render();
-      restoreSearchFocus(snapshot);
-    }, 180);
+      restoreSearchFocus(draft);
+    }
+    return true;
+  }
+
+  function scheduleSearchRender(snapshot) {
+    if (!snapshot?.wsId) return;
+    const owner = searchInteractionOwner();
+    const key = searchDraftKey(snapshot.wsId, snapshot.mode);
+    const previousDraft = owner.drafts[key];
+    if (previousDraft) clearSearchCommitTimer(key);
+    owner.drafts[key] = snapshot;
+    owner.schedules = Number(owner.schedules || 0) + 1;
+    recordSearchResponsiveness('schedule', { wsId: snapshot.wsId, mode: snapshot.mode, valueLength: String(snapshot.value || '').length, delayMs: SEARCH_INPUT_COMMIT_DELAY_MS });
+    const timer = setTimeout(() => {
+      commitSearchDraft(key, { render: true, reason: 'debounce' });
+    }, SEARCH_INPUT_COMMIT_DELAY_MS);
+    owner.timers[key] = timer;
+    app.searchDebounceTimers = app.searchDebounceTimers || {};
+    app.searchDebounceTimers[key] = timer;
+  }
+
+  function flushPendingSearchBeforeAction(target) {
+    if (!target) return false;
+    if ((target.dataset?.action || '') === 'clear-search') return false;
+    const owner = searchInteractionOwner();
+    const wsId = target.dataset?.ws || target.closest?.('[data-ws]')?.dataset?.ws || '';
+    const keys = Object.keys(owner.drafts || {}).filter((key) => !wsId || key.startsWith(`${wsId}:`));
+    if (!keys.length) return false;
+    owner.flushedBeforeAction = Number(owner.flushedBeforeAction || 0) + keys.length;
+    keys.forEach((key) => commitSearchDraft(key, { render: false, reason: 'before-action' }));
+    recordSearchResponsiveness('flush-before-action', { wsId, count: keys.length, action: target.dataset?.action || '' });
+    return true;
+  }
+
+  function clearSearchForWorkspace(ws, mode, options = {}) {
+    if (!ws) return false;
+    const key = searchDraftKey(ws.id, mode);
+    const owner = searchInteractionOwner();
+    if (owner.drafts[key]) delete owner.drafts[key];
+    clearSearchCommitTimer(key);
+    setWorkspaceSearchValue(ws, mode, '');
+    recordSearchResponsiveness('clear', { wsId: ws.id, mode, render: Boolean(options.render) });
+    if (options.render) render();
+    return true;
   }
 
   function onSearchInput(event) {
+    if (event && event.__tiinexSearchHandled) {
+      const owner = searchInteractionOwner();
+      owner.duplicateInputSkips = Number(owner.duplicateInputSkips || 0) + 1;
+      return;
+    }
+    if (event) event.__tiinexSearchHandled = true;
     const input = event.currentTarget || event.target;
     if (!targetLooksSearchInput(input)) return;
     const ws = getWorkspace(input.dataset.ws);
@@ -15538,13 +15712,37 @@ ${bodySections}
     if (!ws) return;
 
     const value = input.value || '';
-    if (mode === 'lineage') ws.lineageSearch = value;
-    else ws.discoverySearch = value;
-
     const wrapper = input.closest?.('.search-box');
     if (wrapper) wrapper.classList.toggle('active', Boolean(value));
 
+    const owner = searchInteractionOwner();
+    owner.inputEvents = Number(owner.inputEvents || 0) + 1;
     scheduleSearchRender(activeSearchSnapshot(input));
+  }
+
+  function searchResponsivenessReport() {
+    const owner = searchInteractionOwner();
+    return {
+      schema: 'tiinex.search-responsiveness.report.v1',
+      policy: 'search input remains native/immediate; expensive filtering/render commits are debounced and pending drafts are flushed before unrelated actions',
+      delayMs: SEARCH_INPUT_COMMIT_DELAY_MS,
+      inputEvents: Number(owner.inputEvents || 0),
+      schedules: Number(owner.schedules || 0),
+      commits: Number(owner.commits || 0),
+      renderCommits: Number(owner.renderCommits || 0),
+      skippedNoChange: Number(owner.skippedNoChange || 0),
+      cancelled: Number(owner.cancelled || 0),
+      flushedBeforeAction: Number(owner.flushedBeforeAction || 0),
+      duplicateInputSkips: Number(owner.duplicateInputSkips || 0),
+      maxCommitDelayMs: Number(owner.maxCommitDelayMs || 0),
+      activeTimers: Object.keys(owner.timers || {}).length,
+      pendingDrafts: Object.keys(owner.drafts || {}).map((key) => {
+        const draft = owner.drafts[key] || {};
+        return { key, wsId: draft.wsId || '', mode: draft.mode || '', valueLength: String(draft.value || '').length, ageMs: Math.max(0, Date.now() - Number(draft.inputAt || Date.now())) };
+      }),
+      last: owner.last || null,
+      recent: Array.isArray(owner.events) ? owner.events.slice(-20) : []
+    };
   }
 
 
@@ -29364,12 +29562,176 @@ ${integrityFooterForPath(parent, path)}`,
     return normalizeAssetPath(item?.path || item?.name || `github-export-item-${index + 1}`);
   }
 
-  function githubExportItemsForModal(modal, plan) {
+  function githubExportRawItemsForPlan(plan) {
     return (plan?.files || []).map((file, index) => ({
       index,
       key: githubExportItemKey(file, index),
       file
     }));
+  }
+
+  function githubExportItemIdentity(ws, item) {
+    const file = item?.file || item || {};
+    const node = githubExportFileNode(ws, file);
+    const path = canonicalWorkspacePath(file.path || file.name || node?.path || '');
+    const storageKey = String(file.storageKey || node?.storageKey || node?.file?.storageKey || '').trim();
+    const sourceId = String(file.sourceId || node?.sourceId || node?.file?.sourceId || '').trim();
+    return {
+      key: item?.key || githubExportItemKey(file, item?.index || 0),
+      index: Number(item?.index || 0),
+      file,
+      node,
+      path,
+      storageKey,
+      sourceId,
+      nodeId: String(node?.id || '').trim()
+    };
+  }
+
+  function githubExportSelectedParentKey(identity, indexes) {
+    let cursor = identity.node?.parentNode || null;
+    let depth = 0;
+    while (cursor && depth < 32) {
+      const nodeId = String(cursor.id || '').trim();
+      const storageKey = String(cursor.storageKey || cursor.file?.storageKey || '').trim();
+      const path = canonicalWorkspacePath(cursor.path || cursor.file?.path || '');
+      const sourceId = String(cursor.sourceId || cursor.file?.sourceId || '').trim();
+      if (nodeId && indexes.byNodeId.has(nodeId)) return indexes.byNodeId.get(nodeId);
+      if (storageKey && indexes.byStorageKey.has(storageKey)) return indexes.byStorageKey.get(storageKey);
+      if (path) {
+        const sourcePathKey = `${sourceId || ''}::${path}`;
+        if (indexes.bySourcePath.has(sourcePathKey)) return indexes.bySourcePath.get(sourcePathKey);
+        if (indexes.byPath.has(path)) return indexes.byPath.get(path);
+      }
+      cursor = cursor.parentNode || null;
+      depth += 1;
+    }
+    return '';
+  }
+
+  function githubExportBatchGraph(modal, plan, rawItems = null) {
+    const ws = getWorkspace(modal?.wsId || '');
+    const surface = githubOutboundSurface(modal);
+    const items = (rawItems || githubExportRawItemsForPlan(plan)).map((item) => Object.assign({}, item));
+    const identities = items.map((item) => githubExportItemIdentity(ws, item));
+    const indexes = { byNodeId: new Map(), byStorageKey: new Map(), bySourcePath: new Map(), byPath: new Map() };
+    identities.forEach((identity) => {
+      if (identity.nodeId && !indexes.byNodeId.has(identity.nodeId)) indexes.byNodeId.set(identity.nodeId, identity.key);
+      if (identity.storageKey && !indexes.byStorageKey.has(identity.storageKey)) indexes.byStorageKey.set(identity.storageKey, identity.key);
+      if (identity.path) {
+        const sourcePathKey = `${identity.sourceId || ''}::${identity.path}`;
+        if (!indexes.bySourcePath.has(sourcePathKey)) indexes.bySourcePath.set(sourcePathKey, identity.key);
+        if (!indexes.byPath.has(identity.path)) indexes.byPath.set(identity.path, identity.key);
+      }
+    });
+
+    const infoByKey = new Map();
+    identities.forEach((identity) => {
+      const selectedParentKey = githubExportSelectedParentKey(identity, indexes);
+      infoByKey.set(identity.key, {
+        schema: 'tiinex.adapter-publication-batch-item.v1',
+        surface,
+        itemKey: identity.key,
+        index: identity.index,
+        path: identity.path,
+        title: markdownTitleFromFile(identity.file),
+        selectedParentKey,
+        selectedParentPath: '',
+        selectedParentTitle: '',
+        rootKey: '',
+        depth: 0,
+        role: selectedParentKey && surface === 'issue' ? 'thread-comment' : 'thread-root',
+        plannedTargetMode: selectedParentKey && surface === 'issue' ? 'create-comment' : '',
+        warning: ''
+      });
+    });
+
+    const byKey = new Map(identities.map((identity) => [identity.key, identity]));
+    const resolveRoot = (key) => {
+      const seen = new Set();
+      let cursor = key;
+      let depth = 0;
+      while (cursor && infoByKey.has(cursor) && !seen.has(cursor) && depth < 32) {
+        seen.add(cursor);
+        const info = infoByKey.get(cursor);
+        if (!info.selectedParentKey || !infoByKey.has(info.selectedParentKey)) break;
+        cursor = info.selectedParentKey;
+        depth += 1;
+      }
+      return { rootKey: cursor || key, depth };
+    };
+
+    for (const info of infoByKey.values()) {
+      const parentIdentity = byKey.get(info.selectedParentKey || '');
+      if (parentIdentity) {
+        info.selectedParentPath = parentIdentity.path || '';
+        info.selectedParentTitle = markdownTitleFromFile(parentIdentity.file) || '';
+      }
+      const resolved = resolveRoot(info.itemKey);
+      info.rootKey = resolved.rootKey;
+      info.depth = resolved.depth;
+      if (info.selectedParentKey && surface !== 'issue') info.warning = 'selected parent exists but this surface does not support thread comments yet';
+    }
+
+    const childrenByParent = new Map();
+    for (const info of infoByKey.values()) {
+      if (!info.selectedParentKey) continue;
+      if (!childrenByParent.has(info.selectedParentKey)) childrenByParent.set(info.selectedParentKey, []);
+      childrenByParent.get(info.selectedParentKey).push(info.itemKey);
+    }
+    const visited = new Set();
+    const orderedKeys = [];
+    const visit = (key) => {
+      if (!key || visited.has(key)) return;
+      visited.add(key);
+      orderedKeys.push(key);
+      (childrenByParent.get(key) || [])
+        .sort((a, b) => (infoByKey.get(a)?.index || 0) - (infoByKey.get(b)?.index || 0))
+        .forEach(visit);
+    };
+    identities
+      .filter((identity) => !infoByKey.get(identity.key)?.selectedParentKey)
+      .sort((a, b) => a.index - b.index)
+      .forEach((identity) => visit(identity.key));
+    identities.sort((a, b) => a.index - b.index).forEach((identity) => visit(identity.key));
+
+    const annotated = orderedKeys.map((key, index) => {
+      const original = items.find((item) => item.key === key) || byKey.get(key) || {};
+      const info = infoByKey.get(key) || {};
+      return Object.assign({}, original, { index, batch: info });
+    });
+    return {
+      schema: 'tiinex.adapter-publication-batch-graph.v1',
+      surface,
+      count: annotated.length,
+      roots: Array.from(new Set(annotated.map((item) => item.batch?.rootKey || item.key))).filter(Boolean),
+      items: annotated,
+      infoByKey
+    };
+  }
+
+  function githubExportItemsForModal(modal, plan) {
+    return githubExportBatchGraph(modal, plan).items;
+  }
+
+  function githubExportBatchInfoForItem(modal, item) {
+    return item?.batch || null;
+  }
+
+  function githubExportBatchParentState(modal, item) {
+    const info = githubExportBatchInfoForItem(modal, item);
+    if (!modal || !info?.selectedParentKey) return null;
+    return githubExportCheckState(modal, info.selectedParentKey);
+  }
+
+  function githubExportBatchParentPublicationUrl(modal, item) {
+    const state = githubExportBatchParentState(modal, item);
+    return String(state?.publishedUrl || state?.targetUrl || '').trim();
+  }
+
+  function githubExportBatchParentLabel(modal, item) {
+    const info = githubExportBatchInfoForItem(modal, item);
+    return info?.selectedParentTitle || info?.selectedParentPath || 'selected parent artifact';
   }
 
   function githubExportCurrentIndex(modal, items) {
@@ -30080,6 +30442,11 @@ ${integrityFooterForPath(parent, path)}`,
         parentPath: parentContext.parentPath || '',
         parentTitle: parentContext.parentTitle || '',
         parentBindingMode: parentContext.parent ? 'resolved' : '',
+        batchRole: item.batch?.role || '',
+        batchRootKey: item.batch?.rootKey || '',
+        batchSelectedParentKey: item.batch?.selectedParentKey || '',
+        batchSelectedParentPath: item.batch?.selectedParentPath || '',
+        batchSelectedParentTitle: item.batch?.selectedParentTitle || '',
         itemKey: item.key,
         path: item.file?.path || item.file?.name || '',
         title: draft.title || markdownTitleFromFile(item.file),
@@ -30134,7 +30501,7 @@ ${integrityFooterForPath(parent, path)}`,
       });
       try {
         app.githubExportBinding.issueBodyBindings += 1;
-        app.githubExportBinding.snapshots.push({ at: now, mode: targetMode || 'unknown', operation: descriptor.operation || '', targetKind: descriptor.targetKind || '', containerKind: descriptor.containerKind || '', verifyKind: descriptor.verifyKind || '', target: spec.issueUrl, path: snapshot.path || '', binding: 'issue-body', parentPath: snapshot.parentPath || '', parentTitle: snapshot.parentTitle || '', parentBindingMode: snapshot.parentBindingMode || '' });
+        app.githubExportBinding.snapshots.push({ at: now, mode: targetMode || 'unknown', operation: descriptor.operation || '', targetKind: descriptor.targetKind || '', containerKind: descriptor.containerKind || '', verifyKind: descriptor.verifyKind || '', target: spec.issueUrl, path: snapshot.path || '', binding: 'issue-body', parentPath: snapshot.parentPath || '', parentTitle: snapshot.parentTitle || '', parentBindingMode: snapshot.parentBindingMode || '', batchRole: snapshot.batchRole || '', batchRootKey: snapshot.batchRootKey || '', batchSelectedParentKey: snapshot.batchSelectedParentKey || '', batchSelectedParentPath: snapshot.batchSelectedParentPath || '', batchSelectedParentTitle: snapshot.batchSelectedParentTitle || '' });
         while (app.githubExportBinding.snapshots.length > 40) app.githubExportBinding.snapshots.shift();
       } catch (_) {}
     } else {
@@ -30162,7 +30529,7 @@ ${integrityFooterForPath(parent, path)}`,
     if (!updatesIssueBody) {
       try {
         app.githubExportBinding.commentBindings += 1;
-        app.githubExportBinding.snapshots.push({ at: now, mode: targetMode || 'unknown', operation: descriptor.operation || '', targetKind: descriptor.targetKind || '', containerKind: descriptor.containerKind || '', verifyKind: descriptor.verifyKind || '', target: snapshot.targetUrl || spec.issueUrl, path: snapshot.path || '', binding: 'comment', parentPath: snapshot.parentPath || '', parentTitle: snapshot.parentTitle || '', parentBindingMode: snapshot.parentBindingMode || '' });
+        app.githubExportBinding.snapshots.push({ at: now, mode: targetMode || 'unknown', operation: descriptor.operation || '', targetKind: descriptor.targetKind || '', containerKind: descriptor.containerKind || '', verifyKind: descriptor.verifyKind || '', target: snapshot.targetUrl || spec.issueUrl, path: snapshot.path || '', binding: 'comment', parentPath: snapshot.parentPath || '', parentTitle: snapshot.parentTitle || '', parentBindingMode: snapshot.parentBindingMode || '', batchRole: snapshot.batchRole || '', batchRootKey: snapshot.batchRootKey || '', batchSelectedParentKey: snapshot.batchSelectedParentKey || '', batchSelectedParentPath: snapshot.batchSelectedParentPath || '', batchSelectedParentTitle: snapshot.batchSelectedParentTitle || '' });
         while (app.githubExportBinding.snapshots.length > 40) app.githubExportBinding.snapshots.shift();
       } catch (_) {}
     }
@@ -30429,7 +30796,7 @@ ${integrityFooterForPath(parent, path)}`,
     if (!path) return [];
     const out = [];
     const repoClean = String(repoHint || '').trim();
-    const match = path.match(/(?:^|\/)github-issues\/([^\/]+?)-(\d+)(?:-[^\/]*)?(?:\/|$)/i);
+    const match = path.match(gitHubIssueSurfacePathPattern());
     if (match) {
       const issueNumber = Number(match[2]);
       let repo = /^[-_.A-Za-z0-9]+\/[-_.A-Za-z0-9]+$/.test(repoClean) ? repoClean : '';
@@ -30492,6 +30859,8 @@ ${integrityFooterForPath(parent, path)}`,
 
   function githubDefaultTargetMode(modal, item, surface, candidates = null) {
     const ws = getWorkspace(modal?.wsId || '');
+    const batch = githubExportBatchInfoForItem(modal, item);
+    if (surface === 'issue' && batch?.selectedParentKey) return 'create-comment';
     const known = candidates || githubExportTargetCandidates(ws, item, surface);
     if (surface === 'issue' && githubExportItemIsContinuation(ws, item) && (known || []).length) return 'create-comment';
     if ((known || []).length) return 'reuse-known';
@@ -30668,16 +31037,17 @@ ${githubOutboundFileExcerpt(file, 18000)}
     const candidates = githubExportTargetCandidates(ws, item, surface);
     const state = githubExportTargetState(modal, item);
     const targetMode = githubExportEffectiveTargetMode(modal, item, surface, candidates);
-    const targetUrl = githubTargetUrlForMode(state, targetMode, candidates);
-    const openUrl = githubOpenUrlForMode(state, targetMode, candidates);
+    const batchParentUrl = targetMode === 'create-comment' ? githubExportBatchParentPublicationUrl(modal, item) : '';
+    const targetUrl = batchParentUrl || githubTargetUrlForMode(state, targetMode, candidates);
+    const openUrl = batchParentUrl || githubOpenUrlForMode(state, targetMode, candidates);
     const resultSurface = githubResultSurfaceLabel(surface, targetMode);
     const descriptor = githubPublicationTargetDescriptor(surface, targetMode, targetUrl);
     const title = githubSingleArtifactTitle(ws, item.file, surface);
-    const body = githubSingleArtifactBody(ws, modal, item.file, surface, { targetMode, targetUrl, resultSurface });
+    const body = githubSingleArtifactBody(ws, modal, item.file, surface, { targetMode, targetUrl, resultSurface, batchParentUrl, batchParentKey: item?.batch?.selectedParentKey || '' });
     let url = '';
     if (targetMode === 'create-new') url = githubOutboundUrlForRepo(repo, surface === 'discussion' ? 'discussion' : 'issue', { title, body });
     else url = openUrl || targetUrl || '';
-    return { title, body, repo, url, targetMode, targetUrl, openUrl, candidates, resultSurface, descriptor, targetKind: descriptor.targetKind, containerKind: descriptor.containerKind, operation: descriptor.operation, verifyKind: descriptor.verifyKind };
+    return { title, body, repo, url, targetMode, targetUrl, openUrl, candidates, resultSurface, descriptor, targetKind: descriptor.targetKind, containerKind: descriptor.containerKind, operation: descriptor.operation, verifyKind: descriptor.verifyKind, batch: item?.batch || null };
   }
 
   function githubPublishedUrlFieldKey(item) {
@@ -30702,10 +31072,13 @@ ${githubOutboundFileExcerpt(file, 18000)}
     const isContinuation = surface === 'issue' && githubExportItemIsContinuation(ws, item);
     const candidateOptions = candidates.slice(0, 8).map((candidate) => `<option value="${escapeAttr(candidate.url)}" ${normalizeGitHubUrlForComparison(candidate.url) === normalizeGitHubUrlForComparison(targetUrl) ? 'selected' : ''}>${escapeHtml(candidate.label)} · ${escapeHtml(candidate.reason)}</option>`).join('');
     const contextCandidate = githubFirstIssueCandidate(candidates, true);
-    if (isContinuation && mode === 'create-comment') {
+    const batchParentUrl = githubExportBatchParentPublicationUrl(modal, item);
+    const batchParentLabel = githubExportBatchParentLabel(modal, item);
+    const commentContextLabel = batchParentUrl ? `${batchParentLabel} · ${batchParentUrl}` : (contextCandidate?.label || targetUrl || 'the parent issue');
+    if ((isContinuation || item?.batch?.selectedParentKey) && mode === 'create-comment') {
       return `<div class="github-target-inline-control compact continuation-target">
-        <div class="github-verify-result compact-result"><i class="fa-solid fa-code-branch"></i><span>Create a new continuation comment in ${escapeHtml(contextCandidate?.label || targetUrl || 'the parent issue')}.</span></div>
-        <div class="github-check-inline-note">The parent comment is context only; Tiinex will verify the new comment by scanning the issue for the copied payload.</div>
+        <div class="github-verify-result compact-result"><i class="fa-solid fa-code-branch"></i><span>Create a new continuation comment in ${escapeHtml(commentContextLabel)}.</span></div>
+        <div class="github-check-inline-note">The parent issue/comment is publication context only; Tiinex keeps the explicit lineage parent from the selected batch relationship.</div>
         ${state.verified ? `<div class="github-verify-result ok compact-result"><i class="fa-solid fa-circle-check"></i><span>${escapeHtml(state.resolvedTitle || surfaceLabel)}${state.resolvedState ? ' · ' + escapeHtml(state.resolvedState) : ''}</span></div>` : state.error ? `<div class="github-verify-result warn compact-result"><i class="fa-solid fa-triangle-exclamation"></i><span>${escapeHtml(state.error)}</span></div>` : ''}
       </div>`;
     }
@@ -30719,7 +31092,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
     return `<div class="github-target-inline-control compact">
       <div class="github-target-inline-modes">
         <button type="button" class="github-target-pill ${mode === 'create-new' ? 'active' : ''}" data-action="github-export-set-target-mode" data-mode="create-new"><i class="fa-solid fa-plus"></i>Create new</button>
-        <button type="button" class="github-target-pill ${mode === 'create-comment' ? 'active' : ''}" data-action="github-export-set-target-mode" data-mode="create-comment" ${candidates.length && surface === 'issue' ? '' : 'disabled'}><i class="fa-solid fa-code-branch"></i>Create comment</button>
+        <button type="button" class="github-target-pill ${mode === 'create-comment' ? 'active' : ''}" data-action="github-export-set-target-mode" data-mode="create-comment" ${(candidates.length || item?.batch?.selectedParentKey) && surface === 'issue' ? '' : 'disabled'}><i class="fa-solid fa-code-branch"></i>Create comment</button>
         <button type="button" class="github-target-pill ${mode === 'reuse-known' ? 'active' : ''}" data-action="github-export-set-target-mode" data-mode="reuse-known" ${candidates.length ? '' : 'disabled'}><i class="fa-solid fa-link"></i>Update known</button>
         <button type="button" class="github-target-pill ${mode === 'paste-existing' ? 'active' : ''}" data-action="github-export-set-target-mode" data-mode="paste-existing"><i class="fa-regular fa-paste"></i>Paste existing</button>
       </div>
@@ -32477,10 +32850,8 @@ ${githubOutboundFileExcerpt(file, 18000)}
     const counts = new Map();
     const sourceNodes = Array.isArray(nodes) ? nodes : previewScopedBaseNodes(ws);
     for (const node of sourceNodes || []) {
-      for (const ref of nodeMaterialRefs(ws, node)) {
-        const kind = materialKindKey(ref);
-        counts.set(kind, (counts.get(kind) || 0) + 1);
-      }
+      const kinds = new Set(nodeMaterialRefs(ws, node).map((ref) => materialKindKey(ref)).filter(Boolean));
+      for (const kind of kinds) counts.set(kind, (counts.get(kind) || 0) + 1);
     }
     const order = ['image', 'text', 'url', 'file'];
     return Array.from(counts.entries())
@@ -32490,6 +32861,15 @@ ${githubOutboundFileExcerpt(file, 18000)}
         return a[0].localeCompare(b[0]);
       })
       .map(([kind, count]) => ({ kind, count }));
+  }
+
+  function previewMaterialCardTotalForWorkspace(ws, nodes = null) {
+    const sourceNodes = Array.isArray(nodes) ? nodes : previewScopedBaseNodes(ws);
+    let total = 0;
+    for (const node of sourceNodes || []) {
+      if (nodeMaterialRefs(ws, node).length) total += 1;
+    }
+    return total;
   }
 
   function renderPreviewToggle(ws) {
@@ -32784,11 +33164,11 @@ ${githubOutboundFileExcerpt(file, 18000)}
 
   function renderPreviewSelectedChips(ws) {
     const counts = previewKindCountMap(ws);
-    const total = Array.from(counts.values()).reduce((sum, n) => sum + n, 0);
+    const total = previewMaterialCardTotalForWorkspace(ws);
     const active = previewMaterialKindSet(ws);
 
     if (!active.size) {
-      return `<button class="preview-selected-chip active" data-action="set-material-preview-kind" data-ws="${escapeAttr(ws.id)}" data-kind="all" title="Showing all attachment types">
+      return `<button class="preview-selected-chip active" data-action="set-material-preview-kind" data-ws="${escapeAttr(ws.id)}" data-kind="all" title="Showing all attachment cards">
         <span>All</span><small>${total}</small>
       </button>`;
     }
@@ -32800,7 +33180,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
 
   function renderPreviewAllTypeOptions(ws) {
     const kinds = previewMaterialKindsForWorkspace(ws);
-    const total = kinds.reduce((sum, item) => sum + item.count, 0);
+    const total = previewMaterialCardTotalForWorkspace(ws);
     const active = previewMaterialKindSet(ws);
     const allActive = active.size === 0;
     return [
@@ -37889,7 +38269,12 @@ window.addEventListener('popstate', (event) => {
       target: snap.target || '',
       parentPath: snap.parentPath || '',
       parentTitle: snap.parentTitle || '',
-      parentBindingMode: snap.parentBindingMode || ''
+      parentBindingMode: snap.parentBindingMode || '',
+      batchRole: snap.batchRole || '',
+      batchRootKey: snap.batchRootKey || '',
+      batchSelectedParentKey: snap.batchSelectedParentKey || '',
+      batchSelectedParentPath: snap.batchSelectedParentPath || '',
+      batchSelectedParentTitle: snap.batchSelectedParentTitle || ''
     }));
     return {
       schema: 'tiinex.adapter-publication-binding.report.v1',
@@ -37898,6 +38283,48 @@ window.addEventListener('popstate', (event) => {
       commentBindings: Number(state.commentBindings || 0),
       removedLocalDrafts: Number(state.removedLocalDrafts || 0),
       rows: rows.slice(-40)
+    };
+  }
+
+  function adapterPublicationBatchReport() {
+    const modal = app.modal?.type === 'export-workspace' ? app.modal : null;
+    const ws = getWorkspace(modal?.wsId || app.activeWorkspaceId || '');
+    const plan = modal && ws ? buildExportPlan(ws, modal) : null;
+    const graph = modal && plan ? githubExportBatchGraph(modal, plan) : null;
+    const rows = (graph?.items || []).map((item) => {
+      const state = modal ? githubExportCheckState(modal, item.key) : {};
+      const draft = modal && ws ? githubSingleArtifactDraft(ws, modal, item, githubOutboundSurface(modal)) : null;
+      return {
+        index: item.index,
+        itemKey: item.key,
+        path: item.file?.path || item.file?.name || '',
+        title: markdownTitleFromFile(item.file),
+        batchRole: item.batch?.role || '',
+        rootKey: item.batch?.rootKey || '',
+        selectedParentKey: item.batch?.selectedParentKey || '',
+        selectedParentPath: item.batch?.selectedParentPath || '',
+        selectedParentTitle: item.batch?.selectedParentTitle || '',
+        plannedTargetMode: draft?.targetMode || item.batch?.plannedTargetMode || '',
+        targetKind: draft?.targetKind || '',
+        targetUrl: draft?.targetUrl || '',
+        verified: Boolean(state?.verified),
+        publishedUrl: state?.publishedUrl || '',
+        warning: item.batch?.warning || ''
+      };
+    });
+    const warnings = rows.filter((row) => row.selectedParentKey && row.plannedTargetMode !== 'create-comment')
+      .map((row) => Object.assign({}, row, { reason: 'selected child has selected parent but is not planned as a thread comment' }));
+    return {
+      schema: 'tiinex.adapter-publication-batch.report.v1',
+      policy: 'A selected lineage segment should publish as one adapter transaction: selected roots own external containers; selected children become publication items in the same thread unless the user explicitly chooses another target.',
+      active: Boolean(modal),
+      workspace: workspaceDisplayLabel(ws),
+      surface: graph?.surface || '',
+      count: rows.length,
+      roots: graph?.roots || [],
+      warningCount: warnings.length,
+      warnings,
+      rows
     };
   }
 
@@ -37910,7 +38337,7 @@ window.addEventListener('popstate', (event) => {
         const mode = node.githubParentResolutionMode || node.file?.githubParentResolutionMode || '';
         const bindingMode = node.githubParentBindingMode || node.file?.githubParentBindingMode || '';
         const sourceUrl = node.recoveredFromUrl || node.sourceOrigin || node.rawUrl || node.browseUrl || '';
-        const isAdapterRecovered = /github\.com\//i.test(sourceUrl) || /github-(issue|comment)-embedded-tiinex-artifact/i.test(node.recoveryKind || node.file?.recoveryKind || '') || /\.topics\/github-issues\//i.test(node.path || '');
+        const isAdapterRecovered = /github\.com\//i.test(sourceUrl) || /github-(issue|comment)-embedded-tiinex-artifact/i.test(node.recoveryKind || node.file?.recoveryKind || '') || isGitHubIssueSurfacePath(node.path || '');
         if (!isAdapterRecovered && !hintCount && !mode) continue;
         const parent = node.parentNode || null;
         const row = {
@@ -37947,7 +38374,7 @@ window.addEventListener('popstate', (event) => {
 
   function githubIssueParentBindingAudit() {
     const report = githubIssueNestedContinuityReport();
-    const rows = (report.rows || []).filter((row) => /github-issues\//i.test(row.path || '') || /github\.com\//i.test(row.sourceUrl || ''));
+    const rows = (report.rows || []).filter((row) => isGitHubIssueSurfacePath(row.path || '') || /github\.com\//i.test(row.sourceUrl || ''));
     const unresolvedHints = rows.filter((row) => Number(row.parentHintCount || 0) > 0 && row.parentBindingMode === 'unresolved-known');
     const fallbackWithHints = rows.filter((row) => Number(row.parentHintCount || 0) > 0 && row.parentBindingMode === 'fallback');
     const commentChildren = rows.filter((row) => /comment-\d+-.*-recovered-/i.test(row.path || ''));
@@ -38981,16 +39408,16 @@ ${raw.slice(0, 800)}`) || 'en')}">
     const activeKinds = activeWs ? Array.from(previewMaterialKindSet(activeWs)) : [];
     const scopedKinds = activeWs ? previewMaterialKindsForWorkspace(activeWs, scopedBase) : [];
     const filtered = activeWs ? scopedBase.filter((node) => nodeHasPreviewMaterial(activeWs, node)) : [];
-    const selectedTotal = activeKinds.length
-      ? scopedKinds.filter((item) => activeKinds.includes(item.kind)).reduce((sum, item) => sum + item.count, 0)
-      : scopedKinds.reduce((sum, item) => sum + item.count, 0);
+    const selectedTotal = filtered.length;
+    const cardTotal = activeWs ? previewMaterialCardTotalForWorkspace(activeWs, scopedBase) : 0;
     return {
       schema: 'tiinex.preview-material-filter.readiness.report.v1',
-      policy: 'preview type counts are scoped to the current non-preview feed result; preview/search/filter narrowing renders all matching cards without Show more',
+      policy: 'preview type counts are card counts scoped to the current non-preview feed result; preview/search/filter narrowing renders all matching cards without Show more',
       workspace: activeWs ? workspaceDisplayLabel(activeWs) : '',
       previewActive: previewMaterialActive(activeWs),
       activeKinds,
       scopedBaseNodes: scopedBase.length,
+      previewCardTotal: cardTotal,
       previewMatchedNodes: filtered.length,
       selectedMaterialCount: selectedTotal,
       kindCounts: scopedKinds,

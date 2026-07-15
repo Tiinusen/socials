@@ -50,6 +50,19 @@ They are not the identity boundary of Tiinex, and this site should not be descri
 - `styles.css` carries the site styling.
 - `samples/` and `.topics/` provide portable artifacts and workspace material for testing and discovery.
 
+## Adapter And Source Layout
+
+Adapter-backed source material is stored as source surface material, not as canonical lineage authority by default.
+
+For GitHub surfaces, new imports use hidden source folders so ordinary topic material and adapter material stay visibly separate:
+
+- `.topics/.github/.issues/...` for GitHub issue bodies, comments, recovered artifacts, and issue attachments when available;
+- `.topics/.github/.discussions/...` for future GitHub discussion bodies, comments, recovered artifacts, and discussion attachments when available.
+
+Older `.topics/github-issues/...` paths remain readable for compatibility.
+
+Adapter implementations should preserve external container, publication item, embedded Tiinex artifact, origin, parent, and attached assets as distinct concepts. When a selected export batch contains parent/child artifacts, the adapter should preserve that lineage segment as one publication transaction when the target supports nested items.
+
 ## Development And Validation
 
 Keep runtime behavior in the app code and public assets. Do not move behavior into docs-only files.

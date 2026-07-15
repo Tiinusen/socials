@@ -45,6 +45,23 @@ They are not the identity boundary of Tiinex, and this repo should not be descri
 - Workspace files act as workspace entrypoints when opened as workspaces.
 - Policy lookup should use the nearest `LINEAGE_POLICY.md` or `LINEAGE_LICENSE.md` when available in loaded material.
 
+## Adapter Source Contract
+
+Adapter-backed material must keep four identities distinct:
+
+- external container: the thread or surface, such as a GitHub issue or future discussion;
+- publication item: the body/comment/reply where content was published or observed;
+- embedded artifact: recovered Tiinex Markdown inside that external item;
+- continuity parent: the Tiinex parent declared by the artifact.
+
+Explicit parent bindings win over external-container fallback. If the parent source is not currently loaded, keep an unresolved-known parent binding so later traversal or discovery can resolve it without rewriting lineage semantics.
+
+The canonical GitHub adapter workspace layout is `.topics/.github/.issues/...` for issue material and `.topics/.github/.discussions/...` for future discussion material. Older `.topics/github-issues/...` paths may be read for compatibility, but new imports should use the hidden `.github` surface folder.
+
+When exporting multiple selected artifacts that form a parent/child segment, the adapter should publish them as one transaction on a target that supports nesting: root artifact as issue/discussion/post body, selected children as comments/replies, with per-item publication bindings.
+
+Assets and attachments belong to the same source surface when a source supports them. Preserving an attachment records source material availability; it does not imply validation, truth, acceptance, or ownership consent.
+
 ## Validation
 
 - `node --check app.js`
