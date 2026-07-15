@@ -32827,9 +32827,58 @@ ${githubOutboundFileExcerpt(file, 18000)}
     return growDiscoveryWindow(ws, reason);
   }
 
+  function previewAutoMoreFeedFromTarget(target) {
+    if (!target) return null;
+    if (target.classList?.contains('preview-material-feed')) return target;
+    return target.closest?.('.preview-material-feed[data-preview-material-surface="true"][data-ws]') || null;
+  }
+
+  const previewMaterialAutoMoreState = new WeakMap();
+
+  function growPreviewMaterialWindow(ws, reason = 'manual') {
+    if (!ws || !previewMaterialActive(ws)) return false;
+    const beforeVisibleCount = previewVisibleCount(ws);
+    const total = previewMaterialItemsForWorkspace(ws).length;
+    if (beforeVisibleCount >= total) return false;
+    const growCount = Math.max(4, Number(app.settings.previewMaterialGrowCount || 12));
+    const afterVisibleCount = Math.min(total, beforeVisibleCount + growCount);
+    if (afterVisibleCount <= beforeVisibleCount) return false;
+    ws.previewMaterialVisibleCount = afterVisibleCount;
+    app.previewMaterialPipeline = app.previewMaterialPipeline || { recent: [] };
+    app.previewMaterialPipeline.autoGrows = Number(app.previewMaterialPipeline.autoGrows || 0) + (reason === 'auto-scroll' ? 1 : 0);
+    app.previewMaterialPipeline.manualGrows = Number(app.previewMaterialPipeline.manualGrows || 0) + (reason === 'manual' ? 1 : 0);
+    app.previewMaterialPipeline.lastGrow = { reason, beforeVisibleCount, afterVisibleCount, total, at: new Date().toISOString() };
+    app.previewMaterialPipeline.recent = (app.previewMaterialPipeline.recent || []).concat([{ event: 'preview-material-window-grow', detail: app.previewMaterialPipeline.lastGrow }]).slice(-20);
+    schedulePreviewMaterialRefresh(ws, `preview-window-${reason}`, { route: false, delayMs: reason === 'auto-scroll' ? 30 : 0 });
+    return true;
+  }
+
+  function maybeAutoGrowPreviewMaterialWindow(feed, reason = 'auto-scroll') {
+    if (!feed || app.restoringStoredScroll) return false;
+    const ws = getWorkspace(feed.dataset?.ws || '');
+    if (!ws || !previewMaterialActive(ws)) return false;
+    const beforeVisibleCount = previewVisibleCount(ws);
+    const total = previewMaterialItemsForWorkspace(ws).length;
+    if (beforeVisibleCount >= total) return false;
+    const distanceToEnd = Math.max(0, Math.round((feed.scrollHeight || 0) - (feed.clientHeight || 0) - (feed.scrollTop || 0)));
+    const threshold = discoveryAutoMoreThreshold(feed);
+    if (distanceToEnd > threshold) return false;
+    const now = Date.now();
+    const last = previewMaterialAutoMoreState.get(feed);
+    if (last && last.visibleCount === beforeVisibleCount && now - last.at < 300) return false;
+    previewMaterialAutoMoreState.set(feed, { visibleCount: beforeVisibleCount, at: now });
+    return growPreviewMaterialWindow(ws, reason);
+  }
+
   function onDiscoveryAutoMoreScroll(event) {
+    const previewFeed = previewAutoMoreFeedFromTarget(event.target);
+    if (previewFeed) {
+      maybeAutoGrowPreviewMaterialWindow(previewFeed, 'auto-scroll');
+      return;
+    }
     const feed = discoveryAutoMoreFeedFromTarget(event.target);
     if (!feed) return;
+    if (feed.dataset?.previewMaterialSurface === 'true') return;
     maybeAutoGrowDiscoveryWindow(feed, 'auto-scroll');
   }
 
@@ -33551,7 +33600,11 @@ ${githubOutboundFileExcerpt(file, 18000)}
 
   function previewMaterialIndexSignature(ws, nodes) {
     const sourceNodes = Array.isArray(nodes) ? nodes : [];
-    const bits = [sourceNodes.length, ws?.files?.size || 0, ws?.assets?.size || 0, previewMaterialKind(ws), ws?.discoverySearch || ''];
+    // The material index is independent of the active material-kind filter.
+    // Kind changes should filter an existing index instead of rebuilding the
+    // attachment scan for every chip click. Search and source content still
+    // participate because they change the base node set.
+    const bits = [sourceNodes.length, ws?.files?.size || 0, ws?.assets?.size || 0, ws?.discoverySearch || ''];
     for (const node of sourceNodes) bits.push(node.id || '', node.path || '', node.storageKey || '', String(node.body || node.rawMarkdown || '').length);
     return bits.join('|');
   }
@@ -33564,7 +33617,12 @@ ${githubOutboundFileExcerpt(file, 18000)}
     const sourceNodes = Array.isArray(nodes) ? nodes : previewScopedBaseNodes(ws);
     const signature = previewMaterialIndexSignature(ws, sourceNodes);
     const cached = ws?.previewMaterialIndexCache;
-    if (cached?.signature === signature && Array.isArray(cached.items)) return cached;
+    if (cached?.signature === signature && Array.isArray(cached.items)) {
+      app.previewMaterialPipeline = app.previewMaterialPipeline || { recent: [] };
+      app.previewMaterialPipeline.indexCacheHits = Number(app.previewMaterialPipeline.indexCacheHits || 0) + 1;
+      app.previewMaterialPipeline.lastIndex = { workspace: ws?.id || '', items: cached.items.length, nodes: cached.nodeCount || sourceNodes.length, buildMs: 0, cacheHit: true };
+      return cached;
+    }
     const started = performance.now ? performance.now() : Date.now();
     const items = [];
     const counts = new Map();
@@ -33595,7 +33653,9 @@ ${githubOutboundFileExcerpt(file, 18000)}
     const result = { signature, items, counts, buildMs, nodeCount: sourceNodes.length, at: new Date().toISOString() };
     if (ws) ws.previewMaterialIndexCache = result;
     app.previewMaterialPipeline = app.previewMaterialPipeline || { recent: [] };
-    app.previewMaterialPipeline.lastIndex = { workspace: ws?.id || '', items: items.length, nodes: sourceNodes.length, buildMs };
+    app.previewMaterialPipeline.indexBuilds = Number(app.previewMaterialPipeline.indexBuilds || 0) + 1;
+    app.previewMaterialPipeline.lastIndex = { workspace: ws?.id || '', items: items.length, nodes: sourceNodes.length, buildMs, cacheHit: false };
+    app.previewMaterialPipeline.maxIndexBuildMs = Math.max(Number(app.previewMaterialPipeline.maxIndexBuildMs || 0), buildMs);
     return result;
   }
 
@@ -33614,6 +33674,57 @@ ${githubOutboundFileExcerpt(file, 18000)}
   function resetPreviewMaterialWindow(ws) {
     if (!ws) return;
     ws.previewMaterialVisibleCount = Number(app.settings.previewMaterialInitialCount || 12);
+  }
+
+  function schedulePreviewMaterialRefresh(ws, reason = 'preview-interaction', options = {}) {
+    if (!ws) return;
+    app.previewMaterialPipeline = app.previewMaterialPipeline || { recent: [] };
+    const owner = app.previewMaterialPipeline.refreshOwner || { generation: 0, activeTimer: false, activeRaf: false, coalesced: 0, schedules: 0, renders: 0, stale: 0 };
+    if (owner.timer) {
+      clearTimeout(owner.timer);
+      owner.coalesced = Number(owner.coalesced || 0) + 1;
+    }
+    if (owner.raf && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(owner.raf);
+      owner.coalesced = Number(owner.coalesced || 0) + 1;
+    }
+    const generation = Number(owner.generation || 0) + 1;
+    owner.generation = generation;
+    owner.schedules = Number(owner.schedules || 0) + 1;
+    owner.lastReason = reason;
+    owner.workspace = ws.id || '';
+    owner.activeTimer = true;
+    owner.activeRaf = false;
+    app.previewMaterialPipeline.refreshOwner = owner;
+
+    const delay = Math.max(0, Number(options.delayMs ?? 90));
+    const scheduledAt = performance.now ? performance.now() : Date.now();
+    owner.timer = setTimeout(() => {
+      owner.activeTimer = false;
+      owner.timer = null;
+      const run = () => {
+        owner.activeRaf = false;
+        owner.raf = null;
+        if (owner.generation !== generation) {
+          owner.stale = Number(owner.stale || 0) + 1;
+          return;
+        }
+        const started = performance.now ? performance.now() : Date.now();
+        if (options.route !== false && typeof setRouteState === 'function') setRouteState('replace');
+        render();
+        const elapsed = Math.round(((performance.now ? performance.now() : Date.now()) - started) * 10) / 10;
+        owner.renders = Number(owner.renders || 0) + 1;
+        owner.lastRender = { reason, workspace: ws.id || '', renderMs: elapsed, delayMs: Math.round(((performance.now ? performance.now() : Date.now()) - scheduledAt) * 10) / 10, at: new Date().toISOString() };
+        app.previewMaterialPipeline.maxScheduledRenderMs = Math.max(Number(app.previewMaterialPipeline.maxScheduledRenderMs || 0), elapsed);
+        app.previewMaterialPipeline.recent = (app.previewMaterialPipeline.recent || []).concat([{ event: 'preview-material-scheduled-render', detail: owner.lastRender }]).slice(-20);
+      };
+      if (typeof requestAnimationFrame === 'function') {
+        owner.activeRaf = true;
+        owner.raf = requestAnimationFrame(run);
+      } else {
+        run();
+      }
+    }, delay);
   }
 
   function previewMaterialKindCounts(ws, nodes = null) {
@@ -33686,7 +33797,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
         </div>
       </div>
       ${temporalLensNotice(ws)}
-      ${renderPreviewFilterBar(ws)}
+      ${renderPreviewFilterBar(ws, nodes)}
       <div class="post-feed discovery view-feed preview-feed preview-material-feed" data-preview-material-surface="true" data-ws="${escapeAttr(ws.id)}" data-selected="">
         ${renderDiscoverySearchLegend(ws, nodes, ws.discoverySearch || '')}
         ${bodyHtml}
@@ -33713,10 +33824,23 @@ ${githubOutboundFileExcerpt(file, 18000)}
       filterKind: active ? previewMaterialKind(active) : 'all',
       materialIndexItems: index?.items?.length || 0,
       materialIndexBuildMs: index?.buildMs || 0,
+      indexBuilds: Number(p.indexBuilds || 0),
+      indexCacheHits: Number(p.indexCacheHits || 0),
+      maxIndexBuildMs: Number(p.maxIndexBuildMs || 0),
       filteredItems: items.length,
       renderedItems: Math.min(items.length, active ? previewVisibleCount(active) : 0),
       windowSize: active ? previewVisibleCount(active) : 0,
       maxRenderMs: Number(p.maxRenderMs || 0),
+      maxScheduledRenderMs: Number(p.maxScheduledRenderMs || 0),
+      renderSchedules: Number(p.refreshOwner?.schedules || 0),
+      scheduledRenders: Number(p.refreshOwner?.renders || 0),
+      coalescedRefreshes: Number(p.refreshOwner?.coalesced || 0),
+      activeRefreshTimer: Boolean(p.refreshOwner?.activeTimer),
+      activeRefreshRaf: Boolean(p.refreshOwner?.activeRaf),
+      autoGrows: Number(p.autoGrows || 0),
+      manualGrows: Number(p.manualGrows || 0),
+      lastGrow: p.lastGrow || null,
+      lastScheduledRender: p.refreshOwner?.lastRender || null,
       lastRender: p.lastRender || null,
       imageItemsWithPreviewUrl: items.filter((item) => item.kind === 'image' && item.url).length,
       imageItemsUnavailable: items.filter((item) => item.kind === 'image' && !item.url).length,
@@ -33806,8 +33930,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       ws.previewMaterialMode = !ws.previewMaterialMode;
       if (!ws.previewMaterialKind) ws.previewMaterialKind = 'all';
       resetPreviewMaterialWindow(ws);
-      if (typeof setRouteState === 'function') setRouteState('replace');
-      render();
+      schedulePreviewMaterialRefresh(ws, 'toggle-preview', { route: true, delayMs: 40 });
       return;
     }
 
@@ -33819,8 +33942,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       ws.previewMaterialKind = event.currentTarget.dataset.kind || 'all';
       ws.previewMaterialMode = true;
       resetPreviewMaterialWindow(ws);
-      if (typeof setRouteState === 'function') setRouteState('replace');
-      render();
+      schedulePreviewMaterialRefresh(ws, 'set-preview-kind', { route: true, delayMs: 90 });
       return;
     }
 
@@ -33932,8 +34054,8 @@ ${githubOutboundFileExcerpt(file, 18000)}
       ws.previewMaterialMode = true;
       ws.previewMaterialKinds = kind === 'all' ? [] : [kind];
       ws.previewMaterialKind = kind;
-      if (typeof setRouteState === 'function') setRouteState('replace');
-      render();
+      resetPreviewMaterialWindow(ws);
+      schedulePreviewMaterialRefresh(ws, 'set-preview-kind', { route: true, delayMs: 90 });
       return;
     }
 
@@ -33950,8 +34072,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       ws.previewMaterialKinds = Array.from(set);
       ws.previewMaterialKind = ws.previewMaterialKinds.length ? ws.previewMaterialKinds.join(',') : 'all';
       resetPreviewMaterialWindow(ws);
-      if (typeof setRouteState === 'function') setRouteState('replace');
-      render();
+      schedulePreviewMaterialRefresh(ws, 'toggle-preview-kind', { route: true, delayMs: 90 });
       return;
     }
 
@@ -34013,15 +34134,15 @@ ${githubOutboundFileExcerpt(file, 18000)}
 
 
 
-  function previewKindCountMap(ws) {
+  function previewKindCountMap(ws, nodes = null) {
     const map = new Map();
-    for (const item of previewMaterialKindsForWorkspace(ws)) map.set(item.kind, item.count);
+    for (const item of previewMaterialKindsForWorkspace(ws, nodes)) map.set(item.kind, item.count);
     return map;
   }
 
-  function renderPreviewSelectedChips(ws) {
-    const counts = previewKindCountMap(ws);
-    const total = previewMaterialCardTotalForWorkspace(ws);
+  function renderPreviewSelectedChips(ws, nodes = null) {
+    const counts = previewKindCountMap(ws, nodes);
+    const total = previewMaterialCardTotalForWorkspace(ws, nodes);
     const active = previewMaterialKindSet(ws);
 
     if (!active.size) {
@@ -34035,9 +34156,9 @@ ${githubOutboundFileExcerpt(file, 18000)}
     </button>`).join('');
   }
 
-  function renderPreviewAllTypeOptions(ws) {
-    const kinds = previewMaterialKindsForWorkspace(ws);
-    const total = previewMaterialCardTotalForWorkspace(ws);
+  function renderPreviewAllTypeOptions(ws, nodes = null) {
+    const kinds = previewMaterialKindsForWorkspace(ws, nodes);
+    const total = previewMaterialCardTotalForWorkspace(ws, nodes);
     const active = previewMaterialKindSet(ws);
     const allActive = active.size === 0;
     return [
@@ -34050,18 +34171,18 @@ ${githubOutboundFileExcerpt(file, 18000)}
     ].join('');
   }
 
-  function renderPreviewFilterBar(ws) {
+  function renderPreviewFilterBar(ws, nodes = null) {
     if (!previewMaterialActive(ws)) return '';
     const open = Boolean(ws.previewFilterOpen);
     return `<div class="preview-filter-bar ${open ? 'open' : ''}">
       <div class="preview-filter-compact">
         <div class="preview-filter-title"><i class="fa-solid fa-images"></i><span>Preview</span></div>
-        <div class="preview-selected-chips">${renderPreviewSelectedChips(ws)}</div>
+        <div class="preview-selected-chips">${renderPreviewSelectedChips(ws, nodes)}</div>
         <button class="preview-filter-toggle" data-action="toggle-preview-filter-tray" data-ws="${escapeAttr(ws.id)}" title="${open ? 'Hide attachment type filters' : 'Show attachment type filters'}">
           <i class="fa-solid fa-sliders"></i><span>Types</span>
         </button>
       </div>
-      ${open ? `<div class="preview-filter-tray">${renderPreviewAllTypeOptions(ws)}</div>` : ''}
+      ${open ? `<div class="preview-filter-tray">${renderPreviewAllTypeOptions(ws, nodes)}</div>` : ''}
     </div>`;
   }
   registerActionHandler(async function previewMaterialWindowAction(event, next) {
@@ -34071,9 +34192,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       event.stopPropagation();
       const ws = getWorkspace(event.currentTarget.dataset.ws || '');
       if (!ws) return;
-      const growth = Number(app.settings.previewMaterialGrowCount || 12);
-      ws.previewMaterialVisibleCount = previewVisibleCount(ws) + Math.max(4, growth);
-      render();
+      growPreviewMaterialWindow(ws, 'manual');
       return;
     }
     return next(event);
@@ -34086,7 +34205,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       const ws = getWorkspace(event.currentTarget.dataset.ws || '');
       if (!ws) return;
       ws.previewFilterOpen = !ws.previewFilterOpen;
-      render();
+      schedulePreviewMaterialRefresh(ws, 'toggle-preview-filter-tray', { route: true, delayMs: 40 });
       return;
     }
     return next(event);
