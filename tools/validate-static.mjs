@@ -1100,8 +1100,9 @@ function validateIntegrityLifecycleUxContract() {
     'Validation Entries',
     'Validation Entry Audit',
     'active-byte-integrity-entry',
-    'Preserved, not evaluated',
-    'duplicate method entry',
+    'Ready for browser evaluation',
+    'resultStatus',
+    'duplicate target entry',
     'integrityEntrySummary'
   ];
   for (const token of requiredTokens) {

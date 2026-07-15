@@ -23396,3 +23396,27 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
     justify-content: flex-start;
   }
 }
+
+.integrity-validation-entry.byte-integrity-verified {
+  border-color: rgba(74, 222, 128, 0.42);
+  background: rgba(22, 163, 74, 0.08);
+}
+
+.integrity-validation-entry.mismatch {
+  border-color: rgba(248, 113, 113, 0.42);
+  background: rgba(127, 29, 29, 0.12);
+}
+
+.integrity-validation-entry.target-unavailable,
+.integrity-validation-entry.method-unsupported,
+.integrity-validation-entry.malformed-claim {
+  border-color: rgba(251, 146, 60, 0.38);
+  background: rgba(154, 52, 18, 0.11);
+}
+
+.integrity-validation-entry.target-ambiguous,
+.integrity-validation-entry.pending,
+.integrity-validation-entry.unresolved {
+  border-color: rgba(245, 197, 83, 0.32);
+  background: rgba(168, 125, 36, 0.09);
+}

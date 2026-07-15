@@ -1886,7 +1886,9 @@
     const activeIndex = Number.isFinite(integrity?.activeEntryIndex) ? integrity.activeEntryIndex : -1;
     const methodCounts = new Map();
     for (const entry of entries) {
-      const key = entry?.method || entry?.methodLabel || 'unknown';
+      const method = entry?.method || entry?.methodLabel || 'unknown';
+      const towards = cleanIntegrityTowards(entry?.towards || '');
+      const key = `${method}::${towards || 'missing-target'}`;
       methodCounts.set(key, (methodCounts.get(key) || 0) + 1);
     }
 
@@ -1899,7 +1901,7 @@
       if (!entry?.value) missing.push('Value');
       if (entry?.placeholderValue) missing.push('real Value');
       const complete = supported && !missing.length;
-      const duplicateMethod = methodCounts.get(method) > 1;
+      const duplicateMethod = methodCounts.get(`${method}::${cleanIntegrityTowards(entry?.towards || '') || 'missing-target'}`) > 1;
       const active = index === activeIndex && complete;
       const status = active
         ? 'active-byte-integrity-entry'
@@ -1907,14 +1909,14 @@
           ? 'preserved-not-evaluated'
           : missing.length
             ? 'incomplete-entry'
-            : 'preserved-not-evaluated';
+            : 'ready-for-evaluation';
       const label = active
-        ? 'Active byte-integrity entry'
+        ? 'Primary self seal entry'
         : !supported
-          ? 'Preserved, not evaluated'
+          ? 'Unsupported method entry'
           : missing.length
             ? 'Incomplete byte-integrity entry'
-            : 'Preserved duplicate byte-integrity entry';
+            : 'Ready for browser evaluation';
       return {
         index,
         position: index + 1,
@@ -1946,6 +1948,257 @@
       incomplete,
       summary: `${evaluated} evaluated · ${unsupported} preserved unsupported · ${incomplete} incomplete · ${duplicate} duplicate ${duplicate === 1 ? 'entry' : 'entries'}`
     };
+  }
+
+
+  function integrityEntryTargetRef(entry) {
+    const raw = cleanIntegrityTowards(entry?.towards || '');
+    const link = parseMarkdownLink(raw);
+    return {
+      raw,
+      text: cleanIntegrityTowards(link.text || raw),
+      href: cleanIntegrityTowards(link.href || '')
+    };
+  }
+
+  function integrityEntryResultPriority(status = '') {
+    const order = {
+      mismatch: 100,
+      'malformed-claim': 90,
+      'method-unsupported': 80,
+      'target-unavailable': 70,
+      'target-ambiguous': 60,
+      unresolved: 50,
+      pending: 40,
+      'byte-integrity-verified': 10
+    };
+    return order[status] || 30;
+  }
+
+  function entryResultLabel(status = '') {
+    if (status === 'byte-integrity-verified') return 'Verified';
+    if (status === 'mismatch') return 'Mismatch';
+    if (status === 'target-unavailable') return 'Target unavailable';
+    if (status === 'target-ambiguous') return 'Target ambiguous';
+    if (status === 'method-unsupported') return 'Unsupported method';
+    if (status === 'malformed-claim') return 'Malformed entry';
+    if (status === 'pending') return 'Open';
+    return status || 'Open';
+  }
+
+  function entryTargetSummary(target) {
+    return cleanIntegrityTowards(target?.href || target?.text || target?.raw || '') || 'missing target';
+  }
+
+  function integrityEntrySummaryFromResults(entries) {
+    const list = Array.isArray(entries) ? entries : [];
+    const counts = list.reduce((acc, entry) => {
+      const key = entry.resultStatus || entry.status || 'open';
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    const pieces = [];
+    if (counts['byte-integrity-verified']) pieces.push(`${counts['byte-integrity-verified']} verified`);
+    if (counts.mismatch) pieces.push(`${counts.mismatch} mismatch`);
+    if (counts['target-unavailable']) pieces.push(`${counts['target-unavailable']} unavailable`);
+    if (counts['target-ambiguous']) pieces.push(`${counts['target-ambiguous']} ambiguous`);
+    if (counts['method-unsupported']) pieces.push(`${counts['method-unsupported']} unsupported`);
+    if (counts['malformed-claim']) pieces.push(`${counts['malformed-claim']} malformed`);
+    const evaluated = list.filter((entry) => entry.evaluated).length;
+    if (!pieces.length) pieces.push(`${evaluated} evaluated`);
+    return `${evaluated}/${list.length} evaluated · ${pieces.join(' · ')}`;
+  }
+
+  function integrityOverallFromEntryAudit(entryAudit, fallbackStatus = 'pending') {
+    const entries = Array.isArray(entryAudit?.entries) ? entryAudit.entries : [];
+    if (!entries.length) return { status: fallbackStatus, label: entryAudit?.summary || 'No integrity method entries.' };
+    const ranked = entries
+      .map((entry) => entry.resultStatus || entry.status || 'pending')
+      .sort((a, b) => integrityEntryResultPriority(b) - integrityEntryResultPriority(a));
+    const status = ranked[0] || fallbackStatus;
+    if (status === 'byte-integrity-verified' && entries.some((entry) => (entry.resultStatus || entry.status) !== 'byte-integrity-verified')) {
+      return { status: 'target-ambiguous', label: entryAudit.summary || 'Not all integrity entries were verified.' };
+    }
+    if (entries.every((entry) => (entry.resultStatus || entry.status) === 'byte-integrity-verified')) {
+      return { status: 'byte-integrity-verified', label: entryAudit.summary || 'All declared integrity entries verified.' };
+    }
+    return { status, label: entryAudit.summary || entryResultLabel(status) };
+  }
+
+  function integrityHashForEntryMethod(hashes, entry, exactSelfHash = '') {
+    const expected = String(entry?.value || '').trim();
+    if (!expected) return null;
+    if (entry?.method === TIINEX_SHA256_C14N_V2_METHOD_ID && integrityTowardsIsSelf(entry.towards)) {
+      if (exactSelfHash && exactSelfHash === expected) return { variant: `${TIINEX_SHA256_C14N_V2_METHOD_ID}:entry-${entry.index + 1}`, hash: exactSelfHash };
+      return null;
+    }
+    if (entry?.method === TIINEX_SHA256_C14N_V2_METHOD_ID) {
+      return (hashes || []).find((item) => item.hash === expected && String(item.variant || '').startsWith(`${TIINEX_SHA256_C14N_V2_METHOD_ID}:self`)) || null;
+    }
+    if (entry?.method === TIINEX_SHA256_C14N_V1_METHOD_ID) {
+      return (hashes || []).find((item) => item.hash === expected && item.variant === TIINEX_SHA256_C14N_V1_METHOD_ID) || null;
+    }
+    return null;
+  }
+
+  async function evaluateIntegrityEntry(ws, node, detail, entry) {
+    const target = integrityEntryTargetRef(entry);
+    const base = Object.assign({}, detail, {
+      target: entryTargetSummary(target),
+      expectedShort: shortHash(entry?.value || ''),
+      resultStatus: detail.status,
+      resultLabel: detail.label,
+      resultDetail: '',
+      resultVariant: '',
+      computedShort: '',
+      evaluated: false,
+      viewerCheck: ''
+    });
+
+    if (!entry?.method || !entry?.towards || !entry?.value || entry?.placeholderValue) {
+      return Object.assign(base, {
+        status: 'malformed-claim',
+        resultStatus: 'malformed-claim',
+        label: 'Malformed integrity entry',
+        resultLabel: 'Malformed integrity entry',
+        resultDetail: 'The entry is missing method, Towards, Value, or uses a placeholder-like value.'
+      });
+    }
+    if (!TIINEX_SUPPORTED_SHA256_C14N_METHOD_IDS.has(entry.method)) {
+      return Object.assign(base, {
+        status: 'method-unsupported',
+        resultStatus: 'method-unsupported',
+        label: 'Unsupported method entry',
+        resultLabel: 'Unsupported method entry',
+        resultDetail: 'This viewer does not implement this validation method.'
+      });
+    }
+
+    const parent = node?.parentNode || null;
+    if (parent && !integrityTowardsIsSelf(entry.towards)) {
+      const targetsParent = integrityTargetReferencesNode(ws, node, target, parent);
+      if (!targetsParent) {
+        const currentParent = artifactDisplayTitle(parent) || parent.title || parent.path || 'current parent';
+        const currentPath = parent.path || parent.rawUrl || parent.browseUrl || '';
+        return Object.assign(base, {
+          status: 'mismatch',
+          resultStatus: 'mismatch',
+          label: 'Parent target stale',
+          resultLabel: 'Parent target stale',
+          resultDetail: `Footer target ${entryTargetSummary(target)} does not match the current lineage parent ${currentParent}${currentPath ? ` (${currentPath})` : ''}.`,
+          viewerCheck: 'current-lineage-parent'
+        });
+      }
+    }
+
+    try {
+      let result = null;
+      let exactSelfHash = '';
+      if (entry.method === TIINEX_SHA256_C14N_V2_METHOD_ID && integrityTowardsIsSelf(entry.towards)) {
+        exactSelfHash = await sha256Base64Url(canonicalizeTiinexMarkdownForV2(node.rawMarkdown || '', entry.index));
+        result = {
+          status: 'ok',
+          confidence: 'exact',
+          authority: 'local-exact',
+          hashes: [{ variant: `${TIINEX_SHA256_C14N_V2_METHOD_ID}:entry-${entry.index + 1}`, hash: exactSelfHash }],
+          label: 'self'
+        };
+      } else {
+        result = await hashIntegrityTarget(ws, node, target);
+      }
+
+      if (result?.status === 'unavailable') {
+        return Object.assign(base, {
+          status: 'target-unavailable',
+          resultStatus: 'target-unavailable',
+          label: 'Target unavailable',
+          resultLabel: 'Target unavailable',
+          resultDetail: result.label || 'The declared target could not be read.',
+          evaluated: true
+        });
+      }
+      if (result?.status === 'unresolved') {
+        return Object.assign(base, {
+          status: 'target-ambiguous',
+          resultStatus: 'target-ambiguous',
+          label: 'Target ambiguous',
+          resultLabel: 'Target ambiguous',
+          resultDetail: result.label || 'The declared target could not be resolved exactly.',
+          evaluated: true
+        });
+      }
+
+      const hashes = Array.isArray(result?.hashes) ? result.hashes : [];
+      const match = integrityHashForEntryMethod(hashes, entry, exactSelfHash);
+      if (match) {
+        return Object.assign(base, {
+          status: 'byte-integrity-verified',
+          resultStatus: 'byte-integrity-verified',
+          label: integrityTowardsIsSelf(entry.towards) ? 'Self seal verified' : 'Target digest verified',
+          resultLabel: integrityTowardsIsSelf(entry.towards) ? 'Self seal verified' : 'Target digest verified',
+          resultDetail: `Matched ${match.variant}.`,
+          resultVariant: match.variant,
+          computedShort: shortHash(match.hash),
+          evaluated: true
+        });
+      }
+
+      const relevant = entry.method === TIINEX_SHA256_C14N_V2_METHOD_ID && !integrityTowardsIsSelf(entry.towards)
+        ? hashes.find((item) => String(item.variant || '').startsWith(`${TIINEX_SHA256_C14N_V2_METHOD_ID}:self`))
+        : entry.method === TIINEX_SHA256_C14N_V1_METHOD_ID
+          ? hashes.find((item) => item.variant === TIINEX_SHA256_C14N_V1_METHOD_ID)
+          : hashes[0];
+      const exactTarget = result?.confidence === 'exact' && (result?.authority === 'local-exact' || result?.authority === 'remote-exact' || result?.authority === 'remote-match');
+      return Object.assign(base, {
+        status: exactTarget ? 'mismatch' : 'target-ambiguous',
+        resultStatus: exactTarget ? 'mismatch' : 'target-ambiguous',
+        label: exactTarget ? 'Checksum mismatch' : 'Target ambiguous',
+        resultLabel: exactTarget ? 'Checksum mismatch' : 'Target ambiguous',
+        resultDetail: entry.method === TIINEX_SHA256_C14N_V2_METHOD_ID && !integrityTowardsIsSelf(entry.towards) && !relevant
+          ? 'The target has no primary v2 self digest available for target-self comparison.'
+          : (result?.label || 'No matching digest was found for this entry.'),
+        resultVariant: relevant?.variant || '',
+        computedShort: relevant?.hash ? shortHash(relevant.hash) : '',
+        evaluated: true
+      });
+    } catch (error) {
+      return Object.assign(base, {
+        status: 'target-unavailable',
+        resultStatus: 'target-unavailable',
+        label: 'Target unavailable',
+        resultLabel: 'Target unavailable',
+        resultDetail: error?.message || 'The declared target could not be read.',
+        evaluated: true
+      });
+    }
+  }
+
+  async function evaluateIntegrityEntriesForNode(ws, node) {
+    const audit = integrityEntryAuditDetails(node?.integrity);
+    const rawEntries = Array.isArray(node?.integrity?.entries) ? node.integrity.entries : [];
+    const entries = [];
+    for (const detail of audit.entries || []) {
+      const entry = rawEntries[detail.index] || null;
+      entries.push(await evaluateIntegrityEntry(ws, node, detail, entry));
+    }
+    const summary = integrityEntrySummaryFromResults(entries);
+    const counts = entries.reduce((acc, entry) => {
+      const key = entry.resultStatus || entry.status || 'open';
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    return Object.assign({}, audit, {
+      entries,
+      summary,
+      counts,
+      evaluated: entries.filter((entry) => entry.evaluated).length,
+      mismatch: counts.mismatch || 0,
+      verified: counts['byte-integrity-verified'] || 0,
+      unavailable: counts['target-unavailable'] || 0,
+      ambiguous: counts['target-ambiguous'] || 0,
+      unsupported: counts['method-unsupported'] || 0,
+      incomplete: counts['malformed-claim'] || audit.incomplete || 0
+    });
   }
 
   function parseIntegrity(text) {
@@ -19189,19 +19442,23 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       const methodLink = entry.methodDefinitionUrl
         ? `<a href="${escapeAttr(entry.methodDefinitionUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(entry.method)}</a>`
         : escapeHtml(entry.method);
-      const classes = ['integrity-validation-entry', entry.status || 'open'];
+      const classes = ['integrity-validation-entry', entry.resultStatus || entry.status || 'open'];
       if (entry.active) classes.push('active');
       if (entry.duplicateMethod) classes.push('duplicate');
+      const resultText = entry.resultDetail || entry.resultLabel || entry.label || 'Open';
+      const computed = entry.computedShort ? `${entry.resultVariant ? `${entry.resultVariant}: ` : ''}${entry.computedShort}` : '—';
       return `<article class="${classes.map(escapeAttr).join(' ')}">
         <header>
           <span>Entry ${entry.position}</span>
-          <strong>${escapeHtml(entry.label)}</strong>
+          <strong>${escapeHtml(entry.resultLabel || entry.label)}</strong>
         </header>
         <dl>
           <div><dt>Method</dt><dd>${methodLink}</dd></div>
           <div><dt>Towards</dt><dd>${escapeHtml(entry.towards || 'missing')}</dd></div>
-          <div><dt>Value</dt><dd>${escapeHtml(entry.valueStatus || 'open')}</dd></div>
-          <div><dt>Audit</dt><dd>${escapeHtml(entry.duplicateMethod ? `${missing} · duplicate method entry` : missing)}</dd></div>
+          <div><dt>Expected</dt><dd class="mono">${escapeHtml(entry.expectedShort || entry.valueStatus || 'open')}</dd></div>
+          <div><dt>Computed</dt><dd class="mono">${escapeHtml(computed)}</dd></div>
+          <div><dt>Result</dt><dd>${escapeHtml(resultText)}</dd></div>
+          <div><dt>Audit</dt><dd>${escapeHtml(entry.duplicateMethod ? `${missing} · duplicate target entry` : missing)}</dd></div>
         </dl>
       </article>`;
     }).join('');
@@ -19438,8 +19695,9 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     const declaredDefinitionUrl = validationMethodDefinitionUrl(declaredMethod, node?.integrity?.methodHref || '');
     const declaredDefinitionStatus = validationMethodDefinitionStatus(declaredMethod, declaredDefinitionUrl);
     const declaredDefinitionNode = findValidationMethodDefinitionNode(ws, declaredMethod, declaredDefinitionUrl);
-    const entryAudit = integrityEntryAuditDetails(node?.integrity);
-    const initialLifecycle = integrityClaimLifecycleForStatus(initialStatus, node?.integrity);
+    const entryAudit = await evaluateIntegrityEntriesForNode(ws, node);
+    const aggregateIntegrity = integrityOverallFromEntryAudit(entryAudit, initialStatus);
+    const initialLifecycle = integrityClaimLifecycleForStatus(aggregateIntegrity.status || initialStatus, node?.integrity);
     const base = {
       title: node?.title || '',
       path: node?.path || '',
@@ -19461,7 +19719,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       integrityEntryAudit: entryAudit,
       validationEntryAuditSummary: entryAudit.summary,
       validationEntries: entryAudit.entries,
-      byteIntegrityResult: byteIntegrityAuditLabel(initialStatus),
+      byteIntegrityResult: byteIntegrityAuditLabel(aggregateIntegrity.status || initialStatus),
       claimLifecycleStatus: initialLifecycle.status,
       claimLifecycleLabel: initialLifecycle.label,
       claimLifecycleAudit: initialLifecycle.audit,
@@ -19516,6 +19774,26 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         authority: 'lineage-edge',
         parentEdgeMismatch,
         note: parentEdgeMismatch.label
+      });
+    }
+
+    if (aggregateIntegrity.status && aggregateIntegrity.status !== 'pending') {
+      const aggregateLifecycle = integrityClaimLifecycleForStatus(aggregateIntegrity.status, node?.integrity);
+      return Object.assign(base, {
+        status: aggregateIntegrity.status,
+        statusLabel: aggregateIntegrity.label || byteIntegrityAuditLabel(aggregateIntegrity.status),
+        byteIntegrityResult: byteIntegrityAuditLabel(aggregateIntegrity.status),
+        claimLifecycleStatus: aggregateLifecycle.status,
+        claimLifecycleLabel: aggregateLifecycle.label,
+        claimLifecycleAudit: aggregateLifecycle.audit,
+        claimLifecycleMessage: aggregateLifecycle.message,
+        finalityStatus: aggregateLifecycle.finality,
+        exportReadiness: aggregateLifecycle.finality,
+        targetStatus: aggregateIntegrity.status,
+        targetLabel: aggregateIntegrity.label || '',
+        confidence: 'entry-evaluation',
+        authority: 'declared-integrity-entries',
+        note: aggregateIntegrity.label || 'Declared integrity entries were evaluated.'
       });
     }
 
@@ -19779,15 +20057,21 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
 
   async function verifyNodeIntegrity(node, ws = null) {
     const initialStatus = initialIntegrityStatusForNode(node);
-    if (initialStatus === 'draft-pending' || initialStatus === 'malformed-claim' || initialStatus === 'method-unsupported') {
+    if (initialStatus === 'draft-pending') {
       return { status: initialStatus, label: initialIntegrityStatusLabelForNode(node) };
+    }
+    try {
+      const audit = await evaluateIntegrityEntriesForNode(ws || node.workspace || null, node);
+      const aggregate = integrityOverallFromEntryAudit(audit, initialStatus);
+      if (aggregate.status && aggregate.status !== 'pending') {
+        return { status: aggregate.status, label: aggregate.label || byteIntegrityAuditLabel(aggregate.status), integrityEntryAudit: audit };
+      }
+    } catch (error) {
+      return { status: 'target-unavailable', label: `integrity target unavailable: ${error.message}` };
     }
 
     const target = integrityTowardsRef(node);
     if (!target.raw) return { status: 'malformed-claim', label: 'Integrity claim target is missing.' };
-
-    const parentEdgeMismatch = parentEdgeIntegrityMismatch(ws || node.workspace || null, node, target);
-    if (parentEdgeMismatch) return { status: 'mismatch', label: parentEdgeMismatch.label, parentEdgeMismatch };
 
     try {
       const result = await hashIntegrityTarget(ws || node.workspace || null, node, target);
