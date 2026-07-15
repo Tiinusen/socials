@@ -33216,20 +33216,40 @@ ${githubOutboundFileExcerpt(file, 18000)}
     </section>`;
   }
 
+  function placeMobileDormancyPreviewHost(host) {
+    const root = $('app');
+    if (!root || !host) return host || null;
+    const grid = workspaceGridForDormancy();
+    const shell = root.querySelector('.app-shell');
+    // Keep the preview outside the parked workspace grid but inside the visible
+    // app shell, directly before the grid. App-switch snapshots only include the
+    // current viewport; appending after the footer/grid leaves the preview below
+    // the blank parked area on phones.
+    if (grid?.parentNode) {
+      grid.parentNode.insertBefore(host, grid);
+    } else if (shell) {
+      shell.appendChild(host);
+    } else {
+      root.insertBefore(host, root.firstElementChild || null);
+    }
+    return host;
+  }
+
   function ensureMobileDormancyPreviewHost() {
     const root = $('app');
     if (!root) return null;
     let host = root.querySelector('#mobile-dormancy-preview');
-    if (host) return host;
+    if (host) {
+      const grid = workspaceGridForDormancy();
+      if (grid && host.parentNode !== grid.parentNode) placeMobileDormancyPreviewHost(host);
+      return host;
+    }
     const wrap = document.createElement('div');
     wrap.innerHTML = mobileDormancyPreviewHtml(mobileVisualDormancyState().previewSummary || mobileDormancyPreviewSummary());
     host = wrap.firstElementChild;
     if (!host) return null;
     host.hidden = true;
-    const grid = workspaceGridForDormancy();
-    if (grid?.parentNode === root) root.insertBefore(host, grid);
-    else root.appendChild(host);
-    return host;
+    return placeMobileDormancyPreviewHost(host);
   }
 
   function refreshMobileDormancyPreview(reason = 'render') {
@@ -33256,11 +33276,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       const wrap = document.createElement('div');
       wrap.innerHTML = state.previewHtml || mobileDormancyPreviewHtml(state.previewSummary || mobileDormancyPreviewSummary());
       host = wrap.firstElementChild;
-      if (host && root) {
-        const grid = workspaceGridForDormancy();
-        if (grid?.parentNode === root) root.insertBefore(host, grid);
-        else root.appendChild(host);
-      }
+      if (host && root) placeMobileDormancyPreviewHost(host);
     }
     if (host) {
       host.hidden = !visible;
@@ -33375,7 +33391,15 @@ ${githubOutboundFileExcerpt(file, 18000)}
       lastPark: state.lastPark || null,
       lastRestore: state.lastRestore || null,
       lastSkip: state.lastSkip || null,
-      preview: state.previewSummary || null,
+      preview: Object.assign({}, state.previewSummary || {}, {
+        hostFound: Boolean($('app')?.querySelector?.('#mobile-dormancy-preview')),
+        hostParent: (() => {
+          try { return $('app')?.querySelector?.('#mobile-dormancy-preview')?.parentElement?.id || $('app')?.querySelector?.('#mobile-dormancy-preview')?.parentElement?.className || ''; } catch (_) { return ''; }
+        })(),
+        hostHidden: (() => {
+          try { return Boolean($('app')?.querySelector?.('#mobile-dormancy-preview')?.hidden); } catch (_) { return false; }
+        })()
+      }),
       current: mobileDormancyWorkspaceSummary(),
       recent: Array.isArray(state.events) ? state.events.slice(-30) : []
     };
