@@ -13359,7 +13359,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
   function byteIntegrityAuditLabel(status) {
     if (status === 'byte-integrity-verified') return 'byte-integrity match';
-    if (status === 'mismatch') return 'byte-integrity mismatch';
+    if (status === 'mismatch') return 'byte-integrity / parent-edge mismatch';
     if (status === 'draft-pending') return 'draft/no-claim';
     if (status === 'malformed-claim') return 'malformed integrity claim';
     if (status === 'method-unsupported') return 'unsupported method';
@@ -18770,6 +18770,116 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     return 'relative-path';
   }
 
+
+  function integrityTargetExactReferenceValues(ws, node, target) {
+    const values = [];
+    const add = (value) => {
+      const clean = String(value || '').trim();
+      if (clean && !values.includes(clean)) values.push(clean);
+    };
+    const addValue = (value) => {
+      const clean = cleanIntegrityTowards(value || '');
+      if (!clean) return;
+      const link = parseMarkdownLink(clean);
+      const raw = link.href || link.text || clean;
+      if (!raw) return;
+      add(raw);
+      const converted = convertSourceUrl(raw);
+      if (converted) {
+        add(converted.path);
+        add(converted.rawUrl);
+        add(converted.browseUrl);
+        return;
+      }
+      if (!/^[a-z]+:/i.test(raw)) {
+        add(normalizeRepoPath(raw));
+        if (node?.path) add(normalizeRepoPath(joinPath(dirname(node.path), raw)));
+      }
+      if (ws?.repo && (ws.ref || node?.ref) && !/^[a-z]+:/i.test(raw)) {
+        const ref = node?.ref || ws.ref || '';
+        const rel = node?.path ? normalizeRepoPath(joinPath(dirname(node.path), raw)) : normalizeRepoPath(raw);
+        if (rel && ref) {
+          add(githubRawUrl(ws.repo, ref, rel));
+          add(githubBrowseUrl(ws.repo, ref, rel));
+        }
+      }
+      if (node?.repo && (node.ref || ws?.ref) && !/^[a-z]+:/i.test(raw)) {
+        const ref = node.ref || ws?.ref || '';
+        const rel = node?.path ? normalizeRepoPath(joinPath(dirname(node.path), raw)) : normalizeRepoPath(raw);
+        if (rel && ref) {
+          add(githubRawUrl(node.repo, ref, rel));
+          add(githubBrowseUrl(node.repo, ref, rel));
+        }
+      }
+    };
+
+    addValue(target?.href || '');
+    if (!target?.href) addValue(target?.text || '');
+    if (!target?.href && !target?.text) addValue(target?.raw || '');
+    return values.filter(Boolean);
+  }
+
+  function integrityTargetReferencesNode(ws, child, target, candidate) {
+    if (!candidate) return false;
+    const candidatePaths = [candidate.path, candidate.file?.path, candidate.recoveredFromPath, candidate.file?.recoveredFromPath]
+      .filter(Boolean)
+      .map((value) => canonicalWorkspacePath(value));
+    const candidateUrls = [candidate.rawUrl, candidate.browseUrl, candidate.sourceOrigin, candidate.recoveredFromUrl, candidate.file?.rawUrl, candidate.file?.browseUrl, candidate.file?.sourceOrigin, candidate.file?.recoveredFromUrl]
+      .filter(Boolean)
+      .map((value) => String(value || '').trim());
+
+    for (const value of integrityTargetExactReferenceValues(ws, child, target)) {
+      const raw = String(value || '').trim();
+      const converted = convertSourceUrl(raw);
+      const path = canonicalWorkspacePath(converted?.path || raw);
+      if (path && candidatePaths.some((candidatePath) => candidatePath && sameImportedPath(candidatePath, path))) return true;
+      const rawUrl = converted?.rawUrl || raw;
+      const browseUrl = converted?.browseUrl || raw;
+      if (rawUrl && candidateUrls.includes(rawUrl)) return true;
+      if (browseUrl && candidateUrls.includes(browseUrl)) return true;
+    }
+    return false;
+  }
+
+  function parentEdgeIntegrityMismatch(ws, node, target) {
+    const parent = node?.parentNode || null;
+    if (!parent || !integrityHasClaim(node?.integrity)) return null;
+    if (!target?.raw) return null;
+    if (integrityTargetReferencesNode(ws, node, target, parent)) return null;
+
+    const declared = target.raw || target.href || target.text || 'declared target';
+    const currentParent = artifactDisplayTitle(parent) || parent.title || parent.path || 'current parent';
+    const currentPath = parent.path || parent.rawUrl || parent.browseUrl || '';
+    const loaded = (() => {
+      try { return loadedIntegrityTarget(ws, node, target, remoteIntegrityTarget(ws, node, target)); } catch (_) { return null; }
+    })();
+    const loadedLabel = loaded && loaded !== parent
+      ? `${artifactDisplayTitle(loaded) || loaded.title || loaded.path || 'declared target'}${loaded.path ? ` (${loaded.path})` : ''}`
+      : '';
+    return {
+      status: 'mismatch',
+      reason: 'parent-edge-target-stale',
+      declaredTarget: declared,
+      declaredTargetLabel: loadedLabel,
+      currentParent,
+      currentParentPath: currentPath,
+      label: `parent checksum stale: footer targets ${loadedLabel || declared}, but the current lineage parent is ${currentParent}${currentPath ? ` (${currentPath})` : ''}. Save this leaf again to refresh the parent checksum.`
+    };
+  }
+
+  function markWorkspaceIntegrityDirty(ws, reason = 'workspace mutation') {
+    if (!ws) return;
+    ws.integrityCache = {};
+    ws.integrityRefreshCompletedKey = '';
+    ws.integrityRefreshQueuedKey = '';
+    ws.integrityRefreshRunningKey = '';
+    ws.integrityDirtyReason = reason;
+    for (const node of ws.nodes || []) {
+      node.integrityStatus = initialIntegrityStatusForNode(node);
+      node.integrityStatusLabel = initialIntegrityStatusLabelForNode(node);
+    }
+  }
+
   function loadedTargetConfidence(loaded, remote, target) {
     if (!loaded) return 'none';
     const kind = targetHrefKind(target);
@@ -19159,6 +19269,9 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       `Target Label: ${diagnostics.targetLabel || ''}`,
       `Confidence: ${diagnostics.confidence || ''}`,
       `Authority: ${diagnostics.authority || ''}`,
+      diagnostics.parentEdgeMismatch ? `Parent Edge Mismatch: ${diagnostics.parentEdgeMismatch.label || ''}` : '',
+      diagnostics.parentEdgeMismatch ? `Current Parent: ${diagnostics.parentEdgeMismatch.currentParent || ''} ${diagnostics.parentEdgeMismatch.currentParentPath || ''}`.trim() : '',
+      diagnostics.parentEdgeMismatch ? `Declared Parent Target: ${diagnostics.parentEdgeMismatch.declaredTarget || ''}` : '',
       '',
       'Computed Hashes:',
       ...(hashes.length ? hashes.map((item) => `- ${item.variant}: ${item.hash}`) : ['- none']),
@@ -19188,6 +19301,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     if (status === 'byte-integrity-verified') {
       return `The declared checksum matches the referenced target${diagnostics?.targetLabel ? `: ${diagnostics.targetLabel}` : ''}.`;
     }
+    if (status === 'mismatch' && diagnostics?.parentEdgeMismatch) return diagnostics.parentEdgeMismatch.label || 'The parent-edge checksum is stale for the current lineage parent.';
     if (status === 'mismatch') return 'The declared checksum does not match the exact target available to this viewer.';
     if (status === 'draft-pending') return 'This artifact is in a draft/no-claim state: no checksum claim is being made yet, and nothing has failed verification.';
     if (status === 'malformed-claim') return 'This artifact has an integrity method entry, but it is incomplete or contains a placeholder-like value.';
@@ -19210,7 +19324,9 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         ? ['No integrity claim is being made yet.', 'This is a valid draft/local state.', 'It is not final byte-integrity verified and export/publish should surface it as no-claim.']
         : status === 'malformed-claim'
           ? ['A method entry exists, but it is not a valid claim this viewer can verify.']
-          : ['This viewer has not proven a matching byte-integrity claim.'];
+          : status === 'mismatch' && diagnostics?.parentEdgeMismatch
+            ? ['The current lineage parent differs from the parent target recorded in this artifact footer.', 'Save this leaf again to refresh the parent checksum once the new parent is intentional.']
+            : ['This viewer has not proven a matching byte-integrity claim.'];
     const limitationItems = [
       'This does not verify that the artifact claims are true.',
       'This does not verify authorship, intent, consent, or semantic correctness.',
@@ -19342,6 +19458,40 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         status: initialStatus,
         statusLabel: initialIntegrityStatusLabelForNode(node),
         note: initialIntegrityStatusLabelForNode(node)
+      });
+    }
+
+    const parentEdgeMismatch = parentEdgeIntegrityMismatch(ws, node, target);
+    if (parentEdgeMismatch) {
+      const resultMethod = node.integrity?.method || TIINEX_SHA256_C14N_METHOD_ID;
+      const resultDefinitionUrl = validationMethodDefinitionUrl(resultMethod, node.integrity?.methodHref || '');
+      const resultDefinitionStatus = validationMethodDefinitionStatus(resultMethod, resultDefinitionUrl);
+      const resultDefinitionNode = findValidationMethodDefinitionNode(ws, resultMethod, resultDefinitionUrl);
+      const resultLifecycle = integrityClaimLifecycleForStatus('mismatch', node?.integrity);
+      return Object.assign(base, {
+        status: 'mismatch',
+        statusLabel: parentEdgeMismatch.label,
+        method: resultMethod,
+        methodDefinitionUrl: resultDefinitionUrl,
+        methodDefinitionLabel: methodDefinitionDisplayLabel(resultMethod, resultDefinitionUrl),
+        methodDefinitionStatus: resultDefinitionStatus.status,
+        methodDefinitionStatusLabel: resultDefinitionStatus.label,
+        methodDefinitionMessage: resultDefinitionStatus.message,
+        methodDefinitionNodeId: resultDefinitionNode?.id || '',
+        methodDefinitionWorkspaceAvailable: Boolean(resultDefinitionNode),
+        byteIntegrityResult: 'parent-edge checksum stale',
+        claimLifecycleStatus: resultLifecycle.status,
+        claimLifecycleLabel: resultLifecycle.label,
+        claimLifecycleAudit: resultLifecycle.audit,
+        claimLifecycleMessage: resultLifecycle.message,
+        finalityStatus: resultLifecycle.finality,
+        exportReadiness: resultLifecycle.finality,
+        targetStatus: 'parent-edge-target-stale',
+        targetLabel: parentEdgeMismatch.declaredTargetLabel || parentEdgeMismatch.declaredTarget,
+        confidence: 'current-lineage-parent',
+        authority: 'lineage-edge',
+        parentEdgeMismatch,
+        note: parentEdgeMismatch.label
       });
     }
 
@@ -19557,6 +19707,9 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
 
     const target = integrityTowardsRef(node);
     if (!target.raw) return { status: 'malformed-claim', label: 'Integrity claim target is missing.' };
+
+    const parentEdgeMismatch = parentEdgeIntegrityMismatch(ws || node.workspace || null, node, target);
+    if (parentEdgeMismatch) return { status: 'mismatch', label: parentEdgeMismatch.label, parentEdgeMismatch };
 
     try {
       const result = await hashIntegrityTarget(ws || node.workspace || null, node, target);
@@ -19787,12 +19940,19 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     } catch (_) {
       nodes = [selected];
     }
-    const basis = nodes.map((node) => [
-      node?.storageKey || node?.path || node?.id || '',
-      node?.integrity?.method || '',
-      node?.integrity?.value || '',
-      node?.rawUrl || ''
-    ].join('@')).join('|');
+    const basis = nodes.map((node) => {
+      const parent = node?.parentNode || null;
+      return [
+        node?.storageKey || node?.path || node?.id || '',
+        node?.integrity?.method || '',
+        node?.integrity?.towards || '',
+        node?.integrity?.value || '',
+        node?.parentHref || '',
+        parent?.storageKey || parent?.path || parent?.id || '',
+        parent ? hashFast(parent.rawMarkdown || parent.file?.content || '') : '',
+        node?.rawUrl || ''
+      ].join('@');
+    }).join('|');
     return `${ws.id || ''}:${selected.id || selected.path || ''}:${hashFast(basis)}`;
   }
 
@@ -24024,6 +24184,7 @@ ${integrityFooter()}`;
       kind: 'text'
     });
     computeWorkspaceIndex(ws);
+    markWorkspaceIntegrityDirty(ws, 'local-edit-save');
     const edited = Array.from(ws.nodeById?.values?.() || []).find((candidate) =>
       candidate.sourceId === sourceId && sameImportedPath(candidate.path, path)
     ) || Array.from(ws.nodeById?.values?.() || []).find((candidate) => sameImportedPath(candidate.path, path));
@@ -24106,6 +24267,7 @@ ${integrityFooter()}`;
       const finalizedText = await finalizeSavedLocalIntegrity(ws, path, text, { parentNodeId: app.modal?.parentNodeId || app.modal?.continuationOf || '' });
       upsertWorkspaceTextFile(ws, path, finalizedText, 'local');
       computeWorkspaceIndex(ws);
+      markWorkspaceIntegrityDirty(ws, 'local-artifact-save');
       const node = Array.from(ws.nodeById?.values?.() || []).find((candidate) => candidate.sourceId === 'local' && sameImportedPath(candidate.path, path))
         || Array.from(ws.nodeById?.values?.() || []).find((candidate) => sameImportedPath(candidate.path, path));
       if (node) selectSavedLocalNode(ws, node, 'local-artifact-save');
