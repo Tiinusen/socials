@@ -35,6 +35,8 @@ Keep the app bootstrap configuration small. Runtime/vendor loading, safe transpo
 A workspace may declare ordered, repository-scoped snapshot and Git-proxy transports. Relative transport resources resolve against the workspace artifact URL. The viewer must try only matching declarations and must not guess mirrors for unrelated repositories.
 Snapshot transports precede Git-proxy transports. Order is significant within each kind. When a workspace omits a ref, a verified snapshot may declare the resolved ref and native Git should follow the remote default branch rather than inventing `master`.
 
+For `github.com/<owner>/<repo>`, the viewer may also probe the schema-defined default GitHub Pages snapshot location after explicit snapshots and before Git. This is one metadata request at `<owner-lowercase>.github.io/<repo>/mirrors/github.com/<owner>/<repo>.json`, not directory crawling. Missing convention mirrors are quiet capability misses, not source failures. Redirects may reach configured custom domains, but viewers must not guess them.
+
 A transport is a delivery path, not provenance. Loading `owner/repo` through a published zip, an HTTP mirror, or a Git proxy must preserve its canonical repository, resolved commit, Parent, and Origin. The transport used may be recorded separately.
 
 Published repository snapshots must reuse the same safe zip-import core as uploaded repository zip files. Snapshot transport provides current repository material; Git transport provides richer Git capabilities when needed. Both should converge on the same workspace material model rather than duplicate discovery or indexing logic.

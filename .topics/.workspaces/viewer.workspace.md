@@ -53,12 +53,6 @@
 
 ## Repository Transports
 
-### Tiinex docs published snapshot
-
-- Kind: snapshot
-- Repository: Tiinex/docs
-- Metadata: ../../mirrors/github.com/Tiinex/docs.json
-
 ### Shared browser Git proxy
 
 - Kind: git-proxy
@@ -99,4 +93,4 @@ A useful validation note names the selected artifact, the source inspected, the 
 
 - [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)
   - Towards: [viewer.workspace.md](viewer.workspace.md)
-  - Value: 2HYAJnlhUX6rao67gx9FM8dRRSOBBeRyumGTI8pJy3g
+  - Value: 6H8m4TbXAerVosJMfQWwGw9diSTKhp2rbaTqiClVP7k

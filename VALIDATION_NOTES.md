@@ -18,6 +18,9 @@ Architecture readiness markers used by repository tooling:
 Repository transport validation should cover:
 
 - workspace-relative snapshot metadata resolution and repository scope matching;
+- default GitHub Pages mirror derivation for project and account sites, with explicit snapshots taking precedence and no directory crawling;
+- conventional mirror misses remaining quiet and falling through to Git without changing canonical source identity;
+- progress-aware snapshot archive transfer so a healthy large zip is not rejected by a fixed short wall-clock timeout;
 - snapshot metadata identity, full commit, archive checksum, and safe zip extraction;
 - ordered Git-proxy selection with one active attempt, real abort, bounded total budget, and persisted cooldown;
 - progress-aware Git network policy: bounded response start, idle and sustained low-throughput detection, with network timers ending when the response body completes;

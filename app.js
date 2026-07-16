@@ -4384,7 +4384,8 @@
   app.settings = Object.assign({
     repoDiscoveryBatchRenderEvery: 20,
     repoDiscoveryFetchDelayMs: 0,
-    repositorySnapshotTimeoutMs: 12000,
+    repositorySnapshotTimeoutMs: 35000,
+    repositorySnapshotMetadataTimeoutMs: 5000,
     gitNativeTransportTimeoutMs: 35000,
     gitNativeResponseStartTimeoutMs: 6000,
     gitNativeIdleTimeoutMs: 8000,
@@ -14684,6 +14685,52 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return new RegExp(`^${escaped}$`, 'i').test(normalizedIdentity);
   }
 
+  function githubRepositoryIdentityParts(value) {
+    const raw = stripMarkdownInline(String(value || '')).trim();
+    if (!raw) return null;
+    if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(raw)) {
+      const [owner, repository] = raw.replace(/\.git$/i, '').split('/');
+      return owner && repository ? { host: 'github.com', owner, repository } : null;
+    }
+    let candidate = raw;
+    if (/^[^@\s]+@[^:\s]+:.+/.test(candidate)) candidate = `ssh://${candidate.replace(':', '/')}`;
+    try {
+      const url = new URL(candidate);
+      if (String(url.hostname || '').toLowerCase() !== 'github.com') return null;
+      const parts = String(url.pathname || '').split('/').filter(Boolean);
+      if (parts.length < 2) return null;
+      return { host: 'github.com', owner: parts[0], repository: parts[1].replace(/\.git$/i, '') };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function githubPagesDefaultSnapshotTransport(repo) {
+    const parts = githubRepositoryIdentityParts(repo);
+    if (!parts?.owner || !parts?.repository) return null;
+    const ownerHost = parts.owner.toLowerCase();
+    const repositoryLower = parts.repository.toLowerCase();
+    const accountSiteRepository = `${ownerHost}.github.io`;
+    const siteBase = repositoryLower === accountSiteRepository
+      ? `https://${ownerHost}.github.io/`
+      : `https://${ownerHost}.github.io/${encodeURIComponent(parts.repository)}/`;
+    const metadataUrl = new URL(`mirrors/github.com/${encodeURIComponent(parts.owner)}/${encodeURIComponent(parts.repository)}.json`, siteBase).toString();
+    return Object.freeze({
+      id: `github-pages-default-${ownerHost}-${repositoryLower}`,
+      label: 'GitHub Pages mirror',
+      kind: 'snapshot',
+      order: Number.MAX_SAFE_INTEGER,
+      repository: `${parts.owner}/${parts.repository}`,
+      repositoryIdentity: normalizeRepositoryTransportIdentity(`${parts.owner}/${parts.repository}`),
+      match: '',
+      metadataUrl,
+      proxyUrl: '',
+      workspaceUrl: '',
+      inferred: true,
+      convention: 'github-pages-default'
+    });
+  }
+
   function parseRepositoryTransports(markdown, configUrl) {
     const section = markdownSectionContent(markdown, 'Repository Transports', 2);
     if (!section) return [];
@@ -14729,11 +14776,23 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
   function repositoryTransportsFor(repo, kind = '') {
     const identity = normalizeRepositoryTransportIdentity(repo);
-    return (app.viewerIdentity?.repositoryTransports || []).filter((transport) => {
+    const matching = (app.viewerIdentity?.repositoryTransports || []).filter((transport) => {
       if (kind && transport.kind !== kind) return false;
       if (transport.repositoryIdentity) return transport.repositoryIdentity === identity;
       return repositoryTransportPatternMatches(transport.match, identity);
     }).sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+    if (!kind || kind === 'snapshot') {
+      const inferred = githubPagesDefaultSnapshotTransport(repo);
+      if (inferred && !matching.some((transport) => transport.kind === 'snapshot' && transport.metadataUrl === inferred.metadataUrl)) matching.push(inferred);
+    }
+    return matching.sort((a, b) => {
+      if (!kind) {
+        const kindRank = (transport) => transport.kind === 'snapshot' ? 0 : transport.kind === 'git-proxy' ? 1 : 2;
+        const phaseDifference = kindRank(a) - kindRank(b);
+        if (phaseDifference) return phaseDifference;
+      }
+      return Number(a.order || 0) - Number(b.order || 0);
+    });
   }
 
   function repositoryTransportHealthKey(repo, transport) {
@@ -14844,7 +14903,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const declared = Array.from(app.viewerIdentity?.repositoryTransports || []);
     return {
       repository: normalizeRepositoryTransportIdentity(repo),
-      snapshotTimeoutMs: Number(app.settings.repositorySnapshotTimeoutMs || 12000),
+      snapshotTimeoutMs: Number(app.settings.repositorySnapshotTimeoutMs || 35000),
+      snapshotMetadataTimeoutMs: Number(app.settings.repositorySnapshotMetadataTimeoutMs || 5000),
+      inferredGitHubPagesSnapshot: githubPagesDefaultSnapshotTransport(repo),
       gitTransportMaxNetworkDurationMs: Number(app.settings.gitNativeTransportTimeoutMs || 35000),
       gitTransportResponseStartTimeoutMs: Number(app.settings.gitNativeResponseStartTimeoutMs || 6000),
       gitTransportIdleTimeoutMs: Number(app.settings.gitNativeIdleTimeoutMs || 8000),
@@ -14863,7 +14924,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         matches: repositoryTransportsFor(repo, transport.kind).some((candidate) => candidate.id === transport.id),
         health: repositoryTransportHealth(repo, transport)
       })),
-      matching: repositoryTransportsFor(repo).map((transport) => transport.id)
+      matching: repositoryTransportsFor(repo).map((transport) => ({ id: transport.id, kind: transport.kind, label: transport.label, metadataUrl: transport.metadataUrl || '', proxyUrl: transport.proxyUrl || '', inferred: Boolean(transport.inferred), convention: transport.convention || '' }))
     };
   }
 
@@ -17328,7 +17389,7 @@ ${bodySections}
 
 
 
-  const EMBEDDED_DEFAULT_WORKSPACE_MD = "# Continuity Context\n\n- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.root.v1.schema.md)\n- Current\n  - Current Schema: [tiinex.workspace.v1](../.schemas/tiinex.workspace.v1.schema.md)\n  - Created At: 2026-06-16 00:00:00\n  - Why: Defines a portable multi-lineage workspace entrypoint.\n  - Summary: Opens the Tiinex docs workspace and declares the default viewer discovery lens.\n\n---\n\n# Tiinex Viewer\n\n## Viewer Identity\n\n- Icon: ../../assets/tiinex-logo-white-transparent.png\n- Browser Title: Tiinex\n- Home: https://github.com/Tiinex\n- Public Viewer URL: https://tiinex.dev/\n- Workspace Home: https://tiinex.dev/\n\n## Empty Stage\n\n- Subtitle: Every handoff starts somewhere\n- Subtitle: Start where the last thread ends\n- Subtitle: Leave enough for the next mind\n- Subtitle: A thread is waiting\n- Subtitle: Nothing starts from nothing\n\n## Workspace Discovery\n\n- [Tiinex docs workspaces](https://github.com/Tiinex/docs)\n  - Kind: github-tree\n  - Ref: master\n  - Root Path: .topics\n  - Match: *.workspace.md\n  - Label: Tiinex docs workspaces\n  - Open Behavior: chooser\n\n## Workspace Entrypoints\n\n### Tiinex docs\n\n- Source Kind: github-tree\n- Repository: Tiinex/docs\n- Ref: master\n- Root Path: .topics\n- Repo Files Discovery: on\n- Issue Discovery: on\n- Issue URL: https://github.com/Tiinex/docs/issues/9\n- Default View: feed\n- Default Filter: all\n\n## Repository Transports\n\n### Tiinex docs published snapshot\n\n- Kind: snapshot\n- Repository: Tiinex/docs\n- Metadata: ../../mirrors/github.com/Tiinex/docs.json\n\n### Shared browser Git proxy\n\n- Kind: git-proxy\n- Match: github.com/*\n- Proxy: https://cors.isomorphic-git.org\n\n## Help\n\n### What is this view?\n\nThis workspace opens Tiinex markdown artifacts so an external reviewer and their LLM helpers can inspect continuity, source material, integrity signals, and continuation paths.\n\n### What should I check first?\n\nStart with what is loaded.\n\nCheck the workspace source, then inspect the visible badges. Treat integrity mismatch, missing integrity, unknown schema, and local-only material as review signals, not automatic failure.\n\n### What should I trust?\n\nTrust only what the artifact and its sources actually show.\n\nUse `Source` to inspect where material came from, `Markdown` to read the artifact, `Open` to inspect the selected node, and `Continue` only when the next step is clear enough to preserve.\n\n### What should an LLM preserve?\n\nDo not collapse Parent and Origin.\n\nParent is the declared continuity edge. Origin is provenance for where the material came from. If either is missing or weak, say so rather than filling the gap.\n\n### What should I send back?\n\nA useful validation note names the selected artifact, the source inspected, the observed signal, and the smallest next correction or continuation.\n\n---\n\n# Continuity Integrity\n\n- [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)\n  - Towards: [viewer.workspace.md](viewer.workspace.md)\n  - Value: 2HYAJnlhUX6rao67gx9FM8dRRSOBBeRyumGTI8pJy3g\n";
+  const EMBEDDED_DEFAULT_WORKSPACE_MD = "# Continuity Context\n\n- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.root.v1.schema.md)\n- Current\n  - Current Schema: [tiinex.workspace.v1](../.schemas/tiinex.workspace.v1.schema.md)\n  - Created At: 2026-06-16 00:00:00\n  - Why: Defines a portable multi-lineage workspace entrypoint.\n  - Summary: Opens the Tiinex docs workspace and declares the default viewer discovery lens.\n\n---\n\n# Tiinex Viewer\n\n## Viewer Identity\n\n- Icon: ../../assets/tiinex-logo-white-transparent.png\n- Browser Title: Tiinex\n- Home: https://github.com/Tiinex\n- Public Viewer URL: https://tiinex.dev/\n- Workspace Home: https://tiinex.dev/\n\n## Empty Stage\n\n- Subtitle: Every handoff starts somewhere\n- Subtitle: Start where the last thread ends\n- Subtitle: Leave enough for the next mind\n- Subtitle: A thread is waiting\n- Subtitle: Nothing starts from nothing\n\n## Workspace Discovery\n\n- [Tiinex docs workspaces](https://github.com/Tiinex/docs)\n  - Kind: github-tree\n  - Ref: master\n  - Root Path: .topics\n  - Match: *.workspace.md\n  - Label: Tiinex docs workspaces\n  - Open Behavior: chooser\n\n## Workspace Entrypoints\n\n### Tiinex docs\n\n- Source Kind: github-tree\n- Repository: Tiinex/docs\n- Ref: master\n- Root Path: .topics\n- Repo Files Discovery: on\n- Issue Discovery: on\n- Issue URL: https://github.com/Tiinex/docs/issues/9\n- Default View: feed\n- Default Filter: all\n\n## Repository Transports\n\n### Shared browser Git proxy\n\n- Kind: git-proxy\n- Match: github.com/*\n- Proxy: https://cors.isomorphic-git.org\n\n## Help\n\n### What is this view?\n\nThis workspace opens Tiinex markdown artifacts so an external reviewer and their LLM helpers can inspect continuity, source material, integrity signals, and continuation paths.\n\n### What should I check first?\n\nStart with what is loaded.\n\nCheck the workspace source, then inspect the visible badges. Treat integrity mismatch, missing integrity, unknown schema, and local-only material as review signals, not automatic failure.\n\n### What should I trust?\n\nTrust only what the artifact and its sources actually show.\n\nUse `Source` to inspect where material came from, `Markdown` to read the artifact, `Open` to inspect the selected node, and `Continue` only when the next step is clear enough to preserve.\n\n### What should an LLM preserve?\n\nDo not collapse Parent and Origin.\n\nParent is the declared continuity edge. Origin is provenance for where the material came from. If either is missing or weak, say so rather than filling the gap.\n\n### What should I send back?\n\nA useful validation note names the selected artifact, the source inspected, the observed signal, and the smallest next correction or continuation.\n\n---\n\n# Continuity Integrity\n\n- [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)\n  - Towards: [viewer.workspace.md](viewer.workspace.md)\n  - Value: 6H8m4TbXAerVosJMfQWwGw9diSTKhp2rbaTqiClVP7k\n";
 
   function shouldUseEmbeddedDefaultWorkspace() {
     // Hash state describes current opened sources; it should not block loading
@@ -34935,6 +34996,13 @@ ${githubOutboundFileExcerpt(file, 18000)}
       if (pct) return pct;
     }
     if (phase === 'source-refresh-start' || phase === 'source-reset-start') return 2;
+    if (phase === 'snapshot-connect') return 4;
+    if (phase === 'snapshot-transfer') {
+      const transferTotal = Math.max(0, Number(p.transferTotal || 0));
+      const transferLoaded = Math.max(0, Number(p.transferLoaded || 0));
+      return transferTotal ? scale(discoveryProgressRatio(transferLoaded, transferTotal), 6, 44) : 14;
+    }
+    if (phase === 'snapshot-processing') return 48;
     if (phase === 'git-connect') return 4;
     if (phase === 'git-transfer') {
       const transferTotal = Math.max(0, Number(p.transferTotal || 0));
@@ -34986,6 +35054,9 @@ ${githubOutboundFileExcerpt(file, 18000)}
 
     if (phase === 'source-refresh-start') return 'Starting source refresh';
     if (phase === 'source-reset-start') return 'Resetting source cache';
+    if (phase === 'snapshot-connect') return `Checking ${p.transportLabel || 'repository mirror'}`;
+    if (phase === 'snapshot-transfer') return `Loading repository snapshot through ${p.transportLabel || 'repository mirror'}${gitTransportProgressDetail(p)}`;
+    if (phase === 'snapshot-processing') return `Preparing repository snapshot from ${p.transportLabel || 'repository mirror'}`;
     if (phase === 'git-connect') return `Connecting through ${p.transportLabel || 'Git transport'}`;
     if (phase === 'git-transfer') return `Receiving repository through ${p.transportLabel || 'Git transport'}${gitTransportProgressDetail(p)}`;
     if (phase === 'git-processing') return `Processing Git snapshot from ${p.transportLabel || 'Git transport'}`;
@@ -35139,11 +35210,65 @@ ${githubOutboundFileExcerpt(file, 18000)}
     return Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, '0')).join('');
   }
 
+  function repositorySnapshotTransportError(kind, message, detail = {}) {
+    const error = new Error(message);
+    error.name = kind.includes('timeout') || kind === 'low-throughput' ? 'TimeoutError' : 'RepositorySnapshotTransportError';
+    error.transportFailure = true;
+    error.transportFailureKind = kind;
+    Object.assign(error, detail || {});
+    return error;
+  }
+
   async function fetchRepositorySnapshotBytes(url, deadlineAt, label, options = {}) {
-    const remaining = Math.max(1, Number(deadlineAt || 0) - Date.now());
-    if (!Number.isFinite(remaining) || remaining <= 1) throw new Error(`${label} exceeded its transport budget.`);
+    const sharedRemainingMs = Math.max(1, Number(deadlineAt || 0) - Date.now());
+    if (!Number.isFinite(sharedRemainingMs) || sharedRemainingMs <= 1) throw repositorySnapshotTransportError('network-timeout', `${label} exceeded its transport budget.`);
+    const metadataRequest = Boolean(options.metadata);
+    const configuredMaxMs = metadataRequest
+      ? Math.max(1000, Number(app.settings.repositorySnapshotMetadataTimeoutMs || 5000))
+      : Math.max(3000, Number(app.settings.repositorySnapshotTimeoutMs || 35000));
+    const maxDurationMs = Math.max(1, Math.min(sharedRemainingMs, configuredMaxMs));
+    const responseStartTimeoutMs = Math.max(500, Math.min(maxDurationMs, metadataRequest
+      ? configuredMaxMs
+      : Number(app.settings.gitNativeResponseStartTimeoutMs || 6000)));
+    const idleTimeoutMs = Math.max(1000, Number(app.settings.gitNativeIdleTimeoutMs || 8000));
+    const lowSpeedGraceMs = Math.max(2000, Number(app.settings.gitNativeLowSpeedGraceMs || 12000));
+    const minBytesPerSecond = Math.max(0, Number(app.settings.gitNativeMinBytesPerSecond || 65536));
+    const startedAt = Date.now();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new DOMException(`${label} timed out.`, 'TimeoutError')), remaining);
+    let responseStartTimer = null;
+    let maxDurationTimer = null;
+    let idleTimer = null;
+    let lowSpeedTimer = null;
+    let reader = null;
+    let abortReason = null;
+    let loaded = 0;
+    let total = 0;
+
+    const telemetry = (event, detail = {}) => {
+      const elapsedMs = Math.max(0, Date.now() - startedAt);
+      const bytesPerSecond = elapsedMs > 0 ? Math.round(loaded * 1000 / elapsedMs) : 0;
+      const value = Object.assign({ event, loaded, total, elapsedMs, bytesPerSecond }, detail || {});
+      Object.assign(options.telemetry || {}, value);
+      try { options.onProgress?.(value); } catch (_) {}
+      return value;
+    };
+    const abort = (kind, message) => {
+      if (abortReason) return abortReason;
+      abortReason = repositorySnapshotTransportError(kind, message, { loaded, total, elapsedMs: Math.max(0, Date.now() - startedAt) });
+      try { controller.abort(abortReason); } catch (_) {}
+      try { reader?.cancel?.(abortReason); } catch (_) {}
+      telemetry('request-failed', { failureKind: kind, reason: message });
+      return abortReason;
+    };
+    const resetIdleTimer = () => {
+      clearTimeout(idleTimer);
+      if (!metadataRequest) idleTimer = setTimeout(() => abort('idle-timeout', `${label} stalled with no new bytes for ${Math.round(idleTimeoutMs / 1000)} seconds.`), idleTimeoutMs);
+    };
+
+    responseStartTimer = setTimeout(() => abort('response-start-timeout', `${label} did not begin responding within ${Math.round(responseStartTimeoutMs / 1000)} seconds.`), responseStartTimeoutMs);
+    maxDurationTimer = setTimeout(() => abort('max-network-duration', `${label} exceeded its ${Math.round(maxDurationMs / 1000)} second network budget.`), maxDurationMs);
+    telemetry('request-start');
+
     try {
       const response = await fetch(url, {
         signal: controller.signal,
@@ -35152,17 +35277,65 @@ ${githubOutboundFileExcerpt(file, 18000)}
         skipGitNativeRawBridge: true,
         allowRawFallback: true
       });
-      if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}.`);
-      return await response.arrayBuffer();
-    } catch (error) {
-      if (controller.signal.aborted) {
-        const timeout = new Error(`${label} timed out after ${Math.max(1, Math.round(remaining / 1000))} seconds.`);
-        timeout.name = 'TimeoutError';
-        throw timeout;
+      clearTimeout(responseStartTimer);
+      responseStartTimer = null;
+      if (!response.ok) {
+        const kind = response.status === 404 ? 'not-found' : 'http-error';
+        throw repositorySnapshotTransportError(kind, `${label} returned HTTP ${response.status}.`, { status: response.status, statusCode: response.status });
       }
-      throw error;
+      total = Math.max(0, Number(response.headers.get('content-length') || 0));
+      telemetry('response-start');
+
+      if (metadataRequest || !response.body?.getReader) {
+        const buffer = await response.arrayBuffer();
+        loaded = buffer.byteLength;
+        telemetry('response-complete');
+        return buffer;
+      }
+
+      reader = response.body.getReader();
+      const chunks = [];
+      resetIdleTimer();
+      lowSpeedTimer = setInterval(() => {
+        const elapsedMs = Math.max(1, Date.now() - startedAt);
+        if (elapsedMs < lowSpeedGraceMs || !loaded || !minBytesPerSecond) return;
+        const bytesPerSecond = loaded * 1000 / elapsedMs;
+        if (bytesPerSecond < minBytesPerSecond) {
+          abort('low-throughput', `${label} remained below ${Math.round(minBytesPerSecond / 1024)} KB/s after ${Math.round(lowSpeedGraceMs / 1000)} seconds.`);
+        }
+      }, 1000);
+
+      while (true) {
+        const result = await reader.read();
+        if (result.done) break;
+        if (result.value?.byteLength) {
+          chunks.push(result.value);
+          loaded += result.value.byteLength;
+          resetIdleTimer();
+          telemetry('progress');
+        }
+        if (abortReason) throw abortReason;
+      }
+      if (abortReason) throw abortReason;
+      const bytes = new Uint8Array(loaded);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      telemetry('response-complete');
+      return bytes.buffer;
+    } catch (error) {
+      if (abortReason) throw abortReason;
+      if (error?.transportFailureKind) throw error;
+      if (controller.signal.aborted) throw repositorySnapshotTransportError('network-timeout', `${label} was aborted before completion.`);
+      throw repositorySnapshotTransportError('network-error', `${label} failed: ${error?.message || String(error)}`);
     } finally {
-      clearTimeout(timer);
+      clearTimeout(responseStartTimer);
+      clearTimeout(maxDurationTimer);
+      clearTimeout(idleTimer);
+      clearInterval(lowSpeedTimer);
+      try { reader?.releaseLock?.(); } catch (_) {}
     }
   }
 
@@ -35179,18 +35352,18 @@ ${githubOutboundFileExcerpt(file, 18000)}
   }
 
   function validateRepositorySnapshotMetadata(metadata, transport, repo, requestedRef = '') {
-    if (!metadata || typeof metadata !== 'object') throw new Error('Snapshot metadata is not an object.');
-    if (metadata.type !== 'tiinex.repository.snapshot' || Number(metadata.version) !== 1) throw new Error('Unsupported repository snapshot metadata type or version.');
+    if (!metadata || typeof metadata !== 'object') throw repositorySnapshotTransportError('invalid-metadata', 'Snapshot metadata is not an object.');
+    if (metadata.type !== 'tiinex.repository.snapshot' || Number(metadata.version) !== 1) throw repositorySnapshotTransportError('invalid-metadata', 'Unsupported repository snapshot metadata type or version.');
     const expectedIdentity = normalizeRepositoryTransportIdentity(repo);
     const actualIdentity = normalizeRepositoryTransportIdentity(metadata.repository || transport.repository || '');
-    if (!actualIdentity || actualIdentity !== expectedIdentity) throw new Error(`Snapshot repository identity mismatch: expected ${expectedIdentity}, received ${actualIdentity || 'none'}.`);
-    if (!/^[0-9a-f]{40}$/i.test(String(metadata.commit || ''))) throw new Error('Snapshot metadata requires a full 40-character commit SHA.');
-    if (!/^[0-9a-f]{64}$/i.test(String(metadata.sha256 || ''))) throw new Error('Snapshot metadata requires a SHA-256 archive checksum.');
+    if (!actualIdentity || actualIdentity !== expectedIdentity) throw repositorySnapshotTransportError('invalid-metadata', `Snapshot repository identity mismatch: expected ${expectedIdentity}, received ${actualIdentity || 'none'}.`);
+    if (!/^[0-9a-f]{40}$/i.test(String(metadata.commit || ''))) throw repositorySnapshotTransportError('invalid-metadata', 'Snapshot metadata requires a full 40-character commit SHA.');
+    if (!/^[0-9a-f]{64}$/i.test(String(metadata.sha256 || ''))) throw repositorySnapshotTransportError('invalid-metadata', 'Snapshot metadata requires a SHA-256 archive checksum.');
     const requested = String(requestedRef || '').trim();
-    if (/^[0-9a-f]{40}$/i.test(requested) && requested.toLowerCase() !== String(metadata.commit).toLowerCase()) throw new Error(`Snapshot commit ${metadata.commit} does not satisfy requested commit ${requested}.`);
-    if (requested && !/^[0-9a-f]{7,40}$/i.test(requested) && metadata.ref && String(metadata.ref).replace(/^refs\/heads\//, '') !== requested.replace(/^refs\/heads\//, '')) throw new Error(`Snapshot ref ${metadata.ref} does not satisfy requested ref ${requested}.`);
+    if (/^[0-9a-f]{40}$/i.test(requested) && requested.toLowerCase() !== String(metadata.commit).toLowerCase()) throw repositorySnapshotTransportError('snapshot-ref-mismatch', `Snapshot commit ${metadata.commit} does not satisfy requested commit ${requested}.`);
+    if (requested && !/^[0-9a-f]{7,40}$/i.test(requested) && metadata.ref && String(metadata.ref).replace(/^refs\/heads\//, '') !== requested.replace(/^refs\/heads\//, '')) throw repositorySnapshotTransportError('snapshot-ref-mismatch', `Snapshot ref ${metadata.ref} does not satisfy requested ref ${requested}.`);
     const archiveUrl = repositorySnapshotArchiveUrl(transport.metadataUrl, metadata);
-    if (!archiveUrl) throw new Error('Snapshot metadata does not provide a usable archive URL.');
+    if (!archiveUrl) throw repositorySnapshotTransportError('invalid-metadata', 'Snapshot metadata does not provide a usable archive URL.');
     return { archiveUrl, commit: String(metadata.commit), ref: String(metadata.ref || requestedRef || '') };
   }
 
@@ -35206,7 +35379,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       return { ok: false, skipped: true, reason: 'no-matching-workspace-transport' };
     }
 
-    const timeoutMs = Math.max(3000, Number(app.settings.repositorySnapshotTimeoutMs || 12000));
+    const timeoutMs = Math.max(3000, Number(app.settings.repositorySnapshotTimeoutMs || 35000));
     for (const transport of transports) {
       if (location.protocol === 'file:' && isFileProtocolUrl(transport.metadataUrl)) {
         githubRepoFetchTrace('repository-snapshot.skip', { sessionId, repo, ref, transportId: transport.id, metadataUrl: transport.metadataUrl, reason: 'local-file-http-snapshot-unavailable' });
@@ -35225,16 +35398,77 @@ ${githubOutboundFileExcerpt(file, 18000)}
         githubRepoFetchTrace('repository-snapshot.skip', { sessionId, repo, ref, transportId: transport.id, reason: 'repository-transport-budget-exhausted' });
         break;
       }
-      githubRepoFetchTrace('repository-snapshot.start', { sessionId, repo, ref, rootPaths, transportId: transport.id, label: transport.label, metadataUrl: transport.metadataUrl, timeoutMs: Math.max(1, deadlineAt - Date.now()), sharedDeadlineAt: Number.isFinite(sharedDeadlineAt) ? sharedDeadlineAt : 0 });
+      const attemptStartedAt = Date.now();
+      githubRepoFetchTrace('repository-snapshot.start', { sessionId, repo, ref, rootPaths, transportId: transport.id, label: transport.label, metadataUrl: transport.metadataUrl, timeoutMs: Math.max(1, deadlineAt - Date.now()), sharedDeadlineAt: Number.isFinite(sharedDeadlineAt) ? sharedDeadlineAt : 0, inferred: Boolean(transport.inferred), convention: transport.convention || '' });
+      ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
+        phase: 'snapshot-connect',
+        transportId: transport.id,
+        transportLabel: transport.label,
+        transferLoaded: 0,
+        transferTotal: 0,
+        transferBytesPerSecond: 0,
+        sourceProgress: context.options?.sourceProgress || ws.discoveryProgress?.sourceProgress || ''
+      });
+      updateDiscoveryProgressDom(ws);
       try {
-        const metadataBuffer = await fetchRepositorySnapshotBytes(transport.metadataUrl, deadlineAt, 'Repository snapshot metadata');
-        const metadata = JSON.parse(new TextDecoder().decode(metadataBuffer));
+        const metadataBuffer = await fetchRepositorySnapshotBytes(transport.metadataUrl, deadlineAt, 'Repository snapshot metadata', { metadata: true });
+        let metadata = null;
+        try {
+          metadata = JSON.parse(new TextDecoder().decode(metadataBuffer));
+        } catch (error) {
+          throw repositorySnapshotTransportError('invalid-metadata', `Repository snapshot metadata is not valid JSON: ${error?.message || String(error)}`);
+        }
         const validated = validateRepositorySnapshotMetadata(metadata, transport, repo, ref);
-        const archiveBuffer = await fetchRepositorySnapshotBytes(validated.archiveUrl, deadlineAt, 'Repository snapshot archive', { cache: 'default' });
+        const archiveTelemetry = {};
+        let lastSnapshotUiAt = 0;
+        let lastSnapshotTraceAt = 0;
+        const archiveBuffer = await fetchRepositorySnapshotBytes(validated.archiveUrl, deadlineAt, 'Repository snapshot archive', {
+          cache: 'default',
+          telemetry: archiveTelemetry,
+          onProgress: (event) => {
+            const now = Date.now();
+            if (event.event === 'response-start' || event.event === 'progress') {
+              if (event.event !== 'progress' || now - lastSnapshotUiAt >= 200) {
+                ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
+                  phase: 'snapshot-transfer',
+                  transportId: transport.id,
+                  transportLabel: transport.label,
+                  transferLoaded: Math.max(0, Number(event.loaded || 0)),
+                  transferTotal: Math.max(0, Number(event.total || 0)),
+                  transferBytesPerSecond: Math.max(0, Number(event.bytesPerSecond || 0)),
+                  transferElapsedMs: Math.max(0, Number(event.elapsedMs || 0)),
+                  sourceProgress: context.options?.sourceProgress || ws.discoveryProgress?.sourceProgress || ''
+                });
+                updateDiscoveryProgressDom(ws);
+                lastSnapshotUiAt = now;
+              }
+              if (event.event !== 'progress' || now - lastSnapshotTraceAt >= 1000) {
+                githubRepoFetchTrace('repository-snapshot.transport.telemetry', { sessionId, repo, ref, transportId: transport.id, label: transport.label, event: event.event, loaded: event.loaded || 0, total: event.total || 0, bytesPerSecond: event.bytesPerSecond || 0, elapsedMs: event.elapsedMs || 0, inferred: Boolean(transport.inferred) });
+                lastSnapshotTraceAt = now;
+              }
+            }
+          }
+        });
+        ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
+          phase: 'snapshot-processing',
+          transportId: transport.id,
+          transportLabel: transport.label,
+          transferLoaded: archiveBuffer.byteLength,
+          transferTotal: archiveBuffer.byteLength,
+          transferBytesPerSecond: Math.max(0, Number(archiveTelemetry.bytesPerSecond || 0)),
+          sourceProgress: context.options?.sourceProgress || ws.discoveryProgress?.sourceProgress || ''
+        });
+        updateDiscoveryProgressDom(ws);
+        await progressYield(ws);
         const actualSha256 = await sha256HexBytes(archiveBuffer);
-        if (actualSha256.toLowerCase() !== String(metadata.sha256).toLowerCase()) throw new Error(`Snapshot checksum mismatch: expected ${metadata.sha256}, received ${actualSha256}.`);
-        if (zipBufferHasEncryptedEntries(archiveBuffer)) throw new Error('Published repository snapshots must not be encrypted.');
-        const entries = await zipBufferToImportEntries(archiveBuffer, { source: 'repository-snapshot', excludeRepositoryInternals: true });
+        if (actualSha256.toLowerCase() !== String(metadata.sha256).toLowerCase()) throw repositorySnapshotTransportError('checksum-mismatch', `Snapshot checksum mismatch: expected ${metadata.sha256}, received ${actualSha256}.`);
+        if (zipBufferHasEncryptedEntries(archiveBuffer)) throw repositorySnapshotTransportError('invalid-archive', 'Published repository snapshots must not be encrypted.');
+        let entries = [];
+        try {
+          entries = await zipBufferToImportEntries(archiveBuffer, { source: 'repository-snapshot', excludeRepositoryInternals: true });
+        } catch (error) {
+          throw repositorySnapshotTransportError('invalid-archive', `Published repository snapshot could not be unpacked safely: ${error?.message || String(error)}`);
+        }
         const sourceBoundary = sourceResolutionBoundaryFor(Object.assign({}, githubSource || {}, { sourceAccessMode: 'published-snapshot', sourceResolutionKind: 'published-repository-snapshot' }), 'published-repository-snapshot');
         let count = 0;
         let assets = 0;
@@ -35282,7 +35516,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
         ws.sourceResolutionKind = 'published-repository-snapshot';
         ws.sourceResultBoundary = 'publisher-generated repository snapshot at a declared commit';
         ws.sourceCacheBoundary = 'HTTP archive plus browser workspace asset cache';
-        ws.repositoryTransport = { kind: 'snapshot', id: transport.id, label: transport.label, metadataUrl: transport.metadataUrl, archiveUrl: validated.archiveUrl, commit: validated.commit };
+        ws.repositoryTransport = { kind: 'snapshot', id: transport.id, label: transport.label, metadataUrl: transport.metadataUrl, archiveUrl: validated.archiveUrl, commit: validated.commit, inferred: Boolean(transport.inferred), convention: transport.convention || '' };
         Object.assign(ws.discoverySource || {}, {
           ref: ref || validated.ref,
           requestedRef: ref || validated.ref,
@@ -35302,14 +35536,15 @@ ${githubOutboundFileExcerpt(file, 18000)}
           sourceBoundary,
           transportUsed: transport.metadataUrl
         });
-        rememberRepositoryTransportSuccess(repo, transport, { commit: validated.commit });
+        rememberRepositoryTransportSuccess(repo, transport, { commit: validated.commit, transferLoaded: archiveBuffer.byteLength, transferBytesPerSecond: Number(archiveTelemetry.bytesPerSecond || 0), networkElapsedMs: Number(archiveTelemetry.elapsedMs || 0) });
         ws.logs.push(`Loaded ${repo}@${validated.commit} from published snapshot ${transport.label}; indexed ${count} Tiinex markdown artifact file(s) and preserved ${assets} repository asset(s).`);
-        githubRepoFetchTrace('repository-snapshot.complete', { sessionId, repo, ref: validated.ref, commit: validated.commit, rootPaths, transportId: transport.id, metadataUrl: transport.metadataUrl, archiveUrl: validated.archiveUrl, bytes: archiveBuffer.byteLength, candidateFiles: count, assets, elapsedMs: timeoutMs - Math.max(0, deadlineAt - Date.now()) });
+        githubRepoFetchTrace('repository-snapshot.complete', { sessionId, repo, ref: validated.ref, commit: validated.commit, rootPaths, transportId: transport.id, metadataUrl: transport.metadataUrl, archiveUrl: validated.archiveUrl, bytes: archiveBuffer.byteLength, candidateFiles: count, assets, elapsedMs: Date.now() - attemptStartedAt, transferBytesPerSecond: Number(archiveTelemetry.bytesPerSecond || 0), inferred: Boolean(transport.inferred), convention: transport.convention || '' });
         return { ok: true, count, failed: 0, total: count, commit: validated.commit, candidateFiles: count, assets, transport };
       } catch (error) {
         const health = rememberRepositoryTransportFailure(repo, transport, error);
-        githubRepoFetchTrace('repository-snapshot.failed', { sessionId, repo, ref, rootPaths, transportId: transport.id, metadataUrl: transport.metadataUrl, error: error?.message || String(error), name: error?.name || '', cooldownUntil: health.cooldownUntil });
-        ws.logs.push(`Published repository snapshot ${transport.label} was unavailable for ${repo}: ${error?.message || String(error)}.`);
+        const eventName = transport.inferred ? 'repository-snapshot.convention-miss' : 'repository-snapshot.failed';
+        githubRepoFetchTrace(eventName, { sessionId, repo, ref, rootPaths, transportId: transport.id, metadataUrl: transport.metadataUrl, error: error?.message || String(error), name: error?.name || '', failureKind: repositoryTransportFailureKind(error), cooldownUntil: health.cooldownUntil, inferred: Boolean(transport.inferred), convention: transport.convention || '' });
+        if (!transport.inferred) ws.logs.push(`Published repository snapshot ${transport.label} was unavailable for ${repo}: ${error?.message || String(error)}.`);
       }
     }
     return { ok: false, skipped: true, reason: 'matching-snapshot-transports-failed' };

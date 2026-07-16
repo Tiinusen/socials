@@ -198,6 +198,31 @@ Rules:
 - Missing `Enabled` means enabled.
 - Older viewers may ignore this optional section without reinterpreting the workspace sources.
 
+### GitHub Pages mirror convention
+
+For a public GitHub repository, a viewer may probe one conventional published snapshot before Git transport when no earlier declared snapshot succeeds.
+
+For `github.com/<owner>/<repository>`, the default project-site metadata URL is:
+
+```text
+https://<owner-lowercase>.github.io/<repository>/mirrors/github.com/<owner>/<repository>.json
+```
+
+For the account-site repository `<owner>.github.io`, the repository path segment is omitted:
+
+```text
+https://<owner-lowercase>.github.io/mirrors/github.com/<owner>/<owner>.github.io.json
+```
+
+Rules:
+
+- Explicit matching `snapshot` declarations precede the convention-derived candidate.
+- The probe is one metadata request. Viewers must not crawl directory indexes or guess unrelated mirror hosts.
+- A missing or unavailable conventional mirror is not a source-integrity failure. The viewer should continue to matching Git transports and then bounded material fallback.
+- The default `github.io` URL is the discovery address. Normal HTTP redirects may lead to a repository custom domain; viewers must not invent custom domains.
+- The metadata and archive must still satisfy the same repository identity, full commit, checksum, safe extraction, and source-boundary rules as declared snapshots.
+- This convention applies only to `github.com` repository identities. Other forges require explicit transports or their own documented conventions.
+
 ## Source Policy
 
 Optional behavior for source and integrity handling.

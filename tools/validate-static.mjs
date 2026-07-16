@@ -1763,15 +1763,36 @@ function validateRepositoryTransportContracts() {
   const workspace = read('.topics/.workspaces/viewer.workspace.md');
   const workflow = read('.github/workflows/publish-public.yml');
 
-  for (const token of ['## Repository Transports', '`snapshot`', '`git-proxy`', 'Snapshot transports precede Git-proxy transports', 'Relative `Metadata` and `Proxy` values resolve against the workspace artifact location']) {
+  for (const token of ['## Repository Transports', '`snapshot`', '`git-proxy`', 'Snapshot transports precede Git-proxy transports', 'Relative `Metadata` and `Proxy` values resolve against the workspace artifact location', '### GitHub Pages mirror convention', 'https://<owner-lowercase>.github.io/<repository>/mirrors/github.com/<owner>/<repository>.json', 'Viewers must not crawl directory indexes']) {
     if (!schema.includes(token)) fail(`workspace schema must document repository transport contract: ${token}`);
   }
-  for (const token of ['## Repository Transports', '- Kind: snapshot', '- Metadata: ../../mirrors/github.com/Tiinex/docs.json', '- Kind: git-proxy', '- Proxy: https://cors.isomorphic-git.org']) {
+  for (const token of ['## Repository Transports', '- Kind: git-proxy', '- Proxy: https://cors.isomorphic-git.org']) {
     if (!workspace.includes(token)) fail(`packaged workspace must declare the default repository transport: ${token}`);
   }
-  for (const token of ['parseRepositoryTransports', 'repositoryTransportsFor', 'tryDiscoverGitHubRepoViaRepositorySnapshot', 'zipBufferToImportEntries', 'repositoryTransportPlan', 'gitNativeTransportCandidates', 'clearRepositoryTransportHealth', 'workspace-transport-lazy', 'repositoryTransportDeadlineAt', 'repositoryTransportBudgetMs', 'local-file-http-snapshot-unavailable']) {
+  if (workspace.includes('- Kind: snapshot') || workspace.includes('mirrors/github.com/Tiinex/docs.json')) {
+    fail('packaged workspace should exercise the schema-defined GitHub Pages mirror convention instead of duplicating its own repo mirror URL');
+  }
+  for (const token of ['parseRepositoryTransports', 'repositoryTransportsFor', 'githubPagesDefaultSnapshotTransport', "convention: 'github-pages-default'", 'tryDiscoverGitHubRepoViaRepositorySnapshot', 'zipBufferToImportEntries', 'repositoryTransportPlan', 'gitNativeTransportCandidates', 'clearRepositoryTransportHealth', 'workspace-transport-lazy', 'repositoryTransportDeadlineAt', 'repositoryTransportBudgetMs', 'local-file-http-snapshot-unavailable', "phase: 'snapshot-connect'", "phase: 'snapshot-transfer'", "phase: 'snapshot-processing'", 'repository-snapshot.convention-miss', 'repositorySnapshotMetadataTimeoutMs: 5000', 'repositorySnapshotTimeoutMs: 35000']) {
     if (!app.includes(token)) fail(`repository transport runtime contract missing: ${token}`);
   }
+  const identityStart = app.indexOf("  function normalizeRepositoryTransportIdentity(value, defaultHost = 'github.com') {");
+  const transportParseStart = app.indexOf('  function parseRepositoryTransports(', identityStart);
+  if (identityStart < 0 || transportParseStart <= identityStart) fail('Could not isolate repository mirror convention helpers.');
+  const mirrorContext = { URL, Number, encodeURIComponent, stripMarkdownInline: (value) => String(value || '') };
+  vm.runInNewContext(`${app.slice(identityStart, transportParseStart)}
+  globalThis.__mirrorConvention = { githubPagesDefaultSnapshotTransport };`, mirrorContext, { filename: 'app.js#github-pages-mirror-convention' });
+  const projectMirror = mirrorContext.__mirrorConvention.githubPagesDefaultSnapshotTransport('Tiinex/docs');
+  if (projectMirror?.metadataUrl !== 'https://tiinex.github.io/docs/mirrors/github.com/Tiinex/docs.json' || !projectMirror?.inferred) {
+    fail('GitHub project repositories must derive the default Pages mirror metadata URL.');
+  }
+  const accountMirror = mirrorContext.__mirrorConvention.githubPagesDefaultSnapshotTransport('Octocat/Octocat.github.io');
+  if (accountMirror?.metadataUrl !== 'https://octocat.github.io/mirrors/github.com/Octocat/Octocat.github.io.json') {
+    fail('GitHub account-site repositories must omit the project path from the default Pages mirror URL.');
+  }
+  if (mirrorContext.__mirrorConvention.githubPagesDefaultSnapshotTransport('https://gitlab.com/example/repo.git')) {
+    fail('GitHub Pages mirror convention must not be inferred for other forges.');
+  }
+
   if (/repo:\s*['"]Tiinex\/docs['"]/u.test(index) || /corsProxy:\s*['"]https:\/\/cors\.isomorphic-git\.org/u.test(index)) {
     fail('repository identity and proxy selection must live in .workspace.md, not default app JSON');
   }
@@ -1784,6 +1805,17 @@ function validateRepositoryTransportContracts() {
   if (!app.includes("const configUrl = normalizeViewerConfigUrl('.topics/.workspaces/viewer.workspace.md')")) {
     fail('embedded workspace resources must resolve from an absolute workspace artifact URL');
   }
+  for (const token of ['repositorySnapshotTransportError', 'response-start-timeout', 'idle-timeout', 'low-throughput', 'max-network-duration', 'reader?.cancel?.(abortReason)', 'repository-snapshot.transport.telemetry']) {
+    if (!app.includes(token)) fail(`snapshot transfer health contract missing: ${token}`);
+  }
+  const snapshotFetchStart = app.indexOf('  async function fetchRepositorySnapshotBytes(');
+  const snapshotFetchEnd = app.indexOf('  function repositorySnapshotArchiveUrl(', snapshotFetchStart);
+  if (snapshotFetchStart < 0 || snapshotFetchEnd <= snapshotFetchStart) fail('Could not isolate repository snapshot transfer helper.');
+  const snapshotFetchSource = app.slice(snapshotFetchStart, snapshotFetchEnd);
+  if (/setTimeout\([^)]*repository snapshot archive timed out after/u.test(snapshotFetchSource)) {
+    fail('Repository snapshot archives must not use one fixed short wall-clock timeout while bytes are progressing.');
+  }
+
   const gitRuntime = read('src/app/git-native-runtime.js');
   for (const token of ['timedFetchHttpClient', 'gitTransportTimingPolicy', 'gitTransportLowSpeedState', 'response-start-timeout', 'idle-timeout', 'low-throughput', 'max-network-duration', 'reader?.cancel?.(error)', 'if (abortReason) throw abortReason', 'AbortController', 'transportSignal', 'cleanupFailedClone', "const requestedRef = clean(opts.ref || '')", 'ref: requestedRef || undefined', 'currentBranch']) {
     if (!gitRuntime.includes(token)) fail(`Git transport abort/cleanup contract missing: ${token}`);
@@ -1816,7 +1848,7 @@ function validateRepositoryTransportContracts() {
   }
   if (!workflow.includes("':(exclude).mirrors/**'")) fail('mirror publisher must exclude nested .mirrors build inputs from every published snapshot');
   if (/exclude_mirrors/u.test(workflow)) fail('mirror publisher should use one invariant instead of per-repository .mirrors exclusion flags');
-  note('workspace-owned repository snapshots and scoped Git proxy contracts are valid');
+  note('workspace-owned repository snapshots, default GitHub Pages discovery, and scoped Git proxy contracts are valid');
 }
 
 function validatePublicBuildContracts() {
