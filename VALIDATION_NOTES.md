@@ -20,6 +20,9 @@ Repository transport validation should cover:
 - workspace-relative snapshot metadata resolution and repository scope matching;
 - snapshot metadata identity, full commit, archive checksum, and safe zip extraction;
 - ordered Git-proxy selection with one active attempt, real abort, bounded total budget, and persisted cooldown;
+- progress-aware Git network policy: bounded response start, idle and sustained low-throughput detection, with network timers ending when the response body completes;
+- local Git pack processing and file indexing never being classified as proxy timeout or transport cooldown;
+- the first automatic cooldown being one minute so failed transports can be retested without hiding them for an entire development session;
 - `Reset cache` clearing transport cooldown for the selected repository;
 - canonical source identity remaining unchanged when a mirror or proxy supplies material;
 - published root and submodule snapshots excluding `.git` and `.mirrors`;

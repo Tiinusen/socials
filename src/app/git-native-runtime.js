@@ -170,61 +170,239 @@
     return joined;
   }
 
-  function timedFetchHttpClient(timeoutMs, transportSignal = null) {
-    const limit = Math.max(1000, Number(timeoutMs || 0));
+  function gitTransportTimingPolicy(value = {}) {
+    const source = typeof value === 'number' ? { maxNetworkDurationMs: value } : (value || {});
+    const maxNetworkDurationMs = Math.max(3000, Number(source.maxNetworkDurationMs || source.requestTimeoutMs || 35000));
+    return Object.freeze({
+      responseStartTimeoutMs: Math.max(1000, Math.min(maxNetworkDurationMs, Number(source.responseStartTimeoutMs || 6000))),
+      idleTimeoutMs: Math.max(1000, Math.min(maxNetworkDurationMs, Number(source.idleTimeoutMs || 8000))),
+      lowSpeedGraceMs: Math.max(2000, Math.min(maxNetworkDurationMs, Number(source.lowSpeedGraceMs || 12000))),
+      minBytesPerSecond: Math.max(0, Number(source.minBytesPerSecond == null || source.minBytesPerSecond === '' ? 65536 : source.minBytesPerSecond)),
+      maxNetworkDurationMs
+    });
+  }
+
+  function gitTransportFailure(message, kind, detail = {}) {
+    const error = new Error(message);
+    error.name = 'TimeoutError';
+    error.transportFailure = true;
+    error.transportFailureKind = kind;
+    Object.assign(error, detail || {});
+    return error;
+  }
+
+  function gitTransportRateState(loaded, startedAt, now = Date.now()) {
+    const durationMs = Math.max(1, Number(now || 0) - Number(startedAt || now || 0));
+    const bytes = Math.max(0, Number(loaded || 0));
+    return Object.freeze({ durationMs, bytesPerSecond: Math.round((bytes * 1000) / durationMs) });
+  }
+
+  function gitTransportLowSpeedState(loaded, firstByteAt, policy, now = Date.now()) {
+    if (!firstByteAt) return Object.freeze({ exceeded: false, receivingMs: 0, bytesPerSecond: 0 });
+    const rate = gitTransportRateState(loaded, firstByteAt, now);
+    const graceMs = Math.max(0, Number(policy?.lowSpeedGraceMs || 0));
+    const minimum = Math.max(0, Number(policy?.minBytesPerSecond || 0));
+    return Object.freeze({
+      exceeded: rate.durationMs >= graceMs && minimum > 0 && rate.bytesPerSecond < minimum,
+      receivingMs: rate.durationMs,
+      bytesPerSecond: rate.bytesPerSecond
+    });
+  }
+
+  function timedFetchHttpClient(timing = {}, transportSignal = null, onTransportEvent = null) {
+    const policy = gitTransportTimingPolicy(timing);
+    let transportNetworkDeadlineAt = 0;
+    const emit = (event, detail = {}) => {
+      if (typeof onTransportEvent !== 'function') return;
+      try { onTransportEvent(Object.assign({ event, at: Date.now() }, detail || {})); } catch (_) {}
+    };
     return Object.freeze({
       async request(input = {}) {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(new DOMException('Git transport timed out.', 'TimeoutError')), limit);
         const externalSignals = [input.signal, transportSignal].filter(Boolean);
+        let abortReason = null;
+        let responseStartTimer = null;
+        let idleTimer = null;
+        let maxNetworkTimer = null;
+        let lowSpeedMonitor = null;
+        let reader = null;
+        let networkStartedAt = 0;
+        let responseStartedAt = 0;
+        let firstByteAt = 0;
+        let loaded = 0;
+        let total = 0;
+        const requestUrl = String(input.url || '');
+        const requestMethod = String(input.method || 'GET').toUpperCase();
+
+        const cleanup = () => {
+          if (responseStartTimer) clearTimeout(responseStartTimer);
+          if (idleTimer) clearTimeout(idleTimer);
+          if (maxNetworkTimer) clearTimeout(maxNetworkTimer);
+          if (lowSpeedMonitor) clearInterval(lowSpeedMonitor);
+          responseStartTimer = null;
+          idleTimer = null;
+          maxNetworkTimer = null;
+          lowSpeedMonitor = null;
+          for (const signal of externalSignals) signal.removeEventListener?.('abort', abortFromExternal);
+          try { reader?.releaseLock?.(); } catch (_) {}
+        };
+        const abortWith = (error) => {
+          if (controller.signal.aborted) return;
+          abortReason = error;
+          try { controller.abort(error); } catch (_) { controller.abort(); }
+          try { reader?.cancel?.(error); } catch (_) {}
+        };
         const abortFromExternal = (event) => {
           const source = event?.target;
-          controller.abort(source?.reason || new DOMException('Git transport aborted.', 'AbortError'));
+          const reason = source?.reason || new DOMException('Git transport aborted.', 'AbortError');
+          abortWith(reason);
         };
+        const elapsedMs = () => Math.max(0, Date.now() - networkStartedAt);
+        const averageBytesPerSecond = () => gitTransportRateState(
+          loaded,
+          firstByteAt || responseStartedAt || networkStartedAt || Date.now()
+        ).bytesPerSecond;
+        const armIdleTimer = () => {
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => abortWith(gitTransportFailure(
+            `Git transport stalled for ${Math.round(policy.idleTimeoutMs / 1000)} seconds.`,
+            'idle-timeout',
+            { loaded, total, elapsedMs: elapsedMs(), bytesPerSecond: averageBytesPerSecond() }
+          )), policy.idleTimeoutMs);
+        };
+        const transportError = (error) => {
+          if (abortReason) return abortReason;
+          if (controller.signal.aborted && controller.signal.reason) return controller.signal.reason;
+          if (error && typeof error === 'object') {
+            error.transportFailure = true;
+            error.transportFailureKind = error.transportFailureKind || 'network-error';
+          }
+          return error;
+        };
+
         for (const signal of externalSignals) {
           if (signal.aborted) abortFromExternal({ target: signal });
           else signal.addEventListener?.('abort', abortFromExternal, { once: true });
         }
+
         try {
           const body = await collectHttpBody(input.body);
+          networkStartedAt = Date.now();
+          if (!transportNetworkDeadlineAt) transportNetworkDeadlineAt = networkStartedAt + policy.maxNetworkDurationMs;
+          const remainingNetworkMs = Math.max(0, transportNetworkDeadlineAt - networkStartedAt);
+          if (remainingNetworkMs < 1) throw gitTransportFailure(
+            `Git transport exhausted the ${Math.round(policy.maxNetworkDurationMs / 1000)} second network budget.`,
+            'max-network-duration',
+            { loaded: 0, total: 0, elapsedMs: 0, bytesPerSecond: 0 }
+          );
+          const responseStartLimitMs = Math.max(1, Math.min(policy.responseStartTimeoutMs, remainingNetworkMs));
+          emit('request-start', { url: requestUrl, method: requestMethod, policy, remainingNetworkMs });
+          responseStartTimer = setTimeout(() => abortWith(gitTransportFailure(
+            `Git transport did not respond within ${Math.round(responseStartLimitMs / 1000)} seconds.`,
+            'response-start-timeout',
+            { loaded: 0, total: 0, elapsedMs: elapsedMs(), bytesPerSecond: 0 }
+          )), responseStartLimitMs);
+          maxNetworkTimer = setTimeout(() => abortWith(gitTransportFailure(
+            `Git transport exceeded the ${Math.round(policy.maxNetworkDurationMs / 1000)} second network budget.`,
+            'max-network-duration',
+            { loaded, total, elapsedMs: elapsedMs(), bytesPerSecond: averageBytesPerSecond() }
+          )), remainingNetworkMs);
+
           const response = await fetch(input.url, {
             method: input.method || 'GET',
             headers: input.headers || {},
-            body: ['GET', 'HEAD'].includes(String(input.method || 'GET').toUpperCase()) ? undefined : body,
+            body: ['GET', 'HEAD'].includes(requestMethod) ? undefined : body,
             signal: controller.signal,
             redirect: 'follow',
             credentials: 'omit',
             skipGitNativeRawBridge: true,
             allowRawFallback: true
           });
+          if (responseStartTimer) clearTimeout(responseStartTimer);
+          responseStartTimer = null;
+          responseStartedAt = Date.now();
           const headers = {};
           response.headers.forEach((value, key) => { headers[key] = value; });
-          const reader = response.body?.getReader?.();
-          const total = Math.max(0, Number(response.headers.get('content-length') || 0));
-          let loaded = 0;
+          reader = response.body?.getReader?.() || null;
+          total = Math.max(0, Number(response.headers.get('content-length') || 0));
+          emit('response-start', { url: response.url || requestUrl, method: requestMethod, statusCode: response.status, total, elapsedMs: elapsedMs() });
+
           async function* responseBody() {
             try {
               if (!reader) return;
+              armIdleTimer();
+              lowSpeedMonitor = setInterval(() => {
+                if (!firstByteAt || controller.signal.aborted) return;
+                const speed = gitTransportLowSpeedState(loaded, firstByteAt, policy);
+                if (speed.exceeded) {
+                  abortWith(gitTransportFailure(
+                    `Git transport remained below ${Math.round(policy.minBytesPerSecond / 1024)} KB/s.`,
+                    'low-throughput',
+                    { loaded, total, elapsedMs: elapsedMs(), receivingMs: speed.receivingMs, bytesPerSecond: speed.bytesPerSecond }
+                  ));
+                }
+              }, 500);
               while (true) {
                 const next = await reader.read();
-                if (next.done) break;
+                if (next.done) {
+                  if (abortReason) throw abortReason;
+                  break;
+                }
                 if (next.value) {
-                  loaded += Number(next.value.byteLength || next.value.length || 0);
+                  const chunkBytes = Number(next.value.byteLength || next.value.length || 0);
+                  loaded += chunkBytes;
+                  const now = Date.now();
+                  if (!firstByteAt) firstByteAt = now;
+                  armIdleTimer();
+                  const detail = {
+                    phase: 'Receiving Git response',
+                    loaded,
+                    total,
+                    chunkBytes,
+                    elapsedMs: elapsedMs(),
+                    bytesPerSecond: averageBytesPerSecond(),
+                    url: response.url || requestUrl,
+                    method: requestMethod,
+                    statusCode: response.status
+                  };
                   if (typeof input.onProgress === 'function') {
-                    input.onProgress({ phase: 'Receiving Git response', loaded, total });
+                    try { input.onProgress(detail); } catch (_) {}
                   }
+                  emit('progress', detail);
                   yield next.value;
                 }
               }
+              const detail = {
+                loaded,
+                total,
+                elapsedMs: elapsedMs(),
+                bytesPerSecond: averageBytesPerSecond(),
+                url: response.url || requestUrl,
+                method: requestMethod,
+                statusCode: response.status
+              };
+              emit('response-complete', detail);
+            } catch (error) {
+              const resolved = transportError(error);
+              emit('request-failed', {
+                url: response.url || requestUrl,
+                method: requestMethod,
+                loaded,
+                total,
+                elapsedMs: elapsedMs(),
+                bytesPerSecond: averageBytesPerSecond(),
+                reason: resolved?.message || String(resolved),
+                failureKind: resolved?.transportFailureKind || ''
+              });
+              throw resolved;
             } finally {
-              clearTimeout(timer);
-              for (const signal of externalSignals) signal.removeEventListener?.('abort', abortFromExternal);
-              try { reader?.releaseLock?.(); } catch (_) {}
+              cleanup();
             }
           }
+
           if (!reader) {
-            clearTimeout(timer);
-            for (const signal of externalSignals) signal.removeEventListener?.('abort', abortFromExternal);
+            emit('response-complete', { url: response.url || requestUrl, method: requestMethod, statusCode: response.status, loaded: 0, total, elapsedMs: elapsedMs(), bytesPerSecond: 0 });
+            cleanup();
           }
           return {
             url: response.url || input.url,
@@ -235,14 +413,19 @@
             statusMessage: response.statusText
           };
         } catch (error) {
-          clearTimeout(timer);
-          for (const signal of externalSignals) signal.removeEventListener?.('abort', abortFromExternal);
-          if (controller.signal.aborted && error?.name !== 'AbortError' && error?.name !== 'TimeoutError') {
-            const timeout = new Error(`Git transport timed out after ${Math.round(limit / 1000)} seconds.`);
-            timeout.name = 'TimeoutError';
-            throw timeout;
-          }
-          throw error;
+          const resolved = transportError(error);
+          emit('request-failed', {
+            url: requestUrl,
+            method: requestMethod,
+            loaded,
+            total,
+            elapsedMs: networkStartedAt ? elapsedMs() : 0,
+            bytesPerSecond: averageBytesPerSecond(),
+            reason: resolved?.message || String(resolved),
+            failureKind: resolved?.transportFailureKind || ''
+          });
+          cleanup();
+          throw resolved;
         }
       }
     });
@@ -303,7 +486,16 @@
       git: globals.git,
       fs,
       pfs,
-      http: opts.requestTimeoutMs ? timedFetchHttpClient(opts.requestTimeoutMs, opts.transportSignal || null) : (opts.http || globals.http),
+      http: (opts.requestTimeoutMs || opts.maxNetworkDurationMs || opts.responseStartTimeoutMs || opts.idleTimeoutMs || opts.lowSpeedGraceMs || opts.minBytesPerSecond)
+        ? timedFetchHttpClient({
+          requestTimeoutMs: opts.requestTimeoutMs,
+          maxNetworkDurationMs: opts.maxNetworkDurationMs,
+          responseStartTimeoutMs: opts.responseStartTimeoutMs,
+          idleTimeoutMs: opts.idleTimeoutMs,
+          lowSpeedGraceMs: opts.lowSpeedGraceMs,
+          minBytesPerSecond: opts.minBytesPerSecond
+        }, opts.transportSignal || null, opts.onTransportEvent || null)
+        : (opts.http || globals.http),
       Buffer: opts.Buffer || globals.Buffer || global.Buffer,
       dir,
       repo: clean(opts.repo || opts.remote || 'source'),
@@ -320,6 +512,11 @@
         explicitCorsProxy: Boolean(clean(opts.corsProxy || '')),
         cloneDepth: Math.max(1, Number(opts.cloneDepth || opts.depth || 1)),
         requestTimeoutMs: Math.max(0, Number(opts.requestTimeoutMs || 0)),
+        maxNetworkDurationMs: Math.max(0, Number(opts.maxNetworkDurationMs || opts.requestTimeoutMs || 0)),
+        responseStartTimeoutMs: Math.max(0, Number(opts.responseStartTimeoutMs || 0)),
+        idleTimeoutMs: Math.max(0, Number(opts.idleTimeoutMs || 0)),
+        lowSpeedGraceMs: Math.max(0, Number(opts.lowSpeedGraceMs || 0)),
+        minBytesPerSecond: Math.max(0, Number(opts.minBytesPerSecond || 0)),
         rootPaths: normalizeRootPaths(opts.rootPaths || '.topics')
       })
     });

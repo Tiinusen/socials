@@ -43,6 +43,8 @@ Issues and Discussions remain provider-adapter surfaces. Repository snapshot and
 
 Observed transport health, cooldowns, cache keys, credentials, and UI state are browser/runtime state and must not be serialized into `.workspace.md`.
 
+Git transport health is measured only while network responses are active. Continuous healthy progress may outlive a nominal short wait, while no response, stalled bytes, or sustained very low throughput may trigger fallback. Once the response body is complete, local Git processing must not time out the proxy or place it in cooldown.
+
 ## Semantics
 
 - Provenance means the visible trail around material: where it came from, what changed, what supports it, and what limits apply.

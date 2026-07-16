@@ -932,6 +932,31 @@ async function validateGitSourceAdapterResearchContract() {
     fail('Git-native runtime export must not expose branch-deepening history hydration.');
   }
 
+  const timingStart = browserGitNative.indexOf('  function gitTransportTimingPolicy(value = {}) {');
+  const timingEnd = browserGitNative.indexOf('  function timedFetchHttpClient(', timingStart);
+  if (timingStart < 0 || timingEnd <= timingStart) fail('Could not isolate progress-aware Git transport timing helpers.');
+  const timingContext = { Object, Number, Math, Date, Error };
+  vm.runInNewContext(`${browserGitNative.slice(timingStart, timingEnd)}
+  globalThis.__gitTimingTest = { gitTransportTimingPolicy, gitTransportRateState, gitTransportLowSpeedState };`, timingContext, { filename: 'src/app/git-native-runtime.js#transport-timing' });
+  const timingPolicy = timingContext.__gitTimingTest.gitTransportTimingPolicy({
+    maxNetworkDurationMs: 35000,
+    responseStartTimeoutMs: 6000,
+    idleTimeoutMs: 8000,
+    lowSpeedGraceMs: 12000,
+    minBytesPerSecond: 65536
+  });
+  const timingNow = 100000;
+  const healthyTransfer = timingContext.__gitTimingTest.gitTransportLowSpeedState(24.6 * 1024 * 1024, timingNow - 14000, timingPolicy, timingNow);
+  const slowTransfer = timingContext.__gitTimingTest.gitTransportLowSpeedState(50 * 1024 * 12, timingNow - 12000, timingPolicy, timingNow);
+  const graceTransfer = timingContext.__gitTimingTest.gitTransportLowSpeedState(20 * 1024 * 5, timingNow - 5000, timingPolicy, timingNow);
+  if (healthyTransfer.exceeded || healthyTransfer.bytesPerSecond < 1024 * 1024) {
+    fail('A healthy multi-megabyte Git transfer must not be rejected by the low-throughput policy.');
+  }
+  if (!slowTransfer.exceeded || slowTransfer.bytesPerSecond >= timingPolicy.minBytesPerSecond) {
+    fail('A sustained 50 KB/s Git transfer must be eligible for bounded fallback after the low-speed grace period.');
+  }
+  if (graceTransfer.exceeded) fail('Git low-throughput policy must not abort before its grace period expires.');
+
   const exactStart = appJs.indexOf("  const EXACT_HISTORICAL_CACHE_NAME = 'tiinex.exact-historical-files';");
   const exactEnd = appJs.indexOf('  async function tryReadGithubRawViaGitNative', exactStart);
   if (exactStart < 0 || exactEnd <= exactStart) fail('Could not isolate exact historical file resolver for runtime validation.');
@@ -1760,8 +1785,34 @@ function validateRepositoryTransportContracts() {
     fail('embedded workspace resources must resolve from an absolute workspace artifact URL');
   }
   const gitRuntime = read('src/app/git-native-runtime.js');
-  for (const token of ['timedFetchHttpClient', 'AbortController', 'transportSignal', 'cleanupFailedClone', "const requestedRef = clean(opts.ref || '')", 'ref: requestedRef || undefined', 'currentBranch']) {
+  for (const token of ['timedFetchHttpClient', 'gitTransportTimingPolicy', 'gitTransportLowSpeedState', 'response-start-timeout', 'idle-timeout', 'low-throughput', 'max-network-duration', 'reader?.cancel?.(error)', 'if (abortReason) throw abortReason', 'AbortController', 'transportSignal', 'cleanupFailedClone', "const requestedRef = clean(opts.ref || '')", 'ref: requestedRef || undefined', 'currentBranch']) {
     if (!gitRuntime.includes(token)) fail(`Git transport abort/cleanup contract missing: ${token}`);
+  }
+  for (const token of ['gitNativeResponseStartTimeoutMs: 6000', 'gitNativeIdleTimeoutMs: 8000', 'gitNativeLowSpeedGraceMs: 12000', 'gitNativeMinBytesPerSecond: 65536', 'repositoryTransportCooldownMs: 60000', 'repositoryTransportFailureShouldCooldown', 'git-native.transport.telemetry', 'repository-transport.fallback-selected', "phase === 'git-transfer'", "phase === 'git-processing'"]) {
+    if (!app.includes(token)) fail(`progress-aware repository transport contract missing: ${token}`);
+  }
+  const gitDiscoveryStart = app.indexOf('  async function tryDiscoverGitHubRepoViaGitNative(ws, context = {}) {');
+  const gitDiscoveryEnd = app.indexOf('  async function discoverGitHubRepoIntoWorkspace(ws, options)', gitDiscoveryStart);
+  if (gitDiscoveryStart < 0 || gitDiscoveryEnd <= gitDiscoveryStart) fail('Could not isolate Git-native discovery coordinator.');
+  const gitDiscoverySource = app.slice(gitDiscoveryStart, gitDiscoveryEnd);
+  if (/transportTimer|setTimeout\([^)]*Git transport/u.test(gitDiscoverySource)) {
+    fail('Git-native discovery must not use one fixed wall-clock timer across network transfer and local pack processing.');
+  }
+  if (!gitDiscoverySource.includes('cooldownApplied = repositoryTransportFailureShouldCooldown(error)')) {
+    fail('Only transport-class failures may put a Git proxy into cooldown.');
+  }
+  const failureKindStart = app.indexOf('  function repositoryTransportFailureKind(error) {');
+  const failureKindEnd = app.indexOf('  function rememberRepositoryTransportFailure(', failureKindStart);
+  if (failureKindStart < 0 || failureKindEnd <= failureKindStart) fail('Could not isolate repository transport failure classification.');
+  const failureKindContext = { String, Number };
+  vm.runInNewContext(`${app.slice(failureKindStart, failureKindEnd)}
+  globalThis.__transportFailureTest = { repositoryTransportFailureKind, repositoryTransportFailureShouldCooldown };`, failureKindContext, { filename: 'app.js#repository-transport-failure-kind' });
+  const transportFailureTest = failureKindContext.__transportFailureTest;
+  if (!transportFailureTest.repositoryTransportFailureShouldCooldown({ name: 'TimeoutError', message: 'Git transport stalled.' })) {
+    fail('Stalled Git network responses must enter cooldown.');
+  }
+  if (transportFailureTest.repositoryTransportFailureShouldCooldown(new Error('Could not list local Git files after download.'))) {
+    fail('Local Git processing errors must not put the network transport into cooldown.');
   }
   if (!workflow.includes("':(exclude).mirrors/**'")) fail('mirror publisher must exclude nested .mirrors build inputs from every published snapshot');
   if (/exclude_mirrors/u.test(workflow)) fail('mirror publisher should use one invariant instead of per-repository .mirrors exclusion flags');

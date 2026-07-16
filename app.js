@@ -4385,9 +4385,13 @@
     repoDiscoveryBatchRenderEvery: 20,
     repoDiscoveryFetchDelayMs: 0,
     repositorySnapshotTimeoutMs: 12000,
-    gitNativeTransportTimeoutMs: 15000,
+    gitNativeTransportTimeoutMs: 35000,
+    gitNativeResponseStartTimeoutMs: 6000,
+    gitNativeIdleTimeoutMs: 8000,
+    gitNativeLowSpeedGraceMs: 12000,
+    gitNativeMinBytesPerSecond: 65536,
     repositoryTransportBudgetMs: 35000,
-    repositoryTransportCooldownMs: 300000,
+    repositoryTransportCooldownMs: 60000,
     repositoryTransportMaxCooldownMs: 3600000
   }, app.settings || {});
 
@@ -14775,22 +14779,42 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return Number(record?.cooldownUntil || 0) > Date.now();
   }
 
-  function rememberRepositoryTransportFailure(repo, transport, error) {
+  function repositoryTransportFailureKind(error) {
+    const explicit = String(error?.transportFailureKind || '').trim();
+    if (explicit) return explicit;
+    if (error?.transportFailure === true) return 'network-error';
+    const name = String(error?.name || '').toLowerCase();
+    const message = String(error?.message || error || '').toLowerCase();
+    const status = Number(error?.status || error?.statusCode || 0);
+    if (name === 'timeouterror' || /timed out|timeout|stalled|low throughput|below \d+ kb\/s/u.test(message)) return 'network-timeout';
+    if (status >= 400 || /failed to fetch|networkerror|cors|http error|econn|err_network|connection reset/u.test(message)) return 'network-error';
+    return 'local-processing';
+  }
+
+  function repositoryTransportFailureShouldCooldown(error) {
+    return repositoryTransportFailureKind(error) !== 'local-processing';
+  }
+
+  function rememberRepositoryTransportFailure(repo, transport, error, options = {}) {
     const state = readRepositoryTransportHealth();
     const key = repositoryTransportHealthKey(repo, transport);
     const previous = state[key] || {};
-    const failures = Math.max(0, Number(previous.failures || 0)) + 1;
-    const base = Math.max(30000, Number(app.settings.repositoryTransportCooldownMs || 300000));
+    const failureKind = repositoryTransportFailureKind(error);
+    const cooldown = options.cooldown !== undefined ? Boolean(options.cooldown) : repositoryTransportFailureShouldCooldown(error);
+    const failures = cooldown ? Math.max(0, Number(previous.failures || 0)) + 1 : Math.max(0, Number(previous.failures || 0));
+    const base = Math.max(30000, Number(app.settings.repositoryTransportCooldownMs || 60000));
     const max = Math.max(base, Number(app.settings.repositoryTransportMaxCooldownMs || 3600000));
-    const cooldownMs = Math.min(max, base * Math.pow(2, Math.max(0, failures - 1)));
+    const cooldownMs = cooldown ? Math.min(max, base * Math.pow(2, Math.max(0, failures - 1))) : 0;
     state[key] = {
       repo: normalizeRepositoryTransportIdentity(repo),
       transportId: transport?.id || '',
       kind: transport?.kind || '',
       failures,
       lastFailureAt: new Date().toISOString(),
+      lastFailureKind: failureKind,
       lastError: String(error?.message || error || '').slice(0, 500),
-      cooldownUntil: Date.now() + cooldownMs
+      cooldownApplied: cooldown,
+      cooldownUntil: cooldown ? Date.now() + cooldownMs : 0
     };
     try { storageWriteJson(localStorage, STORAGE_KEYS.repositoryTransportHealth, state); } catch (_) {}
     return state[key];
@@ -14806,6 +14830,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       failures: 0,
       lastSuccessAt: new Date().toISOString(),
       resolvedCommit: String(detail.commit || ''),
+      transferLoaded: Math.max(0, Number(detail.transferLoaded || 0)),
+      transferBytesPerSecond: Math.max(0, Number(detail.transferBytesPerSecond || 0)),
+      networkElapsedMs: Math.max(0, Number(detail.networkElapsedMs || 0)),
+      cooldownApplied: false,
       cooldownUntil: 0
     };
     try { storageWriteJson(localStorage, STORAGE_KEYS.repositoryTransportHealth, state); } catch (_) {}
@@ -14817,7 +14845,12 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return {
       repository: normalizeRepositoryTransportIdentity(repo),
       snapshotTimeoutMs: Number(app.settings.repositorySnapshotTimeoutMs || 12000),
-      gitTransportTimeoutMs: Number(app.settings.gitNativeTransportTimeoutMs || 15000),
+      gitTransportMaxNetworkDurationMs: Number(app.settings.gitNativeTransportTimeoutMs || 35000),
+      gitTransportResponseStartTimeoutMs: Number(app.settings.gitNativeResponseStartTimeoutMs || 6000),
+      gitTransportIdleTimeoutMs: Number(app.settings.gitNativeIdleTimeoutMs || 8000),
+      gitTransportLowSpeedGraceMs: Number(app.settings.gitNativeLowSpeedGraceMs || 12000),
+      gitTransportMinBytesPerSecond: Number(app.settings.gitNativeMinBytesPerSecond || 65536),
+      repositoryTransportCooldownMs: Number(app.settings.repositoryTransportCooldownMs || 60000),
       repositoryTransportBudgetMs: Number(app.settings.repositoryTransportBudgetMs || 35000),
       declared: declared.map((transport) => ({
         id: transport.id,
@@ -34870,7 +34903,15 @@ ${githubOutboundFileExcerpt(file, 18000)}
     const scale = (value, start, end) => Math.max(start, Math.min(end, Math.round(start + (end - start) * Math.max(0, Math.min(1, value)))));
     const repoPhasePct = () => {
       if (phase === 'source-refresh-start' || phase === 'source-reset-start') return 2;
-    if (phase === 'tree') return 4;
+      if (phase === 'git-connect') return 4;
+      if (phase === 'git-transfer') {
+        const transferTotal = Math.max(0, Number(p.transferTotal || 0));
+        const transferLoaded = Math.max(0, Number(p.transferLoaded || 0));
+        return transferTotal ? scale(discoveryProgressRatio(transferLoaded, transferTotal), 6, 36) : 12;
+      }
+      if (phase === 'git-processing') return 40;
+      if (phase === 'git-read') return total ? scale(discoveryProgressRatio(done, total), 40, 46) : 42;
+      if (phase === 'tree') return 4;
       if (phase === 'fetch') return total ? scale(discoveryProgressRatio(done, total), 8, 46) : 8;
       if (phase === 'index') {
         const indexTotal = Math.max(0, Number(p.indexTotal || total || 0));
@@ -34894,6 +34935,14 @@ ${githubOutboundFileExcerpt(file, 18000)}
       if (pct) return pct;
     }
     if (phase === 'source-refresh-start' || phase === 'source-reset-start') return 2;
+    if (phase === 'git-connect') return 4;
+    if (phase === 'git-transfer') {
+      const transferTotal = Math.max(0, Number(p.transferTotal || 0));
+      const transferLoaded = Math.max(0, Number(p.transferLoaded || 0));
+      return transferTotal ? scale(discoveryProgressRatio(transferLoaded, transferTotal), 6, 44) : 14;
+    }
+    if (phase === 'git-processing') return 48;
+    if (phase === 'git-read') return total ? scale(discoveryProgressRatio(done, total), 48, 60) : 52;
     if (phase === 'tree') return 4;
     if (phase === 'fetch') {
       if (!total) return 8;
@@ -34916,6 +34965,15 @@ ${githubOutboundFileExcerpt(file, 18000)}
     return Math.max(2, Math.min(100, Math.round(discoveryProgressRatio(done, total) * 100)));
   }
 
+  function gitTransportProgressDetail(p = {}) {
+    const loaded = Math.max(0, Number(p.transferLoaded || 0));
+    const rate = Math.max(0, Number(p.transferBytesPerSecond || 0));
+    const parts = [];
+    if (loaded) parts.push(humanSize(loaded));
+    if (rate) parts.push(`${humanSize(rate)}/s`);
+    return parts.length ? ` · ${parts.join(' · ')}` : '';
+  }
+
   function discoveryProgressTitle(ws) {
     const p = ws?.discoveryProgress || {};
     const phase = String(p.phase || '');
@@ -34928,6 +34986,11 @@ ${githubOutboundFileExcerpt(file, 18000)}
 
     if (phase === 'source-refresh-start') return 'Starting source refresh';
     if (phase === 'source-reset-start') return 'Resetting source cache';
+    if (phase === 'git-connect') return `Connecting through ${p.transportLabel || 'Git transport'}`;
+    if (phase === 'git-transfer') return `Receiving repository through ${p.transportLabel || 'Git transport'}${gitTransportProgressDetail(p)}`;
+    if (phase === 'git-processing') return `Processing Git snapshot from ${p.transportLabel || 'Git transport'}`;
+    if (phase === 'git-read') return total ? `Reading repo files from local Git ${done}/${total}` : 'Reading repo files from local Git';
+    if (phase === 'tree' && p.transportFallbackReason) return 'Git transport unavailable; discovering through GitHub raw';
     if (phase === 'tree') return 'Discovering repo file list';
     if (phase === 'fetch') return total ? `Loading repo markdown files ${done}/${total}` : 'Loading repo markdown files';
     if (phase === 'index') return indexTotal ? `Indexing workspace ${indexLoaded}/${indexTotal}` : 'Indexing workspace';
@@ -35305,7 +35368,11 @@ ${githubOutboundFileExcerpt(file, 18000)}
     const sharedDeadlineAt = Number(context.transportDeadlineAt || 0);
     const budgetDeadline = sharedDeadlineAt > Date.now() ? sharedDeadlineAt : Date.now() + configuredBudgetMs;
     const budgetMs = Math.max(0, budgetDeadline - Date.now());
-    const perTransportMs = Math.max(3000, Number(app.settings.gitNativeTransportTimeoutMs || 15000));
+    const maxNetworkDurationSettingMs = Math.max(3000, Number(app.settings.gitNativeTransportTimeoutMs || 35000));
+    const responseStartTimeoutSettingMs = Math.max(1000, Number(app.settings.gitNativeResponseStartTimeoutMs || 6000));
+    const idleTimeoutSettingMs = Math.max(1000, Number(app.settings.gitNativeIdleTimeoutMs || 8000));
+    const lowSpeedGraceSettingMs = Math.max(2000, Number(app.settings.gitNativeLowSpeedGraceMs || 12000));
+    const minBytesPerSecond = Math.max(0, Number(app.settings.gitNativeMinBytesPerSecond || 65536));
     let selected = null;
     let snapshot = null;
     let lastReason = '';
@@ -35324,7 +35391,65 @@ ${githubOutboundFileExcerpt(file, 18000)}
         githubRepoFetchTrace('git-native.transport.skip', { sessionId, repo, ref, transportId: transport.id, reason: lastReason, budgetMs });
         break;
       }
-      const requestTimeoutMs = Math.max(1000, Math.min(perTransportMs, remaining));
+      const maxNetworkDurationMs = Math.max(1000, Math.min(maxNetworkDurationSettingMs, remaining));
+      const responseStartTimeoutMs = Math.max(1000, Math.min(responseStartTimeoutSettingMs, maxNetworkDurationMs));
+      const idleTimeoutMs = Math.max(1000, Math.min(idleTimeoutSettingMs, maxNetworkDurationMs));
+      const lowSpeedGraceMs = Math.max(2000, Math.min(lowSpeedGraceSettingMs, maxNetworkDurationMs));
+      let transportObservation = { loaded: 0, total: 0, bytesPerSecond: 0, networkElapsedMs: 0, networkComplete: false };
+      let lastTransportUiAt = 0;
+      let lastTransportTraceAt = 0;
+      const observeTransport = (event = {}) => {
+        const now = Date.now();
+        const requestRestarted = event.event === 'request-start';
+        transportObservation = Object.assign({}, transportObservation, {
+          event: event.event || '',
+          loaded: requestRestarted ? 0 : Math.max(0, Number(event.loaded || transportObservation.loaded || 0)),
+          total: requestRestarted ? 0 : Math.max(0, Number(event.total || transportObservation.total || 0)),
+          bytesPerSecond: requestRestarted ? 0 : Math.max(0, Number(event.bytesPerSecond || transportObservation.bytesPerSecond || 0)),
+          networkElapsedMs: requestRestarted ? 0 : Math.max(0, Number(event.elapsedMs || transportObservation.networkElapsedMs || 0)),
+          networkComplete: requestRestarted ? false : (event.event === 'response-complete' ? true : transportObservation.networkComplete),
+          failureKind: event.failureKind || transportObservation.failureKind || '',
+          reason: event.reason || transportObservation.reason || ''
+        });
+        const isProgress = event.event === 'progress';
+        const shouldUpdateUi = !isProgress || now - lastTransportUiAt >= 200;
+        const shouldTrace = !isProgress || now - lastTransportTraceAt >= 1000;
+        if (shouldUpdateUi) {
+          const phase = event.event === 'request-start' ? 'git-connect'
+            : event.event === 'response-complete' ? 'git-processing'
+              : event.event === 'request-failed' ? 'git-connect'
+                : 'git-transfer';
+          ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
+            phase,
+            transportId: transport.id,
+            transportLabel: transport.label,
+            transferLoaded: transportObservation.loaded,
+            transferTotal: transportObservation.total,
+            transferBytesPerSecond: transportObservation.bytesPerSecond,
+            transferElapsedMs: transportObservation.networkElapsedMs,
+            sourceProgress: context.options?.sourceProgress || ws.discoveryProgress?.sourceProgress || ''
+          });
+          updateDiscoveryProgressDom(ws);
+          lastTransportUiAt = now;
+        }
+        if (shouldTrace) {
+          githubRepoFetchTrace('git-native.transport.telemetry', {
+            sessionId,
+            repo,
+            ref,
+            transportId: transport.id,
+            transportLabel: transport.label,
+            event: event.event || '',
+            loaded: transportObservation.loaded,
+            total: transportObservation.total,
+            bytesPerSecond: transportObservation.bytesPerSecond,
+            networkElapsedMs: transportObservation.networkElapsedMs,
+            failureKind: transportObservation.failureKind,
+            reason: transportObservation.reason
+          });
+          lastTransportTraceAt = now;
+        }
+      };
       const gitNativeOptions = Object.assign({}, persistedGitNativeOptions || {}, {
         repo,
         ref: ref || persistedGitNativeOptions.ref || '',
@@ -35332,7 +35457,13 @@ ${githubOutboundFileExcerpt(file, 18000)}
         corsProxy: transport.corsProxy || '',
         allowDirectGithubClone: Boolean(transport.allowDirectGithubClone),
         dir: gitNativeTransportDir(repo, transport),
-        requestTimeoutMs,
+        requestTimeoutMs: maxNetworkDurationMs,
+        maxNetworkDurationMs,
+        responseStartTimeoutMs,
+        idleTimeoutMs,
+        lowSpeedGraceMs,
+        minBytesPerSecond,
+        onTransportEvent: observeTransport,
         cleanupFailedClone: true,
         reuseExistingClone: context.options?.reuseExistingGitNativeClone !== false,
         refreshExistingClone: Boolean(context.options?.hardRefresh),
@@ -35360,7 +35491,11 @@ ${githubOutboundFileExcerpt(file, 18000)}
         transportId: transport.id,
         transportLabel: transport.label,
         corsProxy: transport.corsProxy,
-        requestTimeoutMs,
+        maxNetworkDurationMs,
+        responseStartTimeoutMs,
+        idleTimeoutMs,
+        lowSpeedGraceMs,
+        minBytesPerSecond,
         remainingBudgetMs: remaining,
         runtimeAvailable: Boolean(status?.runtimeAvailable),
         cachedRuntime: Boolean(status?.cachedRuntime),
@@ -35369,19 +35504,23 @@ ${githubOutboundFileExcerpt(file, 18000)}
         hiddenVendorLoad: false
       });
 
-      const transportController = new AbortController();
-      const transportTimer = setTimeout(() => transportController.abort(new DOMException(`Git transport ${transport.label} timed out.`, 'TimeoutError')), requestTimeoutMs);
-      gitNativeOptions.transportSignal = transportController.signal;
+      ws.logs.push(`Trying Git transport ${transport.label} for ${repo}; network policy: ${Math.round(responseStartTimeoutMs / 1000)}s response start, ${Math.round(idleTimeoutMs / 1000)}s idle, ${Math.round(lowSpeedGraceMs / 1000)}s low-speed grace, ${Math.round(maxNetworkDurationMs / 1000)}s network cap.`);
       gitNativeOptions.reloadRuntime = true;
       try {
         const candidate = await bridge.acquireSnapshot(gitNativeOptions);
         if (!candidate?.ok || !Array.isArray(candidate.candidates)) throw new Error(candidate?.error || 'git-native snapshot did not return candidate files');
-        selected = { transport, options: gitNativeOptions };
+        selected = { transport, options: gitNativeOptions, observation: Object.assign({}, transportObservation) };
         snapshot = candidate;
         break;
       } catch (error) {
-        lastReason = error?.needsExplicitCorsProxy ? 'needs-explicit-cors-proxy' : (error?.message || String(error));
-        const health = rememberRepositoryTransportFailure(repo, healthTransport, error);
+        if (transportObservation.failureKind && error && typeof error === 'object' && !error.transportFailureKind) {
+          error.transportFailure = true;
+          error.transportFailureKind = transportObservation.failureKind;
+        }
+        lastReason = error?.needsExplicitCorsProxy ? 'needs-explicit-cors-proxy' : (error?.message || transportObservation.reason || String(error));
+        const failureKind = repositoryTransportFailureKind(error);
+        const cooldownApplied = repositoryTransportFailureShouldCooldown(error);
+        const health = rememberRepositoryTransportFailure(repo, healthTransport, error, { cooldown: cooldownApplied });
         githubRepoFetchTrace('git-native.snapshot.failed', {
           sessionId,
           repo,
@@ -35394,11 +35533,16 @@ ${githubOutboundFileExcerpt(file, 18000)}
           stage: error?.stage || '',
           name: error?.name || '',
           missing: error?.missing || [],
+          failureKind,
+          cooldownApplied,
+          transferLoaded: transportObservation.loaded,
+          transferBytesPerSecond: transportObservation.bytesPerSecond,
+          networkElapsedMs: transportObservation.networkElapsedMs,
           cooldownUntil: health.cooldownUntil
         });
-        ws.logs.push(`Git transport ${transport.label} was unavailable for ${repo}: ${lastReason}.`);
-      } finally {
-        clearTimeout(transportTimer);
+        ws.logs.push(cooldownApplied
+          ? `Git transport ${transport.label} was unavailable for ${repo}: ${lastReason}. Cooling down for one minute before the next automatic attempt.`
+          : `Git transport ${transport.label} completed its network phase but could not produce a local snapshot for ${repo}: ${lastReason}. No transport cooldown was applied.`);
       }
     }
 
@@ -35408,7 +35552,12 @@ ${githubOutboundFileExcerpt(file, 18000)}
       return { ok: false, skipped: true, reason };
     }
 
-    rememberRepositoryTransportSuccess(repo, Object.assign({ kind: 'git-proxy', proxyUrl: selected.transport.corsProxy || '' }, selected.transport), { commit: snapshot.commit || selected.options.ref });
+    rememberRepositoryTransportSuccess(repo, Object.assign({ kind: 'git-proxy', proxyUrl: selected.transport.corsProxy || '' }, selected.transport), {
+      commit: snapshot.commit || selected.options.ref,
+      transferLoaded: selected.observation?.loaded || 0,
+      transferBytesPerSecond: selected.observation?.bytesPerSecond || 0,
+      networkElapsedMs: selected.observation?.networkElapsedMs || 0
+    });
     const gitNativeOptions = Object.assign({}, selected.options);
     delete gitNativeOptions.transportSignal;
     gitNativeOptions.reloadRuntime = true;
@@ -35436,7 +35585,10 @@ ${githubOutboundFileExcerpt(file, 18000)}
       refreshedExistingClone: Boolean(snapshot.refreshedExistingClone),
       sourceState: snapshot.sourceState || 'git-native-local-object-store',
       corsProxyConfigured: Boolean(snapshot.corsProxyConfigured),
-      hiddenProxy: false
+      hiddenProxy: false,
+      transferLoaded: selected.observation?.loaded || 0,
+      transferBytesPerSecond: selected.observation?.bytesPerSecond || 0,
+      networkElapsedMs: selected.observation?.networkElapsedMs || 0
     });
 
     const requestedRef = gitNativeOptions.ref || ref || snapshot.ref || 'master';
@@ -35655,7 +35807,23 @@ ${githubOutboundFileExcerpt(file, 18000)}
         return;
       }
 
-      githubRepoFetchTrace('tree.discovery.start', { sessionId: repoFetchSessionId, repo, ref, rootPaths, hardRefresh: Boolean(options.hardRefresh), preferStatic: Boolean(options.preferStatic), noApi: Boolean(options.noApi) });
+      ws.repositoryTransport = { kind: 'github-raw', label: 'GitHub raw fallback', reason: gitNative.reason || repositorySnapshot.reason || 'repository-transports-unavailable' };
+      ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
+        phase: 'tree',
+        transportFallbackReason: ws.repositoryTransport.reason,
+        transportLabel: ws.repositoryTransport.label,
+        sourceProgress: options.sourceProgress || ws.discoveryProgress?.sourceProgress || ''
+      });
+      updateDiscoveryProgressDom(ws);
+      githubRepoFetchTrace('repository-transport.fallback-selected', {
+        sessionId: repoFetchSessionId,
+        repo,
+        ref,
+        fallback: 'github-raw',
+        reason: ws.repositoryTransport.reason
+      });
+
+      githubRepoFetchTrace('tree.discovery.start', { sessionId: repoFetchSessionId, repo, ref, rootPaths, hardRefresh: Boolean(options.hardRefresh), preferStatic: Boolean(options.preferStatic), noApi: Boolean(options.noApi), fallbackReason: ws.repositoryTransport.reason });
       const discovery = await discoverGitHubTracePaths(repo, ref, rootPaths, {
         hardRefresh: Boolean(options.hardRefresh),
         preferStatic: Boolean(options.preferStatic),
