@@ -79,7 +79,9 @@
         loadFromUnpkg: true,
         allowDefaultVendorUrls: true,
         corsProxy: 'https://cors.isomorphic-git.org',
-        depth: 1
+        depth: 1,
+        historicalDepth: 64,
+        historicalMaxDepth: 256
       };
       const existing = window.TIINEX_VIEWER_OPTIONS || {};
       window.TIINEX_VIEWER_OPTIONS = Object.assign({ createWorkspace: true, browserTitle: 'Tiinex' }, existing);

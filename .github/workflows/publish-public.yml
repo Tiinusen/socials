@@ -2,18 +2,12 @@ name: Publish Public Branch
 
 on:
   push:
-    branches:
-      - master
-    paths-ignore:
-      - README.md
-      - LICENSE
-      - NOTICE
   workflow_dispatch:
     inputs:
       source_ref:
         description: Branch, tag, or commit to publish from
         required: false
-        default: "master"
+        default: ""
 
 permissions:
   contents: write
@@ -24,6 +18,7 @@ concurrency:
 
 jobs:
   publish:
+    if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     env:
       PAGES_CNAME: ${{ vars.PAGES_CNAME || '' }}
@@ -34,20 +29,28 @@ jobs:
         shell: bash
         run: |
           source_ref="${{ github.event.inputs.source_ref }}"
+          if [ -z "$source_ref" ] && [ "${{ github.event_name }}" = "push" ]; then
+            source_ref="$GITHUB_REF_NAME"
+          fi
           if [ -z "$source_ref" ]; then
-            source_ref="master"
+            source_ref="${{ github.event.repository.default_branch }}"
+          fi
+          if [ -z "$source_ref" ]; then
+            echo "Unable to resolve a source ref." >&2
+            exit 1
           fi
 
           echo "source_ref=$source_ref" >> "$GITHUB_OUTPUT"
 
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ steps.settings.outputs.source_ref }}
           fetch-depth: 0
+          submodules: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
 
@@ -57,9 +60,232 @@ jobs:
       - name: Build public site
         run: npm run build:public
 
+      # Copyable mirror convention:
+      #   .mirrors/<host>/<owner>/<repo> in .gitmodules declares a source.
+      #   The remote's current default branch is cloned at publish time; the
+      #   superproject's recorded gitlink commit is intentionally not used.
+      #   The publishing repository itself is emitted through the same layout.
+      - name: Build repository mirrors
+        shell: bash
+        env:
+          SOURCE_REF: ${{ steps.settings.outputs.source_ref }}
+        run: |
+          set -euo pipefail
+
+          export GIT_TERMINAL_PROMPT=0
+
+          mirror_root="$GITHUB_WORKSPACE/.site-publish/mirrors"
+          temp_root="$RUNNER_TEMP/tiinex-mirror-build"
+          rm -rf "$mirror_root" "$temp_root"
+          mkdir -p "$mirror_root" "$temp_root"
+          declare -A published_identities=()
+
+          normalize_remote_identity() {
+            local remote="$1"
+            local remainder host repository_path
+
+            remote="${remote%/}"
+            case "$remote" in
+              https://*|http://*|ssh://*)
+                remainder="${remote#*://}"
+                remainder="${remainder#*@}"
+                host="${remainder%%/*}"
+                repository_path="${remainder#*/}"
+                ;;
+              *@*:* )
+                host="${remote%%:*}"
+                host="${host#*@}"
+                repository_path="${remote#*:}"
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+
+            host="${host%%:*}"
+            repository_path="${repository_path#/}"
+            repository_path="${repository_path%.git}"
+            repository_path="${repository_path%/}"
+            [ -n "$host" ] && [ -n "$repository_path" ] || return 1
+            printf '%s/%s\n' "$host" "$repository_path"
+          }
+
+          write_metadata() {
+            local metadata_path="$1"
+            local repository_url="$2"
+            local ref="$3"
+            local commit="$4"
+            local archive_name="$5"
+            local directory_name="$6"
+            local sha256="$7"
+            local selection="$8"
+            local generated_at="$9"
+
+            jq -n \
+              --arg repository "$repository_url" \
+              --arg ref "$ref" \
+              --arg commit "$commit" \
+              --arg archive "$archive_name" \
+              --arg directory "$directory_name" \
+              --arg sha256 "$sha256" \
+              --arg selection "$selection" \
+              --arg generatedAt "$generated_at" \
+              '{
+                type: "tiinex.repository.snapshot",
+                version: 1,
+                repository: $repository,
+                ref: $ref,
+                commit: $commit,
+                directory: $directory,
+                archive: $archive,
+                sha256: $sha256,
+                selection: $selection,
+                generatedAt: $generatedAt
+              }' > "$metadata_path"
+          }
+
+          publish_snapshot() {
+            local repository_dir="$1"
+            local public_identity="$2"
+            local repository_url="$3"
+            local ref="$4"
+            local commit="$5"
+            local selection="$6"
+            local exclude_mirrors="$7"
+
+            local output_parent repository_name directory_path archive_path metadata_path
+            local archive_name directory_name sha256 generated_at
+
+            if [ -n "${published_identities[$public_identity]+x}" ]; then
+              echo "Duplicate mirror identity: $public_identity" >&2
+              exit 1
+            fi
+            published_identities["$public_identity"]=1
+
+            output_parent="$mirror_root/$(dirname "$public_identity")"
+            repository_name="$(basename "$public_identity")"
+            directory_name="$repository_name/"
+            archive_name="$repository_name.zip"
+            directory_path="$output_parent/$repository_name"
+            archive_path="$output_parent/$archive_name"
+            metadata_path="$output_parent/$repository_name.json"
+
+            rm -rf "$directory_path" "$archive_path" "$metadata_path"
+            mkdir -p "$directory_path" "$output_parent"
+
+            if [ "$exclude_mirrors" = "true" ]; then
+              git -C "$repository_dir" archive --format=tar "$commit" -- . \
+                ':(exclude).mirrors' \
+                ':(exclude).mirrors/**' \
+                | tar -xf - -C "$directory_path"
+
+              git -C "$repository_dir" archive --format=zip \
+                --output="$archive_path" \
+                "$commit" -- . \
+                ':(exclude).mirrors' \
+                ':(exclude).mirrors/**'
+            else
+              git -C "$repository_dir" archive --format=tar "$commit" \
+                | tar -xf - -C "$directory_path"
+
+              git -C "$repository_dir" archive --format=zip \
+                --output="$archive_path" \
+                "$commit"
+            fi
+
+            sha256="$(sha256sum "$archive_path" | awk '{print $1}')"
+            generated_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            write_metadata \
+              "$metadata_path" \
+              "$repository_url" \
+              "$ref" \
+              "$commit" \
+              "$archive_name" \
+              "$directory_name" \
+              "$sha256" \
+              "$selection" \
+              "$generated_at"
+
+            printf 'Published mirror %s @ %s\n' "$public_identity" "$commit"
+          }
+
+          server_host="${GITHUB_SERVER_URL#*://}"
+          server_host="${server_host%%/*}"
+          server_host="${server_host%%:*}"
+          root_identity="$server_host/$GITHUB_REPOSITORY"
+          root_commit="$(git rev-parse HEAD)"
+          root_repository_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+
+          publish_snapshot \
+            "$GITHUB_WORKSPACE" \
+            "$root_identity" \
+            "$root_repository_url" \
+            "$SOURCE_REF" \
+            "$root_commit" \
+            "source-ref" \
+            "true"
+
+          if [ -f .gitmodules ]; then
+            while IFS= read -r path_key; do
+              [ -n "$path_key" ] || continue
+
+              module_name="${path_key#submodule.}"
+              module_name="${module_name%.path}"
+              module_path="$(git config -f .gitmodules --get "$path_key")"
+              module_url="$(git config -f .gitmodules --get "submodule.$module_name.url")"
+
+              case "$module_path" in
+                .mirrors/*) ;;
+                *)
+                  echo "Mirror submodule must live below .mirrors/: $module_path" >&2
+                  exit 1
+                  ;;
+              esac
+
+              public_identity="${module_path#.mirrors/}"
+              case "/$public_identity/" in
+                */../*|*//*|*\\*)
+                  echo "Unsafe mirror path: $module_path" >&2
+                  exit 1
+                  ;;
+              esac
+
+              remote_identity="$(normalize_remote_identity "$module_url")" || {
+                echo "Mirror URL must be an absolute HTTP(S), SSH, or scp-style Git URL: $module_url" >&2
+                exit 1
+              }
+
+              if [ "$remote_identity" != "$public_identity" ]; then
+                echo "Mirror path does not match remote identity:" >&2
+                echo "  path:   $public_identity" >&2
+                echo "  remote: $remote_identity" >&2
+                exit 1
+              fi
+
+              clone_dir="$temp_root/$public_identity"
+              mkdir -p "$(dirname "$clone_dir")"
+              git clone --depth 1 --single-branch --no-tags "$module_url" "$clone_dir"
+
+              resolved_ref="$(git -C "$clone_dir" symbolic-ref --quiet --short HEAD)"
+              resolved_commit="$(git -C "$clone_dir" rev-parse HEAD)"
+
+              publish_snapshot \
+                "$clone_dir" \
+                "$public_identity" \
+                "$module_url" \
+                "$resolved_ref" \
+                "$resolved_commit" \
+                "remote-default-branch" \
+                "false"
+            done < <(git config -f .gitmodules --name-only --get-regexp '^submodule\..*\.path$' || true)
+          fi
+
+          echo "Repository mirror output:"
+          find "$mirror_root" -type f -name '*.zip' | sort
+
       - name: Check public publish artifact
         run: |
-          npm run public:check
+          npm test
           node --check .site-publish/tiinex.bundle.js
           npm run metrics
           npm run storage:scan

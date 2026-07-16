@@ -39,7 +39,7 @@ function read(path) {
   return readFileSync(file(path), 'utf8');
 }
 
-const WALK_IGNORED_DIRECTORIES = new Set(['.git']);
+const WALK_IGNORED_DIRECTORIES = new Set(['.git', '.mirrors', '.site-publish', 'node_modules']);
 
 function walk(dir, output = []) {
   for (const entry of readdirSync(dir)) {
@@ -1729,7 +1729,11 @@ function validateRootPackageShape() {
   ]);
 
   const ignoredInfrastructureRootEntries = new Set([
-    '.git'
+    '.git',
+    '.gitmodules',
+    '.mirrors',
+    '.site-publish',
+    'node_modules'
   ]);
 
   const allowedRootEntries = new Set([
