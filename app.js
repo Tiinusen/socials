@@ -17236,6 +17236,65 @@ ${bodySections}
 
   const EMBEDDED_DEFAULT_WORKSPACE_MD = "# Continuity Context\n\n- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.root.v1.schema.md)\n- Current\n  - Current Schema: [tiinex.workspace.v1](../.schemas/tiinex.workspace.v1.schema.md)\n  - Created At: 2026-06-16 00:00:00\n  - Why: Defines a portable multi-lineage workspace entrypoint.\n  - Summary: Opens the Tiinex docs workspace and declares the default viewer discovery lens.\n\n---\n\n# Tiinex Viewer\n\n## Viewer Identity\n\n- Icon: ../../assets/tiinex-logo-white-transparent.png\n- Browser Title: Tiinex\n- Home: https://github.com/Tiinex\n- Public Viewer URL: https://tiinex.dev/\n- Workspace Home: https://tiinex.dev/\n\n## Empty Stage\n\n- Subtitle: Every handoff starts somewhere\n- Subtitle: Start where the last thread ends\n- Subtitle: Leave enough for the next mind\n- Subtitle: A thread is waiting\n- Subtitle: Nothing starts from nothing\n\n## Workspace Discovery\n\n- [Tiinex docs workspaces](https://github.com/Tiinex/docs)\n  - Kind: github-tree\n  - Ref: master\n  - Root Path: .topics\n  - Match: *.workspace.md\n  - Label: Tiinex docs workspaces\n  - Open Behavior: chooser\n\n## Workspace Entrypoints\n\n### Tiinex docs\n\n- Source Kind: github-tree\n- Repository: Tiinex/docs\n- Ref: master\n- Root Path: .topics\n- Repo Files Discovery: on\n- Issue Discovery: on\n- Issue URL: https://github.com/Tiinex/docs/issues/9\n- Default View: feed\n- Default Filter: all\n\n## Repository Transports\n\n### Tiinex docs published snapshot\n\n- Kind: snapshot\n- Repository: Tiinex/docs\n- Metadata: ../../mirrors/github.com/Tiinex/docs.json\n\n### Shared browser Git proxy\n\n- Kind: git-proxy\n- Match: github.com/*\n- Proxy: https://cors.isomorphic-git.org\n\n## Help\n\n### What is this view?\n\nThis workspace opens Tiinex markdown artifacts so an external reviewer and their LLM helpers can inspect continuity, source material, integrity signals, and continuation paths.\n\n### What should I check first?\n\nStart with what is loaded.\n\nCheck the workspace source, then inspect the visible badges. Treat integrity mismatch, missing integrity, unknown schema, and local-only material as review signals, not automatic failure.\n\n### What should I trust?\n\nTrust only what the artifact and its sources actually show.\n\nUse `Source` to inspect where material came from, `Markdown` to read the artifact, `Open` to inspect the selected node, and `Continue` only when the next step is clear enough to preserve.\n\n### What should an LLM preserve?\n\nDo not collapse Parent and Origin.\n\nParent is the declared continuity edge. Origin is provenance for where the material came from. If either is missing or weak, say so rather than filling the gap.\n\n### What should I send back?\n\nA useful validation note names the selected artifact, the source inspected, the observed signal, and the smallest next correction or continuation.\n\n---\n\n# Continuity Integrity\n\n- [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)\n  - Towards: [viewer.workspace.md](viewer.workspace.md)\n  - Value: 2HYAJnlhUX6rao67gx9FM8dRRSOBBeRyumGTI8pJy3g\n";
 
+  function shouldUseEmbeddedDefaultWorkspace() {
+    // Hash state describes current opened sources; it should not block loading
+    // the default workspace shell/identity in static disk mode.
+    return location.protocol === 'file:' && !pageHasExplicitWorkspaceQuery();
+  }
+
+  function workspaceAssetUrl(value, configUrl) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+
+    const pageFallback = assetPageFallback(raw);
+
+    // In file:// mode, never prefer a resolved file URL that may walk outside
+    // the app folder. Packaged assets should resolve relative to index.html.
+    if (location.protocol === 'file:') {
+      if (pageFallback) return pageFallback;
+      if (/^file:/i.test(raw)) return DEFAULT_TIINEX_BRAND_ASSET;
+    }
+
+    if (/^(data:|blob:)/i.test(raw)) return pageFallback || '';
+
+    const direct = safeUrl(raw);
+    if (direct) return direct;
+
+    try {
+      return new URL(raw, workspaceArtifactBaseUrl(configUrl)).href;
+    } catch (_) {
+      return pageFallback || '';
+    }
+  }
+
+  function staticDiskMode() {
+    return location.protocol === 'file:';
+  }
+
+  function cleanHashOnly() {
+    if (!location.hash) return;
+    try {
+      history.replaceState({ v: 'static-disk', sources: [] }, '', `${location.pathname}${location.search}`);
+    } catch (_) {}
+  }
+
+  const DEFAULT_TIINEX_BRAND_ASSET = 'assets/tiinex-logo-white-transparent.png';
+
+  function packagedAssetUrlFromAnyPath(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const clean = raw.split(/[?#]/)[0].replace(/\\/g, '/');
+    const idx = clean.toLowerCase().lastIndexOf('/assets/');
+    if (idx >= 0) return clean.slice(idx + 1);
+    const idx2 = clean.toLowerCase().indexOf('assets/');
+    if (idx2 >= 0) return clean.slice(idx2);
+    const file = clean.split('/').filter(Boolean).pop();
+    if (file && /^tiinex-.*\.(png|jpe?g|webp|gif|svg)$/i.test(file)) return `assets/${file}`;
+    return '';
+  }
+
+  // --- Workspace/config markdown parsing ---
+
   function parseViewerConfigMarkdown(markdown, configUrl) {
     const out = {};
     const text = normalizeMarkdown(markdown || '');

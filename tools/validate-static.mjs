@@ -1043,6 +1043,24 @@ function validateJavascriptSyntax() {
 function validateJavascriptSurface() {
   const js = read('app.js');
   const code = stripJsStringsAndComments(js);
+
+  // These helpers execute before the viewer can load its workspace or restore a
+  // file:// route. A syntax-only check cannot detect that a refactor removed a
+  // declaration while leaving its calls behind, so keep their ownership explicit.
+  const requiredBootstrapHelpers = [
+    'shouldUseEmbeddedDefaultWorkspace',
+    'workspaceAssetUrl',
+    'staticDiskMode',
+    'cleanHashOnly',
+    'packagedAssetUrlFromAnyPath'
+  ];
+  for (const name of requiredBootstrapHelpers) {
+    const declaration = new RegExp(`(?:function\\s+${name}\\s*\\(|(?:const|let|var)\\s+${name}\\s*=)`);
+    if (!declaration.test(code)) fail(`app.js bootstrap helper is referenced but not declared: ${name}`);
+  }
+  if (!/(?:const|let|var)\s+DEFAULT_TIINEX_BRAND_ASSET\s*=/.test(code)) {
+    fail('app.js bootstrap brand asset constant is missing: DEFAULT_TIINEX_BRAND_ASSET');
+  }
   const ordinaryVersionedIdentifiers = [...code.matchAll(/\b[A-Za-z_$][\w$]*(?:V\d{2,}|v\d{2,})\b/g)].map((m) => m[0]);
   if (ordinaryVersionedIdentifiers.length) {
     fail(`Ordinary version-stamped JavaScript identifiers found: ${[...new Set(ordinaryVersionedIdentifiers)].slice(0, 20).join(', ')}`);
