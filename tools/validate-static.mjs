@@ -660,7 +660,12 @@ function validateGitHubRecoveredContinuityContract() {
     "githubIssueImportTrace('issue-thread-loader.parent-reconciliation'",
     'githubParentMaterializationMode: materialized.mode',
     "githubParentMaterializationMode: 'resolved-parent'",
-    "reason: 'continuity loss: unresolved-known recovery no longer contains its declared Parent block'"
+    "reason: 'continuity loss: unresolved-known recovery no longer contains its declared Parent block'",
+    "case: 'exact-parent-path-beats-same-basename-collision'",
+    "case: 'basename-only-parent-collision-remains-unresolved-known'",
+    'function tiinexHintConcreteIdentityKeys',
+    "unresolvedKnown('ambiguous-explicit-parent'",
+    'githubParentResolutionSpecificity'
   ];
   for (const token of requiredTokens) {
     if (!js.includes(token)) fail(`GitHub recovered continuity contract missing app token: ${token}`);
@@ -682,7 +687,7 @@ function validateGitHubRecoveredContinuityContract() {
   if (js.includes("resolveAdapterParentTraversalForWorkspace(ws, { reason: options.reason || 'public-link-open'")) {
     fail('Public hash loading must not rerun parent traversal after the issue loader has already reconciled that snapshot.');
   }
-  note('GitHub recovered continuity preserves unresolved Parent declarations and reconciles each issue snapshot once');
+  note('GitHub recovered continuity preserves unresolved Parent declarations, rejects basename collisions, and reconciles each issue snapshot once');
 }
 
 function validateRenderBoundaryArchitecture() {

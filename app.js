@@ -7544,6 +7544,10 @@
       githubParentResolutionMode: file.githubParentResolutionMode || '',
       githubParentResolutionHint: file.githubParentResolutionHint || '',
       githubParentResolutionScore: Number(file.githubParentResolutionScore || 0),
+      githubParentResolutionSpecificity: Number(file.githubParentResolutionSpecificity || 0),
+      githubParentResolutionMatchKind: file.githubParentResolutionMatchKind || '',
+      githubParentAmbiguousCount: Number(file.githubParentAmbiguousCount || 0),
+      githubParentAmbiguityPaths: Array.isArray(file.githubParentAmbiguityPaths) ? file.githubParentAmbiguityPaths.slice() : [],
       githubParentExplicit: Boolean(file.githubParentExplicit),
       githubParentBindingMode: file.githubParentBindingMode || '',
       githubParentUnresolvedHint: file.githubParentUnresolvedHint || '',
@@ -7680,6 +7684,10 @@
       githubParentResolutionMode: file.githubParentResolutionMode || '',
       githubParentResolutionHint: file.githubParentResolutionHint || '',
       githubParentResolutionScore: Number(file.githubParentResolutionScore || 0),
+      githubParentResolutionSpecificity: Number(file.githubParentResolutionSpecificity || 0),
+      githubParentResolutionMatchKind: file.githubParentResolutionMatchKind || '',
+      githubParentAmbiguousCount: Number(file.githubParentAmbiguousCount || 0),
+      githubParentAmbiguityPaths: Array.isArray(file.githubParentAmbiguityPaths) ? file.githubParentAmbiguityPaths.slice() : [],
       githubParentExplicit: Boolean(file.githubParentExplicit),
       githubParentBindingMode: file.githubParentBindingMode || '',
       githubParentUnresolvedHint: file.githubParentUnresolvedHint || '',
@@ -10884,6 +10892,47 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       browseUrl: parentBrowseUrl,
       rawMarkdown: parentMarkdown
     };
+    const collisionParented = `# Continuity Context
+
+- Envelope Schema: tiinex.root.v1
+- Parent
+  - Parent Schema: tiinex.reduction.v1
+  - Trace: [001-1-1.trace.md](../../../odysseus/001-1-1.trace.md)
+  - Origin:
+    - relative: ../../../odysseus/001-1-1.trace.md
+    - [browse + git](https://github.com/Tiinex/docs/blob/fixture/.topics/odysseus/001-1-1.trace.md)
+- Current
+  - Current Schema: tiinex.discovery.follow.v1
+  - Created At: 2000-01-02 00:00:00
+
+---
+
+# Awaiting response`;
+    const intendedCollisionParent = {
+      id: 'fixture-odysseus-parent',
+      path: '.topics/odysseus/001-1-1.trace.md',
+      title: 'Odysseus / Minimum Observable Reduction Surface',
+      currentSchema: 'tiinex.reduction.v1',
+      browseUrl: 'https://github.com/Tiinex/docs/blob/fixture/.topics/odysseus/001-1-1.trace.md'
+    };
+    const wrongBasenameParent = {
+      id: 'fixture-off-grid-parent',
+      path: '.topics/educational/memes/off-grid/001-1-1.trace.md',
+      title: 'Off-Grid Resilience Task',
+      currentSchema: 'tiinex.task.v1',
+      recoveryKind: 'github-issue-embedded-tiinex-artifact'
+    };
+    const collisionWorkspace = {
+      nodeById: new Map([
+        [wrongBasenameParent.id, wrongBasenameParent],
+        [intendedCollisionParent.id, intendedCollisionParent]
+      ])
+    };
+    const collisionResolution = resolveGitHubIssueParentNodeForRecoveredArtifact(collisionWorkspace, collisionParented, null, null, collisionParented);
+    const basenameOnlyParented = collisionParented
+      .replace('../../../odysseus/001-1-1.trace.md', '001-1-1.trace.md')
+      .replace(/\n  - Origin:\n    - relative: \.\.\/\.\.\/\.\.\/odysseus\/001-1-1\.trace\.md\n    - \[browse \+ git\]\([^\n]+\)/, '');
+    const basenameOnlyResolution = resolveGitHubIssueParentNodeForRecoveredArtifact(collisionWorkspace, basenameOnlyParented, null, null, basenameOnlyParented);
     const unresolvedResolution = resolveGitHubIssueParentNodeForRecoveredArtifact({ nodeById: new Map() }, parented, null, null, parented);
     const unresolved = await materializeRecoveredTiinexArtifactMarkdown(parented, unresolvedResolution, recoveredPath);
     const resolvedResolution = resolveGitHubIssueParentNodeForRecoveredArtifact({ nodeById: new Map([[parentNode.id, parentNode]]) }, parented, null, null, parented);
@@ -10920,6 +10969,29 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         bindingMode: resolvedResolution.bindingMode,
         resolutionMode: resolvedResolution.mode,
         score: resolvedResolution.score
+      },
+      {
+        case: 'exact-parent-path-beats-same-basename-collision',
+        pass: collisionResolution.bindingMode === 'resolved'
+          && collisionResolution.node === intendedCollisionParent
+          && collisionResolution.specificity >= 4
+          && /path|url/.test(collisionResolution.matchKind || ''),
+        bindingMode: collisionResolution.bindingMode,
+        parentPath: collisionResolution.node?.path || '',
+        specificity: collisionResolution.specificity || 0,
+        matchKind: collisionResolution.matchKind || '',
+        score: collisionResolution.score || 0
+      },
+      {
+        case: 'basename-only-parent-collision-remains-unresolved-known',
+        pass: basenameOnlyResolution.bindingMode === 'unresolved-known'
+          && basenameOnlyResolution.mode === 'ambiguous-explicit-parent'
+          && !basenameOnlyResolution.node
+          && basenameOnlyResolution.ambiguousCount >= 2,
+        bindingMode: basenameOnlyResolution.bindingMode,
+        resolutionMode: basenameOnlyResolution.mode,
+        ambiguityPaths: basenameOnlyResolution.ambiguityPaths || [],
+        ambiguousCount: basenameOnlyResolution.ambiguousCount || 0
       },
       {
         case: 'resolved-parent-resealed-with-v2-continuity',
@@ -11120,21 +11192,30 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return tiinexParentHintDedupe(hints);
   }
 
-  function tiinexHintsReferenceSameIdentity(a = {}, b = {}) {
-    const needles = gitHubIssueParentHintNeedle(a).map((value) => value.toLowerCase()).filter(Boolean);
-    const sources = gitHubIssueParentHintNeedle(b).map((value) => value.toLowerCase()).filter(Boolean);
-    if (!needles.length || !sources.length) return false;
-    for (const needle of needles) {
-      for (const source of sources) {
-        if (!needle || !source) continue;
-        if (needle === source) return true;
-        const needleBase = fileNameFromPath(needle).replace(/\.trace\.md$/i, '').replace(/\.md$/i, '');
-        const sourceBase = fileNameFromPath(source).replace(/\.trace\.md$/i, '').replace(/\.md$/i, '');
-        if (needleBase && sourceBase && needleBase === sourceBase) return true;
+  function tiinexHintConcreteIdentityKeys(hint = {}) {
+    const keys = [];
+    for (const value of gitHubIssueParentHintNeedle(hint)) {
+      const raw = stripMarkdownInline(String(value || '').trim()).replace(/^['"]|['"]$/g, '');
+      if (!raw || /^self$/i.test(raw)) continue;
+      if (/issuecomment-\d+/i.test(raw) || /^https?:\/\//i.test(raw)) {
+        const normalizedUrl = normalizeGitHubUrlForComparison(raw);
+        if (normalizedUrl) keys.push(`url:${normalizedUrl}`);
+        continue;
       }
+      const clean = stripUrlDecorations(raw).replace(/\\/g, '/');
+      if (!clean.includes('/')) continue;
+      const normalizedPath = canonicalWorkspacePath(stripLeadingRelativePathSegments(clean)).toLowerCase();
+      if (normalizedPath) keys.push(`path:${normalizedPath}`);
     }
-    return false;
+    return tiinexDedupeStrings(keys);
   }
+
+  function tiinexHintsReferenceSameIdentity(a = {}, b = {}) {
+    const needles = tiinexHintConcreteIdentityKeys(a);
+    const sources = new Set(tiinexHintConcreteIdentityKeys(b));
+    return needles.some((key) => sources.has(key));
+  }
+
 
   function removeSourceSelfHintsFromParentHints(parentHints = [], sourceSelfHints = []) {
     if (!sourceSelfHints.length) return parentHints;
@@ -11306,35 +11387,51 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return tiinexDedupeStrings(out);
   }
 
-  function scoreNodePathForExplicitParentHint(nodePath = '', hint = {}) {
+  function strongerGitHubParentHintMatch(current = null, candidate = null) {
+    if (!candidate?.score) return current || { score: 0, specificity: 0, matchKind: '' };
+    if (!current?.score) return candidate;
+    if (candidate.specificity !== current.specificity) return candidate.specificity > current.specificity ? candidate : current;
+    if (candidate.score !== current.score) return candidate.score > current.score ? candidate : current;
+    return current;
+  }
+
+  function matchNodePathForExplicitParentHint(nodePath = '', hint = {}) {
     const path = canonicalWorkspacePath(nodePath || '');
-    if (!path) return 0;
+    if (!path) return { score: 0, specificity: 0, matchKind: '' };
     const pathLower = path.toLowerCase();
     const pathNoTopics = pathLower.replace(/^\.topics\//i, 'topics/');
-    const candidates = tiinexHintPathCandidates(hint);
-    let best = 0;
-    for (const candidate of candidates) {
+    let best = { score: 0, specificity: 0, matchKind: '' };
+    for (const candidate of tiinexHintPathCandidates(hint)) {
       const c = canonicalWorkspacePath(candidate || '');
       const cLower = c.toLowerCase();
       const cNoTopics = cLower.replace(/^\.topics\//i, 'topics/');
       if (!cLower) continue;
-      if (pathLower === cLower || pathNoTopics === cNoTopics || pathLower.endsWith(`/${cLower}`) || pathNoTopics.endsWith(`/${cNoTopics}`)) best = Math.max(best, 260);
+      const pathQualified = cLower.includes('/');
+      if (pathLower === cLower || pathNoTopics === cNoTopics) {
+        best = strongerGitHubParentHintMatch(best, { score: 260, specificity: 5, matchKind: 'exact-path' });
+      } else if (pathQualified && (pathLower.endsWith(`/${cLower}`) || pathNoTopics.endsWith(`/${cNoTopics}`))) {
+        best = strongerGitHubParentHintMatch(best, { score: 255, specificity: 4, matchKind: 'path-suffix' });
+      }
       const folder = cLower.endsWith('/') ? cLower : `${cLower}/`;
       const folderNoTopics = cNoTopics.endsWith('/') ? cNoTopics : `${cNoTopics}/`;
-      if (pathLower.startsWith(folder) || pathNoTopics.startsWith(folderNoTopics) || pathLower.includes(`/${folder}`) || pathNoTopics.includes(`/${folderNoTopics}`)) best = Math.max(best, 235);
+      if (pathQualified && (pathLower.startsWith(folder) || pathNoTopics.startsWith(folderNoTopics) || pathLower.includes(`/${folder}`) || pathNoTopics.includes(`/${folderNoTopics}`))) {
+        best = strongerGitHubParentHintMatch(best, { score: 235, specificity: 2, matchKind: 'path-container' });
+      }
       const cBase = fileNameFromPath(cLower).replace(/\.trace\.md$/i, '').replace(/\.md$/i, '');
-      if (cBase && fileNameFromPath(pathLower).toLowerCase().startsWith(cBase)) best = Math.max(best, 215);
+      if (cBase && fileNameFromPath(pathLower).toLowerCase().startsWith(cBase)) {
+        best = strongerGitHubParentHintMatch(best, { score: 215, specificity: 1, matchKind: 'basename' });
+      }
     }
     return best;
   }
 
-  function scoreGitHubIssueParentNodeForHint(node, hint, fallbackParent = null, newComment = null) {
-    if (!node) return 0;
+  function matchGitHubIssueParentNodeForHint(node, hint, fallbackParent = null, newComment = null) {
+    if (!node) return { score: 0, specificity: 0, matchKind: '' };
     const path = node.path || node.file?.path || '';
     const newId = String(newComment?.id || '').trim();
     if (newId) {
       const nodeText = [path, node.recoveredFromUrl, node.sourceOrigin, node.rawUrl, node.browseUrl, node.file?.recoveredFromUrl, node.file?.sourceOrigin, node.file?.rawUrl, node.file?.browseUrl].filter(Boolean).join(' ');
-      if (nodeText.includes(`issuecomment-${newId}`) || nodeText.includes(`/issues/comments/${newId}`)) return 0;
+      if (nodeText.includes(`issuecomment-${newId}`) || nodeText.includes(`/issues/comments/${newId}`)) return { score: 0, specificity: 0, matchKind: '' };
     }
     const sameThread = fallbackParent ? gitHubIssueNodeSameThread(node, fallbackParent) : false;
     const schema = schemaKey(node.currentSchemaText || node.currentSchema || node.file?.currentSchema || '');
@@ -11363,31 +11460,45 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       node.file?.browseUrl
     ].filter(Boolean).map((value) => String(value).trim()).filter(Boolean);
     const nodeLower = nodeValues.map((value) => value.toLowerCase());
-    let best = scoreNodePathForExplicitParentHint(path, hint);
+    let best = matchNodePathForExplicitParentHint(path, hint);
     for (const needle of gitHubIssueParentHintNeedle(hint)) {
       const needleLower = needle.toLowerCase();
       const needleSlug = slugifyTitle(needle);
       const needleBase = fileNameFromPath(needle).replace(/\.trace\.md$/i, '').replace(/\.md$/i, '');
+      const concreteUrl = /^https?:\/\//i.test(needle) || /issuecomment-\d+/i.test(needle);
+      const concretePath = !concreteUrl && stripUrlDecorations(needle).replace(/\\/g, '/').includes('/');
       if (!needleLower || /^self$/i.test(needleLower)) continue;
       for (const value of nodeLower) {
-        if (value === needleLower) best = Math.max(best, 220);
-        if (needleBase && value === needleBase.toLowerCase()) best = Math.max(best, 210);
-        if (needleSlug && value === needleSlug) best = Math.max(best, 205);
-        if (needleBase && value.includes(needleBase.toLowerCase())) best = Math.max(best, 160);
-        if (needleSlug && value.includes(needleSlug)) best = Math.max(best, 150);
+        if (value === needleLower) {
+          best = strongerGitHubParentHintMatch(best, {
+            score: 220,
+            specificity: concreteUrl ? 5 : (concretePath ? 4 : (/\.trace\.md$/i.test(needleLower) ? 1 : 2)),
+            matchKind: concreteUrl ? 'exact-url' : (concretePath ? 'exact-path-value' : (/\.trace\.md$/i.test(needleLower) ? 'exact-basename' : 'exact-title'))
+          });
+        }
+        if (needleBase && value === needleBase.toLowerCase()) best = strongerGitHubParentHintMatch(best, { score: 210, specificity: 1, matchKind: 'basename' });
+        if (needleSlug && value === needleSlug) best = strongerGitHubParentHintMatch(best, { score: 205, specificity: 1, matchKind: 'slug' });
+        if (needleBase && value.includes(needleBase.toLowerCase())) best = strongerGitHubParentHintMatch(best, { score: 160, specificity: 1, matchKind: 'basename-substring' });
+        if (needleSlug && value.includes(needleSlug)) best = strongerGitHubParentHintMatch(best, { score: 150, specificity: 1, matchKind: 'slug-substring' });
       }
     }
-    if (!best) return 0;
+    if (!best.score) return best;
     const hintKind = String(hint?.kind || '').toLowerCase();
     const crossSourceAllowed = /(path|trace|origin|integrity|browse|url|comment)/i.test(hintKind);
-    if (!sameThread && (!crossSourceAllowed || best < 200)) return 0;
-    if (schema && schema !== 'discovery.finding') best += 80;
-    if (node.recoveredFromPath || node.recoveredFromUrl || node.recoveryKind || node.file?.recoveryKind) best += 45;
-    if (schema === 'discovery.finding') best -= 35;
-    if (/issue-root-recovered-/i.test(path)) best += 30;
-    if (!sameThread) best += 25;
-    return best;
+    if (!sameThread && (!crossSourceAllowed || best.score < 200)) return { score: 0, specificity: 0, matchKind: '' };
+    let score = best.score;
+    if (schema && schema !== 'discovery.finding') score += 80;
+    if (node.recoveredFromPath || node.recoveredFromUrl || node.recoveryKind || node.file?.recoveryKind) score += 45;
+    if (schema === 'discovery.finding') score -= 35;
+    if (/issue-root-recovered-/i.test(path)) score += 30;
+    if (!sameThread) score += 25;
+    return Object.assign({}, best, { score });
   }
+
+  function scoreGitHubIssueParentNodeForHint(node, hint, fallbackParent = null, newComment = null) {
+    return matchGitHubIssueParentNodeForHint(node, hint, fallbackParent, newComment).score;
+  }
+
 
 
   function githubIssueCommentNodeMatchScore(node = {}, id = '') {
@@ -11450,38 +11561,122 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const nodes = Array.from(ws?.nodeById?.values?.() || []);
     const firstHint = ids.length ? `issuecomment-${ids[0]}` : (parentHints[0]?.value || (declaresParent ? 'declared-parent' : ''));
     const hintCount = parentHints.length + ids.length + (declaresParent && !parentHints.length && !ids.length ? 1 : 0);
-    const fallback = () => ({
+    const common = {
+      hintCount,
+      hintKinds: parentDiagnostics.parentHintKinds || [],
+      sourceSelfHintCount: (parentDiagnostics.sourceSelfHints || []).length,
+      filteredSelfHintCount: parentDiagnostics.filteredSelfHintCount || 0
+    };
+    const fallback = () => Object.assign({
       node: fallbackParent || null,
       mode: fallbackParent ? 'fallback-container-parent' : 'fallback-no-parent',
       bindingMode: 'fallback',
       hint: '',
       score: 0,
+      specificity: 0,
+      matchKind: '',
       explicit: false,
-      hintCount,
       unresolvedHint: '',
-      hintKinds: parentDiagnostics.parentHintKinds || [],
-      sourceSelfHintCount: (parentDiagnostics.sourceSelfHints || []).length,
-      filteredSelfHintCount: parentDiagnostics.filteredSelfHintCount || 0
-    });
+      ambiguousCount: 0,
+      ambiguityPaths: []
+    }, common);
+    const unresolvedKnown = (mode = 'unresolved-known', detail = {}) => Object.assign({
+      node: null,
+      mode,
+      bindingMode: 'unresolved-known',
+      hint: detail.hint || firstHint,
+      score: detail.score || 0,
+      specificity: detail.specificity || 0,
+      matchKind: detail.matchKind || '',
+      explicit: false,
+      unresolvedHint: detail.hint || firstHint,
+      ambiguousCount: detail.ambiguousCount || 0,
+      ambiguityPaths: detail.ambiguityPaths || []
+    }, common);
     if (!ws || !nodes.length) {
-      if (declaresParent || ids.length || parentHints.length) return { node: null, mode: 'unresolved-known', bindingMode: 'unresolved-known', hint: firstHint, score: 0, explicit: false, hintCount, unresolvedHint: firstHint, hintKinds: parentDiagnostics.parentHintKinds || [], sourceSelfHintCount: (parentDiagnostics.sourceSelfHints || []).length, filteredSelfHintCount: parentDiagnostics.filteredSelfHintCount || 0 };
+      if (declaresParent || ids.length || parentHints.length) return unresolvedKnown();
       return fallback();
     }
-    const result = { node: null, mode: 'unresolved', bindingMode: 'unresolved', hint: '', score: 0, explicit: false, hintCount, unresolvedHint: '', hintKinds: parentDiagnostics.parentHintKinds || [], sourceSelfHintCount: (parentDiagnostics.sourceSelfHints || []).length, filteredSelfHintCount: parentDiagnostics.filteredSelfHintCount || 0 };
+    const result = Object.assign({
+      node: null,
+      mode: 'unresolved',
+      bindingMode: 'unresolved',
+      hint: '',
+      score: 0,
+      specificity: 0,
+      matchKind: '',
+      explicit: false,
+      unresolvedHint: '',
+      ambiguousCount: 0,
+      ambiguityPaths: []
+    }, common);
     const commentParent = githubIssueCommentParentNodeForIds(ws, ids, newComment) || githubIssueCommentParentNodeFromHints(ws, parentHints, newComment);
     if (commentParent?.node) {
-      Object.assign(result, { node: commentParent.node, mode: 'explicit-publication-item-comment', bindingMode: 'resolved', hint: `issuecomment-${commentParent.id}`, score: commentParent.score, explicit: true, unresolvedHint: '' });
+      Object.assign(result, {
+        node: commentParent.node,
+        mode: 'explicit-publication-item-comment',
+        bindingMode: 'resolved',
+        hint: `issuecomment-${commentParent.id}`,
+        score: commentParent.score,
+        specificity: 6,
+        matchKind: 'publication-item-id',
+        explicit: true,
+        unresolvedHint: ''
+      });
     }
+    const candidateByNode = new Map();
     for (const hint of parentHints) {
       for (const node of nodes) {
-        const score = scoreGitHubIssueParentNodeForHint(node, hint, fallbackParent, newComment);
-        if (score > result.score) Object.assign(result, { node, mode: `explicit-${hint.kind}`, bindingMode: 'resolved', hint: hint.value, score, explicit: true, unresolvedHint: '' });
+        const match = matchGitHubIssueParentNodeForHint(node, hint, fallbackParent, newComment);
+        if (!match.score) continue;
+        const key = node.id || `${node.sourceId || node.file?.sourceId || ''}:${canonicalWorkspacePath(node.path || node.file?.path || '')}`;
+        const candidate = Object.assign({ node, hint }, match);
+        const previous = candidateByNode.get(key);
+        if (!previous || strongerGitHubParentHintMatch(previous, candidate) === candidate) candidateByNode.set(key, candidate);
       }
     }
+    const candidates = Array.from(candidateByNode.values()).sort((a, b) => {
+      if (a.specificity !== b.specificity) return b.specificity - a.specificity;
+      if (a.score !== b.score) return b.score - a.score;
+      return canonicalWorkspacePath(a.node?.path || a.node?.file?.path || '').localeCompare(canonicalWorkspacePath(b.node?.path || b.node?.file?.path || ''));
+    });
+    const best = candidates[0] || null;
+    if (best && (!result.node || best.specificity > result.specificity || (best.specificity === result.specificity && best.score > result.score))) {
+      const bestPath = canonicalWorkspacePath(best.node?.path || best.node?.file?.path || '');
+      const identityCompetitors = candidates.filter((candidate) => {
+        if (candidate === best || candidate.specificity !== best.specificity) return false;
+        const candidatePath = canonicalWorkspacePath(candidate.node?.path || candidate.node?.file?.path || '');
+        if (!candidatePath || !bestPath || sameImportedPath(candidatePath, bestPath)) return false;
+        if (best.specificity <= 2) return true;
+        return candidate.score === best.score;
+      });
+      if (identityCompetitors.length) {
+        return unresolvedKnown('ambiguous-explicit-parent', {
+          hint: best.hint?.value || firstHint,
+          score: best.score,
+          specificity: best.specificity,
+          matchKind: best.matchKind,
+          ambiguousCount: identityCompetitors.length + 1,
+          ambiguityPaths: [bestPath, ...identityCompetitors.map((candidate) => canonicalWorkspacePath(candidate.node?.path || candidate.node?.file?.path || ''))].filter(Boolean)
+        });
+      }
+      Object.assign(result, {
+        node: best.node,
+        mode: `explicit-${best.hint?.kind || 'parent-hint'}`,
+        bindingMode: 'resolved',
+        hint: best.hint?.value || '',
+        score: best.score,
+        specificity: best.specificity,
+        matchKind: best.matchKind || '',
+        explicit: true,
+        unresolvedHint: ''
+      });
+    }
     if (result.node) return result;
-    if (declaresParent || ids.length || parentHints.length) return { node: null, mode: 'unresolved-known', bindingMode: 'unresolved-known', hint: firstHint, score: 0, explicit: false, hintCount, unresolvedHint: firstHint, hintKinds: parentDiagnostics.parentHintKinds || [], sourceSelfHintCount: (parentDiagnostics.sourceSelfHints || []).length, filteredSelfHintCount: parentDiagnostics.filteredSelfHintCount || 0 };
+    if (declaresParent || ids.length || parentHints.length) return unresolvedKnown();
     return fallback();
   }
+
 
   function publicLinkOpenOwner() {
     app.publicLinkOpenDiagnostics = app.publicLinkOpenDiagnostics || {
@@ -11999,6 +12194,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
             githubParentResolutionMode: parentResolution.mode || 'adapter-parent-traversal',
             githubParentResolutionHint: parentResolution.hint || loadedSpec?.path || '',
             githubParentResolutionScore: parentResolution.score || 0,
+            githubParentResolutionSpecificity: parentResolution.specificity || 0,
+            githubParentResolutionMatchKind: parentResolution.matchKind || '',
+            githubParentAmbiguousCount: parentResolution.ambiguousCount || 0,
+            githubParentAmbiguityPaths: parentResolution.ambiguityPaths || [],
             githubParentExplicit: true,
             githubParentBindingMode: 'resolved',
             githubParentUnresolvedHint: '',
@@ -12042,6 +12241,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         const resolutionMode = node.githubParentResolutionMode || node.file?.githubParentResolutionMode || '';
         const resolutionHint = node.githubParentResolutionHint || node.file?.githubParentResolutionHint || '';
         const resolutionScore = Number(node.githubParentResolutionScore || node.file?.githubParentResolutionScore || 0);
+        const resolutionSpecificity = Number(node.githubParentResolutionSpecificity || node.file?.githubParentResolutionSpecificity || 0);
+        const resolutionMatchKind = node.githubParentResolutionMatchKind || node.file?.githubParentResolutionMatchKind || '';
+        const ambiguousParentCount = Number(node.githubParentAmbiguousCount || node.file?.githubParentAmbiguousCount || 0);
+        const ambiguityPaths = node.githubParentAmbiguityPaths || node.file?.githubParentAmbiguityPaths || [];
         const explicitParent = Boolean(node.githubParentExplicit || node.file?.githubParentExplicit);
         const hintCount = Number(node.githubParentHintCount || node.file?.githubParentHintCount || 0);
         const parentBindingMode = node.githubParentBindingMode || node.file?.githubParentBindingMode || '';
@@ -12062,6 +12265,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           resolutionMode,
           resolutionHint,
           resolutionScore,
+          resolutionSpecificity,
+          resolutionMatchKind,
+          ambiguousParentCount,
+          ambiguityPaths,
           explicitParent,
           parentHintCount: hintCount,
           parentBindingMode,
@@ -12078,7 +12285,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         if (recovered && !row.parentPath) warnings.push({ path: row.path, reason: 'recovered artifact has no resolved parent' });
         if (recovered && row.parentPath && row.parentPath === row.path) warnings.push({ path: row.path, reason: 'recovered artifact self-parented' });
         if (recovered && hintCount > 0 && parentBindingMode === 'fallback') warnings.push({ path: row.path, parentPath: row.parentPath, resolutionMode, resolutionHint, hintCount, reason: 'embedded parent hints existed but external container fallback was used' });
-        if (recovered && hintCount > 0 && parentBindingMode === 'unresolved-known') warnings.push({ path: row.path, parentPath: row.parentPath, resolutionMode, resolutionHint, unresolvedParentHint, hintCount, reason: 'embedded parent hint is unresolved-known; add/discover the parent source to resolve traversal' });
+        if (recovered && hintCount > 0 && parentBindingMode === 'unresolved-known') warnings.push({ path: row.path, parentPath: row.parentPath, resolutionMode, resolutionHint, unresolvedParentHint, hintCount, ambiguousParentCount, ambiguityPaths, reason: ambiguousParentCount > 1 ? 'embedded parent identity is ambiguous; preserve the declared Parent until a concrete path or URL resolves it' : 'embedded parent hint is unresolved-known; add/discover the parent source to resolve traversal' });
         if (recovered && parentBindingMode === 'unresolved-known' && !declaredParentPresent) warnings.push({ path: row.path, resolutionMode, resolutionHint, unresolvedParentHint, hintCount, parentMaterializationMode, reason: 'continuity loss: unresolved-known recovery no longer contains its declared Parent block' });
         if (recovered && /github-comment-embedded-tiinex-artifact/i.test(node.recoveryKind || node.file?.recoveryKind || '') && /comment-\d+-.*-recovered-/i.test(row.parentPath) && !explicitParent) warnings.push({ path: row.path, parentPath: row.parentPath, reason: 'recovered comment artifact is chained to a previous comment without explicit parent binding' });
       }
@@ -12297,6 +12504,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           githubParentResolutionMode: parentResolution.mode || '',
           githubParentResolutionHint: parentResolution.hint || '',
           githubParentResolutionScore: parentResolution.score || 0,
+          githubParentResolutionSpecificity: parentResolution.specificity || 0,
+          githubParentResolutionMatchKind: parentResolution.matchKind || '',
+          githubParentAmbiguousCount: parentResolution.ambiguousCount || 0,
+          githubParentAmbiguityPaths: parentResolution.ambiguityPaths || [],
           githubParentExplicit: Boolean(parentResolution.explicit),
           githubParentBindingMode: parentResolution.bindingMode || '',
           githubParentUnresolvedHint: parentResolution.unresolvedHint || '',
@@ -12400,6 +12611,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           githubParentResolutionMode: parentResolution.mode || '',
           githubParentResolutionHint: parentResolution.hint || '',
           githubParentResolutionScore: parentResolution.score || 0,
+          githubParentResolutionSpecificity: parentResolution.specificity || 0,
+          githubParentResolutionMatchKind: parentResolution.matchKind || '',
+          githubParentAmbiguousCount: parentResolution.ambiguousCount || 0,
+          githubParentAmbiguityPaths: parentResolution.ambiguityPaths || [],
           githubParentExplicit: Boolean(parentResolution.explicit),
           githubParentBindingMode: parentResolution.bindingMode || '',
           githubParentUnresolvedHint: parentResolution.unresolvedHint || '',
@@ -12427,6 +12642,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           githubParentResolutionMode: parentResolution.mode || '',
           githubParentResolutionHint: parentResolution.hint || '',
           githubParentResolutionScore: parentResolution.score || 0,
+          githubParentResolutionSpecificity: parentResolution.specificity || 0,
+          githubParentResolutionMatchKind: parentResolution.matchKind || '',
+          githubParentAmbiguousCount: parentResolution.ambiguousCount || 0,
+          githubParentAmbiguityPaths: parentResolution.ambiguityPaths || [],
           githubParentExplicit: Boolean(parentResolution.explicit),
           githubParentBindingMode: parentResolution.bindingMode || '',
           githubParentUnresolvedHint: parentResolution.unresolvedHint || '',
