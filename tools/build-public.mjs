@@ -59,7 +59,7 @@ function bundleSource() {
     parts.push('\n');
   }
   parts.push(`\n;/* ---- viewer options ---- */\n`);
-  parts.push(`(function () {\n  const defaultGitNative = {\n    enabled: true,\n    repo: 'Tiinex/docs',\n    ref: 'master',\n    rootPaths: ['.topics'],\n    loadFromUnpkg: true,\n    allowDefaultVendorUrls: true,\n    corsProxy: 'https://cors.isomorphic-git.org',\n    depth: 1,\n    historicalDepth: 64,\n    historicalMaxDepth: 256\n  };\n  const existing = window.TIINEX_VIEWER_OPTIONS || {};\n  window.TIINEX_VIEWER_OPTIONS = Object.assign({ createWorkspace: true, browserTitle: 'Tiinex' }, existing);\n  window.TIINEX_VIEWER_OPTIONS.gitNative = Object.assign({}, defaultGitNative, existing.gitNative || existing.gitNativeRuntime || {});\n})();\n`);
+  parts.push(`(function () {\n  const defaultGitNative = {\n    enabled: true,\n    repo: 'Tiinex/docs',\n    ref: 'master',\n    rootPaths: ['.topics'],\n    loadFromUnpkg: true,\n    allowDefaultVendorUrls: true,\n    corsProxy: 'https://cors.isomorphic-git.org',\n    depth: 1\n  };\n  const existing = window.TIINEX_VIEWER_OPTIONS || {};\n  window.TIINEX_VIEWER_OPTIONS = Object.assign({ createWorkspace: true, browserTitle: 'Tiinex' }, existing);\n  window.TIINEX_VIEWER_OPTIONS.gitNative = Object.assign({}, defaultGitNative, existing.gitNative || existing.gitNativeRuntime || {});\n})();\n`);
   parts.push(`\n;/* ---- app.js ---- */\n`);
   parts.push(read('app.js'));
   parts.push('\n');

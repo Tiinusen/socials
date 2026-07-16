@@ -12,7 +12,6 @@
   const loadedScripts = new Map();
   const importedModules = new Map();
   const runtimeCache = { value: null };
-  const hydratedCommitCache = new Map();
 
 
   function viewerOptions() {
@@ -332,105 +331,6 @@
     }
   }
 
-  function parsePositiveNumberList(value) {
-    const raw = Array.isArray(value) ? value : clean(value).split(/[\s,]+/u);
-    return raw
-      .map((item) => Math.floor(Number(item)))
-      .filter((item) => Number.isFinite(item) && item > 0);
-  }
-
-  function uniqueSortedDepths(values = []) {
-    return Array.from(new Set(values
-      .map((item) => Math.floor(Number(item)))
-      .filter((item) => Number.isFinite(item) && item > 0)))
-      .sort((a, b) => a - b);
-  }
-
-  function historicalHydrationDepthPlan(options = {}, runtime = null) {
-    const opts = gitNativeOptions(options);
-    const baseDepth = Math.max(1, Number(opts.historicalDepth || opts.timePortalDepth || opts.depth || opts.cloneDepth || runtime?.options?.cloneDepth || 64));
-    const maxDepth = Math.max(baseDepth, Number(opts.historicalMaxDepth || opts.maxHistoricalDepth || opts.timePortalMaxDepth || 256));
-    const configuredSteps = parsePositiveNumberList(opts.historicalDepthSteps || opts.historyDepthSteps || '');
-    const ladder = configuredSteps.length ? configuredSteps : [baseDepth, baseDepth * 2, baseDepth * 4, maxDepth];
-    const depths = uniqueSortedDepths([baseDepth, ...ladder, maxDepth]).filter((depth) => depth <= maxDepth);
-    return depths.length ? depths : [baseDepth];
-  }
-
-  function hydrationKey(runtime, commit, options = {}) {
-    const depths = historicalHydrationDepthPlan(options, runtime);
-    return `${runtime?.identityKey || runtime?.dir || 'runtime'}::${clean(commit)}::${depths.join('-')}`;
-  }
-
-  async function hydrateCommit(runtime, commit, options = {}) {
-    const oid = clean(commit);
-    if (!runtime?.git || typeof runtime.git.fetch !== 'function') throw new Error('Git runtime cannot hydrate historical commits; expected git.fetch.');
-    if (!looksLikeCommit(oid)) throw new Error(`Historical hydration requires a full commit SHA, got: ${oid || 'empty'}`);
-    if (await commitPresent(runtime, oid)) return Object.freeze({ ok: true, commit: oid, alreadyPresent: true, method: 'local-object-store' });
-
-    const key = hydrationKey(runtime, oid, options);
-    if (hydratedCommitCache.has(key)) return hydratedCommitCache.get(key);
-
-    const promise = (async () => {
-      const opts = gitNativeOptions(options);
-      const depths = historicalHydrationDepthPlan(opts, runtime);
-      const fallbackRef = clean(opts.historyRef || opts.ref || 'master');
-      const attempts = [];
-
-      const common = {
-        fs: runtime.fs,
-        http: runtime.http,
-        dir: runtime.dir,
-        url: runtime.remote,
-        corsProxy: runtime.corsProxy || undefined,
-        cache: runtime.cache,
-        noTags: opts.noTags !== false,
-        singleBranch: false,
-        force: true,
-        onProgress: typeof opts.onProgress === 'function' ? opts.onProgress : undefined
-      };
-
-      // GitHub's smart HTTP endpoint often does not advertise arbitrary commit
-      // SHAs for direct browser fetches. Try it first because it is the most
-      // exact request shape, but then progressively deepen the declared history
-      // ref. This preserves a bounded Git-native Time Portal path without
-      // silently falling back to raw.githubusercontent.com.
-      try {
-        const directDepth = depths[0] || 1;
-        attempts.push({ method: 'fetch-commit-sha', ref: oid, depth: directDepth });
-        await runtime.git.fetch(Object.assign({}, common, { ref: oid, depth: directDepth }));
-        if (await commitPresent(runtime, oid)) return Object.freeze({ ok: true, commit: oid, method: 'fetch-commit-sha', depth: directDepth, attempts });
-      } catch (error) {
-        attempts[attempts.length - 1].error = error?.message || String(error);
-      }
-
-      if (fallbackRef) {
-        for (const depth of depths) {
-          try {
-            attempts.push({ method: 'progressive-deepen-ref', ref: fallbackRef, depth });
-            await runtime.git.fetch(Object.assign({}, common, { ref: fallbackRef, depth, singleBranch: true }));
-            if (await commitPresent(runtime, oid)) return Object.freeze({ ok: true, commit: oid, method: 'progressive-deepen-ref', depth, attempts });
-          } catch (error) {
-            attempts[attempts.length - 1].error = error?.message || String(error);
-          }
-        }
-      }
-
-      const error = new Error(`Git-native historical commit hydration failed for ${oid}.`);
-      error.commit = oid;
-      error.attempts = attempts;
-      error.depths = depths;
-      throw error;
-    })();
-
-    hydratedCommitCache.set(key, promise);
-    try {
-      return await promise;
-    } catch (error) {
-      hydratedCommitCache.delete(key);
-      throw error;
-    }
-  }
-
   async function acquireSnapshot(options = {}) {
     const opts = gitNativeOptions(options);
     const repo = clean(opts.repo || 'Tiinex/docs');
@@ -460,6 +360,33 @@
         pushLabEvent(events, { phase: 'clone.reuse-check.miss', error: error?.message || String(error) });
       }
     }
+    let refreshedExistingClone = false;
+    if (commit && opts.refreshExistingClone === true) {
+      try {
+        pushLabEvent(events, { phase: 'fetch-current.start', remote, ref, depth, dir: runtime.dir });
+        await runtime.git.fetch({
+          fs: runtime.fs,
+          http: runtime.http,
+          dir: runtime.dir,
+          url: remote,
+          ref,
+          singleBranch: true,
+          depth,
+          tags: false,
+          force: true,
+          corsProxy: runtime.corsProxy || undefined,
+          cache: runtime.cache,
+          onProgress
+        });
+        commit = await runtime.git.resolveRef({ fs: runtime.fs, dir: runtime.dir, ref, cache: runtime.cache });
+        refreshedExistingClone = true;
+        pushLabEvent(events, { phase: 'fetch-current.complete', commit });
+      } catch (error) {
+        pushLabEvent(events, { phase: 'fetch-current.failed', error: error?.message || String(error), retainedCommit: commit });
+        if (opts.requireFreshSnapshot === true) throw error;
+      }
+    }
+
     if (!commit) {
       try {
         pushLabEvent(events, { phase: 'clone.start', remote, ref, depth, dir: runtime.dir });
@@ -520,6 +447,7 @@
       candidateFiles: candidates.length,
       elapsedMs: Date.now() - started,
       progressEvents: events.slice(-40),
+      refreshedExistingClone,
       sourceState: 'git-native-local-object-store',
       hiddenProxy: false,
       corsProxyConfigured: Boolean(runtime.corsProxy)
@@ -679,7 +607,7 @@
       cachedRepo: runtimeCache.value?.repo || '',
       cachedDir: runtimeCache.value?.dir || '',
       primaryReadPath: 'git-native-local-object-store',
-      timePortalReadyWhenRuntimeAvailable: runtimeAvailable
+      exactHistoricalObjectsAvailableWhenLocal: runtimeAvailable
     });
   }
 
@@ -691,7 +619,6 @@
     cloneLab,
     listGitFiles,
     readGitText,
-    hydrateCommit,
     commitPresent,
     defaultArtifactPathMatch
   });

@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import vm from 'node:vm';
 import { ARCHITECTURE_BOUNDARIES, architectureLayerForPath } from '../src/architecture/boundaries.mjs';
 import { normalizeLineEndings, shortText, splitNonEmptyLines, trimOuterBlankLines } from '../src/core/text.mjs';
 import { canonicalWorkspacePath, dirname, fileNameFromPath, joinPath, normalizeAssetPath, relativePath, slugify } from '../src/core/path.mjs';
@@ -811,8 +812,11 @@ async function validateGitSourceAdapterResearchContract() {
   for (const token of ['emptyRepoFetchDiagnostics', 'summarizeRepoFetchEvents', 'repoFetchDiscoveryVerdict']) {
     if (!repoDiag.includes(token)) fail(`Repo fetch diagnostics module missing ${token}`);
   }
-  for (const token of ['TiinexGitNativeRuntime', 'cloneLab', 'ensureRuntime', 'explicitVendorLoad', 'bufferModuleUrl', 'Missing Buffer dependency', 'GitHub browser git clone needs an explicit CORS proxy']) {
+  for (const token of ['TiinexGitNativeRuntime', 'cloneLab', 'ensureRuntime', 'explicitVendorLoad', 'bufferModuleUrl', 'Missing Buffer dependency', 'GitHub browser git clone needs an explicit CORS proxy', 'commitPresent']) {
     if (!browserGitNative.includes(token)) fail(`Browser Git-native runtime bridge missing ${token}`);
+  }
+  for (const forbidden of ['hydrateCommits', 'hydrateCommit', 'hydrationStatus', 'coordinated-deepen-ref']) {
+    if (browserGitNative.includes(forbidden)) fail(`Browser Git-native runtime must not expose implicit historical branch deepening: ${forbidden}`);
   }
   for (const token of [
     'githubRepoFetchTrace',
@@ -825,10 +829,182 @@ async function validateGitSourceAdapterResearchContract() {
     'session.start',
     'raw.request',
     'raw.success',
-    'raw.failed'
+    'raw.failed',
+    'exactHistoricalFileReport',
+    'EXACT_HISTORICAL_CACHE_NAME',
+    'networkRequested !== true',
+    'exact-immutable-file',
+    'refreshExactHistoricalIntegrityDependents',
+    'allowHistoricalNetwork: false',
+    'allowHistoricalNetwork: true',
+    'exactHistoricalReadBudget'
   ]) {
-    if (!appJs.includes(token)) fail(`GitHub repo fetch observability missing app token: ${token}`);
+    if (!appJs.includes(token)) fail(`GitHub repo fetch reliability contract missing app token: ${token}`);
   }
+  for (const forbidden of [
+    'queueGitNativeHistoricalHydration',
+    'flushGitNativeHistoricalHydrationQueue',
+    'git-native.historical-coordinator.start',
+    'current-snapshot-first-background-hydration',
+    'bridge.hydrateCommit',
+    'app.integrityTargetHashCache = {}'
+  ]) {
+    if (appJs.includes(forbidden)) fail(`Ordinary app runtime must not reintroduce workspace-wide historical hydration: ${forbidden}`);
+  }
+  if (appJs.includes("await scheduleIntegrityVerification(ws, { discoveryProgress: true })")) {
+    fail('Progressive repo indexing must not block current-snapshot rendering on full integrity verification.');
+  }
+  if (!appJs.includes("networkRequested: options.allowHistoricalNetwork === true")) {
+    fail('Exact historical network reads must require an explicit caller-owned allowHistoricalNetwork decision.');
+  }
+  if (!appJs.includes("skipGitNativeRawBridge: true") || !appJs.includes("fallbackPolicy: 'exact-immutable-file'")) {
+    fail('Exact historical file reads must bypass Git pack hydration and use the explicit immutable-file transport boundary.');
+  }
+
+  const runtimeWindow = { TIINEX_VIEWER_OPTIONS: { gitNative: {} } };
+  vm.runInNewContext(browserGitNative, {
+    window: runtimeWindow,
+    URL,
+    TextDecoder,
+    TextEncoder,
+    Uint8Array,
+    Map,
+    Set,
+    Promise,
+    Object,
+    Array,
+    String,
+    Number,
+    Boolean,
+    Date,
+    Math,
+    RegExp,
+    Error
+  }, { filename: 'src/app/git-native-runtime.js' });
+  if (typeof runtimeWindow.TiinexGitNativeRuntime?.commitPresent !== 'function') fail('Git-native runtime must retain local commit presence checks.');
+  if ('hydrateCommits' in runtimeWindow.TiinexGitNativeRuntime || 'hydrateCommit' in runtimeWindow.TiinexGitNativeRuntime) {
+    fail('Git-native runtime export must not expose branch-deepening history hydration.');
+  }
+
+  const exactStart = appJs.indexOf("  const EXACT_HISTORICAL_CACHE_NAME = 'tiinex.exact-historical-files';");
+  const exactEnd = appJs.indexOf('  async function tryReadGithubRawViaGitNative', exactStart);
+  if (exactStart < 0 || exactEnd <= exactStart) fail('Could not isolate exact historical file resolver for runtime validation.');
+  const exactSource = `${appJs.slice(exactStart, exactEnd)}\n  globalThis.__exactHistoricalTest = { readExactHistoricalFile, exactHistoricalFileReport, clearExactHistoricalFileCache };`;
+  const exactCache = new Map();
+  const exactStorage = new Map();
+  const traceEvents = [];
+  let exactNetworkCalls = 0;
+  let exactActiveCalls = 0;
+  let exactMaxActiveCalls = 0;
+  const exactContext = {
+    app: {},
+    window: {
+      caches: {
+        async open() {
+          return {
+            async match(url) { return exactCache.has(url) ? new Response(exactCache.get(url)) : undefined; },
+            async put(url, response) { exactCache.set(url, await response.text()); },
+            async keys() { return Array.from(exactCache.keys()).map((url) => ({ url })); },
+            async delete(request) { return exactCache.delete(request.url || request); }
+          };
+        }
+      }
+    },
+    location: { href: 'https://tiinex.dev/' },
+    document: { hidden: false },
+    localStorage: {
+      getItem(key) { return exactStorage.has(key) ? exactStorage.get(key) : null; },
+      setItem(key, value) { exactStorage.set(key, String(value)); },
+      removeItem(key) { exactStorage.delete(key); }
+    },
+    STORAGE_KEYS: { exactHistoricalReadBudget: 'tiinex.exactHistoricalReadBudget' },
+    storageReadJson(storage, key, fallback) {
+      const raw = storage.getItem(key);
+      return raw == null ? fallback : JSON.parse(raw);
+    },
+    storageWriteJson(storage, key, value) { storage.setItem(key, JSON.stringify(value)); },
+    normalizeRepoSlug(value = '') { return String(value || '').trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').toLowerCase(); },
+    normalizeRepoPath(value = '') { return String(value || '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\//, '').replace(/\/{2,}/g, '/'); },
+    isCommitRef(value = '') { return /^[a-f0-9]{40}$/i.test(String(value || '').trim()); },
+    rawGithubSourceParts(url = '') {
+      const parsed = new URL(url);
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      return { repo: `${parts[0]}/${parts[1]}`, ref: parts[2], path: parts.slice(3).join('/'), rawUrl: url };
+    },
+    sameRepoSlug(a = '', b = '') { return String(a || '').toLowerCase() === String(b || '').toLowerCase(); },
+    githubRepoFetchTrace(event, detail) { traceEvents.push({ event, detail }); },
+    async adapterRequest(url) {
+      exactNetworkCalls += 1;
+      exactActiveCalls += 1;
+      exactMaxActiveCalls = Math.max(exactMaxActiveCalls, exactActiveCalls);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      exactActiveCalls -= 1;
+      return { text: `content:${url}` };
+    },
+    getWorkspace() { return null; },
+    async verifyNodeIntegrity() { return { status: 'target-unavailable', label: 'unused' }; },
+    render() {},
+    Response,
+    URL,
+    Map,
+    Set,
+    Promise,
+    Object,
+    Array,
+    String,
+    Number,
+    Boolean,
+    Date,
+    Math,
+    RegExp,
+    Error,
+    JSON,
+    setTimeout,
+    clearTimeout
+  };
+  vm.runInNewContext(exactSource, exactContext, { filename: 'app.js#exact-historical-file-resolver' });
+  const exactResolver = exactContext.__exactHistoricalTest;
+  const commitOne = '1'.repeat(40);
+  const commitTwo = '2'.repeat(40);
+  const deferredExact = await exactResolver.readExactHistoricalFile({ repo: 'Tiinex/docs', ref: commitOne, path: '.topics/a.md' }, { networkRequested: false });
+  if (!deferredExact.deferred || exactNetworkCalls !== 0) fail('Ordinary historical target reads must defer without network access.');
+  const [exactOne, exactTwo] = await Promise.all([
+    exactResolver.readExactHistoricalFile({ repo: 'Tiinex/docs', ref: commitOne, path: '.topics/a.md' }, { networkRequested: true }),
+    exactResolver.readExactHistoricalFile({ repo: 'Tiinex/docs', ref: commitTwo, path: '.topics/b.md' }, { networkRequested: true })
+  ]);
+  if (!exactOne.ok || !exactTwo.ok || exactNetworkCalls !== 2 || exactMaxActiveCalls !== 1) {
+    fail(`Exact historical reads must serialize per origin; calls=${exactNetworkCalls} maxActive=${exactMaxActiveCalls}`);
+  }
+  const cachedExact = await exactResolver.readExactHistoricalFile({ repo: 'Tiinex/docs', ref: commitOne, path: '.topics/a.md' }, { networkRequested: false });
+  if (!cachedExact.ok || exactNetworkCalls !== 2 || !/cache/.test(cachedExact.sourceResolutionKind || '')) {
+    fail('Exact historical files must remain readable from immutable cache without a second network call.');
+  }
+  const exactReport = exactResolver.exactHistoricalFileReport();
+  if (exactReport.networkReads !== 2 || exactReport.maxConcurrentObserved !== 1 || exactReport.cacheHits < 1) {
+    fail('Exact historical diagnostics must expose network, serialization, and cache behavior.');
+  }
+  if (!traceEvents.some((item) => item.event === 'git-native.historical-read.deferred') || !traceEvents.some((item) => item.event === 'exact-historical.network.success')) {
+    fail('Exact historical resolver diagnostics must distinguish deferred startup reads from explicit network reads.');
+  }
+
+  const budgetSuppressed = await exactResolver.readExactHistoricalFile({ repo: 'Tiinex/docs', ref: '3'.repeat(40), path: '.topics/c.md' }, { networkRequested: true, maxReadsPerWindow: 2 });
+  if (!budgetSuppressed.deferred || budgetSuppressed.reason !== 'origin-window-budget-exhausted' || exactNetworkCalls !== 2) {
+    fail('Persistent exact historical origin budget must suppress excess requests before network access.');
+  }
+  const reloadContext = Object.assign({}, exactContext, {
+    app: {},
+    window: { caches: exactContext.window.caches }
+  });
+  vm.runInNewContext(exactSource, reloadContext, { filename: 'app.js#exact-historical-file-resolver-reload' });
+  const reloadCached = await reloadContext.__exactHistoricalTest.readExactHistoricalFile({ repo: 'Tiinex/docs', ref: commitOne, path: '.topics/a.md' }, { networkRequested: false });
+  if (!reloadCached.ok || reloadCached.cacheState !== 'cache-storage' || exactNetworkCalls !== 2) {
+    fail('Exact historical immutable cache must survive a page-runtime reset without a new network call.');
+  }
+  const gitFetchCalls = (browserGitNative.match(/runtime\.git\.fetch\s*\(/g) || []).length;
+  if (gitFetchCalls !== 1 || !browserGitNative.includes('opts.refreshExistingClone === true')) {
+    fail(`Git-native runtime should retain exactly one fetch path for explicit current-ref refresh; found ${gitFetchCalls}.`);
+  }
+
   const remote = gitRemoteUrlFromSource({ repo: 'Tiinex/docs' });
   if (remote !== 'https://github.com/Tiinex/docs.git') fail(`Git native remote URL normalization failed: ${remote}`);
   const parsed = parseGitFilePermalink('https://github.com/Tiinex/docs/blob/1234567890abcdef/.topics/demo/001.trace.md');

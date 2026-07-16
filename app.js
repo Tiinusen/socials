@@ -227,7 +227,8 @@
     githubIssueThreadCache: 'tiinex.github.issueThreadCache.v1',
     githubIssueImportTrace: 'tiinex.github.issueImportTrace.v1',
     githubRepoFetchTrace: 'tiinex.github.repoFetchTrace.v1',
-    gitNativeDiscoveryConfig: 'tiinex.gitNative.discoveryConfig.v1'
+    gitNativeDiscoveryConfig: 'tiinex.gitNative.discoveryConfig.v1',
+    exactHistoricalReadBudget: 'tiinex.exactHistoricalReadBudget'
   });
 
 
@@ -239,12 +240,6 @@
     'rootPaths',
     'depth',
     'cloneDepth',
-    'historicalDepth',
-    'historicalMaxDepth',
-    'historicalDepthSteps',
-    'timePortalDepth',
-    'timePortalMaxDepth',
-    'historyRef',
     'singleBranch',
     'noCheckout',
     'noTags',
@@ -489,9 +484,13 @@
         fetchGatePassThrough: 0,
         integrityDeferred: 0,
         localRefSubstitute: 0,
-        historicalHydrateStarts: 0,
-        historicalHydrateSuccess: 0,
-        historicalHydrateFailed: 0,
+        historicalReadsDeferred: 0,
+        exactHistoricalCacheHits: 0,
+        exactHistoricalNetworkReads: 0,
+        exactHistoricalNetworkFailed: 0,
+        exactHistoricalNetworkSuppressed: 0,
+        exactHistoricalBytes: 0,
+        exactHistoricalMaxConcurrentObserved: 0,
         byReason: {}
       },
       verdict: 'not-observed'
@@ -517,9 +516,16 @@
       if (event === 'repo-material.raw-fallback.blocked') { summary.repoMaterial.rawFallbackBlocked += 1; rememberReason(); }
       if (event === 'repo-material.integrity.deferred') { summary.repoMaterial.integrityDeferred += 1; rememberReason(); }
       if (event === 'repo-material.git-native.local-ref-substitute' || event === 'git-native.raw-bridge.local-substitute.success') { summary.repoMaterial.localRefSubstitute += 1; rememberReason(); }
-      if (event === 'git-native.historical-hydrate.start') { summary.repoMaterial.historicalHydrateStarts += 1; rememberReason(); }
-      if (event === 'git-native.historical-hydrate.success') { summary.repoMaterial.historicalHydrateSuccess += 1; rememberReason(); }
-      if (event === 'git-native.historical-hydrate.failed') { summary.repoMaterial.historicalHydrateFailed += 1; rememberReason(); }
+      if (event === 'git-native.historical-read.deferred') { summary.repoMaterial.historicalReadsDeferred += 1; rememberReason(); }
+      if (event === 'exact-historical.cache-hit') { summary.repoMaterial.exactHistoricalCacheHits += 1; rememberReason(); }
+      if (event === 'exact-historical.network.success') {
+        summary.repoMaterial.exactHistoricalNetworkReads += 1;
+        summary.repoMaterial.exactHistoricalBytes += Math.max(0, Number(detail.bytes || 0));
+        summary.repoMaterial.exactHistoricalMaxConcurrentObserved = Math.max(summary.repoMaterial.exactHistoricalMaxConcurrentObserved, Number(detail.maxConcurrentObserved || 0));
+        rememberReason();
+      }
+      if (event === 'exact-historical.network.failed') { summary.repoMaterial.exactHistoricalNetworkFailed += 1; rememberReason(); }
+      if (event === 'exact-historical.network.suppressed') { summary.repoMaterial.exactHistoricalNetworkSuppressed += 1; rememberReason(); }
       if (event === 'git-native.raw-fetch-gate.pass-through') { summary.repoMaterial.fetchGatePassThrough += 1; rememberReason(); }
       if (event === 'git-native.raw-fetch-gate.blocked') { summary.repoMaterial.rawFallbackBlocked += 1; rememberReason(); }
       if (event === 'git-native.raw-fetch-gate.pass-through' && detail?.unexpected) summary.repoMaterial.rawPassThroughUnexpected += 1;
@@ -594,6 +600,7 @@
     summary.verdict = summary.rawRateLimited ? 'rate-limited'
       : summary.repoMaterial.rawPassThroughUnexpected ? 'git-native-unexpected-raw-pass-through'
       : summary.repoMaterial.rawFallbackBlocked ? 'git-native-raw-fallback-blocked'
+      : gitNativeReads && summary.repoMaterial.exactHistoricalNetworkReads ? 'git-native-with-explicit-exact-historical-reads'
       : gitNativeReads && summary.repoMaterial.rawFallbackExplicit ? 'git-native-with-explicit-raw-fallback'
       : gitNativeReads && observedRawNetworkSuccess ? 'git-native-with-unclassified-raw-success'
       : gitNativeReads && !summary.rawRequests ? 'git-native-active'
@@ -614,7 +621,8 @@
     const wanted = new Set([
       'repo-material.raw-fallback.blocked',
       'repo-material.git-native.miss',
-      'git-native.historical-hydrate.failed',
+      'exact-historical.network.failed',
+      'exact-historical.network.suppressed',
       'git-native.raw-fetch-gate.blocked'
     ]);
     const seen = new Set();
@@ -1063,6 +1071,8 @@
     clearGithubRepoFetchTrace,
     githubRepoFetchSummary: () => githubRepoFetchSummary(),
     githubRepoFetchLastSessionSummary,
+    exactHistoricalFileReport: () => exactHistoricalFileReport(),
+    clearExactHistoricalFileCache: (repo = '') => clearExactHistoricalFileCache(repo),
     githubRepoMaterialProblemTargets: (limit = 80) => githubRepoMaterialProblemTargets(githubRepoFetchCurrentSessionEvents(), limit),
     publicViewerShareUrlFor: (url, adapter = '') => publicViewerShareUrlForTarget(url, adapter),
     parseHashShareTarget: (hash = location.hash) => parseHashShareTarget(hash),
@@ -1115,9 +1125,9 @@
     gitSourceAdapterContract: () => ({
       id: 'tiinex.git-source-adapter.v1',
       canonicalPath: 'git-native-local-object-store-first',
-      fallbackPath: 'permalink/raw-web lookup only when local source state cannot answer',
+      fallbackPath: 'immutable commit/path file lookup only on explicit demand when local source state cannot answer',
       surfaces: ['repoFiles', 'issueSnapshots'],
-      principles: ['local capabilities first', 'Time Portal aware', 'permalink as recovery anchor']
+      principles: ['local capabilities first', 'Time Portal aware', 'permalink as recovery anchor', 'no implicit historical branch deepening']
     }),
     gitNativeAdapterCapability: () => ({
       id: 'tiinex.git-native-source-adapter.v1',
@@ -1127,7 +1137,7 @@
       primaryReadPath: 'local Git object store',
       requiredRuntime: ['git', 'fs', 'dir', 'Buffer'],
       optionalRuntime: ['http', 'cache', 'TREE', 'listFiles', 'readText', 'onProgress', 'onEvent'],
-      timePortal: ['resolve ref', 'read file at commit', 'resolve parent from local objects before permalink lookup']
+      timePortal: ['resolve local ref', 'read local object at commit when present', 'fetch exact immutable commit/path file only on explicit demand']
     }),
     gitNativeRuntimeStatus: (options = {}) => window.TiinexGitNativeRuntime?.status ? window.TiinexGitNativeRuntime.status(effectiveGitNativeDiscoveryConfig(options)) : { runtimeAvailable: false, reason: 'TiinexGitNativeRuntime module not loaded' },
     gitNativeDiscoveryConfig: () => Object.freeze(effectiveGitNativeDiscoveryConfig({})),
@@ -2115,7 +2125,7 @@
     return null;
   }
 
-  async function evaluateIntegrityEntry(ws, node, detail, entry) {
+  async function evaluateIntegrityEntry(ws, node, detail, entry, options = {}) {
     const target = integrityEntryTargetRef(entry);
     const role = integrityEntryRoleForNode(ws, node, entry);
     const base = Object.assign({}, detail, {
@@ -2182,7 +2192,7 @@
           label: 'self'
         };
       } else {
-        result = await hashIntegrityTarget(ws, node, target);
+        result = await hashIntegrityTarget(ws, node, target, options);
       }
 
       if (result?.status === 'unavailable') {
@@ -2251,13 +2261,13 @@
     }
   }
 
-  async function evaluateIntegrityEntriesForNode(ws, node) {
+  async function evaluateIntegrityEntriesForNode(ws, node, options = {}) {
     const audit = integrityEntryAuditDetails(node?.integrity);
     const rawEntries = Array.isArray(node?.integrity?.entries) ? node.integrity.entries : [];
     const entries = [];
     for (const detail of audit.entries || []) {
       const entry = rawEntries[detail.index] || null;
-      entries.push(await evaluateIntegrityEntry(ws, node, detail, entry));
+      entries.push(await evaluateIntegrityEntry(ws, node, detail, entry, options));
     }
     const summary = integrityEntrySummaryFromResults(entries);
     const counts = entries.reduce((acc, entry) => {
@@ -5948,7 +5958,11 @@
     repoDiscoveryBatchRenderEvery: 80,
     repoDiscoveryBatchRenderDelayMs: 16,
     repoDiscoveryPreferGitNative: true,
-    repoDiscoveryGitNativeReadConcurrency: 16
+    repoDiscoveryGitNativeReadConcurrency: 16,
+    gitHistoricalHydrationDelayMs: 1200,
+    gitHistoricalHydrationMaxFetches: 3,
+    gitHistoricalHydrationMaxElapsedMs: 90000,
+    gitHistoricalHydrationCooldownMs: 300000
   }, app.settings || {});
 
   hydratePersistedGitNativeDiscoveryConfig();
@@ -7932,7 +7946,10 @@
     render();
     await progressYield(ws);
     try {
-      if (hardRefresh) clearAdapterRuntimeCache(source.repo || '');
+      if (hardRefresh) {
+        clearAdapterRuntimeCache(source.repo || '');
+        await clearExactHistoricalFileCache(source.repo || '');
+      }
       const label = hardRefresh ? 'Cache reset' : 'Refresh';
       toast(`${label} started for ${source.repo || 'GitHub source'}.`, 'info');
       await loadGitHubStateSourceIntoWorkspace(ws, source, {
@@ -16470,15 +16487,7 @@ ${bodySections}
     return commit && commit !== requested ? commit : '';
   }
 
-  function gitNativeHistoricalHydrationBaseRefFor(parts = null) {
-    const owner = gitNativeRepoMaterialOwnerRecord(parts)
-      || gitNativeRepoMaterialOwnerRecordAnyRef(parts)
-      || gitNativeRepoMaterialWorkspaceOwner(parts)
-      || gitNativeRepoMaterialWorkspaceOwnerAnyRef(parts);
-    return String(owner?.ref || owner?.requestedRef || workspaceGitRefLabel(owner) || '').trim() || 'master';
-  }
-
-  function gitNativeHistoricalHydrationNeeded(parts = null, commit = '') {
+  function gitNativeHistoricalObjectMissingFromCurrentSnapshot(parts = null, commit = '') {
     if (!parts?.repo || !parts.path || !isCommitRef(commit || parts.ref)) return false;
     const requested = String(commit || parts.ref || '').trim();
     const owner = gitNativeRepoMaterialOwnerRecord(parts)
@@ -16562,6 +16571,293 @@ ${bodySections}
     return snapshot.commit;
   }
 
+
+  const EXACT_HISTORICAL_CACHE_NAME = 'tiinex.exact-historical-files';
+  const EXACT_HISTORICAL_READ_WINDOW_MS = 5 * 60 * 1000;
+  const EXACT_HISTORICAL_READ_MAX_PER_ORIGIN = 6;
+
+  function exactHistoricalFileState() {
+    if (!app.exactHistoricalFiles) {
+      app.exactHistoricalFiles = {
+        memory: new Map(),
+        inFlight: new Map(),
+        originChains: new Map(),
+        activeByOrigin: new Map(),
+        dependencies: new Map(),
+        recent: [],
+        networkReads: 0,
+        cacheHits: 0,
+        suppressed: 0,
+        failed: 0,
+        bytes: 0,
+        maxConcurrentObserved: 0
+      };
+    }
+    return app.exactHistoricalFiles;
+  }
+
+  function exactHistoricalFileKey(parts = null) {
+    if (!parts?.repo || !isCommitRef(parts.ref) || !parts.path) return '';
+    return `${normalizeRepoSlug(parts.repo)}@${String(parts.ref).toLowerCase()}:${normalizeRepoPath(parts.path)}`;
+  }
+
+  function exactHistoricalRawUrl(parts = null) {
+    if (!parts?.repo || !isCommitRef(parts.ref) || !parts.path) return '';
+    return `https://raw.githubusercontent.com/${parts.repo}/${parts.ref}/${normalizeRepoPath(parts.path)}`;
+  }
+
+  function exactHistoricalOriginKey(url = '') {
+    try { return new URL(String(url || ''), location.href).origin; } catch (_) { return ''; }
+  }
+
+  function exactHistoricalReadBudgetSnapshot() {
+    try {
+      const stored = storageReadJson(localStorage, STORAGE_KEYS.exactHistoricalReadBudget, {});
+      return stored && typeof stored === 'object' ? stored : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function writeExactHistoricalReadBudget(snapshot = {}) {
+    try { storageWriteJson(localStorage, STORAGE_KEYS.exactHistoricalReadBudget, snapshot || {}); } catch (_) {}
+  }
+
+  function consumeExactHistoricalReadBudget(origin = '', options = {}) {
+    const now = Date.now();
+    const maxReads = Math.max(1, Number(options.maxReadsPerWindow || EXACT_HISTORICAL_READ_MAX_PER_ORIGIN));
+    const windowMs = Math.max(1000, Number(options.windowMs || EXACT_HISTORICAL_READ_WINDOW_MS));
+    const snapshot = exactHistoricalReadBudgetSnapshot();
+    const prior = snapshot[origin] || {};
+    const expired = !prior.windowStartedAt || now - Number(prior.windowStartedAt || 0) >= windowMs;
+    const record = expired
+      ? { windowStartedAt: now, count: 0, cooldownUntil: 0, lastAttemptAt: 0 }
+      : {
+          windowStartedAt: Number(prior.windowStartedAt || now),
+          count: Math.max(0, Number(prior.count || 0)),
+          cooldownUntil: Math.max(0, Number(prior.cooldownUntil || 0)),
+          lastAttemptAt: Math.max(0, Number(prior.lastAttemptAt || 0))
+        };
+    if (record.cooldownUntil > now) return { ok: false, reason: 'persistent-cooldown', nextAllowedAt: record.cooldownUntil, count: record.count, maxReads };
+    if (record.count >= maxReads) {
+      record.cooldownUntil = record.windowStartedAt + windowMs;
+      snapshot[origin] = record;
+      writeExactHistoricalReadBudget(snapshot);
+      return { ok: false, reason: 'origin-window-budget-exhausted', nextAllowedAt: record.cooldownUntil, count: record.count, maxReads };
+    }
+    record.count += 1;
+    record.lastAttemptAt = now;
+    snapshot[origin] = record;
+    writeExactHistoricalReadBudget(snapshot);
+    return { ok: true, count: record.count, maxReads, windowStartedAt: record.windowStartedAt };
+  }
+
+  async function exactHistoricalCacheRead(rawUrl = '') {
+    const state = exactHistoricalFileState();
+    if (state.memory.has(rawUrl)) return { ok: true, text: state.memory.get(rawUrl), cacheState: 'memory' };
+    if (!window.caches?.open) return null;
+    try {
+      const cache = await window.caches.open(EXACT_HISTORICAL_CACHE_NAME);
+      const response = await cache.match(rawUrl);
+      if (!response?.ok) return null;
+      const text = await response.text();
+      state.memory.set(rawUrl, text);
+      return { ok: true, text, cacheState: 'cache-storage' };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function exactHistoricalCacheWrite(rawUrl = '', text = '', options = {}) {
+    const state = exactHistoricalFileState();
+    state.memory.set(rawUrl, String(text || ''));
+    if (options.persist === false || !window.caches?.open) return;
+    try {
+      const cache = await window.caches.open(EXACT_HISTORICAL_CACHE_NAME);
+      await cache.put(rawUrl, new Response(String(text || ''), {
+        status: 200,
+        headers: {
+          'content-type': 'text/plain; charset=utf-8',
+          'cache-control': 'public, max-age=31536000, immutable',
+          'x-tiinex-source-state': 'exact-historical-file-cache'
+        }
+      }));
+    } catch (_) {}
+  }
+
+  function rememberExactHistoricalIntegrityDependency(parts, ws, node) {
+    const key = exactHistoricalFileKey(parts);
+    if (!key || !ws?.id || !node?.id) return '';
+    const state = exactHistoricalFileState();
+    const deps = state.dependencies.get(key) || new Map();
+    deps.set(`${ws.id}:${node.id}`, { wsId: ws.id, nodeId: node.id, rawUrl: exactHistoricalRawUrl(parts) });
+    state.dependencies.set(key, deps);
+    return key;
+  }
+
+  async function refreshExactHistoricalIntegrityDependents(key = '', skipNodeId = '') {
+    const state = exactHistoricalFileState();
+    const deps = Array.from(state.dependencies.get(key)?.values?.() || []);
+    if (!deps.length) return { refreshed: 0 };
+    let refreshed = 0;
+    let changed = false;
+    for (const dep of deps) {
+      if (skipNodeId && dep.nodeId === skipNodeId) continue;
+      const ws = getWorkspace(dep.wsId);
+      if (!ws) continue;
+      if (ws.integrityInFlightPromise) {
+        try { await ws.integrityInFlightPromise; } catch (_) {}
+      }
+      const node = ws.nodeById?.get?.(dep.nodeId);
+      if (!node) continue;
+      const previous = node.integrityStatus || '';
+      const result = await verifyNodeIntegrity(node, ws, { allowHistoricalNetwork: false, exactHistoricalRefresh: true });
+      const cacheValue = { status: result.status, label: result.label };
+      ws.integrityCache = ws.integrityCache || {};
+      if (node.storageKey) ws.integrityCache[node.storageKey] = cacheValue;
+      if (node.path) ws.integrityCache[node.path] = cacheValue;
+      node.integrityStatus = result.status;
+      node.integrityStatusLabel = result.label;
+      refreshed += 1;
+      if (previous !== result.status) changed = true;
+    }
+    if (changed) render();
+    return { refreshed };
+  }
+
+  async function readExactHistoricalFile(parts, options = {}) {
+    const key = exactHistoricalFileKey(parts);
+    const rawUrl = exactHistoricalRawUrl(parts);
+    if (!key || !rawUrl) return { ok: false, deferred: true, reason: 'not-exact-historical-file' };
+    const state = exactHistoricalFileState();
+    const cached = await exactHistoricalCacheRead(rawUrl);
+    if (cached?.ok) {
+      state.cacheHits += 1;
+      githubRepoFetchTrace('exact-historical.cache-hit', { repo: parts.repo, commit: parts.ref, path: parts.path, rawUrl, cacheState: cached.cacheState, reason: 'immutable-commit-path-cache' });
+      return Object.assign({ key, rawUrl, sourceResolutionKind: 'exact-historical-file-cache' }, cached);
+    }
+    if (options.networkRequested !== true) {
+      githubRepoFetchTrace('git-native.historical-read.deferred', { repo: parts.repo, commit: parts.ref, path: parts.path, rawUrl, reason: 'network-not-requested' });
+      return { ok: false, deferred: true, key, rawUrl, reason: 'network-not-requested' };
+    }
+    if (document.hidden) {
+      state.suppressed += 1;
+      githubRepoFetchTrace('exact-historical.network.suppressed', { repo: parts.repo, commit: parts.ref, path: parts.path, rawUrl, reason: 'document-hidden' });
+      return { ok: false, deferred: true, key, rawUrl, reason: 'document-hidden' };
+    }
+    if (state.inFlight.has(key)) return state.inFlight.get(key);
+
+    const origin = exactHistoricalOriginKey(rawUrl);
+    const previous = state.originChains.get(origin) || Promise.resolve();
+    const task = previous.catch(() => {}).then(async () => {
+      const secondCache = await exactHistoricalCacheRead(rawUrl);
+      if (secondCache?.ok) {
+        state.cacheHits += 1;
+        githubRepoFetchTrace('exact-historical.cache-hit', { repo: parts.repo, commit: parts.ref, path: parts.path, rawUrl, cacheState: secondCache.cacheState, reason: 'cache-filled-while-waiting' });
+        return Object.assign({ ok: true, key, rawUrl, sourceResolutionKind: 'exact-historical-file-cache' }, secondCache);
+      }
+
+      const budget = consumeExactHistoricalReadBudget(origin, options);
+      if (!budget.ok) {
+        state.suppressed += 1;
+        githubRepoFetchTrace('exact-historical.network.suppressed', { repo: parts.repo, commit: parts.ref, path: parts.path, rawUrl, reason: budget.reason, nextAllowedAt: budget.nextAllowedAt || 0, count: budget.count || 0, maxReads: budget.maxReads || 0 });
+        return { ok: false, deferred: true, key, rawUrl, reason: budget.reason, nextAllowedAt: budget.nextAllowedAt || 0 };
+      }
+
+      const active = Number(state.activeByOrigin.get(origin) || 0) + 1;
+      state.activeByOrigin.set(origin, active);
+      state.maxConcurrentObserved = Math.max(state.maxConcurrentObserved, active);
+      const started = Date.now();
+      try {
+        const response = await adapterRequest(rawUrl, {
+          adapter: 'github-raw',
+          label: options.label || 'Exact historical file',
+          allowRawFallback: true,
+          fallbackPolicy: 'exact-immutable-file',
+          skipGitNativeRawBridge: true,
+          cacheMode: 'force-cache'
+        });
+        const text = String(response?.text || '');
+        const persistAllowed = response?.cachePolicy?.noStore !== true && response?.preservationPolicy !== 'requiresExplicitChoice';
+        await exactHistoricalCacheWrite(rawUrl, text, { persist: persistAllowed });
+        state.networkReads += 1;
+        state.bytes += text.length;
+        const event = { at: new Date().toISOString(), ok: true, repo: parts.repo, commit: parts.ref, path: parts.path, rawUrl, bytes: text.length, elapsedMs: Date.now() - started, persisted: persistAllowed };
+        state.recent.push(event);
+        while (state.recent.length > 30) state.recent.shift();
+        githubRepoFetchTrace('exact-historical.network.success', Object.assign({}, event, { maxConcurrentObserved: state.maxConcurrentObserved, reason: 'explicit-demand-exact-file' }));
+        setTimeout(() => refreshExactHistoricalIntegrityDependents(key, options.requestingNodeId || '').catch(() => {}), 0);
+        return { ok: true, key, rawUrl, text, cacheState: 'network-then-immutable-cache', sourceResolutionKind: 'exact-historical-file-network' };
+      } catch (error) {
+        state.failed += 1;
+        const event = { at: new Date().toISOString(), ok: false, repo: parts.repo, commit: parts.ref, path: parts.path, rawUrl, error: error?.message || String(error), elapsedMs: Date.now() - started };
+        state.recent.push(event);
+        while (state.recent.length > 30) state.recent.shift();
+        githubRepoFetchTrace('exact-historical.network.failed', Object.assign({}, event, { reason: error?.rateLimited ? 'rate-limited' : 'request-failed' }));
+        throw error;
+      } finally {
+        const remaining = Math.max(0, Number(state.activeByOrigin.get(origin) || 1) - 1);
+        if (remaining) state.activeByOrigin.set(origin, remaining);
+        else state.activeByOrigin.delete(origin);
+      }
+    });
+
+    const settled = task.finally(() => {
+      if (state.inFlight.get(key) === settled) state.inFlight.delete(key);
+      if (state.originChains.get(origin) === settled) state.originChains.delete(origin);
+    });
+    state.inFlight.set(key, settled);
+    state.originChains.set(origin, settled);
+    return settled;
+  }
+
+  async function clearExactHistoricalFileCache(repo = '') {
+    const state = exactHistoricalFileState();
+    const normalizedRepo = normalizeRepoSlug(repo || '');
+    for (const rawUrl of Array.from(state.memory.keys())) {
+      const parts = rawGithubSourceParts(rawUrl);
+      if (!normalizedRepo || sameRepoSlug(parts?.repo || '', normalizedRepo)) state.memory.delete(rawUrl);
+    }
+    let deleted = 0;
+    if (window.caches?.open) {
+      try {
+        const cache = await window.caches.open(EXACT_HISTORICAL_CACHE_NAME);
+        const requests = await cache.keys();
+        for (const request of requests) {
+          const parts = rawGithubSourceParts(request.url);
+          if (!normalizedRepo || sameRepoSlug(parts?.repo || '', normalizedRepo)) {
+            if (await cache.delete(request)) deleted += 1;
+          }
+        }
+      } catch (_) {}
+    }
+    if (!normalizedRepo) {
+      try { localStorage.removeItem(STORAGE_KEYS.exactHistoricalReadBudget); } catch (_) {}
+    }
+    githubRepoFetchTrace('exact-historical.cache-cleared', { repo: repo || '', deleted, reason: 'explicit-cache-reset' });
+    return Object.freeze({ ok: true, repo: repo || '', deleted });
+  }
+
+  function exactHistoricalFileReport() {
+    const state = exactHistoricalFileState();
+    return {
+      policy: 'ordinary startup never fetches historical Git packs or exact files; immutable commit/path files are fetched only by explicit demand and cached persistently',
+      memoryEntries: state.memory.size,
+      inFlight: state.inFlight.size,
+      activeOrigins: Array.from(state.activeByOrigin.entries()).map(([origin, active]) => ({ origin, active })),
+      maxConcurrentObserved: state.maxConcurrentObserved,
+      networkReads: state.networkReads,
+      cacheHits: state.cacheHits,
+      suppressed: state.suppressed,
+      failed: state.failed,
+      bytes: state.bytes,
+      dependencyTargets: state.dependencies.size,
+      dependencyNodes: Array.from(state.dependencies.values()).reduce((sum, deps) => sum + deps.size, 0),
+      persistentBudget: exactHistoricalReadBudgetSnapshot(),
+      recent: state.recent.slice(-12)
+    };
+  }
+
   async function tryReadGithubRawViaGitNative(resolved, label = 'resource', options = {}) {
     const parts = rawGithubSourceParts(resolved);
     if (!gitNativeRawReadEnabledFor(parts)) return null;
@@ -16584,21 +16880,13 @@ ${bodySections}
     try {
       const runtime = await bridge.ensureRuntime(Object.assign({}, opts, { repo: parts.repo }));
       const commit = await resolveGitNativeCommitForRawRead(runtime, bridge, opts, parts, traceDetail);
-      if (gitNativeHistoricalHydrationNeeded(parts, commit) && typeof bridge.hydrateCommit === 'function') {
-        const historyRef = gitNativeHistoricalHydrationBaseRefFor(parts) || opts.ref || 'master';
-        const hydrationOpts = Object.assign({}, opts, {
-          ref: historyRef,
-          historyRef,
-          historicalDepth: Math.max(1, Number(options.historicalDepth || config.historicalDepth || config.timePortalDepth || 64)),
-          historicalMaxDepth: Math.max(1, Number(options.historicalMaxDepth || config.historicalMaxDepth || config.timePortalMaxDepth || 256)),
-          historicalDepthSteps: options.historicalDepthSteps || config.historicalDepthSteps || ''
-        });
-        githubRepoFetchTrace('git-native.historical-hydrate.start', Object.assign({}, traceDetail, { commit, historyRef, depth: hydrationOpts.historicalDepth, maxDepth: hydrationOpts.historicalMaxDepth, depthSteps: hydrationOpts.historicalDepthSteps || '', reason: 'historical-commit-object-missing-candidate' }));
-        try {
-          const hydration = await bridge.hydrateCommit(runtime, commit, hydrationOpts);
-          githubRepoFetchTrace('git-native.historical-hydrate.success', Object.assign({}, traceDetail, { commit, historyRef, depth: hydration?.depth || hydrationOpts.historicalDepth, method: hydration?.method || '', alreadyPresent: Boolean(hydration?.alreadyPresent), attempts: hydration?.attempts || [] }));
-        } catch (error) {
-          githubRepoFetchTrace('git-native.historical-hydrate.failed', Object.assign({}, traceDetail, { commit, historyRef, depth: hydrationOpts.historicalDepth, maxDepth: hydrationOpts.historicalMaxDepth, depthSteps: hydrationOpts.historicalDepthSteps || '', error: error?.message || String(error), attempts: error?.attempts || [] }));
+      if (gitNativeHistoricalObjectMissingFromCurrentSnapshot(parts, commit) && typeof bridge.commitPresent === 'function') {
+        const present = await bridge.commitPresent(runtime, commit);
+        if (!present) {
+          githubRepoFetchTrace('git-native.historical-read.deferred', Object.assign({}, traceDetail, {
+            commit,
+            reason: 'historical-object-not-local-no-implicit-network'
+          }));
         }
       }
       const candidatePaths = gitNativeCandidatePathsForRawPath(parts.path);
@@ -19509,7 +19797,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
           node.workspace = ws;
           const cacheKey = node.storageKey || node.path;
           const previous = cache[cacheKey]?.status || node.integrityStatus || '';
-          const result = await verifyNodeIntegrity(node, ws);
+          const result = await verifyNodeIntegrity(node, ws, { allowHistoricalNetwork: false, reason: options.reason || 'workspace-integrity-pass' });
           cache[cacheKey] = result;
           cache[node.path] = result;
           node.integrityStatus = result.status;
@@ -20216,7 +20504,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     const declaredDefinitionUrl = validationMethodDefinitionUrl(declaredMethod, node?.integrity?.methodHref || '');
     const declaredDefinitionStatus = validationMethodDefinitionStatus(declaredMethod, declaredDefinitionUrl);
     const declaredDefinitionNode = findValidationMethodDefinitionNode(ws, declaredMethod, declaredDefinitionUrl);
-    const entryAudit = await evaluateIntegrityEntriesForNode(ws, node);
+    const entryAudit = await evaluateIntegrityEntriesForNode(ws, node, { allowHistoricalNetwork: true, reason: 'user-opened-integrity-diagnostics' });
     const aggregateIntegrity = integrityOverallFromEntryAudit(entryAudit, initialStatus);
     const initialLifecycle = integrityClaimLifecycleForStatus(aggregateIntegrity.status || initialStatus, node?.integrity);
     const base = {
@@ -20320,7 +20608,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
 
     let result = null;
     try {
-      result = await hashIntegrityTarget(ws, node, target);
+      result = await hashIntegrityTarget(ws, node, target, { allowHistoricalNetwork: true, reason: 'user-opened-integrity-diagnostics' });
     } catch (error) {
       result = {
         status: 'target-unavailable',
@@ -20557,32 +20845,78 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     };
   }
 
-  async function hashRemoteTarget(remote) {
+  async function hashRemoteTarget(remote, options = {}) {
     if (!remote?.rawUrl) return null;
     const cacheKey = `integrity-target:${remote.rawUrl}:sha256-base64url-c14n-v1-v2`;
-    if (!app.integrityTargetHashCache[cacheKey]) {
-      app.integrityTargetHashCache[cacheKey] = (async () => {
-        const parts = rawGithubSourceParts(remote.rawUrl);
-        if (parts && gitNativeRepoMaterialIntendedFor(parts)) {
-          const repoMaterial = await readRepoMaterialText({ url: remote.rawUrl, label: 'integrity target', purpose: 'integrity target', fallbackPolicy: 'never', allowRawFallback: false });
+    if (app.integrityTargetHashCache[cacheKey]) return app.integrityTargetHashCache[cacheKey];
+
+    const work = (async () => {
+      const parts = rawGithubSourceParts(remote.rawUrl);
+      if (parts && gitNativeRepoMaterialIntendedFor(parts)) {
+        if (isCommitRef(parts.ref)) rememberExactHistoricalIntegrityDependency(parts, options.ws, options.node);
+        try {
+          const repoMaterial = await readRepoMaterialText({
+            url: remote.rawUrl,
+            label: 'integrity target',
+            purpose: 'integrity target',
+            fallbackPolicy: 'never',
+            allowRawFallback: false
+          });
           if (repoMaterial?.ok) return integrityHashesForMarkdown(repoMaterial.text);
-          githubRepoFetchTrace('repo-material.integrity.deferred', { label: 'integrity target', repo: parts.repo, ref: parts.ref, path: parts.path, rawUrl: parts.rawUrl || remote.rawUrl, reason: 'git-native-owned-target-not-locally-resolved' });
-          throw repoMaterialUnavailableError(parts, 'git-native-owned-target-not-locally-resolved', 'integrity target');
+        } catch (localError) {
+          if (isCommitRef(parts.ref)) {
+            const exact = await readExactHistoricalFile(parts, {
+              networkRequested: options.allowHistoricalNetwork === true,
+              label: 'Exact historical integrity target',
+              requestingNodeId: options.node?.id || '',
+              reason: options.reason || 'integrity-target'
+            });
+            if (exact?.ok) return integrityHashesForMarkdown(exact.text);
+            const reason = exact?.reason || 'historical-target-deferred';
+            githubRepoFetchTrace('repo-material.integrity.deferred', {
+              label: 'integrity target',
+              repo: parts.repo,
+              ref: parts.ref,
+              path: parts.path,
+              rawUrl: parts.rawUrl || remote.rawUrl,
+              reason
+            });
+            const next = exact?.nextAllowedAt ? ` until ${new Date(exact.nextAllowedAt).toLocaleTimeString()}` : '';
+            const message = reason === 'network-not-requested'
+              ? 'Historical integrity target deferred; open integrity diagnostics to request the exact immutable file.'
+              : `Historical integrity target deferred by ${reason}${next}.`;
+            const error = new Error(message);
+            error.historicalTargetDeferred = true;
+            error.exactHistoricalReason = reason;
+            error.repo = parts.repo;
+            error.ref = parts.ref;
+            error.path = parts.path;
+            throw error;
+          }
+          throw localError;
         }
-        const text = await fetchText(remote.rawUrl, 'integrity target', { fallbackPolicy: 'defer-when-missing', allowRawFallback: false });
-        return integrityHashesForMarkdown(text);
-      })();
+        throw repoMaterialUnavailableError(parts, 'git-native-owned-target-not-locally-resolved', 'integrity target');
+      }
+      const text = await fetchText(remote.rawUrl, 'integrity target', { fallbackPolicy: 'defer-when-missing', allowRawFallback: false });
+      return integrityHashesForMarkdown(text);
+    })();
+
+    app.integrityTargetHashCache[cacheKey] = work;
+    try {
+      return await work;
+    } catch (error) {
+      if (app.integrityTargetHashCache[cacheKey] === work) delete app.integrityTargetHashCache[cacheKey];
+      throw error;
     }
-    return app.integrityTargetHashCache[cacheKey];
   }
 
-  async function verifyNodeIntegrity(node, ws = null) {
+  async function verifyNodeIntegrity(node, ws = null, options = {}) {
     const initialStatus = initialIntegrityStatusForNode(node);
     if (initialStatus === 'draft-pending') {
       return { status: initialStatus, label: initialIntegrityStatusLabelForNode(node) };
     }
     try {
-      const audit = await evaluateIntegrityEntriesForNode(ws || node.workspace || null, node);
+      const audit = await evaluateIntegrityEntriesForNode(ws || node.workspace || null, node, options);
       const aggregate = integrityOverallFromEntryAudit(audit, initialStatus);
       if (aggregate.status && aggregate.status !== 'pending') {
         return { status: aggregate.status, label: aggregate.label || byteIntegrityAuditLabel(aggregate.status), integrityEntryAudit: audit };
@@ -20595,7 +20929,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     if (!target.raw) return { status: 'malformed-claim', label: 'Integrity claim target is missing.' };
 
     try {
-      const result = await hashIntegrityTarget(ws || node.workspace || null, node, target);
+      const result = await hashIntegrityTarget(ws || node.workspace || null, node, target, options);
       if (result.status === 'unavailable') return { status: 'target-unavailable', label: result.label };
       if (result.status === 'unresolved') return { status: 'target-ambiguous', label: result.label };
 
@@ -20655,7 +20989,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     return raw === 'self' || text === 'self' || href === 'self';
   }
 
-  async function hashIntegrityTarget(ws, node, target) {
+  async function hashIntegrityTarget(ws, node, target, options = {}) {
     if (isSelfIntegrityTarget(target)) {
       return {
         status: 'ok',
@@ -20697,7 +21031,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
 
     if (remote?.rawUrl) {
       try {
-        const remoteHashes = await hashRemoteTarget(remote);
+        const remoteHashes = await hashRemoteTarget(remote, Object.assign({}, options, { ws, node }));
         const remoteMatch = matchingIntegrityHash({ hashes: remoteHashes }, node.integrity.value);
         if (remoteMatch) {
           return {
@@ -20797,7 +21131,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
 
       for (const node of nodes || []) {
         const before = node.integrityStatus || '';
-        const result = await verifyNodeIntegrity(node, ws);
+        const result = await verifyNodeIntegrity(node, ws, { allowHistoricalNetwork: false, reason: 'visible-lineage-refresh' });
         node.integrityStatus = result.status;
         node.integrityStatusLabel = result.label;
         ws.integrityCache = ws.integrityCache || {};
@@ -34455,12 +34789,12 @@ ${githubOutboundFileExcerpt(file, 18000)}
     ws.lineageWindows = previousWindows;
     ws.integrityCache = previousIntegrity;
     ws.parentFetches = previousParentFetches;
-    if (typeof scheduleIntegrityVerification === 'function') {
-      await scheduleIntegrityVerification(ws, { discoveryProgress: true });
-    }
     if (typeof scheduleGitCommitSortEnrichment === 'function') scheduleGitCommitSortEnrichment(ws);
     if (typeof resolvePendingSelectedRoutes === 'function') resolvePendingSelectedRoutes();
     applyDurableLensAfterProgressiveIndex(ws);
+    if (typeof scheduleIntegrityVerification === 'function') {
+      scheduleIntegrityVerification(ws, { currentSnapshotFirst: true });
+    }
   }
 
   function gitNativeRepoDiscoveryEnabled(options = {}) {
@@ -34487,6 +34821,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       ref: ref || persistedGitNativeOptions.ref || 'master',
       rootPaths,
       reuseExistingClone: context.options?.reuseExistingGitNativeClone !== false,
+      refreshExistingClone: Boolean(context.options?.hardRefresh),
       sampleReads: 0
     });
 
@@ -34557,6 +34892,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       candidateFiles: candidates.length,
       pathsToRead: paths.length,
       elapsedMs: snapshot.elapsedMs || 0,
+      refreshedExistingClone: Boolean(snapshot.refreshedExistingClone),
       sourceState: snapshot.sourceState || 'git-native-local-object-store',
       corsProxyConfigured: Boolean(snapshot.corsProxyConfigured),
       hiddenProxy: false

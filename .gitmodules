@@ -1,0 +1,9 @@
+[submodule ".mirrors/github.com/Tiinex/docs"]
+	path = .mirrors/github.com/Tiinex/docs
+	url = https://github.com/Tiinex/docs.git
+[submodule ".mirrors/github.com/Tiinex/ai-provenance"]
+	path = .mirrors/github.com/Tiinex/ai-provenance
+	url = https://github.com/Tiinex/ai-provenance.git
+[submodule ".mirrors/github.com/Tiinusen/socials"]
+	path = .mirrors/github.com/Tiinusen/socials
+	url = https://github.com/Tiinusen/socials.git
