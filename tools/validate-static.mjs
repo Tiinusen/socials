@@ -540,7 +540,9 @@ function validateWizardArchitecture() {
   if (!js.includes('/^sha256-base64url-c14n-v\\d+$/.test(label)') || !js.includes('commit-pinned permalink|validator artifact|validation method artifact|method definition')) {
     fail('Referenced Material must exclude linked validation-method examples and validator placeholders, not only real .validator.md URLs.');
   }
-  if (!js.includes('function renderMaterialSection(ws, node, opts = {}) {\n    const refs = nodeMaterialRefs(ws, node);') || !js.includes('function materialSchemaBadges(ws, node) {\n    const refs = nodeMaterialRefs(ws, node);')) {
+  const renderMaterialUsesCanonicalRefs = /function\s+renderMaterialSection\(ws, node, opts = \{\}\)\s*\{[\s\S]{0,420}?nodeMaterialRefs\(ws, node\)/u.test(js);
+  const materialBadgesUseCanonicalRefs = /function\s+materialSchemaBadges\(ws, node\)\s*\{[\s\S]{0,180}?nodeMaterialRefs\(ws, node\)/u.test(js);
+  if (!renderMaterialUsesCanonicalRefs || !materialBadgesUseCanonicalRefs) {
     fail('Rendered material sections and material badges must use the canonical nodeMaterialRefs pipeline so wrappers apply consistently.');
   }
   if (!js.includes('function insertPreviewMaterialAfterPostMain(html, material)') || js.includes("const insertAfterMain = html.indexOf('</div>')") || js.includes("const firstClose = html.indexOf('</div>')")) {
@@ -645,6 +647,42 @@ function validateWizardArchitecture() {
     fail('Quantum traversal runtime create policy must remain child-scoped under traversal.runtime.');
   }
   note('wizard architecture uses direct services, header-level context, registry contract guards, and schema create-policy metadata');
+}
+
+function validateGitHubRecoveredContinuityContract() {
+  const js = read('app.js');
+  const requiredTokens = [
+    'function recoveredTiinexArtifactParentDisposition',
+    'function materializeRecoveredTiinexArtifactMarkdown',
+    'function githubRecoveredContinuityRegressionReport',
+    "mode: 'preserved-unresolved-parent'",
+    "reason: 'github-issue-import'",
+    "githubIssueImportTrace('issue-thread-loader.parent-reconciliation'",
+    'githubParentMaterializationMode: materialized.mode',
+    "githubParentMaterializationMode: 'resolved-parent'",
+    "reason: 'continuity loss: unresolved-known recovery no longer contains its declared Parent block'"
+  ];
+  for (const token of requiredTokens) {
+    if (!js.includes(token)) fail(`GitHub recovered continuity contract missing app token: ${token}`);
+  }
+  const materializerCalls = (js.match(/materializeRecoveredTiinexArtifactMarkdown\(/g) || []).length;
+  if (materializerCalls < 3) {
+    fail('GitHub issue body and comment recovery must share one materialization owner.');
+  }
+  if (js.includes('markdownWithSelfIntegrity(stripContinuityParentBlock(embeddedIssue))')) {
+    fail('GitHub issue recovery must not strip an unresolved declared Parent and reseal it as a root.');
+  }
+  const stripParentCalls = (js.match(/stripContinuityParentBlock\(/g) || []).length;
+  if (stripParentCalls !== 2) {
+    fail(`Parent stripping must remain owned by the helper definition and explicit root/detach save path; found ${stripParentCalls} references.`);
+  }
+  if (!/resolveAdapterParentTraversalForWorkspace\(ws,\s*\{[\s\S]{0,220}?sourceId:\s*source\.id/u.test(js)) {
+    fail('GitHub issue import must run source-bounded parent reconciliation after all issue artifacts are indexed.');
+  }
+  if (js.includes("resolveAdapterParentTraversalForWorkspace(ws, { reason: options.reason || 'public-link-open'")) {
+    fail('Public hash loading must not rerun parent traversal after the issue loader has already reconciled that snapshot.');
+  }
+  note('GitHub recovered continuity preserves unresolved Parent declarations and reconciles each issue snapshot once');
 }
 
 function validateRenderBoundaryArchitecture() {
@@ -1569,6 +1607,7 @@ async function main() {
   validateNoAuditReports();
   validateMarkdownContinuityHygiene();
   validateIntegrityLifecycleUxContract();
+  validateGitHubRecoveredContinuityContract();
   validateEmbeddedWorkspaceMirror();
   validateNoInlineCodeHistory();
   validateNoScaffoldMarkers();

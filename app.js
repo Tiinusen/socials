@@ -1049,6 +1049,7 @@
     clearGithubIssueImportTrace,
     lastGithubIssueImportTrace: () => githubIssueImportTraceEnsure().slice(-40),
     githubIssueNestedContinuityReport: () => githubIssueNestedContinuityReport(),
+    githubRecoveredContinuityRegressionReport: () => githubRecoveredContinuityRegressionReport(),
     githubIssueParentBindingAudit: () => githubIssueParentBindingAudit(),
     adapterPublicationBindingReport: () => adapterPublicationBindingReport(),
     adapterPublicationBatchReport: () => adapterPublicationBatchReport(),
@@ -4364,9 +4365,6 @@
       await loadUrlsIntoWorkspace(ws, [target.url]);
       computeWorkspaceIndex(ws);
       selectPublicHashTargetNode(ws, target, spec, options.reason || 'boot-hash-target');
-      await resolveAdapterParentTraversalForWorkspace(ws, { reason: options.reason || 'public-link-open', spec, hardRefresh: false });
-      computeWorkspaceIndex(ws);
-      selectPublicHashTargetNode(ws, target, spec, options.reason || 'boot-hash-target-after-parent-traversal');
       render();
       return true;
     }
@@ -10790,6 +10788,174 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return markdownWithParentTargetIntegrity(parentNode, childPath, reparented);
   }
 
+  function recoveredTiinexArtifactParentDisposition(parentResolution = {}, recoveredPath = '') {
+    let parentNode = parentResolution.bindingMode === 'resolved' ? parentResolution.node : null;
+    if (isGitHubIssueContainerRootNode(parentNode, recoveredPath)) parentNode = null;
+    if (parentNode) return { mode: 'resolved-parent', parentNode };
+    if (parentResolution.bindingMode === 'unresolved-known') return { mode: 'preserved-unresolved-parent', parentNode: null };
+    return { mode: 'preserved-source-root', parentNode: null };
+  }
+
+  async function materializeRecoveredTiinexArtifactMarkdown(markdown = '', parentResolution = {}, recoveredPath = '') {
+    const sourceMarkdown = normalizeNewlines(markdown || '').trim();
+    const disposition = recoveredTiinexArtifactParentDisposition(parentResolution, recoveredPath);
+    if (disposition.parentNode) {
+      return {
+        markdown: await reparentRecoveredTiinexArtifactForWorkspace(sourceMarkdown, disposition.parentNode, recoveredPath),
+        parentNode: disposition.parentNode,
+        mode: disposition.mode
+      };
+    }
+    // Source Markdown is authoritative when an explicit parent has not yet
+    // resolved, and for source roots. Preserve its envelope and integrity
+    // entries instead of converting a transient lookup miss into a new root.
+    return { markdown: sourceMarkdown, parentNode: null, mode: disposition.mode };
+  }
+
+  async function githubRecoveredContinuityRegressionReport() {
+    const parentBrowseUrl = 'https://github.com/Tiinex/docs/blob/fixture/.topics/parent.trace.md';
+    const parented = `# Continuity Context
+
+- Envelope Schema: tiinex.root.v1
+- Parent
+  - Parent Schema: tiinex.topic.v1
+  - Trace: [parent.trace.md](../parent.trace.md)
+  - Origin:
+    - relative: ../parent.trace.md
+    - [browse + git](${parentBrowseUrl})
+- Current
+  - Current Schema: tiinex.discovery.follow.v1
+  - Created At: 2000-01-02 00:00:00
+
+---
+
+# Recovered child
+
+---
+
+# Continuity Integrity
+
+- sha256-base64url-c14n-v2
+  - Towards: self
+  - Value: fixture`;
+    const parentMarkdown = `# Continuity Context
+
+- Envelope Schema: tiinex.root.v1
+- Current
+  - Current Schema: tiinex.topic.v1
+  - Created At: 2000-01-01 00:00:00
+
+---
+
+# Fixture parent
+
+---
+
+# Continuity Integrity
+
+- sha256-base64url-c14n-v2
+  - Towards: self
+  - Value: fixture`;
+    const root = `# Continuity Context
+
+- Envelope Schema: tiinex.root.v1
+- Current
+  - Current Schema: tiinex.topic.v1
+  - Created At: 2000-01-01 00:00:00
+
+---
+
+# Recovered root
+
+---
+
+# Continuity Integrity
+
+- sha256-base64url-c14n-v2
+  - Towards: self
+  - Value: fixture`;
+    const recoveredPath = '.topics/.github/.issues/example/issue-root-recovered-child.trace.md';
+    const parentNode = {
+      id: 'fixture-parent',
+      path: '.topics/parent.trace.md',
+      title: 'Fixture parent',
+      currentSchema: 'tiinex.topic.v1',
+      createdAt: '2000-01-01 00:00:00',
+      browseUrl: parentBrowseUrl,
+      rawMarkdown: parentMarkdown
+    };
+    const unresolvedResolution = resolveGitHubIssueParentNodeForRecoveredArtifact({ nodeById: new Map() }, parented, null, null, parented);
+    const unresolved = await materializeRecoveredTiinexArtifactMarkdown(parented, unresolvedResolution, recoveredPath);
+    const resolvedResolution = resolveGitHubIssueParentNodeForRecoveredArtifact({ nodeById: new Map([[parentNode.id, parentNode]]) }, parented, null, null, parented);
+    const resolved = await materializeRecoveredTiinexArtifactMarkdown(parented, resolvedResolution, recoveredPath);
+    const resolvedIntegrity = parseIntegrity(resolved.markdown);
+    const resolvedTargetEntry = resolvedIntegrity?.entries?.find((entry) => entry.method === TIINEX_SHA256_C14N_V2_METHOD_ID && !integrityTowardsIsSelf(entry.towards));
+    const resolvedSelfEntry = primaryV2SelfIntegrityEntry(resolvedIntegrity);
+    const expectedParentDigest = await v2SelfDigestForMarkdown(parentMarkdown);
+    const expectedResolvedSelfDigest = await v2SelfDigestForMarkdown(resolved.markdown);
+    const sourceRoot = await materializeRecoveredTiinexArtifactMarkdown(root, { bindingMode: 'fallback' }, recoveredPath);
+    const issueContainer = { path: '.topics/.github/.issues/example/issue-root.trace.md', rawMarkdown: root };
+    const suppressedContainer = await materializeRecoveredTiinexArtifactMarkdown(root, { bindingMode: 'resolved', node: issueContainer }, recoveredPath);
+    const rows = [
+      {
+        case: 'declared-parent-resolves-as-unresolved-known-before-index',
+        pass: unresolvedResolution.bindingMode === 'unresolved-known'
+          && unresolvedResolution.hintCount > 0
+          && !unresolvedResolution.node,
+        bindingMode: unresolvedResolution.bindingMode,
+        hintCount: unresolvedResolution.hintCount
+      },
+      {
+        case: 'declared-parent-preserved-before-index',
+        pass: unresolved.mode === 'preserved-unresolved-parent'
+          && unresolved.markdown === normalizeNewlines(parented).trim()
+          && markdownDeclaresContinuityParent(unresolved.markdown),
+        mode: unresolved.mode,
+        parentPreserved: markdownDeclaresContinuityParent(unresolved.markdown)
+      },
+      {
+        case: 'declared-parent-resolves-after-index',
+        pass: resolvedResolution.bindingMode === 'resolved'
+          && resolvedResolution.node === parentNode,
+        bindingMode: resolvedResolution.bindingMode,
+        resolutionMode: resolvedResolution.mode,
+        score: resolvedResolution.score
+      },
+      {
+        case: 'resolved-parent-resealed-with-v2-continuity',
+        pass: resolved.mode === 'resolved-parent'
+          && resolved.parentNode === parentNode
+          && markdownDeclaresContinuityParent(resolved.markdown)
+          && resolvedTargetEntry?.value === expectedParentDigest
+          && resolvedSelfEntry?.value === expectedResolvedSelfDigest,
+        mode: resolved.mode,
+        parentTargetMatches: resolvedTargetEntry?.value === expectedParentDigest,
+        selfMatches: resolvedSelfEntry?.value === expectedResolvedSelfDigest
+      },
+      {
+        case: 'source-root',
+        pass: sourceRoot.mode === 'preserved-source-root'
+          && sourceRoot.markdown === normalizeNewlines(root).trim()
+          && !markdownDeclaresContinuityParent(sourceRoot.markdown),
+        mode: sourceRoot.mode,
+        parentPreserved: markdownDeclaresContinuityParent(sourceRoot.markdown)
+      },
+      {
+        case: 'publication-container-suppressed',
+        pass: suppressedContainer.mode === 'preserved-source-root'
+          && suppressedContainer.markdown === normalizeNewlines(root).trim()
+          && !suppressedContainer.parentNode,
+        mode: suppressedContainer.mode,
+        parentPreserved: markdownDeclaresContinuityParent(suppressedContainer.markdown)
+      }
+    ];
+    return {
+      policy: 'Recovered Source Markdown keeps a declared Parent while unresolved, resolves it after indexing, reseals v2 continuity, never adopts a GitHub publication container as Parent, and preserves source roots.',
+      pass: rows.every((row) => row.pass),
+      rows
+    };
+  }
+
   function githubParentCommentIdsFromEmbeddedMarkdown(markdown = '') {
     const text = normalizeNewlines(markdown || '');
     const envelope = text.split(/\n---/)[0] || '';
@@ -11280,8 +11446,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const ids = githubParentCommentIdsFromEmbeddedMarkdown(resolutionText).filter((id) => id && id !== newId);
     const parentDiagnostics = tiinexIssueParentHintDiagnostics(embeddedMarkdown, contextText);
     const parentHints = parentDiagnostics.parentHints || tiinexIssueParentHintsForResolution(embeddedMarkdown, contextText);
+    const declaresParent = markdownDeclaresContinuityParent(embeddedMarkdown);
     const nodes = Array.from(ws?.nodeById?.values?.() || []);
-    const firstHint = ids.length ? `issuecomment-${ids[0]}` : (parentHints[0]?.value || '');
+    const firstHint = ids.length ? `issuecomment-${ids[0]}` : (parentHints[0]?.value || (declaresParent ? 'declared-parent' : ''));
+    const hintCount = parentHints.length + ids.length + (declaresParent && !parentHints.length && !ids.length ? 1 : 0);
     const fallback = () => ({
       node: fallbackParent || null,
       mode: fallbackParent ? 'fallback-container-parent' : 'fallback-no-parent',
@@ -11289,17 +11457,17 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       hint: '',
       score: 0,
       explicit: false,
-      hintCount: parentHints.length + ids.length,
+      hintCount,
       unresolvedHint: '',
       hintKinds: parentDiagnostics.parentHintKinds || [],
       sourceSelfHintCount: (parentDiagnostics.sourceSelfHints || []).length,
       filteredSelfHintCount: parentDiagnostics.filteredSelfHintCount || 0
     });
     if (!ws || !nodes.length) {
-      if (ids.length || parentHints.length) return { node: null, mode: 'unresolved-known', bindingMode: 'unresolved-known', hint: firstHint, score: 0, explicit: false, hintCount: parentHints.length + ids.length, unresolvedHint: firstHint, hintKinds: parentDiagnostics.parentHintKinds || [], sourceSelfHintCount: (parentDiagnostics.sourceSelfHints || []).length, filteredSelfHintCount: parentDiagnostics.filteredSelfHintCount || 0 };
+      if (declaresParent || ids.length || parentHints.length) return { node: null, mode: 'unresolved-known', bindingMode: 'unresolved-known', hint: firstHint, score: 0, explicit: false, hintCount, unresolvedHint: firstHint, hintKinds: parentDiagnostics.parentHintKinds || [], sourceSelfHintCount: (parentDiagnostics.sourceSelfHints || []).length, filteredSelfHintCount: parentDiagnostics.filteredSelfHintCount || 0 };
       return fallback();
     }
-    const result = { node: null, mode: 'unresolved', bindingMode: 'unresolved', hint: '', score: 0, explicit: false, hintCount: parentHints.length + ids.length, unresolvedHint: '', hintKinds: parentDiagnostics.parentHintKinds || [], sourceSelfHintCount: (parentDiagnostics.sourceSelfHints || []).length, filteredSelfHintCount: parentDiagnostics.filteredSelfHintCount || 0 };
+    const result = { node: null, mode: 'unresolved', bindingMode: 'unresolved', hint: '', score: 0, explicit: false, hintCount, unresolvedHint: '', hintKinds: parentDiagnostics.parentHintKinds || [], sourceSelfHintCount: (parentDiagnostics.sourceSelfHints || []).length, filteredSelfHintCount: parentDiagnostics.filteredSelfHintCount || 0 };
     const commentParent = githubIssueCommentParentNodeForIds(ws, ids, newComment) || githubIssueCommentParentNodeFromHints(ws, parentHints, newComment);
     if (commentParent?.node) {
       Object.assign(result, { node: commentParent.node, mode: 'explicit-publication-item-comment', bindingMode: 'resolved', hint: `issuecomment-${commentParent.id}`, score: commentParent.score, explicit: true, unresolvedHint: '' });
@@ -11311,7 +11479,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       }
     }
     if (result.node) return result;
-    if (ids.length || parentHints.length) return { node: null, mode: 'unresolved-known', bindingMode: 'unresolved-known', hint: firstHint, score: 0, explicit: false, hintCount: parentHints.length + ids.length, unresolvedHint: firstHint, hintKinds: parentDiagnostics.parentHintKinds || [], sourceSelfHintCount: (parentDiagnostics.sourceSelfHints || []).length, filteredSelfHintCount: parentDiagnostics.filteredSelfHintCount || 0 };
+    if (declaresParent || ids.length || parentHints.length) return { node: null, mode: 'unresolved-known', bindingMode: 'unresolved-known', hint: firstHint, score: 0, explicit: false, hintCount, unresolvedHint: firstHint, hintKinds: parentDiagnostics.parentHintKinds || [], sourceSelfHintCount: (parentDiagnostics.sourceSelfHints || []).length, filteredSelfHintCount: parentDiagnostics.filteredSelfHintCount || 0 };
     return fallback();
   }
 
@@ -11776,8 +11944,13 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   async function resolveAdapterParentTraversalForWorkspace(ws, options = {}) {
     if (!ws) return { attempted: 0, fetched: 0, resolved: 0, unresolved: 0, skipped: 0 };
     const spec = options.spec || null;
+    const sourceId = String(options.sourceId || '').trim();
     const rows = [];
-    const candidates = Array.from(ws.nodeById?.values?.() || []).filter(shouldAttemptAdapterParentTraversal);
+    const candidates = Array.from(ws.nodeById?.values?.() || []).filter((node) => {
+      if (!shouldAttemptAdapterParentTraversal(node)) return false;
+      if (!sourceId) return true;
+      return (node.sourceId || node.file?.sourceId || '') === sourceId;
+    });
     let attempted = 0;
     let fetched = 0;
     let resolved = 0;
@@ -11830,6 +12003,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
             githubParentBindingMode: 'resolved',
             githubParentUnresolvedHint: '',
             githubParentFallbackReason: '',
+            githubParentMaterializationMode: 'resolved-parent',
             githubParentHintKinds: (parentResolution.hintKinds || []).join(', '),
             githubParentSourceSelfHintCount: parentResolution.sourceSelfHintCount || 0,
             githubParentFilteredSelfHintCount: parentResolution.filteredSelfHintCount || 0
@@ -11845,7 +12019,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         rows.push({ path: refreshedNode.path || '', status: 'fetched-but-unresolved', loadedParentPath: loadedParent.path || '' });
       }
     }
-    const summary = { attempted, fetched, resolved, unresolved, skipped, rows };
+    const summary = { attempted, fetched, resolved, unresolved, skipped, sourceId, rows };
     recordPublicLinkOpenEvent('parent-traversal-complete', summary);
     return summary;
   }
@@ -11871,6 +12045,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         const explicitParent = Boolean(node.githubParentExplicit || node.file?.githubParentExplicit);
         const hintCount = Number(node.githubParentHintCount || node.file?.githubParentHintCount || 0);
         const parentBindingMode = node.githubParentBindingMode || node.file?.githubParentBindingMode || '';
+        const parentMaterializationMode = node.githubParentMaterializationMode || node.file?.githubParentMaterializationMode || '';
+        const declaredParentPresent = markdownDeclaresContinuityParent(node.rawMarkdown || node.file?.content || '');
         const unresolvedParentHint = node.githubParentUnresolvedHint || node.file?.githubParentUnresolvedHint || '';
         const row = {
           workspace: ws.label || ws.id || '',
@@ -11889,6 +12065,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           explicitParent,
           parentHintCount: hintCount,
           parentBindingMode,
+          parentMaterializationMode,
+          declaredParentPresent,
           unresolvedParentHint,
           parentHintKinds: node.githubParentHintKinds || node.file?.githubParentHintKinds || '',
           parentPublicationCommentUrl: githubNodeIssueCommentUrl(parent) || '',
@@ -11901,6 +12079,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         if (recovered && row.parentPath && row.parentPath === row.path) warnings.push({ path: row.path, reason: 'recovered artifact self-parented' });
         if (recovered && hintCount > 0 && parentBindingMode === 'fallback') warnings.push({ path: row.path, parentPath: row.parentPath, resolutionMode, resolutionHint, hintCount, reason: 'embedded parent hints existed but external container fallback was used' });
         if (recovered && hintCount > 0 && parentBindingMode === 'unresolved-known') warnings.push({ path: row.path, parentPath: row.parentPath, resolutionMode, resolutionHint, unresolvedParentHint, hintCount, reason: 'embedded parent hint is unresolved-known; add/discover the parent source to resolve traversal' });
+        if (recovered && parentBindingMode === 'unresolved-known' && !declaredParentPresent) warnings.push({ path: row.path, resolutionMode, resolutionHint, unresolvedParentHint, hintCount, parentMaterializationMode, reason: 'continuity loss: unresolved-known recovery no longer contains its declared Parent block' });
         if (recovered && /github-comment-embedded-tiinex-artifact/i.test(node.recoveryKind || node.file?.recoveryKind || '') && /comment-\d+-.*-recovered-/i.test(row.parentPath) && !explicitParent) warnings.push({ path: row.path, parentPath: row.parentPath, reason: 'recovered comment artifact is chained to a previous comment without explicit parent binding' });
       }
     }
@@ -12096,15 +12275,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         const parentContext = issue?.body || '';
         const parentHints = tiinexIssueParentHintsForResolution(embeddedIssue, parentContext);
         const parentResolution = resolveGitHubIssueParentNodeForRecoveredArtifact(ws, embeddedIssue, rootNode, null, parentContext);
-        // For embedded Tiinex Source Markdown, absence of an explicit parent
-        // is meaningful: the embedded artifact is a root. The adapter may
-        // parent shell/findings to the issue container for navigation, but it
-        // must not invent a continuity parent for recovered typed artifacts.
-        let recoveredParentNode = parentResolution.bindingMode === 'resolved' ? parentResolution.node : null;
-        if (isGitHubIssueContainerRootNode(recoveredParentNode, recoveredPath)) recoveredParentNode = null;
-        const recoveredIssueMarkdown = recoveredParentNode
-          ? await reparentRecoveredTiinexArtifactForWorkspace(embeddedIssue, recoveredParentNode, recoveredPath)
-          : await markdownWithSelfIntegrity(stripContinuityParentBlock(embeddedIssue));
+        const materialized = await materializeRecoveredTiinexArtifactMarkdown(embeddedIssue, parentResolution, recoveredPath);
+        const recoveredParentNode = materialized.parentNode;
+        const recoveredIssueMarkdown = materialized.markdown;
         addFileToWorkspace(ws, {
           path: recoveredPath,
           content: recoveredIssueMarkdown,
@@ -12129,9 +12302,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           githubParentUnresolvedHint: parentResolution.unresolvedHint || '',
           githubParentFallbackReason: parentResolution.bindingMode === 'fallback' ? 'adapter container fallback suppressed for embedded root artifact' : '',
           githubParentFallbackSuppressed: parentResolution.bindingMode === 'fallback',
+          githubParentMaterializationMode: materialized.mode,
           embeddedSourcePath: tiinexEmbeddedMarkdownSourcePath(embeddedIssue),
           embeddedSelfIntegrity: tiinexEmbeddedMarkdownSelfIntegrityValue(embeddedIssue),
-          githubParentHintCount: parentHints.length,
+          githubParentHintCount: parentResolution.hintCount || parentHints.length,
           githubParentHintKinds: (parentResolution.hintKinds || []).join(', '),
           githubParentSourceSelfHintCount: parentResolution.sourceSelfHintCount || 0,
           githubParentFilteredSelfHintCount: parentResolution.filteredSelfHintCount || 0
@@ -12145,7 +12319,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           parentResolutionMode: parentResolution.mode || '',
           parentResolutionHint: parentResolution.hint || '',
           parentResolutionScore: parentResolution.score || 0,
-          parentMode: parentResolution.bindingMode || (parentResolution.explicit ? 'resolved' : 'fallback')
+          parentMode: parentResolution.bindingMode || (parentResolution.explicit ? 'resolved' : 'fallback'),
+          materializationMode: materialized.mode
         });
         // When the issue body already contains a typed Tiinex artifact, later
         // untyped issue comments are not new root-level discoveries. They are
@@ -12203,12 +12378,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         const parentContext = comment?.body || '';
         const parentHints = tiinexIssueParentHintsForResolution(embedded, parentContext);
         const parentResolution = resolveGitHubIssueParentNodeForRecoveredArtifact(ws, embedded, issueWorkingParentNode || rootNode, comment, parentContext);
-        // Same rule for comment-embedded Tiinex artifacts: the GitHub
-        // comment/thread is the publication container, not an implicit
-        // continuity parent. Only explicit parent bindings from the payload
-        // or GitHub boundary may reparent the recovered artifact.
-        const recoveredParentNode = parentResolution.bindingMode === 'resolved' ? parentResolution.node : null;
-        const recoveredCommentMarkdown = await reparentRecoveredTiinexArtifactForWorkspace(embedded, recoveredParentNode, recoveredPath);
+        const materialized = await materializeRecoveredTiinexArtifactMarkdown(embedded, parentResolution, recoveredPath);
+        const recoveredParentNode = materialized.parentNode;
+        const recoveredCommentMarkdown = materialized.markdown;
         addFileToWorkspace(ws, {
           path: recoveredPath,
           content: recoveredCommentMarkdown,
@@ -12233,9 +12405,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           githubParentUnresolvedHint: parentResolution.unresolvedHint || '',
           githubParentFallbackReason: parentResolution.bindingMode === 'fallback' ? 'adapter container fallback suppressed for embedded root artifact' : '',
           githubParentFallbackSuppressed: parentResolution.bindingMode === 'fallback',
+          githubParentMaterializationMode: materialized.mode,
           embeddedSourcePath: tiinexEmbeddedMarkdownSourcePath(embedded),
           embeddedSelfIntegrity: tiinexEmbeddedMarkdownSelfIntegrityValue(embedded),
-          githubParentHintCount: parentHints.length,
+          githubParentHintCount: parentResolution.hintCount || parentHints.length,
           githubParentHintKinds: (parentResolution.hintKinds || []).join(', '),
           githubParentSourceSelfHintCount: parentResolution.sourceSelfHintCount || 0,
           githubParentFilteredSelfHintCount: parentResolution.filteredSelfHintCount || 0
@@ -12259,9 +12432,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           githubParentUnresolvedHint: parentResolution.unresolvedHint || '',
           githubParentFallbackReason: parentResolution.bindingMode === 'fallback' ? 'adapter container fallback suppressed for embedded root artifact' : '',
           githubParentFallbackSuppressed: parentResolution.bindingMode === 'fallback',
+          githubParentMaterializationMode: materialized.mode,
           embeddedSourcePath: tiinexEmbeddedMarkdownSourcePath(embedded),
           embeddedSelfIntegrity: tiinexEmbeddedMarkdownSelfIntegrityValue(embedded),
-          githubParentHintCount: parentHints.length,
+          githubParentHintCount: parentResolution.hintCount || parentHints.length,
           githubParentHintKinds: (parentResolution.hintKinds || []).join(', '),
           githubParentSourceSelfHintCount: parentResolution.sourceSelfHintCount || 0,
           githubParentFilteredSelfHintCount: parentResolution.filteredSelfHintCount || 0
@@ -12274,7 +12448,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           parentResolutionMode: parentResolution.mode || '',
           parentResolutionHint: parentResolution.hint || '',
           parentResolutionScore: parentResolution.score || 0,
-          parentMode: parentResolution.bindingMode || (parentResolution.explicit ? 'resolved' : 'fallback')
+          parentMode: parentResolution.bindingMode || (parentResolution.explicit ? 'resolved' : 'fallback'),
+          materializationMode: materialized.mode
         });
       }
       commentCount += 1;
@@ -12283,6 +12458,13 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const prunedLocalCopies = pruneLocalFilesShadowedByIdenticalSource(ws, `GitHub issue ${spec.repo}#${spec.issueNumber}`);
     githubIssueImportTrace('issue-thread-loader.local-shadow-pruned', { prunedLocalCopies });
     computeWorkspaceIndex(ws);
+    const parentTraversal = await resolveAdapterParentTraversalForWorkspace(ws, {
+      reason: 'github-issue-import',
+      spec,
+      sourceId: source.id,
+      hardRefresh: Boolean(options.hardRefresh)
+    });
+    githubIssueImportTrace('issue-thread-loader.parent-reconciliation', parentTraversal);
     if (!ws.discoverySource) ws.discoverySource = { kind: 'github-tree', repo: spec.repo, ref: source.ref || '', rootPath: '.topics', rootPaths: ['.topics'], sourceId: source.id, issueUrls: configuredGitHubIssueUrls(source, spec.repo) };
     const modeNote = adapterMode === 'github-web-fallback' ? ' via GitHub web fallback' : '';
     ws.logs.push(`Loaded GitHub issue discussion ${spec.repo}#${spec.issueNumber}${modeNote}: ${commentCount} comment node(s)${truncated ? ' (truncated after 500 comments)' : ''}.`);
@@ -40317,6 +40499,7 @@ window.addEventListener('popstate', (event) => {
         const hintCount = Number(node.githubParentHintCount || node.file?.githubParentHintCount || 0);
         const mode = node.githubParentResolutionMode || node.file?.githubParentResolutionMode || '';
         const bindingMode = node.githubParentBindingMode || node.file?.githubParentBindingMode || '';
+        const materializationMode = node.githubParentMaterializationMode || node.file?.githubParentMaterializationMode || '';
         const sourceUrl = node.recoveredFromUrl || node.sourceOrigin || node.rawUrl || node.browseUrl || '';
         const isAdapterRecovered = /github\.com\//i.test(sourceUrl) || /github-(issue|comment)-embedded-tiinex-artifact/i.test(node.recoveryKind || node.file?.recoveryKind || '') || isGitHubIssueSurfacePath(node.path || '');
         if (!isAdapterRecovered && !hintCount && !mode) continue;
@@ -40331,6 +40514,7 @@ window.addEventListener('popstate', (event) => {
           hintCount,
           parentHint: node.githubParentResolutionHint || node.file?.githubParentResolutionHint || '',
           bindingMode,
+          materializationMode,
           resolutionMode: mode,
           explicitResolved: Boolean(node.githubParentExplicit || node.file?.githubParentExplicit),
           unresolvedHint: node.githubParentUnresolvedHint || node.file?.githubParentUnresolvedHint || '',
@@ -41495,166 +41679,6 @@ ${raw.slice(0, 800)}`) || 'en')}">
     };
   }
 
-  function routeAndLocalStateContinuityReport() {
-    let registry = [];
-    try { registry = readLocalStateRegistry(); } catch (_) {}
-    const currentId = currentLocalStateCandidateId();
-    const snapshot = currentId ? localStateStoredSnapshot(currentId) : null;
-    return {
-      schema: 'tiinex.route-local-continuity.report.v1',
-      policy: 'browser back/view restore must reuse materialized workspaces; local-state restore matches local payload by label before repo/ref so source-backed workspaces do not absorb separate local workspaces',
-      startup: typeof startupRouteInitSummary === 'function' ? startupRouteInitSummary() : {},
-      routeBoot: app.startupBoot || {},
-      routing: {
-        restoring: Boolean(app.routing?.restoring),
-        popDirection: Number(app.routing?.popDirection || 0),
-        activeWorkspaceId: app.activeWorkspaceId || '',
-        lastApplyRouteState: app.routing?.lastApplyRouteState || null,
-        routeSourcesSignature: (() => { try { return routeSourcesSignature(typeof decodeRouteStateFromHash === 'function' ? (decodeRouteStateFromHash() || { sources: [] }) : { sources: [] }); } catch (_) { return ''; } })(),
-        currentSourcesSignature: (() => { try { return currentSourcesSignature(); } catch (_) { return ''; } })()
-      },
-      localState: {
-        currentId,
-        registryCount: registry.length,
-        snapshotWorkspaceCount: Array.isArray(snapshot?.workspaces) ? snapshot.workspaces.length : 0,
-        snapshotWorkspaces: (snapshot?.workspaces || []).map((saved) => ({
-          label: saved.label || '',
-          repo: saved.repo || '',
-          ref: saved.ref || '',
-          localPayload: localStateSnapshotHasLocalPayload(saved),
-          files: Array.isArray(saved.files) ? saved.files.length : 0,
-          assets: Array.isArray(saved.assets) ? saved.assets.length : 0,
-          sourceCount: Array.isArray(saved.sources) ? saved.sources.length : 0
-        }))
-      },
-      workspaces: (app.workspaces || []).map((ws) => ({
-        label: ws.label || '',
-        repo: ws.repo || '',
-        ref: ws.ref || '',
-        selected: Boolean(ws.selectedNodeId || ws.pendingSelectedRoute),
-        mobileChromeCompact: Boolean(ws.mobileChromeCompact),
-        sourceCount: ws.sources?.size || 0,
-        files: ws.files?.size || 0,
-        nodes: ws.nodes?.length || 0
-      }))
-    };
-  }
-
-
-  function lifecycleResponsivenessReport() {
-    const state = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
-    const restore = app.storedScrollRestoreOwner || {};
-    return {
-      schema: 'tiinex.lifecycle-responsiveness.report.v1',
-      policy: 'mobile tab/app switches must not synchronously serialize large local workspace state during pagehide/beforeunload; mutation-time saves own durable local edits while lifecycle leave owns cached-only scroll/lens state and cancels deferred restore work',
-      skippedSyncLocalSaves: Number(state.skippedSyncLocalSaves || 0),
-      lightweightFlushes: Number(state.lightweightFlushes || 0),
-      duplicateLeaveSkips: Number(state.duplicateLeaveSkips || 0),
-      hiddenCancels: Number(state.hiddenCancels || 0),
-      severeEvents: Number(state.severeEvents || 0),
-      maxStepMs: Number(state.maxStepMs || 0),
-      lastLeave: state.lastLeave || null,
-      lastSteps: state.lastSteps || {},
-      restoreOwner: {
-        generation: Number(restore.generation || 0),
-        activeTimers: Array.isArray(restore.timers) ? restore.timers.length : 0,
-        activeRafs: Array.isArray(restore.rafs) ? restore.rafs.length : 0,
-        schedules: Number(restore.schedules || 0),
-        cancelledSchedules: Number(restore.cancelledSchedules || 0),
-        staleCallbacks: Number(restore.staleCallbacks || 0),
-        hiddenSkips: Number(restore.hiddenSkips || 0),
-        restoreRuns: Number(restore.restoreRuns || 0),
-        chaseStarts: Number(restore.chaseStarts || 0),
-        maxRestoreWorkMs: Number(restore.maxRestoreWorkMs || 0),
-        lastSchedule: restore.lastSchedule || null,
-        lastCancel: restore.lastCancel || null,
-        lastRestore: restore.lastRestore || null
-      },
-      recent: Array.isArray(state.events) ? state.events.slice(-20) : []
-    };
-  }
-
-  function githubExportBindingReport() {
-    const state = app.githubExportBinding || { snapshots: [], issueBodyBindings: 0, commentBindings: 0, removedLocalDrafts: 0 };
-    return {
-      schema: 'tiinex.github-export-binding.report.v1',
-      policy: 'Update known issue binds the exported markdown to the issue body and prunes the local draft shadow; comments remain comment targets so hidden discovery/source visibility is not forced into the feed',
-      issueBodyBindings: Number(state.issueBodyBindings || 0),
-      commentBindings: Number(state.commentBindings || 0),
-      removedLocalDrafts: Number(state.removedLocalDrafts || 0),
-      snapshots: Array.isArray(state.snapshots) ? state.snapshots.slice(-20) : []
-    };
-  }
-
-  function workspaceOpenBoundaryReport() {
-    return {
-      schema: 'tiinex.workspace-open-boundary.report.v1',
-      policy: '.workspace.md opens workspace state instead of becoming a leaf; Open may close non-draft workspaces while preserving browser-local drafts; Merge upserts workspace/source config without closing workspaces; exported workspace files do not embed draft payloads',
-      lastOpen: app.workspaceOpenBoundary || null,
-      lastMerge: app.workspaceOpenMerge?.last || null,
-      workspaceCount: Array.isArray(app.workspaces) ? app.workspaces.length : 0,
-      draftWorkspaceCount: typeof localStateSerializableWorkspaces === 'function' ? localStateSerializableWorkspaces().length : 0,
-      workspaces: (app.workspaces || []).map((ws) => ({
-        label: workspaceDisplayLabel(ws),
-        localDraftPayload: workspaceHasUnpublishedDrafts(ws),
-        repo: ws.repo || '',
-        ref: ws.ref || '',
-        sourceCount: ws.sources?.size || 0,
-        nodes: ws.nodes?.length || 0
-      }))
-    };
-  }
-
-  function workspaceOpenMergeReport() {
-    const state = app.workspaceOpenMerge || { events: [], last: null, duplicateExports: 0, mergeImports: 0, openImports: 0 };
-    return {
-      schema: 'tiinex.workspace-open-merge.report.v1',
-      policy: 'Open replaces only non-draft workspaces; Merge keeps current workspaces and upserts matching workspace/source config; Duplicate workspace export carries duplicate intent in the file and opens as a separate workspace copy while local drafts remain browser-local; confirmed close persists local-state deletion',
-      openImports: Number(state.openImports || 0),
-      mergeImports: Number(state.mergeImports || 0),
-      duplicateExports: Number(state.duplicateExports || 0),
-      last: state.last || null,
-      events: Array.isArray(state.events) ? state.events.slice(-20) : []
-    };
-  }
-
-  function workspaceDropRoutingReport() {
-    const merge = app.workspaceOpenMerge || { events: [], last: null };
-    return {
-      schema: 'tiinex.workspace-drop-routing.report.v1',
-      policy: 'empty-stage workspace drops open directly; page-level drops with existing workspaces ask Open/Merge; drops on a concrete workspace add an entrypoint card; global known-file drops prevent browser navigation',
-      workspaceCount: Array.isArray(app.workspaces) ? app.workspaces.length : 0,
-      pendingChoice: app.pendingWorkspaceDropChoice ? { names: app.pendingWorkspaceDropChoice.names || [], scope: app.pendingWorkspaceDropChoice.scope || '' } : null,
-      lastOpenMerge: merge.last || null,
-      recentOpenMerge: Array.isArray(merge.events) ? merge.events.slice(-12) : []
-    };
-  }
-
-  function workspaceEntrypointShareReport() {
-    const rows = [];
-    for (const ws of app.workspaces || []) {
-      for (const node of ws.nodes || []) {
-        if (!isWorkspaceNode(node)) continue;
-        const href = shareNodeSourceUrl(node);
-        const eligibility = buildShareEligibility('artifact', ws, node);
-        rows.push({
-          workspace: workspaceDisplayLabel(ws),
-          title: artifactDisplayTitle(node) || node.title || '',
-          path: node.path || '',
-          sourceUrl: href,
-          target: eligibility.target || null,
-          publicUrl: eligibility.publicUrl || '',
-          status: eligibility.status || ''
-        });
-      }
-    }
-    return {
-      schema: 'tiinex.workspace-entrypoint-share.report.v1',
-      policy: 'workspace entrypoint cards share/open as workspace targets, including workspace markdown recovered from repo, issue, or comment surfaces',
-      count: rows.length,
-      rows
-    };
-  }
 
   window.TiinexDiagnostics = Object.assign(window.TiinexDiagnostics || {}, {
     mobileActionLayoutReadinessReport,
