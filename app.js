@@ -16759,29 +16759,76 @@ ${bodySections}
     return null;
   }
 
+  function normalizedGitNativeRefLabel(value = '') {
+    return String(value || '')
+      .trim()
+      .replace(/^refs\/heads\//, '')
+      .replace(/^refs\/remotes\/origin\//, '')
+      .replace(/^origin\//, '');
+  }
+
+  function gitNativeLoadedCommitForRawRef(parts = null) {
+    if (!parts?.repo) return '';
+    const owner = gitNativeRepoMaterialOwnerRecord(parts)
+      || gitNativeRepoMaterialOwnerRecordAnyRef(parts)
+      || gitNativeRepoMaterialWorkspaceOwner(parts)
+      || gitNativeRepoMaterialWorkspaceOwnerAnyRef(parts);
+    const commit = String(owner?.commit || owner?.resolvedCommit || workspaceGitResolvedCommit(owner) || '').trim();
+    if (!commit) return '';
+
+    const requested = normalizedGitNativeRefLabel(parts.ref || '');
+    if (!requested || /^HEAD$/i.test(requested)) return commit;
+    const aliases = [
+      owner?.ref,
+      owner?.requestedRef,
+      owner?.branch,
+      workspaceGitRefLabel(owner)
+    ].map(normalizedGitNativeRefLabel).filter(Boolean);
+    return aliases.includes(requested) ? commit : '';
+  }
+
+  function gitNativeRawBridgeResolutionState() {
+    app.gitNativeRawBridgeResolution = app.gitNativeRawBridgeResolution || {
+      localResolveHits: 0,
+      loadedCommitSubstitutions: 0,
+      blockedImplicitRefreshes: 0,
+      lastBlocked: null
+    };
+    return app.gitNativeRawBridgeResolution;
+  }
+
   async function resolveGitNativeCommitForRawRead(runtime, bridge, opts, parts, traceDetail) {
     if (isCommitRef(parts.ref)) return parts.ref;
+    const state = gitNativeRawBridgeResolutionState();
     try {
-      return await runtime.git.resolveRef({ fs: runtime.fs, dir: runtime.dir, ref: parts.ref, cache: runtime.cache });
+      const commit = await runtime.git.resolveRef({ fs: runtime.fs, dir: runtime.dir, ref: parts.ref, cache: runtime.cache });
+      state.localResolveHits += 1;
+      return commit;
     } catch (error) {
       githubRepoFetchTrace('git-native.raw-bridge.resolve-miss', Object.assign({}, traceDetail, { error: error?.message || String(error) }));
     }
 
-    const snapshotKey = `${parts.repo}@${parts.ref}:${(opts.rootPaths || '.topics')}`;
-    app.gitNativeRawSnapshotInFlight = app.gitNativeRawSnapshotInFlight || new Map();
-    if (!app.gitNativeRawSnapshotInFlight.has(snapshotKey)) {
-      app.gitNativeRawSnapshotInFlight.set(snapshotKey, bridge.acquireSnapshot(Object.assign({}, opts, {
-        repo: parts.repo,
-        ref: parts.ref,
-        reuseExistingClone: true,
-        sampleReads: 0
-      })).finally(() => {
-        app.gitNativeRawSnapshotInFlight.delete(snapshotKey);
+    const loadedCommit = gitNativeLoadedCommitForRawRef(parts);
+    if (loadedCommit) {
+      state.loadedCommitSubstitutions += 1;
+      githubRepoFetchTrace('git-native.raw-bridge.loaded-commit', Object.assign({}, traceDetail, {
+        commit: loadedCommit,
+        reason: 'requested-ref-matches-loaded-snapshot-no-network'
       }));
+      return loadedCommit;
     }
-    const snapshot = await app.gitNativeRawSnapshotInFlight.get(snapshotKey);
-    if (!snapshot?.ok || !snapshot.commit) throw new Error(snapshot?.error || 'Git-native snapshot did not resolve a commit.');
-    return snapshot.commit;
+
+    state.blockedImplicitRefreshes += 1;
+    state.lastBlocked = {
+      at: new Date().toISOString(),
+      repo: parts?.repo || '',
+      ref: parts?.ref || '',
+      path: parts?.path || ''
+    };
+    githubRepoFetchTrace('git-native.raw-bridge.network-refresh-blocked', Object.assign({}, traceDetail, {
+      reason: 'local-ref-unavailable-no-implicit-snapshot-refresh'
+    }));
+    throw new Error(`Git ref ${parts?.ref || 'HEAD'} is not available in the loaded local object store; implicit Git network refresh is disabled for material reads.`);
   }
 
 
@@ -17070,6 +17117,20 @@ ${bodySections}
       recent: state.recent.slice(-12)
     };
   }
+
+  window.TiinexDiagnostics = Object.assign(window.TiinexDiagnostics || {}, {
+    gitNativeRawBridgeReport() {
+      const state = gitNativeRawBridgeResolutionState();
+      return Object.freeze({
+        policy: 'repo material reads are local-object-store-only and never start clone/fetch',
+        localResolveHits: state.localResolveHits,
+        loadedCommitSubstitutions: state.loadedCommitSubstitutions,
+        blockedImplicitRefreshes: state.blockedImplicitRefreshes,
+        implicitSnapshotRefreshes: 0,
+        lastBlocked: state.lastBlocked
+      });
+    }
+  });
 
   async function tryReadGithubRawViaGitNative(resolved, label = 'resource', options = {}) {
     const parts = rawGithubSourceParts(resolved);
@@ -35084,6 +35145,11 @@ ${githubOutboundFileExcerpt(file, 18000)}
 
     const timeoutMs = Math.max(3000, Number(app.settings.repositorySnapshotTimeoutMs || 12000));
     for (const transport of transports) {
+      if (location.protocol === 'file:' && isFileProtocolUrl(transport.metadataUrl)) {
+        githubRepoFetchTrace('repository-snapshot.skip', { sessionId, repo, ref, transportId: transport.id, metadataUrl: transport.metadataUrl, reason: 'local-file-http-snapshot-unavailable' });
+        ws.logs.push(`Published repository snapshot ${transport.label} is unavailable in file:// mode; continuing with local Git or material fallback.`);
+        continue;
+      }
       if (repositoryTransportCoolingDown(repo, transport, context.options || {})) {
         const health = repositoryTransportHealth(repo, transport);
         githubRepoFetchTrace('repository-snapshot.skip', { sessionId, repo, ref, transportId: transport.id, reason: 'transport-cooldown', cooldownUntil: health?.cooldownUntil || 0 });

@@ -24,11 +24,13 @@ Repository transport validation should cover:
 - canonical source identity remaining unchanged when a mirror or proxy supplies material;
 - published root and submodule snapshots excluding `.git` and `.mirrors`;
 - mirror publication selecting the remote default-branch HEAD rather than the superproject gitlink commit.
-- omitted workspace refs accepting snapshot metadata refs and native Git following the remote default branch instead of assuming `master`.
+- omitted workspace refs accepting snapshot metadata refs and native Git following the remote default branch instead of assuming `master`;
+- repo-material reads remaining local-object-store-only after snapshot completion: a missing branch ref may reuse the loaded resolved commit, but must never start another clone/fetch.
 
 Useful browser diagnostics:
 
 - `TiinexDiagnostics.repositoryTransportPlan('Tiinex/docs')`
 - `TiinexDiagnostics.repositoryTransportHealth()`
 - `TiinexDiagnostics.githubRepoFetchTraceJson()`
+- `TiinexDiagnostics.gitNativeRawBridgeReport()`
 

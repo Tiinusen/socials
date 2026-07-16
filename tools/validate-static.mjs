@@ -861,6 +861,52 @@ async function validateGitSourceAdapterResearchContract() {
     fail('Exact historical file reads must bypass Git pack hydration and use the explicit immutable-file transport boundary.');
   }
 
+  const rawResolverStart = appJs.indexOf("  function normalizedGitNativeRefLabel(value = '') {");
+  const rawResolverEnd = appJs.indexOf("  const EXACT_HISTORICAL_CACHE_NAME = 'tiinex.exact-historical-files';", rawResolverStart);
+  if (rawResolverStart < 0 || rawResolverEnd <= rawResolverStart) fail('Could not isolate Git-native raw material resolver for validation.');
+  const rawResolverSource = appJs.slice(rawResolverStart, rawResolverEnd);
+  if (/\bacquireSnapshot\s*\(/u.test(rawResolverSource)) {
+    fail('Git-native raw material reads must never restart clone/fetch through acquireSnapshot after the repository snapshot is loaded.');
+  }
+  for (const token of ['git-native.raw-bridge.loaded-commit', 'git-native.raw-bridge.network-refresh-blocked', 'implicitSnapshotRefreshes: 0']) {
+    if (!appJs.includes(token)) fail(`Git-native local-only raw bridge contract missing: ${token}`);
+  }
+
+  let implicitRawSnapshotRefreshes = 0;
+  const rawTraceEvents = [];
+  const rawResolverContext = {
+    app: {},
+    isCommitRef(value = '') { return /^[a-f0-9]{40}$/i.test(String(value || '').trim()); },
+    gitNativeRepoMaterialOwnerRecord() { return null; },
+    gitNativeRepoMaterialOwnerRecordAnyRef() { return { repo: 'Tiinex/docs', ref: 'master', requestedRef: 'master', commit: 'a'.repeat(40), resolvedCommit: 'a'.repeat(40) }; },
+    gitNativeRepoMaterialWorkspaceOwner() { return null; },
+    gitNativeRepoMaterialWorkspaceOwnerAnyRef() { return null; },
+    workspaceGitResolvedCommit(owner) { return owner?.resolvedCommit || owner?.commit || ''; },
+    workspaceGitRefLabel(owner) { return owner?.ref || ''; },
+    githubRepoFetchTrace(event, detail) { rawTraceEvents.push({ event, detail }); },
+    Date,
+    Object,
+    String,
+    RegExp,
+    Error
+  };
+  vm.runInNewContext(`${rawResolverSource}\n  globalThis.__rawResolverTest = { resolveGitNativeCommitForRawRead, gitNativeRawBridgeResolutionState };`, rawResolverContext, { filename: 'app.js#git-native-raw-resolver' });
+  const rawRuntime = { git: { async resolveRef() { throw new Error('local ref absent'); } }, fs: {}, dir: '/repo', cache: {} };
+  const rawBridge = { async acquireSnapshot() { implicitRawSnapshotRefreshes += 1; return { ok: true, commit: 'b'.repeat(40) }; } };
+  const resolvedLoadedCommit = await rawResolverContext.__rawResolverTest.resolveGitNativeCommitForRawRead(rawRuntime, rawBridge, {}, { repo: 'Tiinex/docs', ref: 'master', path: '.topics/a.md' }, {});
+  if (resolvedLoadedCommit !== 'a'.repeat(40) || implicitRawSnapshotRefreshes !== 0) {
+    fail('A missing local branch ref must reuse the already loaded resolved commit without any snapshot refresh.');
+  }
+  let mismatchedRefBlocked = false;
+  try {
+    await rawResolverContext.__rawResolverTest.resolveGitNativeCommitForRawRead(rawRuntime, rawBridge, {}, { repo: 'Tiinex/docs', ref: 'other-branch', path: '.topics/a.md' }, {});
+  } catch (_) {
+    mismatchedRefBlocked = true;
+  }
+  if (!mismatchedRefBlocked || implicitRawSnapshotRefreshes !== 0 || !rawTraceEvents.some((item) => item.event === 'git-native.raw-bridge.network-refresh-blocked')) {
+    fail('An unavailable non-current ref must be blocked locally and must not trigger clone/fetch.');
+  }
+
   const runtimeWindow = { TIINEX_VIEWER_OPTIONS: { gitNative: {} } };
   vm.runInNewContext(browserGitNative, {
     window: runtimeWindow,
@@ -1698,7 +1744,7 @@ function validateRepositoryTransportContracts() {
   for (const token of ['## Repository Transports', '- Kind: snapshot', '- Metadata: ../../mirrors/github.com/Tiinex/docs.json', '- Kind: git-proxy', '- Proxy: https://cors.isomorphic-git.org']) {
     if (!workspace.includes(token)) fail(`packaged workspace must declare the default repository transport: ${token}`);
   }
-  for (const token of ['parseRepositoryTransports', 'repositoryTransportsFor', 'tryDiscoverGitHubRepoViaRepositorySnapshot', 'zipBufferToImportEntries', 'repositoryTransportPlan', 'gitNativeTransportCandidates', 'clearRepositoryTransportHealth', 'workspace-transport-lazy', 'repositoryTransportDeadlineAt', 'repositoryTransportBudgetMs']) {
+  for (const token of ['parseRepositoryTransports', 'repositoryTransportsFor', 'tryDiscoverGitHubRepoViaRepositorySnapshot', 'zipBufferToImportEntries', 'repositoryTransportPlan', 'gitNativeTransportCandidates', 'clearRepositoryTransportHealth', 'workspace-transport-lazy', 'repositoryTransportDeadlineAt', 'repositoryTransportBudgetMs', 'local-file-http-snapshot-unavailable']) {
     if (!app.includes(token)) fail(`repository transport runtime contract missing: ${token}`);
   }
   if (/repo:\s*['"]Tiinex\/docs['"]/u.test(index) || /corsProxy:\s*['"]https:\/\/cors\.isomorphic-git\.org/u.test(index)) {
