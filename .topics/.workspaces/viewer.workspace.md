@@ -2,7 +2,7 @@
 
 - Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.root.v1.schema.md)
 - Current
-  - Current Schema: [tiinex.workspace.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.workspace.v1.schema.md)
+  - Current Schema: [tiinex.workspace.v1](../.schemas/tiinex.workspace.v1.schema.md)
   - Created At: 2026-06-16 00:00:00
   - Why: Defines a portable multi-lineage workspace entrypoint.
   - Summary: Opens the Tiinex docs workspace and declares the default viewer discovery lens.
@@ -51,6 +51,20 @@
 - Default View: feed
 - Default Filter: all
 
+## Repository Transports
+
+### Tiinex docs published snapshot
+
+- Kind: snapshot
+- Repository: Tiinex/docs
+- Metadata: ../../mirrors/github.com/Tiinex/docs.json
+
+### Shared browser Git proxy
+
+- Kind: git-proxy
+- Match: github.com/*
+- Proxy: https://cors.isomorphic-git.org
+
 ## Help
 
 ### What is this view?
@@ -85,4 +99,4 @@ A useful validation note names the selected artifact, the source inspected, the 
 
 - [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)
   - Towards: [viewer.workspace.md](viewer.workspace.md)
-  - Value: r45Tk9hmaYpM6B2SUqCHAfNqieAWH5o1DO3_1TGKa0Y
+  - Value: 2HYAJnlhUX6rao67gx9FM8dRRSOBBeRyumGTI8pJy3g

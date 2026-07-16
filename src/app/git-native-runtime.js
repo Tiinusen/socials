@@ -150,6 +150,120 @@
     };
   }
 
+  async function collectHttpBody(body) {
+    if (!body) return undefined;
+    if (body instanceof Uint8Array || body instanceof ArrayBuffer || typeof body === 'string' || body instanceof Blob) return body;
+    const chunks = [];
+    let total = 0;
+    for await (const chunk of body) {
+      const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk || []);
+      chunks.push(bytes);
+      total += bytes.byteLength;
+    }
+    if (!total) return undefined;
+    const joined = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      joined.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return joined;
+  }
+
+  function timedFetchHttpClient(timeoutMs, transportSignal = null) {
+    const limit = Math.max(1000, Number(timeoutMs || 0));
+    return Object.freeze({
+      async request(input = {}) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(new DOMException('Git transport timed out.', 'TimeoutError')), limit);
+        const externalSignals = [input.signal, transportSignal].filter(Boolean);
+        const abortFromExternal = (event) => {
+          const source = event?.target;
+          controller.abort(source?.reason || new DOMException('Git transport aborted.', 'AbortError'));
+        };
+        for (const signal of externalSignals) {
+          if (signal.aborted) abortFromExternal({ target: signal });
+          else signal.addEventListener?.('abort', abortFromExternal, { once: true });
+        }
+        try {
+          const body = await collectHttpBody(input.body);
+          const response = await fetch(input.url, {
+            method: input.method || 'GET',
+            headers: input.headers || {},
+            body: ['GET', 'HEAD'].includes(String(input.method || 'GET').toUpperCase()) ? undefined : body,
+            signal: controller.signal,
+            redirect: 'follow',
+            credentials: 'omit',
+            skipGitNativeRawBridge: true,
+            allowRawFallback: true
+          });
+          const headers = {};
+          response.headers.forEach((value, key) => { headers[key] = value; });
+          const reader = response.body?.getReader?.();
+          const total = Math.max(0, Number(response.headers.get('content-length') || 0));
+          let loaded = 0;
+          async function* responseBody() {
+            try {
+              if (!reader) return;
+              while (true) {
+                const next = await reader.read();
+                if (next.done) break;
+                if (next.value) {
+                  loaded += Number(next.value.byteLength || next.value.length || 0);
+                  if (typeof input.onProgress === 'function') {
+                    input.onProgress({ phase: 'Receiving Git response', loaded, total });
+                  }
+                  yield next.value;
+                }
+              }
+            } finally {
+              clearTimeout(timer);
+              for (const signal of externalSignals) signal.removeEventListener?.('abort', abortFromExternal);
+              try { reader?.releaseLock?.(); } catch (_) {}
+            }
+          }
+          if (!reader) {
+            clearTimeout(timer);
+            for (const signal of externalSignals) signal.removeEventListener?.('abort', abortFromExternal);
+          }
+          return {
+            url: response.url || input.url,
+            method: input.method || 'GET',
+            headers,
+            body: responseBody(),
+            statusCode: response.status,
+            statusMessage: response.statusText
+          };
+        } catch (error) {
+          clearTimeout(timer);
+          for (const signal of externalSignals) signal.removeEventListener?.('abort', abortFromExternal);
+          if (controller.signal.aborted && error?.name !== 'AbortError' && error?.name !== 'TimeoutError') {
+            const timeout = new Error(`Git transport timed out after ${Math.round(limit / 1000)} seconds.`);
+            timeout.name = 'TimeoutError';
+            throw timeout;
+          }
+          throw error;
+        }
+      }
+    });
+  }
+
+  async function removeDirRecursive(pfs, path) {
+    if (!pfs || !path) return;
+    let names = [];
+    try { names = await pfs.readdir(path); } catch (_) { return; }
+    for (const name of names) {
+      const child = `${String(path).replace(/\/$/, '')}/${name}`;
+      let stat = null;
+      try { stat = await pfs.stat(child); } catch (_) {}
+      if (stat?.isDirectory?.()) await removeDirRecursive(pfs, child);
+      else {
+        try { await pfs.unlink(child); } catch (_) {}
+      }
+    }
+    try { await pfs.rmdir(path); } catch (_) {}
+  }
+
   async function ensureDir(pfs, dir) {
     if (!pfs || typeof pfs.mkdir !== 'function') return;
     const parts = cleanDir(dir).split('/').filter(Boolean);
@@ -189,7 +303,7 @@
       git: globals.git,
       fs,
       pfs,
-      http: opts.http || globals.http,
+      http: opts.requestTimeoutMs ? timedFetchHttpClient(opts.requestTimeoutMs, opts.transportSignal || null) : (opts.http || globals.http),
       Buffer: opts.Buffer || globals.Buffer || global.Buffer,
       dir,
       repo: clean(opts.repo || opts.remote || 'source'),
@@ -205,6 +319,7 @@
         explicitVendorLoad: Boolean(vendor.loaded),
         explicitCorsProxy: Boolean(clean(opts.corsProxy || '')),
         cloneDepth: Math.max(1, Number(opts.cloneDepth || opts.depth || 1)),
+        requestTimeoutMs: Math.max(0, Number(opts.requestTimeoutMs || 0)),
         rootPaths: normalizeRootPaths(opts.rootPaths || '.topics')
       })
     });
@@ -335,7 +450,8 @@
     const opts = gitNativeOptions(options);
     const repo = clean(opts.repo || 'Tiinex/docs');
     const remote = githubRemote(opts.remote || repo);
-    const ref = clean(opts.ref || 'master');
+    const requestedRef = clean(opts.ref || '');
+    const ref = requestedRef || 'HEAD';
     const runtime = await ensureRuntime(Object.assign({}, opts, { repo }));
     if (isGithubRemote(remote) && !runtime.corsProxy && !opts.allowDirectGithubClone) {
       const error = new Error('GitHub browser git clone needs an explicit CORS proxy or allowDirectGithubClone=true. Tiinex will not choose a hidden proxy.');
@@ -369,7 +485,7 @@
           http: runtime.http,
           dir: runtime.dir,
           url: remote,
-          ref,
+          ref: requestedRef || undefined,
           singleBranch: true,
           depth,
           tags: false,
@@ -395,7 +511,7 @@
           http: runtime.http,
           dir: runtime.dir,
           url: remote,
-          ref,
+          ref: requestedRef || undefined,
           singleBranch: opts.singleBranch !== false,
           depth,
           noCheckout: opts.noCheckout !== false,
@@ -410,6 +526,15 @@
       } catch (error) {
         error.stage = error.stage || 'clone';
         error.progressEvents = events.slice(-40);
+        if (opts.cleanupFailedClone !== false) {
+          try {
+            await removeDirRecursive(runtime.pfs, runtime.dir);
+            await ensureDir(runtime.pfs, runtime.dir);
+            pushLabEvent(events, { phase: 'clone.failed-cleanup.complete', dir: runtime.dir });
+          } catch (cleanupError) {
+            pushLabEvent(events, { phase: 'clone.failed-cleanup.failed', dir: runtime.dir, error: cleanupError?.message || String(cleanupError) });
+          }
+        }
         throw error;
       }
       try {
@@ -422,6 +547,11 @@
         throw error;
       }
     }
+    let resolvedRef = requestedRef;
+    if (!resolvedRef && typeof runtime.git.currentBranch === 'function') {
+      try { resolvedRef = clean(await runtime.git.currentBranch({ fs: runtime.fs, dir: runtime.dir, fullname: false })); } catch (_) {}
+    }
+    if (!resolvedRef) resolvedRef = 'HEAD';
     const rootPaths = normalizeRootPaths(opts.rootPaths || runtime.options.rootPaths || '.topics');
     let files = [];
     try {
@@ -436,7 +566,7 @@
       ok: true,
       repo,
       remote,
-      ref,
+      ref: resolvedRef,
       commit,
       dir: runtime.dir,
       depth,
@@ -458,7 +588,8 @@
     const opts = gitNativeOptions(options);
     const repo = clean(opts.repo || 'Tiinex/docs');
     const remote = githubRemote(opts.remote || repo);
-    const ref = clean(opts.ref || 'master');
+    const requestedRef = clean(opts.ref || '');
+    const ref = requestedRef || 'HEAD';
     const runtime = await ensureRuntime(Object.assign({}, opts, { repo }));
     if (isGithubRemote(remote) && !runtime.corsProxy && !opts.allowDirectGithubClone) {
       const error = new Error('GitHub browser git clone needs an explicit CORS proxy or allowDirectGithubClone=true. Tiinex will not choose a hidden proxy.');
@@ -491,7 +622,7 @@
           http: runtime.http,
           dir: runtime.dir,
           url: remote,
-          ref,
+          ref: requestedRef || undefined,
           singleBranch: opts.singleBranch !== false,
           depth,
           noCheckout: opts.noCheckout !== false,
@@ -506,6 +637,15 @@
       } catch (error) {
         error.stage = error.stage || 'clone';
         error.progressEvents = events.slice(-40);
+        if (opts.cleanupFailedClone !== false) {
+          try {
+            await removeDirRecursive(runtime.pfs, runtime.dir);
+            await ensureDir(runtime.pfs, runtime.dir);
+            pushLabEvent(events, { phase: 'clone.failed-cleanup.complete', dir: runtime.dir });
+          } catch (cleanupError) {
+            pushLabEvent(events, { phase: 'clone.failed-cleanup.failed', dir: runtime.dir, error: cleanupError?.message || String(cleanupError) });
+          }
+        }
         throw error;
       }
       try {
@@ -518,6 +658,11 @@
         throw error;
       }
     }
+    let resolvedRef = requestedRef;
+    if (!resolvedRef && typeof runtime.git.currentBranch === 'function') {
+      try { resolvedRef = clean(await runtime.git.currentBranch({ fs: runtime.fs, dir: runtime.dir, fullname: false })); } catch (_) {}
+    }
+    if (!resolvedRef) resolvedRef = 'HEAD';
     const rootPaths = normalizeRootPaths(opts.rootPaths || runtime.options.rootPaths || '.topics');
     let files = [];
     try {
@@ -541,7 +686,7 @@
       ok: true,
       repo,
       remote,
-      ref,
+      ref: resolvedRef,
       commit,
       dir: runtime.dir,
       depth,
@@ -570,7 +715,7 @@
       resultType: error?.resultType || '',
       progressEvents: Array.isArray(error?.progressEvents) ? error.progressEvents.slice(-40) : [],
       repo: clean(options.repo || 'Tiinex/docs'),
-      ref: clean(options.ref || 'master'),
+      ref: clean(options.ref || 'HEAD'),
       sourceState: 'git-native-lab-failed-before-source-snapshot',
       hiddenProxy: false,
       hiddenVendorLoad: false,

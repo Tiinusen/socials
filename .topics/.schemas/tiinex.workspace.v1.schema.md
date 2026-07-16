@@ -21,7 +21,7 @@
 
 Defines a markdown-first workspace format for a Tiinex-compatible viewer shell.
 
-A `.workspace.md` artifact is a portable workspace entrypoint. It may set viewer identity, empty-stage behavior, workspace discovery roots, workspace entrypoints, source policies, local-state behavior, export behavior, help, custom CSS, and residual machine state.
+A `.workspace.md` artifact is a portable workspace entrypoint. It may set viewer identity, empty-stage behavior, workspace discovery roots, workspace entrypoints, repository transports, source policies, local-state behavior, export behavior, help, custom CSS, and residual machine state.
 
 ## Core Semantics
 
@@ -55,6 +55,7 @@ The body should prefer this order when sections are present:
 - `## Host Defaults`
 - `## Workspace Discovery`
 - `## Workspace Entrypoints`
+- `## Repository Transports`
 - `## Source Policy`
 - `## Local Workspace State`
 - `## Workspace Source Actions`
@@ -161,6 +162,41 @@ Recognized fields:
 - `If Already Open`
 
 A viewer should open entrypoints where `Open On Apply` is omitted or affirmative.
+
+## Repository Transports
+
+Optional ordered declarations for delivering repository material without changing its canonical source identity.
+
+Each transport should be a third-level heading under `## Repository Transports`.
+
+Viewers should try current-material `snapshot` transports before richer `git-proxy` transports. Declaration order is preference order among transports of the same kind.
+
+Recognized fields:
+
+- `Kind`
+- `Repository`
+- `Match`
+- `Metadata`
+- `Proxy`
+- `Enabled`
+
+Recognized kinds:
+
+- `snapshot` — a published repository snapshot described by a small metadata document and delivered as an archive
+- `git-proxy` — a browser Git transport proxy used for matching repositories
+
+Rules:
+
+- `Repository` declares one exact repository identity. `owner/repo` means `github.com/owner/repo`; absolute Git repository URLs are also allowed.
+- `Match` declares a scoped repository pattern. A trailing `*` may match one or more repositories below the declared host or owner path.
+- A `snapshot` entry requires `Metadata` and should normally use `Repository`.
+- A `git-proxy` entry requires `Proxy` and requires either `Repository` or `Match`.
+- Relative `Metadata` and `Proxy` values resolve against the workspace artifact location.
+- Snapshot metadata owns the resolved commit, archive location, and checksum; the workspace should not duplicate those volatile values.
+- A repository transport is a delivery path. It must not replace Canonical Origin, Parent, Origin, or repository identity.
+- Runtime observations such as timeouts, cooldowns, health, cache keys, and credentials must not be serialized here.
+- Missing `Enabled` means enabled.
+- Older viewers may ignore this optional section without reinterpreting the workspace sources.
 
 ## Source Policy
 
@@ -298,6 +334,7 @@ Optional Sections
 - Host Defaults
 - Workspace Discovery
 - Workspace Entrypoints
+- Repository Transports
 - Source Policy
 - Local Workspace State
 - Workspace Source Actions
@@ -311,7 +348,9 @@ Rules
 - The first body H1 after the continuity envelope is the display name.
 - Empty optional fields should be omitted.
 - Missing optional sections or fields mean no opinion.
-- Machine State must not replace readable Workspace Entrypoints when markdown can express them.
+- Machine State must not replace readable Workspace Entrypoints or Repository Transports when markdown can express them.
+- Snapshot transports precede Git-proxy transports; declaration order is preference order within each kind.
+- Repository transports must remain distinct from canonical source identity and continuity provenance.
 - Subtitle values should avoid terminal punctuation unless punctuation is intentional content.
 - Prose outside `Schema Validation Contract` may explain the schema, but it does not add required validation rules.
 

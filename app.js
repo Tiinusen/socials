@@ -228,7 +228,8 @@
     githubIssueImportTrace: 'tiinex.github.issueImportTrace.v1',
     githubRepoFetchTrace: 'tiinex.github.repoFetchTrace.v1',
     gitNativeDiscoveryConfig: 'tiinex.gitNative.discoveryConfig.v1',
-    exactHistoricalReadBudget: 'tiinex.exactHistoricalReadBudget'
+    exactHistoricalReadBudget: 'tiinex.exactHistoricalReadBudget',
+    repositoryTransportHealth: 'tiinex.repositoryTransportHealth.v1'
   });
 
 
@@ -324,51 +325,6 @@
     return effective;
   }
 
-  function defaultGitNativeRepoForStartup(config = {}) {
-    return String(config.repo || config.remote || 'Tiinex/docs').trim() || 'Tiinex/docs';
-  }
-
-  async function ensurePersistedGitNativeDiscoveryRuntime(reason = 'startup') {
-    const config = effectiveGitNativeDiscoveryConfig({});
-    if (!config.enabled) return Object.freeze({ ok: false, skipped: true, reason: 'git-native-not-enabled' });
-    if (!window.TiinexGitNativeRuntime?.ensureRuntime || !window.TiinexGitNativeRuntime?.status) {
-      githubRepoFetchTrace('git-native.bootstrap.skip', { reason, skippedReason: 'runtime-bridge-not-loaded' });
-      return Object.freeze({ ok: false, skipped: true, reason: 'runtime-bridge-not-loaded' });
-    }
-    const repo = defaultGitNativeRepoForStartup(config);
-    const opts = Object.assign({ repo, ref: config.ref || 'master', rootPaths: config.rootPaths || '.topics' }, config);
-    githubRepoFetchTrace('git-native.bootstrap.start', {
-      reason,
-      repo: opts.repo,
-      ref: opts.ref || '',
-      corsProxyConfigured: Boolean(opts.corsProxy),
-      loadFromUnpkg: Boolean(opts.loadFromUnpkg),
-      allowDefaultVendorUrls: Boolean(opts.allowDefaultVendorUrls || opts.useDefaultVendorUrls)
-    });
-    try {
-      const runtime = await window.TiinexGitNativeRuntime.ensureRuntime(opts);
-      const status = await window.TiinexGitNativeRuntime.status(opts);
-      githubRepoFetchTrace('git-native.bootstrap.ready', {
-        reason,
-        repo: runtime?.repo || opts.repo,
-        dir: runtime?.dir || status?.cachedDir || '',
-        runtimeAvailable: Boolean(status?.runtimeAvailable),
-        cachedRuntime: Boolean(status?.cachedRuntime || runtime),
-        corsProxyConfigured: Boolean(status?.corsProxyConfigured || opts.corsProxy)
-      });
-      return Object.freeze({ ok: true, runtimeReady: true, repo: runtime?.repo || opts.repo, dir: runtime?.dir || '' });
-    } catch (error) {
-      githubRepoFetchTrace('git-native.bootstrap.failed', {
-        reason,
-        repo: opts.repo,
-        ref: opts.ref || '',
-        error: error?.message || String(error),
-        missing: Array.isArray(error?.missing) ? error.missing.slice() : undefined,
-        needsExplicitCorsProxy: Boolean(error?.needsExplicitCorsProxy)
-      });
-      return Object.freeze({ ok: false, runtimeReady: false, error: error?.message || String(error), missing: error?.missing });
-    }
-  }
 
 
 
@@ -4427,7 +4383,12 @@
 
   app.settings = Object.assign({
     repoDiscoveryBatchRenderEvery: 20,
-    repoDiscoveryFetchDelayMs: 0
+    repoDiscoveryFetchDelayMs: 0,
+    repositorySnapshotTimeoutMs: 12000,
+    gitNativeTransportTimeoutMs: 15000,
+    repositoryTransportBudgetMs: 35000,
+    repositoryTransportCooldownMs: 300000,
+    repositoryTransportMaxCooldownMs: 3600000
   }, app.settings || {});
 
   function normalizeRepoPath(path) {
@@ -6031,9 +5992,27 @@
       .filter(Boolean);
   }
 
+  async function repositorySnapshotRootText(ws, names = []) {
+    if (ws?.sourceAccessMode !== 'published-snapshot' || !ws?.assets) return null;
+    const wanted = new Set(names.map((name) => String(name || '').toLowerCase()));
+    for (const asset of ws.assets.values()) {
+      const path = normalizeAssetPath(asset?.path || '');
+      if (!path || path.includes('/') || !wanted.has(path.toLowerCase())) continue;
+      const text = asset.content != null ? String(asset.content) : (asset.blob ? await asset.blob.text() : '');
+      return { kind: path, text, url: githubRawUrl(ws.repo, ws.resolvedCommit || ws.ref, path) };
+    }
+    return null;
+  }
+
   async function discoverWorkspaceNotice(ws, rootFileMap = null) {
     if (!ws || !ws.repo || !ws.ref) {
       if (ws) ws.notice = { status: 'local', kind: '', text: '', url: '', note: '' };
+      return;
+    }
+
+    const localNotice = await repositorySnapshotRootText(ws, ['NOTICE', 'NOTICE.md']);
+    if (localNotice) {
+      ws.notice = { status: 'found', kind: localNotice.kind, text: localNotice.text, url: localNotice.url, note: `${localNotice.kind} loaded from the verified repository snapshot.` };
       return;
     }
 
@@ -6075,6 +6054,19 @@
         };
         ws.notice = { status: 'local', kind: '', text: '', url: '', note: '' };
       }
+      return;
+    }
+
+    const localPolicy = await repositorySnapshotRootText(ws, repoPolicyCandidateNames());
+    if (localPolicy) {
+      ws.policy = {
+        status: isLineagePolicyKind(localPolicy.kind) ? 'found' : 'origin-fallback',
+        kind: localPolicy.kind,
+        text: localPolicy.text,
+        url: localPolicy.url,
+        note: `${localPolicy.kind} loaded from the verified repository snapshot.`
+      };
+      await discoverWorkspaceNotice(ws, new Map());
       return;
     }
 
@@ -6796,6 +6788,40 @@
     return out;
   }
 
+  function safeRepositoryArchivePath(value, options = {}) {
+    const raw = String(value || '').replace(/\\/g, '/');
+    if (!raw || raw.startsWith('/') || /^[A-Za-z]:\//.test(raw)) return '';
+    const segments = raw.split('/').filter((segment) => segment && segment !== '.');
+    if (!segments.length || segments.some((segment) => segment === '..')) return '';
+    if (options.excludeRepositoryInternals && (segments[0] === '.git' || segments[0] === '.mirrors')) return '';
+    return normalizeAssetPath(segments.join('/'));
+  }
+
+  async function zipBufferToImportEntries(zipBuffer, options = {}) {
+    if (!window.JSZip) throw new Error('JSZip CDN was not available.');
+    const zip = await window.JSZip.loadAsync(zipBuffer);
+    const entries = [];
+    const zipEntries = Object.values(zip.files).filter((entry) => !entry.dir);
+    for (const entry of zipEntries) {
+      const path = safeRepositoryArchivePath(entry.name, { excludeRepositoryInternals: Boolean(options.excludeRepositoryInternals) });
+      if (!path) continue;
+      const blob = await entry.async('blob');
+      let content = null;
+      if (/\.(trace\.md|md|txt)$/i.test(path)) content = await entry.async('string');
+      entries.push({
+        path,
+        blob,
+        content,
+        type: blob.type || '',
+        size: blob.size || 0,
+        lastModified: '',
+        source: options.source || 'zip',
+        kind: importEntryKind(path, content)
+      });
+    }
+    return entries;
+  }
+
   async function encryptedZipToImportEntries(file, buffer) {
     const password = promptForZipPassword(file);
     return zipCryptoImportEntriesFromBytes(new Uint8Array(buffer), password);
@@ -6808,26 +6834,7 @@
     if (/\.zip$/i.test(file.name || relativePath)) {
       const zipBuffer = await file.arrayBuffer();
       if (zipBufferHasEncryptedEntries(zipBuffer)) return encryptedZipToImportEntries(file, zipBuffer);
-      if (!window.JSZip) throw new Error('JSZip CDN was not available.');
-      const zip = await window.JSZip.loadAsync(zipBuffer);
-      const zipEntries = Object.values(zip.files).filter((entry) => !entry.dir);
-      for (const entry of zipEntries) {
-        const path = normalizeAssetPath(entry.name);
-        const blob = await entry.async('blob');
-        let content = null;
-        if (/\.(trace\.md|md|txt)$/i.test(path)) content = await entry.async('string');
-        entries.push({
-          path,
-          blob,
-          content,
-          type: blob.type || '',
-          size: blob.size || 0,
-          lastModified: '',
-          source: 'zip',
-          kind: importEntryKind(path, content)
-        });
-      }
-      return entries;
+      return zipBufferToImportEntries(zipBuffer, { source: 'zip' });
     }
 
     let content = null;
@@ -6993,6 +7000,16 @@
       sourceResultBoundary: 'future explicit local git object/ref/log resolution',
       sourceCacheBoundary: 'future local repository/object cache chosen by user',
       courtesyBoundary: 'preferred when repeated history traversal would otherwise pressure a remote host'
+    }),
+    'published-snapshot': Object.freeze({
+      id: 'published-snapshot',
+      label: 'Published repository snapshot',
+      implemented: true,
+      remote: true,
+      gitNative: false,
+      sourceResultBoundary: 'publisher-generated repository snapshot at a declared commit',
+      sourceCacheBoundary: 'HTTP archive plus browser workspace asset cache',
+      courtesyBoundary: 'prefer one verified archive over repeated repository-wide remote reads'
     }),
     'browser-remote-git': Object.freeze({
       id: 'browser-remote-git',
@@ -7948,6 +7965,7 @@
     try {
       if (hardRefresh) {
         clearAdapterRuntimeCache(source.repo || '');
+        clearRepositoryTransportHealth(source.repo || '');
         await clearExactHistoricalFileCache(source.repo || '');
       }
       const label = hardRefresh ? 'Cache reset' : 'Refresh';
@@ -14637,6 +14655,191 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return out;
   }
 
+  function normalizeRepositoryTransportIdentity(value, defaultHost = 'github.com') {
+    const raw = stripMarkdownInline(String(value || '')).trim();
+    if (!raw) return '';
+    if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(raw)) return `${defaultHost}/${raw.replace(/\.git$/i, '')}`.toLowerCase();
+    let candidate = raw;
+    if (/^[^@\s]+@[^:\s]+:.+/.test(candidate)) candidate = `ssh://${candidate.replace(':', '/')}`;
+    try {
+      const url = new URL(candidate);
+      const host = String(url.hostname || '').toLowerCase();
+      const path = String(url.pathname || '').replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '');
+      return host && path ? `${host}/${path}`.toLowerCase() : '';
+    } catch (_) {
+      return raw.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '').toLowerCase();
+    }
+  }
+
+  function repositoryTransportPatternMatches(pattern, identity) {
+    const normalizedPattern = normalizeRepositoryTransportIdentity(pattern).replace(/\*+$/g, '*');
+    const normalizedIdentity = normalizeRepositoryTransportIdentity(identity);
+    if (!normalizedPattern || !normalizedIdentity) return false;
+    if (!normalizedPattern.includes('*')) return normalizedPattern === normalizedIdentity;
+    const escaped = normalizedPattern.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*');
+    return new RegExp(`^${escaped}$`, 'i').test(normalizedIdentity);
+  }
+
+  function parseRepositoryTransports(markdown, configUrl) {
+    const section = markdownSectionContent(markdown, 'Repository Transports', 2);
+    if (!section) return [];
+    const groups = [];
+    let current = null;
+    for (const raw of normalizeMarkdown(section).split('\n')) {
+      const heading = raw.match(/^###\s+(.+?)\s*$/);
+      if (heading) {
+        if (current) groups.push(current);
+        current = { label: stripMarkdownInline(heading[1]), lines: [] };
+        continue;
+      }
+      if (current) current.lines.push(raw);
+    }
+    if (current) groups.push(current);
+    return groups.map((group, index) => {
+      const map = sectionKeyValueMap(group.lines.join('\n'));
+      if (!isAffirmative(firstKv(map, ['Enabled']), true)) return null;
+      const rawKind = firstKv(map, ['Kind'], '').toLowerCase().replace(/[ _]+/g, '-');
+      const kind = ['snapshot', 'repository-snapshot', 'zip', 'mirror-zip'].includes(rawKind) ? 'snapshot'
+        : ['git-proxy', 'proxy', 'smart-git-proxy'].includes(rawKind) ? 'git-proxy' : '';
+      const repository = firstKv(map, ['Repository', 'Repo'], '');
+      const match = firstKv(map, ['Match', 'Scope'], '');
+      const metadata = firstKv(map, ['Metadata', 'Snapshot Metadata', 'Manifest'], '');
+      const proxy = firstKv(map, ['Proxy', 'CORS Proxy', 'Git Proxy'], '');
+      if (!kind || (!repository && !match)) return null;
+      if (kind === 'snapshot' && !metadata) return null;
+      if (kind === 'git-proxy' && !proxy) return null;
+      return Object.freeze({
+        id: `workspace-transport-${index + 1}`,
+        label: group.label || `${kind} ${index + 1}`,
+        kind,
+        order: index,
+        repository,
+        repositoryIdentity: repository ? normalizeRepositoryTransportIdentity(repository) : '',
+        match,
+        metadataUrl: metadata ? markdownConfigValue(metadata, configUrl) : '',
+        proxyUrl: proxy ? markdownConfigValue(proxy, configUrl) : '',
+        workspaceUrl: configUrl || ''
+      });
+    }).filter(Boolean);
+  }
+
+  function repositoryTransportsFor(repo, kind = '') {
+    const identity = normalizeRepositoryTransportIdentity(repo);
+    return (app.viewerIdentity?.repositoryTransports || []).filter((transport) => {
+      if (kind && transport.kind !== kind) return false;
+      if (transport.repositoryIdentity) return transport.repositoryIdentity === identity;
+      return repositoryTransportPatternMatches(transport.match, identity);
+    }).sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+  }
+
+  function repositoryTransportHealthKey(repo, transport) {
+    return `${normalizeRepositoryTransportIdentity(repo)}::${transport?.kind || ''}::${transport?.metadataUrl || transport?.proxyUrl || transport?.id || ''}`;
+  }
+
+  function readRepositoryTransportHealth() {
+    try {
+      const value = storageReadJson(localStorage, STORAGE_KEYS.repositoryTransportHealth, {});
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function repositoryTransportHealth(repo, transport) {
+    return readRepositoryTransportHealth()[repositoryTransportHealthKey(repo, transport)] || null;
+  }
+
+  function clearRepositoryTransportHealth(repo = '') {
+    const identity = normalizeRepositoryTransportIdentity(repo);
+    if (!identity) {
+      try { localStorage.removeItem(STORAGE_KEYS.repositoryTransportHealth); } catch (_) {}
+      return 0;
+    }
+    const state = readRepositoryTransportHealth();
+    let removed = 0;
+    for (const key of Object.keys(state)) {
+      if (!key.startsWith(`${identity}::`)) continue;
+      delete state[key];
+      removed += 1;
+    }
+    try {
+      if (Object.keys(state).length) storageWriteJson(localStorage, STORAGE_KEYS.repositoryTransportHealth, state);
+      else localStorage.removeItem(STORAGE_KEYS.repositoryTransportHealth);
+    } catch (_) {}
+    return removed;
+  }
+
+  function repositoryTransportCoolingDown(repo, transport, options = {}) {
+    if (options.hardRefresh) return false;
+    const record = repositoryTransportHealth(repo, transport);
+    return Number(record?.cooldownUntil || 0) > Date.now();
+  }
+
+  function rememberRepositoryTransportFailure(repo, transport, error) {
+    const state = readRepositoryTransportHealth();
+    const key = repositoryTransportHealthKey(repo, transport);
+    const previous = state[key] || {};
+    const failures = Math.max(0, Number(previous.failures || 0)) + 1;
+    const base = Math.max(30000, Number(app.settings.repositoryTransportCooldownMs || 300000));
+    const max = Math.max(base, Number(app.settings.repositoryTransportMaxCooldownMs || 3600000));
+    const cooldownMs = Math.min(max, base * Math.pow(2, Math.max(0, failures - 1)));
+    state[key] = {
+      repo: normalizeRepositoryTransportIdentity(repo),
+      transportId: transport?.id || '',
+      kind: transport?.kind || '',
+      failures,
+      lastFailureAt: new Date().toISOString(),
+      lastError: String(error?.message || error || '').slice(0, 500),
+      cooldownUntil: Date.now() + cooldownMs
+    };
+    try { storageWriteJson(localStorage, STORAGE_KEYS.repositoryTransportHealth, state); } catch (_) {}
+    return state[key];
+  }
+
+  function rememberRepositoryTransportSuccess(repo, transport, detail = {}) {
+    const state = readRepositoryTransportHealth();
+    const key = repositoryTransportHealthKey(repo, transport);
+    state[key] = {
+      repo: normalizeRepositoryTransportIdentity(repo),
+      transportId: transport?.id || '',
+      kind: transport?.kind || '',
+      failures: 0,
+      lastSuccessAt: new Date().toISOString(),
+      resolvedCommit: String(detail.commit || ''),
+      cooldownUntil: 0
+    };
+    try { storageWriteJson(localStorage, STORAGE_KEYS.repositoryTransportHealth, state); } catch (_) {}
+    return state[key];
+  }
+
+  function repositoryTransportPlan(repo) {
+    const declared = Array.from(app.viewerIdentity?.repositoryTransports || []);
+    return {
+      repository: normalizeRepositoryTransportIdentity(repo),
+      snapshotTimeoutMs: Number(app.settings.repositorySnapshotTimeoutMs || 12000),
+      gitTransportTimeoutMs: Number(app.settings.gitNativeTransportTimeoutMs || 15000),
+      repositoryTransportBudgetMs: Number(app.settings.repositoryTransportBudgetMs || 35000),
+      declared: declared.map((transport) => ({
+        id: transport.id,
+        label: transport.label,
+        kind: transport.kind,
+        repository: transport.repository || '',
+        match: transport.match || '',
+        metadataUrl: transport.metadataUrl || '',
+        proxyUrl: transport.proxyUrl || '',
+        matches: repositoryTransportsFor(repo, transport.kind).some((candidate) => candidate.id === transport.id),
+        health: repositoryTransportHealth(repo, transport)
+      })),
+      matching: repositoryTransportsFor(repo).map((transport) => transport.id)
+    };
+  }
+
+  window.TiinexDiagnostics = Object.assign(window.TiinexDiagnostics || {}, {
+    repositoryTransportPlan,
+    repositoryTransportHealth: () => readRepositoryTransportHealth(),
+    clearRepositoryTransportHealth
+  });
+
   function parseWorkspaceEntrypoints(markdown, configUrl, machineState = null) {
     const section = markdownSectionContent(markdown, 'Workspace Entrypoints', 2);
     const sourceCaches = parseWorkspaceSourceCaches(markdown);
@@ -16188,7 +16391,9 @@ ${bodySections}
   }
 
   function gitNativeConfiguredRepo(config = {}) {
-    return String(config.repo || defaultGitNativeRepoForStartup(config) || '').trim();
+    // Repository ownership is explicit. Runtime/vendor defaults must never make
+    // a repository Git-native-owned before a matching transport actually loads it.
+    return String(config.repo || '').trim();
   }
 
   function githubRepoPathStartIndex(segments = []) {
@@ -16364,6 +16569,11 @@ ${bodySections}
       sourceId: String(owner.sourceId || '').trim(),
       sourceResolutionKind: owner.sourceResolutionKind || 'git-native-local-object-store',
       sourceAccessMode: owner.sourceAccessMode || 'git-object-store',
+      fsName: String(owner.fsName || '').trim(),
+      dir: String(owner.dir || '').trim(),
+      corsProxy: String(owner.corsProxy || '').trim(),
+      requestTimeoutMs: Math.max(0, Number(owner.requestTimeoutMs || 0)),
+      transportId: String(owner.transportId || '').trim(),
       registeredAt: new Date().toISOString()
     });
     ensureGitNativeRepoMaterialOwners().set(key, record);
@@ -16374,7 +16584,10 @@ ${bodySections}
       rootPaths: record.rootPaths,
       sourceId: record.sourceId,
       sourceResolutionKind: record.sourceResolutionKind,
-      sourceAccessMode: record.sourceAccessMode
+      sourceAccessMode: record.sourceAccessMode,
+      transportId: record.transportId,
+      dir: record.dir,
+      corsProxyConfigured: Boolean(record.corsProxy)
     });
     return record;
   }
@@ -16862,11 +17075,17 @@ ${bodySections}
     const parts = rawGithubSourceParts(resolved);
     if (!gitNativeRawReadEnabledFor(parts)) return null;
     const bridge = window.TiinexGitNativeRuntime;
+    const owner = gitNativeRepoMaterialOwnerRecordAnyRef(parts);
     const config = effectiveGitNativeDiscoveryConfig({});
-    const opts = Object.assign({}, config, {
+    const opts = Object.assign({}, config, owner ? {
+      fsName: owner.fsName || config.fsName,
+      dir: owner.dir || config.dir,
+      corsProxy: owner.corsProxy || config.corsProxy,
+      requestTimeoutMs: owner.requestTimeoutMs || config.requestTimeoutMs
+    } : {}, {
       repo: parts.repo,
-      ref: parts.ref || config.ref || 'master',
-      rootPaths: config.rootPaths || '.topics',
+      ref: parts.ref || owner?.ref || config.ref || 'master',
+      rootPaths: owner?.rootPaths?.length ? owner.rootPaths : (config.rootPaths || '.topics'),
       reuseExistingClone: true
     });
     const traceDetail = {
@@ -17015,82 +17234,7 @@ ${bodySections}
 
 
 
-  const EMBEDDED_DEFAULT_WORKSPACE_MD = "# Continuity Context\n\n- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.root.v1.schema.md)\n- Current\n  - Current Schema: [tiinex.workspace.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.workspace.v1.schema.md)\n  - Created At: 2026-06-16 00:00:00\n  - Why: Defines a portable multi-lineage workspace entrypoint.\n  - Summary: Opens the Tiinex docs workspace and declares the default viewer discovery lens.\n\n---\n\n# Tiinex Viewer\n\n## Viewer Identity\n\n- Icon: ../../assets/tiinex-logo-white-transparent.png\n- Browser Title: Tiinex\n- Home: https://github.com/Tiinex\n- Public Viewer URL: https://tiinex.dev/\n- Workspace Home: https://tiinex.dev/\n\n## Empty Stage\n\n- Subtitle: Every handoff starts somewhere\n- Subtitle: Start where the last thread ends\n- Subtitle: Leave enough for the next mind\n- Subtitle: A thread is waiting\n- Subtitle: Nothing starts from nothing\n\n## Workspace Discovery\n\n- [Tiinex docs workspaces](https://github.com/Tiinex/docs)\n  - Kind: github-tree\n  - Ref: master\n  - Root Path: .topics\n  - Match: *.workspace.md\n  - Label: Tiinex docs workspaces\n  - Open Behavior: chooser\n\n## Workspace Entrypoints\n\n### Tiinex docs\n\n- Source Kind: github-tree\n- Repository: Tiinex/docs\n- Ref: master\n- Root Path: .topics\n- Repo Files Discovery: on\n- Issue Discovery: on\n- Issue URL: https://github.com/Tiinex/docs/issues/9\n- Default View: feed\n- Default Filter: all\n\n## Help\n\n### What is this view?\n\nThis workspace opens Tiinex markdown artifacts so an external reviewer and their LLM helpers can inspect continuity, source material, integrity signals, and continuation paths.\n\n### What should I check first?\n\nStart with what is loaded.\n\nCheck the workspace source, then inspect the visible badges. Treat integrity mismatch, missing integrity, unknown schema, and local-only material as review signals, not automatic failure.\n\n### What should I trust?\n\nTrust only what the artifact and its sources actually show.\n\nUse `Source` to inspect where material came from, `Markdown` to read the artifact, `Open` to inspect the selected node, and `Continue` only when the next step is clear enough to preserve.\n\n### What should an LLM preserve?\n\nDo not collapse Parent and Origin.\n\nParent is the declared continuity edge. Origin is provenance for where the material came from. If either is missing or weak, say so rather than filling the gap.\n\n### What should I send back?\n\nA useful validation note names the selected artifact, the source inspected, the observed signal, and the smallest next correction or continuation.\n\n---\n\n# Continuity Integrity\n\n- [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)\n  - Towards: [viewer.workspace.md](viewer.workspace.md)\n  - Value: r45Tk9hmaYpM6B2SUqCHAfNqieAWH5o1DO3_1TGKa0Y\n";
-
-  function shouldUseEmbeddedDefaultWorkspace() {
-    // Hash state describes current opened sources; it should not block loading
-    // the default workspace shell/identity in static disk mode.
-    return location.protocol === 'file:' && !pageHasExplicitWorkspaceQuery();
-  }
-
-  function workspaceAssetUrl(value, configUrl) {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-
-    const pageFallback = assetPageFallback(raw);
-
-    // In file:// mode, never prefer a resolved file URL that may walk outside
-    // the app folder. Packaged assets should resolve relative to index.html.
-    if (location.protocol === 'file:') {
-      if (pageFallback) return pageFallback;
-      if (/^file:/i.test(raw)) return DEFAULT_TIINEX_BRAND_ASSET;
-    }
-
-    if (/^(data:|blob:)/i.test(raw)) return pageFallback || '';
-
-    const direct = safeUrl(raw);
-    if (direct) return direct;
-
-    try {
-      return new URL(raw, workspaceArtifactBaseUrl(configUrl)).href;
-    } catch (_) {
-      return pageFallback || '';
-    }
-  }
-
-
-
-
-
-
-
-
-
-
-  function staticDiskMode() {
-    return location.protocol === 'file:';
-  }
-
-  function cleanHashOnly() {
-    if (!location.hash) return;
-    try {
-      history.replaceState({ v: 'static-disk', sources: [] }, '', `${location.pathname}${location.search}`);
-    } catch (_) {}
-  }
-
-
-
-
-
-  const DEFAULT_TIINEX_BRAND_ASSET = 'assets/tiinex-logo-white-transparent.png';
-
-  function packagedAssetUrlFromAnyPath(value) {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-    const clean = raw.split(/[?#]/)[0].replace(/\\/g, '/');
-    const idx = clean.toLowerCase().lastIndexOf('/assets/');
-    if (idx >= 0) return clean.slice(idx + 1);
-    const idx2 = clean.toLowerCase().indexOf('assets/');
-    if (idx2 >= 0) return clean.slice(idx2);
-    const file = clean.split('/').filter(Boolean).pop();
-    if (file && /^tiinex-.*\.(png|jpe?g|webp|gif|svg)$/i.test(file)) return `assets/${file}`;
-    return '';
-  }
-
-
-
-
-  // --- Workspace/config markdown parsing ---
+  const EMBEDDED_DEFAULT_WORKSPACE_MD = "# Continuity Context\n\n- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.root.v1.schema.md)\n- Current\n  - Current Schema: [tiinex.workspace.v1](../.schemas/tiinex.workspace.v1.schema.md)\n  - Created At: 2026-06-16 00:00:00\n  - Why: Defines a portable multi-lineage workspace entrypoint.\n  - Summary: Opens the Tiinex docs workspace and declares the default viewer discovery lens.\n\n---\n\n# Tiinex Viewer\n\n## Viewer Identity\n\n- Icon: ../../assets/tiinex-logo-white-transparent.png\n- Browser Title: Tiinex\n- Home: https://github.com/Tiinex\n- Public Viewer URL: https://tiinex.dev/\n- Workspace Home: https://tiinex.dev/\n\n## Empty Stage\n\n- Subtitle: Every handoff starts somewhere\n- Subtitle: Start where the last thread ends\n- Subtitle: Leave enough for the next mind\n- Subtitle: A thread is waiting\n- Subtitle: Nothing starts from nothing\n\n## Workspace Discovery\n\n- [Tiinex docs workspaces](https://github.com/Tiinex/docs)\n  - Kind: github-tree\n  - Ref: master\n  - Root Path: .topics\n  - Match: *.workspace.md\n  - Label: Tiinex docs workspaces\n  - Open Behavior: chooser\n\n## Workspace Entrypoints\n\n### Tiinex docs\n\n- Source Kind: github-tree\n- Repository: Tiinex/docs\n- Ref: master\n- Root Path: .topics\n- Repo Files Discovery: on\n- Issue Discovery: on\n- Issue URL: https://github.com/Tiinex/docs/issues/9\n- Default View: feed\n- Default Filter: all\n\n## Repository Transports\n\n### Tiinex docs published snapshot\n\n- Kind: snapshot\n- Repository: Tiinex/docs\n- Metadata: ../../mirrors/github.com/Tiinex/docs.json\n\n### Shared browser Git proxy\n\n- Kind: git-proxy\n- Match: github.com/*\n- Proxy: https://cors.isomorphic-git.org\n\n## Help\n\n### What is this view?\n\nThis workspace opens Tiinex markdown artifacts so an external reviewer and their LLM helpers can inspect continuity, source material, integrity signals, and continuation paths.\n\n### What should I check first?\n\nStart with what is loaded.\n\nCheck the workspace source, then inspect the visible badges. Treat integrity mismatch, missing integrity, unknown schema, and local-only material as review signals, not automatic failure.\n\n### What should I trust?\n\nTrust only what the artifact and its sources actually show.\n\nUse `Source` to inspect where material came from, `Markdown` to read the artifact, `Open` to inspect the selected node, and `Continue` only when the next step is clear enough to preserve.\n\n### What should an LLM preserve?\n\nDo not collapse Parent and Origin.\n\nParent is the declared continuity edge. Origin is provenance for where the material came from. If either is missing or weak, say so rather than filling the gap.\n\n### What should I send back?\n\nA useful validation note names the selected artifact, the source inspected, the observed signal, and the smallest next correction or continuation.\n\n---\n\n# Continuity Integrity\n\n- [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)\n  - Towards: [viewer.workspace.md](viewer.workspace.md)\n  - Value: 2HYAJnlhUX6rao67gx9FM8dRRSOBBeRyumGTI8pJy3g\n";
 
   function parseViewerConfigMarkdown(markdown, configUrl) {
     const out = {};
@@ -17141,6 +17285,7 @@ ${bodySections}
 
     Object.assign(out, parseEmptyStage(text));
     out.configDiscoveryMarkdown = parseConfigDiscovery(text);
+    out.repositoryTransports = parseRepositoryTransports(text, configUrl);
     const help = helpMarkdownFromConfig(text);
     if (help) out.helpMarkdown = help;
 
@@ -17160,9 +17305,10 @@ ${bodySections}
   }
 
   async function applyEmbeddedDefaultWorkspace(options = {}) {
-    app.viewerIdentity.configUrl = '.topics/.workspaces/viewer.workspace.md';
-    const parsed = parseViewerConfigMarkdown(EMBEDDED_DEFAULT_WORKSPACE_MD, app.viewerIdentity.configUrl);
-    await applyParsedViewerConfig(parsed, app.viewerIdentity.configUrl, { applyWorkspaceState: options.applyWorkspaceState !== false });
+    const configUrl = normalizeViewerConfigUrl('.topics/.workspaces/viewer.workspace.md');
+    app.viewerIdentity.configUrl = configUrl;
+    const parsed = parseViewerConfigMarkdown(EMBEDDED_DEFAULT_WORKSPACE_MD, configUrl);
+    await applyParsedViewerConfig(parsed, configUrl, { applyWorkspaceState: options.applyWorkspaceState !== false });
   }
 
   async function loadViewerConfig() {
@@ -34797,16 +34943,223 @@ ${githubOutboundFileExcerpt(file, 18000)}
     }
   }
 
+  function pathWithinRepositoryRoots(path, rootPaths = []) {
+    const cleanPath = normalizeRepoPath(path);
+    const roots = (Array.isArray(rootPaths) ? rootPaths : parseRootPaths(rootPaths || '.topics'))
+      .map(normalizeRepoPath)
+      .filter(Boolean);
+    return roots.some((root) => cleanPath === root || cleanPath.startsWith(`${root}/`));
+  }
+
+  async function sha256HexBytes(bytes) {
+    const digest = await crypto.subtle.digest('SHA-256', bytes instanceof ArrayBuffer ? bytes : bytes.buffer);
+    return Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function fetchRepositorySnapshotBytes(url, deadlineAt, label, options = {}) {
+    const remaining = Math.max(1, Number(deadlineAt || 0) - Date.now());
+    if (!Number.isFinite(remaining) || remaining <= 1) throw new Error(`${label} exceeded its transport budget.`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new DOMException(`${label} timed out.`, 'TimeoutError')), remaining);
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        cache: options.cache || 'no-cache',
+        credentials: 'omit',
+        skipGitNativeRawBridge: true,
+        allowRawFallback: true
+      });
+      if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}.`);
+      return await response.arrayBuffer();
+    } catch (error) {
+      if (controller.signal.aborted) {
+        const timeout = new Error(`${label} timed out after ${Math.max(1, Math.round(remaining / 1000))} seconds.`);
+        timeout.name = 'TimeoutError';
+        throw timeout;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function repositorySnapshotArchiveUrl(metadataUrl, metadata) {
+    const archive = String(metadata?.archive || '').trim();
+    if (!archive) return '';
+    try {
+      const url = new URL(archive, metadataUrl);
+      if (metadata.sha256) url.searchParams.set('tiinexSnapshot', String(metadata.sha256).slice(0, 16));
+      return url.toString();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function validateRepositorySnapshotMetadata(metadata, transport, repo, requestedRef = '') {
+    if (!metadata || typeof metadata !== 'object') throw new Error('Snapshot metadata is not an object.');
+    if (metadata.type !== 'tiinex.repository.snapshot' || Number(metadata.version) !== 1) throw new Error('Unsupported repository snapshot metadata type or version.');
+    const expectedIdentity = normalizeRepositoryTransportIdentity(repo);
+    const actualIdentity = normalizeRepositoryTransportIdentity(metadata.repository || transport.repository || '');
+    if (!actualIdentity || actualIdentity !== expectedIdentity) throw new Error(`Snapshot repository identity mismatch: expected ${expectedIdentity}, received ${actualIdentity || 'none'}.`);
+    if (!/^[0-9a-f]{40}$/i.test(String(metadata.commit || ''))) throw new Error('Snapshot metadata requires a full 40-character commit SHA.');
+    if (!/^[0-9a-f]{64}$/i.test(String(metadata.sha256 || ''))) throw new Error('Snapshot metadata requires a SHA-256 archive checksum.');
+    const requested = String(requestedRef || '').trim();
+    if (/^[0-9a-f]{40}$/i.test(requested) && requested.toLowerCase() !== String(metadata.commit).toLowerCase()) throw new Error(`Snapshot commit ${metadata.commit} does not satisfy requested commit ${requested}.`);
+    if (requested && !/^[0-9a-f]{7,40}$/i.test(requested) && metadata.ref && String(metadata.ref).replace(/^refs\/heads\//, '') !== requested.replace(/^refs\/heads\//, '')) throw new Error(`Snapshot ref ${metadata.ref} does not satisfy requested ref ${requested}.`);
+    const archiveUrl = repositorySnapshotArchiveUrl(transport.metadataUrl, metadata);
+    if (!archiveUrl) throw new Error('Snapshot metadata does not provide a usable archive URL.');
+    return { archiveUrl, commit: String(metadata.commit), ref: String(metadata.ref || requestedRef || '') };
+  }
+
+  async function tryDiscoverGitHubRepoViaRepositorySnapshot(ws, context = {}) {
+    const repo = context.repo || '';
+    const ref = context.ref || '';
+    const rootPaths = Array.isArray(context.rootPaths) ? context.rootPaths : parseRootPaths(context.rootPath || '.topics');
+    const githubSource = context.githubSource || context.source || null;
+    const sessionId = context.sessionId || githubRepoDiscoverySessionId(repo, ref, rootPaths);
+    const transports = repositoryTransportsFor(repo, 'snapshot');
+    if (!transports.length) {
+      githubRepoFetchTrace('repository-snapshot.skip', { sessionId, repo, ref, rootPaths, reason: 'no-matching-workspace-transport' });
+      return { ok: false, skipped: true, reason: 'no-matching-workspace-transport' };
+    }
+
+    const timeoutMs = Math.max(3000, Number(app.settings.repositorySnapshotTimeoutMs || 12000));
+    for (const transport of transports) {
+      if (repositoryTransportCoolingDown(repo, transport, context.options || {})) {
+        const health = repositoryTransportHealth(repo, transport);
+        githubRepoFetchTrace('repository-snapshot.skip', { sessionId, repo, ref, transportId: transport.id, reason: 'transport-cooldown', cooldownUntil: health?.cooldownUntil || 0 });
+        ws.logs.push(`Published repository snapshot ${transport.label} is cooling down after a recent failure.`);
+        continue;
+      }
+      const sharedDeadlineAt = Number(context.transportDeadlineAt || 0);
+      const deadlineAt = Math.min(Date.now() + timeoutMs, sharedDeadlineAt > Date.now() ? sharedDeadlineAt : Number.POSITIVE_INFINITY);
+      if (!Number.isFinite(deadlineAt) || deadlineAt <= Date.now()) {
+        githubRepoFetchTrace('repository-snapshot.skip', { sessionId, repo, ref, transportId: transport.id, reason: 'repository-transport-budget-exhausted' });
+        break;
+      }
+      githubRepoFetchTrace('repository-snapshot.start', { sessionId, repo, ref, rootPaths, transportId: transport.id, label: transport.label, metadataUrl: transport.metadataUrl, timeoutMs: Math.max(1, deadlineAt - Date.now()), sharedDeadlineAt: Number.isFinite(sharedDeadlineAt) ? sharedDeadlineAt : 0 });
+      try {
+        const metadataBuffer = await fetchRepositorySnapshotBytes(transport.metadataUrl, deadlineAt, 'Repository snapshot metadata');
+        const metadata = JSON.parse(new TextDecoder().decode(metadataBuffer));
+        const validated = validateRepositorySnapshotMetadata(metadata, transport, repo, ref);
+        const archiveBuffer = await fetchRepositorySnapshotBytes(validated.archiveUrl, deadlineAt, 'Repository snapshot archive', { cache: 'default' });
+        const actualSha256 = await sha256HexBytes(archiveBuffer);
+        if (actualSha256.toLowerCase() !== String(metadata.sha256).toLowerCase()) throw new Error(`Snapshot checksum mismatch: expected ${metadata.sha256}, received ${actualSha256}.`);
+        if (zipBufferHasEncryptedEntries(archiveBuffer)) throw new Error('Published repository snapshots must not be encrypted.');
+        const entries = await zipBufferToImportEntries(archiveBuffer, { source: 'repository-snapshot', excludeRepositoryInternals: true });
+        const sourceBoundary = sourceResolutionBoundaryFor(Object.assign({}, githubSource || {}, { sourceAccessMode: 'published-snapshot', sourceResolutionKind: 'published-repository-snapshot' }), 'published-repository-snapshot');
+        let count = 0;
+        let assets = 0;
+        for (const entry of entries) {
+          const path = safeRepositoryArchivePath(entry.path);
+          if (!path) continue;
+          storeWorkspaceAsset(ws, path, entry.blob || entry.content || '', {
+            type: entry.type || '',
+            size: entry.size || 0,
+            source: 'repository-snapshot',
+            sourceId: githubSource?.id || ws.discoverySource?.sourceId || ''
+          });
+          assets += 1;
+          if (!pathWithinRepositoryRoots(path, rootPaths)) continue;
+          const content = entry.content != null ? entry.content : (entry.blob ? await entry.blob.text() : '');
+          if (!shouldIndexAsTrace(path, content)) continue;
+          if (!context.options?.refreshExisting && Array.from(ws.files.values()).some((file) => file.sourceId === githubSource?.id && file.path === path)) continue;
+          addFileToWorkspace(ws, {
+            path,
+            content,
+            rawUrl: githubRawUrl(repo, validated.commit, path),
+            browseUrl: githubBrowseUrl(repo, validated.commit, path),
+            repo,
+            ref: validated.commit,
+            sourceId: githubSource?.id || ws.discoverySource?.sourceId || '',
+            sourceKind: githubSource?.kind || 'github',
+            sourceLabel: githubSource?.label || repo,
+            sourceOrigin: githubSource?.origin || `https://github.com/${repo}`,
+            rootPaths,
+            enabledSurfaces: githubSource?.enabledSurfaces,
+            sourceAccessMode: 'published-snapshot',
+            sourceResolutionKind: 'published-repository-snapshot',
+            sourceBoundary,
+            sourceResultBoundary: 'publisher-generated repository snapshot at a declared commit',
+            sourceCacheBoundary: 'HTTP archive plus browser workspace asset cache',
+            sourceSurface: 'repoFiles'
+          });
+          count += 1;
+        }
+
+        ws.repo = repo;
+        ws.ref = ref || validated.ref;
+        ws.resolvedCommit = validated.commit;
+        ws.sourceAccessMode = 'published-snapshot';
+        ws.sourceResolutionKind = 'published-repository-snapshot';
+        ws.sourceResultBoundary = 'publisher-generated repository snapshot at a declared commit';
+        ws.sourceCacheBoundary = 'HTTP archive plus browser workspace asset cache';
+        ws.repositoryTransport = { kind: 'snapshot', id: transport.id, label: transport.label, metadataUrl: transport.metadataUrl, archiveUrl: validated.archiveUrl, commit: validated.commit };
+        Object.assign(ws.discoverySource || {}, {
+          ref: ref || validated.ref,
+          requestedRef: ref || validated.ref,
+          resolvedCommit: validated.commit,
+          rootPath: rootPaths[0] || '.topics',
+          rootPaths,
+          sourceAccessMode: 'published-snapshot',
+          sourceResolutionKind: 'published-repository-snapshot',
+          sourceBoundary
+        });
+        if (githubSource) Object.assign(githubSource, {
+          ref: githubSource.requestedRef || githubSource.ref || ref || validated.ref,
+          requestedRef: githubSource.requestedRef || githubSource.ref || ref || validated.ref,
+          resolvedCommit: validated.commit,
+          sourceAccessMode: 'published-snapshot',
+          sourceResolutionKind: 'published-repository-snapshot',
+          sourceBoundary,
+          transportUsed: transport.metadataUrl
+        });
+        rememberRepositoryTransportSuccess(repo, transport, { commit: validated.commit });
+        ws.logs.push(`Loaded ${repo}@${validated.commit} from published snapshot ${transport.label}; indexed ${count} Tiinex markdown artifact file(s) and preserved ${assets} repository asset(s).`);
+        githubRepoFetchTrace('repository-snapshot.complete', { sessionId, repo, ref: validated.ref, commit: validated.commit, rootPaths, transportId: transport.id, metadataUrl: transport.metadataUrl, archiveUrl: validated.archiveUrl, bytes: archiveBuffer.byteLength, candidateFiles: count, assets, elapsedMs: timeoutMs - Math.max(0, deadlineAt - Date.now()) });
+        return { ok: true, count, failed: 0, total: count, commit: validated.commit, candidateFiles: count, assets, transport };
+      } catch (error) {
+        const health = rememberRepositoryTransportFailure(repo, transport, error);
+        githubRepoFetchTrace('repository-snapshot.failed', { sessionId, repo, ref, rootPaths, transportId: transport.id, metadataUrl: transport.metadataUrl, error: error?.message || String(error), name: error?.name || '', cooldownUntil: health.cooldownUntil });
+        ws.logs.push(`Published repository snapshot ${transport.label} was unavailable for ${repo}: ${error?.message || String(error)}.`);
+      }
+    }
+    return { ok: false, skipped: true, reason: 'matching-snapshot-transports-failed' };
+  }
+
   function gitNativeRepoDiscoveryEnabled(options = {}) {
     if (options.gitNative === false || options.useGitNative === false || options.disableGitNative) return false;
     if (!window.TiinexGitNativeRuntime || typeof window.TiinexGitNativeRuntime.acquireSnapshot !== 'function') return false;
     return app.settings.repoDiscoveryPreferGitNative !== false;
   }
 
+  function gitNativeTransportCandidates(repo, persistedOptions = {}) {
+    const candidates = repositoryTransportsFor(repo, 'git-proxy').map((transport) => ({
+      id: transport.id,
+      label: transport.label,
+      corsProxy: transport.proxyUrl,
+      workspaceDeclared: true
+    }));
+    const appConfiguredProxy = String(persistedOptions.corsProxy || '').trim();
+    if (appConfiguredProxy && !candidates.some((candidate) => candidate.corsProxy === appConfiguredProxy)) {
+      candidates.push({ id: 'app-configured-git-proxy', label: 'App-configured Git proxy', corsProxy: appConfiguredProxy, workspaceDeclared: false });
+    }
+    if (!candidates.length && persistedOptions.allowDirectGithubClone) {
+      candidates.push({ id: 'direct-git', label: 'Direct Git transport', corsProxy: '', workspaceDeclared: false, allowDirectGithubClone: true });
+    }
+    return candidates;
+  }
+
+  function gitNativeTransportDir(repo, transport) {
+    const repoSlug = String(repo || 'source').replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'source';
+    const transportSlug = String(transport?.id || transport?.label || 'transport').replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'transport';
+    return `/tiinex-git/${repoSlug}/${transportSlug}`;
+  }
+
   async function tryDiscoverGitHubRepoViaGitNative(ws, context = {}) {
     const bridge = window.TiinexGitNativeRuntime;
     const repo = context.repo || '';
-    const ref = context.ref || 'master';
+    const ref = context.ref || '';
     const rootPaths = Array.isArray(context.rootPaths) ? context.rootPaths : parseRootPaths(context.rootPath || '.topics');
     const githubSource = context.githubSource || context.source || null;
     const sessionId = context.sessionId || githubRepoDiscoverySessionId(repo, ref, rootPaths);
@@ -34816,65 +35169,125 @@ ${githubOutboundFileExcerpt(file, 18000)}
     }
 
     const persistedGitNativeOptions = effectiveGitNativeDiscoveryConfig(context.options?.gitNativeOptions || {});
-    const gitNativeOptions = Object.assign({}, persistedGitNativeOptions || {}, {
-      repo,
-      ref: ref || persistedGitNativeOptions.ref || 'master',
-      rootPaths,
-      reuseExistingClone: context.options?.reuseExistingGitNativeClone !== false,
-      refreshExistingClone: Boolean(context.options?.hardRefresh),
-      sampleReads: 0
-    });
-
-    let status = null;
-    try {
-      status = typeof bridge.status === 'function' ? await bridge.status(gitNativeOptions) : null;
-    } catch (error) {
-      status = { runtimeAvailable: false, error: error?.message || String(error) };
+    const transports = gitNativeTransportCandidates(repo, persistedGitNativeOptions);
+    if (!transports.length) {
+      githubRepoFetchTrace('git-native.skip', { sessionId, repo, ref, rootPaths, reason: 'no-matching-git-proxy-transport' });
+      ws.logs.push(`No matching Git proxy transport is declared for ${repo}. Falling back to bounded GitHub raw reads.`);
+      return { ok: false, skipped: true, reason: 'no-matching-git-proxy-transport' };
     }
 
-    const explicitlyConfigured = Boolean(status?.runtimeAvailable || status?.cachedRuntime || status?.canLoadExplicitVendor || gitNativeOptions.enabled || gitNativeOptions.loadFromUnpkg || gitNativeOptions.loadRuntime || gitNativeOptions.loadVendor || gitNativeOptions.gitScriptUrl || gitNativeOptions.lightningFsScriptUrl);
-    if (!explicitlyConfigured) {
-      githubRepoFetchTrace('git-native.skip', { sessionId, repo, ref, rootPaths, reason: 'runtime-not-loaded-and-no-explicit-vendor-config' });
-      return { ok: false, skipped: true, reason: 'runtime-not-loaded-and-no-explicit-vendor-config' };
-    }
+    const configuredBudgetMs = Math.max(3000, Number(app.settings.repositoryTransportBudgetMs || 35000));
+    const sharedDeadlineAt = Number(context.transportDeadlineAt || 0);
+    const budgetDeadline = sharedDeadlineAt > Date.now() ? sharedDeadlineAt : Date.now() + configuredBudgetMs;
+    const budgetMs = Math.max(0, budgetDeadline - Date.now());
+    const perTransportMs = Math.max(3000, Number(app.settings.gitNativeTransportTimeoutMs || 15000));
+    let selected = null;
+    let snapshot = null;
+    let lastReason = '';
 
-    githubRepoFetchTrace('git-native.snapshot.start', {
-      sessionId,
-      repo,
-      ref: gitNativeOptions.ref,
-      rootPaths,
-      runtimeAvailable: Boolean(status?.runtimeAvailable),
-      cachedRuntime: Boolean(status?.cachedRuntime),
-      corsProxyConfigured: Boolean(status?.corsProxyConfigured),
-      hiddenProxy: false,
-      hiddenVendorLoad: false
-    });
+    for (const transport of transports) {
+      const healthTransport = Object.assign({ kind: 'git-proxy', proxyUrl: transport.corsProxy || '' }, transport);
+      if (repositoryTransportCoolingDown(repo, healthTransport, context.options || {})) {
+        const health = repositoryTransportHealth(repo, healthTransport);
+        githubRepoFetchTrace('git-native.transport.skip', { sessionId, repo, ref, transportId: transport.id, reason: 'transport-cooldown', cooldownUntil: health?.cooldownUntil || 0 });
+        ws.logs.push(`Git transport ${transport.label} is cooling down after a recent failure.`);
+        continue;
+      }
+      const remaining = budgetDeadline - Date.now();
+      if (remaining < 1000) {
+        lastReason = 'git-native-transport-budget-exhausted';
+        githubRepoFetchTrace('git-native.transport.skip', { sessionId, repo, ref, transportId: transport.id, reason: lastReason, budgetMs });
+        break;
+      }
+      const requestTimeoutMs = Math.max(1000, Math.min(perTransportMs, remaining));
+      const gitNativeOptions = Object.assign({}, persistedGitNativeOptions || {}, {
+        repo,
+        ref: ref || persistedGitNativeOptions.ref || '',
+        rootPaths,
+        corsProxy: transport.corsProxy || '',
+        allowDirectGithubClone: Boolean(transport.allowDirectGithubClone),
+        dir: gitNativeTransportDir(repo, transport),
+        requestTimeoutMs,
+        cleanupFailedClone: true,
+        reuseExistingClone: context.options?.reuseExistingGitNativeClone !== false,
+        refreshExistingClone: Boolean(context.options?.hardRefresh),
+        sampleReads: 0
+      });
 
-    let snapshot;
-    try {
-      snapshot = await bridge.acquireSnapshot(gitNativeOptions);
-    } catch (error) {
-      const reason = error?.needsExplicitCorsProxy ? 'needs-explicit-cors-proxy' : (error?.message || String(error));
-      githubRepoFetchTrace('git-native.snapshot.failed', {
+      let status = null;
+      try {
+        status = typeof bridge.status === 'function' ? await bridge.status(gitNativeOptions) : null;
+      } catch (error) {
+        status = { runtimeAvailable: false, error: error?.message || String(error) };
+      }
+      const explicitlyConfigured = Boolean(status?.runtimeAvailable || status?.cachedRuntime || status?.canLoadExplicitVendor || gitNativeOptions.enabled || gitNativeOptions.loadFromUnpkg || gitNativeOptions.loadRuntime || gitNativeOptions.loadVendor || gitNativeOptions.gitScriptUrl || gitNativeOptions.lightningFsScriptUrl);
+      if (!explicitlyConfigured) {
+        lastReason = 'runtime-not-loaded-and-no-explicit-vendor-config';
+        githubRepoFetchTrace('git-native.transport.skip', { sessionId, repo, ref, rootPaths, transportId: transport.id, label: transport.label, reason: lastReason });
+        continue;
+      }
+
+      githubRepoFetchTrace('git-native.snapshot.start', {
         sessionId,
         repo,
         ref: gitNativeOptions.ref,
         rootPaths,
-        reason,
-        stage: error?.stage || '',
-        missing: error?.missing || []
+        transportId: transport.id,
+        transportLabel: transport.label,
+        corsProxy: transport.corsProxy,
+        requestTimeoutMs,
+        remainingBudgetMs: remaining,
+        runtimeAvailable: Boolean(status?.runtimeAvailable),
+        cachedRuntime: Boolean(status?.cachedRuntime),
+        corsProxyConfigured: Boolean(transport.corsProxy),
+        hiddenProxy: false,
+        hiddenVendorLoad: false
       });
+
+      const transportController = new AbortController();
+      const transportTimer = setTimeout(() => transportController.abort(new DOMException(`Git transport ${transport.label} timed out.`, 'TimeoutError')), requestTimeoutMs);
+      gitNativeOptions.transportSignal = transportController.signal;
+      gitNativeOptions.reloadRuntime = true;
+      try {
+        const candidate = await bridge.acquireSnapshot(gitNativeOptions);
+        if (!candidate?.ok || !Array.isArray(candidate.candidates)) throw new Error(candidate?.error || 'git-native snapshot did not return candidate files');
+        selected = { transport, options: gitNativeOptions };
+        snapshot = candidate;
+        break;
+      } catch (error) {
+        lastReason = error?.needsExplicitCorsProxy ? 'needs-explicit-cors-proxy' : (error?.message || String(error));
+        const health = rememberRepositoryTransportFailure(repo, healthTransport, error);
+        githubRepoFetchTrace('git-native.snapshot.failed', {
+          sessionId,
+          repo,
+          ref: gitNativeOptions.ref,
+          rootPaths,
+          transportId: transport.id,
+          transportLabel: transport.label,
+          corsProxy: transport.corsProxy,
+          reason: lastReason,
+          stage: error?.stage || '',
+          name: error?.name || '',
+          missing: error?.missing || [],
+          cooldownUntil: health.cooldownUntil
+        });
+        ws.logs.push(`Git transport ${transport.label} was unavailable for ${repo}: ${lastReason}.`);
+      } finally {
+        clearTimeout(transportTimer);
+      }
+    }
+
+    if (!selected || !snapshot) {
+      const reason = lastReason || 'all-matching-git-proxy-transports-failed';
       ws.logs.push(`Git-native repo discovery unavailable for ${repo}: ${reason}. Falling back to bounded GitHub raw reads.`);
       return { ok: false, skipped: true, reason };
     }
 
-    if (!snapshot?.ok || !Array.isArray(snapshot.candidates)) {
-      const reason = snapshot?.error || 'git-native snapshot did not return candidate files';
-      githubRepoFetchTrace('git-native.snapshot.failed', { sessionId, repo, ref: gitNativeOptions.ref, rootPaths, reason, resultType: typeof snapshot });
-      ws.logs.push(`Git-native repo discovery unavailable for ${repo}: ${reason}. Falling back to bounded GitHub raw reads.`);
-      return { ok: false, skipped: true, reason };
-    }
-
+    rememberRepositoryTransportSuccess(repo, Object.assign({ kind: 'git-proxy', proxyUrl: selected.transport.corsProxy || '' }, selected.transport), { commit: snapshot.commit || selected.options.ref });
+    const gitNativeOptions = Object.assign({}, selected.options);
+    delete gitNativeOptions.transportSignal;
+    gitNativeOptions.reloadRuntime = true;
+    const transport = selected.transport;
     const commit = snapshot.commit || gitNativeOptions.ref;
     const candidates = Array.from(new Set(snapshot.candidates.map((path) => normalizeRepoPath(path)).filter(Boolean))).sort((a, b) => a.localeCompare(b));
     const paths = candidates.filter((path) => {
@@ -34888,6 +35301,9 @@ ${githubOutboundFileExcerpt(file, 18000)}
       ref: snapshot.ref || gitNativeOptions.ref,
       commit,
       rootPaths: snapshot.rootPaths || rootPaths,
+      transportId: transport.id,
+      transportLabel: transport.label,
+      corsProxy: transport.corsProxy,
       fileCount: snapshot.fileCount || 0,
       candidateFiles: candidates.length,
       pathsToRead: paths.length,
@@ -34899,7 +35315,6 @@ ${githubOutboundFileExcerpt(file, 18000)}
     });
 
     const requestedRef = gitNativeOptions.ref || ref || snapshot.ref || 'master';
-    const resolvedRef = commit || snapshot.ref || requestedRef;
     const resolvedRootPaths = snapshot.rootPaths || rootPaths;
     const gitNativeBoundary = sourceResolutionBoundaryFor(Object.assign({}, githubSource || {}, { sourceAccessMode: 'git-object-store', sourceResolutionKind: 'git-native-local-object-store' }), 'git-native-local-object-store');
     ws.repo = repo;
@@ -34909,22 +35324,26 @@ ${githubOutboundFileExcerpt(file, 18000)}
     ws.sourceResolutionKind = 'git-native-local-object-store';
     ws.sourceResultBoundary = 'bounded Git object-store snapshot';
     ws.sourceCacheBoundary = 'browser-local-git-object-store';
-    ws.discoverySource.ref = requestedRef;
-    ws.discoverySource.requestedRef = requestedRef;
-    ws.discoverySource.resolvedCommit = commit;
-    ws.discoverySource.rootPath = resolvedRootPaths[0] || '.topics';
-    ws.discoverySource.rootPaths = resolvedRootPaths;
-    ws.discoverySource.sourceAccessMode = 'git-object-store';
-    ws.discoverySource.sourceResolutionKind = 'git-native-local-object-store';
-    ws.discoverySource.sourceBoundary = gitNativeBoundary;
-    if (githubSource) {
-      githubSource.ref = githubSource.requestedRef || githubSource.ref || requestedRef;
-      githubSource.requestedRef = githubSource.requestedRef || githubSource.ref || requestedRef;
-      githubSource.resolvedCommit = commit;
-      githubSource.sourceAccessMode = 'git-object-store';
-      githubSource.sourceResolutionKind = 'git-native-local-object-store';
-      githubSource.sourceBoundary = gitNativeBoundary;
-    }
+    ws.repositoryTransport = { kind: 'git-proxy', id: transport.id, label: transport.label, proxyUrl: transport.corsProxy, commit };
+    Object.assign(ws.discoverySource || {}, {
+      ref: requestedRef,
+      requestedRef,
+      resolvedCommit: commit,
+      rootPath: resolvedRootPaths[0] || '.topics',
+      rootPaths: resolvedRootPaths,
+      sourceAccessMode: 'git-object-store',
+      sourceResolutionKind: 'git-native-local-object-store',
+      sourceBoundary: gitNativeBoundary
+    });
+    if (githubSource) Object.assign(githubSource, {
+      ref: githubSource.requestedRef || githubSource.ref || requestedRef,
+      requestedRef: githubSource.requestedRef || githubSource.ref || requestedRef,
+      resolvedCommit: commit,
+      sourceAccessMode: 'git-object-store',
+      sourceResolutionKind: 'git-native-local-object-store',
+      sourceBoundary: gitNativeBoundary,
+      transportUsed: transport.corsProxy
+    });
     rememberGitNativeRepoMaterialOwner({
       repo,
       ref: requestedRef,
@@ -34932,12 +35351,17 @@ ${githubOutboundFileExcerpt(file, 18000)}
       commit,
       resolvedCommit: commit,
       rootPaths: resolvedRootPaths,
-      sourceId: githubSource?.id || ws.discoverySource.sourceId || '',
+      sourceId: githubSource?.id || ws.discoverySource?.sourceId || '',
       sourceResolutionKind: 'git-native-local-object-store',
-      sourceAccessMode: 'git-object-store'
+      sourceAccessMode: 'git-object-store',
+      fsName: gitNativeOptions.fsName || 'tiinex-git-native-fs',
+      dir: gitNativeOptions.dir,
+      corsProxy: gitNativeOptions.corsProxy,
+      requestTimeoutMs: gitNativeOptions.requestTimeoutMs,
+      transportId: transport.id
     });
 
-    ws.logs.push(`Git-native repo discovery resolved ${repo}${ref ? '@' + ref : ''} to ${commit} and found ${candidates.length} Tiinex markdown artifact file(s).`);
+    ws.logs.push(`Git-native repo discovery resolved ${repo}${ref ? '@' + ref : ''} to ${commit} through ${transport.label} and found ${candidates.length} Tiinex markdown artifact file(s).`);
     ws.discoveryProgress = { phase: 'git-read', loaded: 0, total: paths.length, failed: 0, sourceProgress: context.options?.sourceProgress || '' };
     updateDiscoveryProgressDom(ws);
     await progressYield(ws);
@@ -34958,12 +35382,12 @@ ${githubOutboundFileExcerpt(file, 18000)}
           browseUrl: githubBrowseUrl(repo, commit, path),
           repo,
           ref: commit,
-          sourceId: githubSource.id,
-          sourceKind: githubSource.kind,
-          sourceLabel: githubSource.label,
-          sourceOrigin: githubSource.origin,
-          rootPaths: githubSource.rootPaths,
-          enabledSurfaces: githubSource.enabledSurfaces,
+          sourceId: githubSource?.id || ws.discoverySource?.sourceId || '',
+          sourceKind: githubSource?.kind || 'github',
+          sourceLabel: githubSource?.label || repo,
+          sourceOrigin: githubSource?.origin || `https://github.com/${repo}`,
+          rootPaths: githubSource?.rootPaths || resolvedRootPaths,
+          enabledSurfaces: githubSource?.enabledSurfaces,
           sourceAccessMode: 'git-object-store',
           sourceResolutionKind: 'git-native-local-object-store',
           sourceResultBoundary: 'bounded Git object-store snapshot',
@@ -34971,10 +35395,10 @@ ${githubOutboundFileExcerpt(file, 18000)}
           sourceSurface: 'repoFiles'
         });
         count += 1;
-        githubRepoFetchTrace('git-native.read.success', { sessionId, repo, commit, path, bytes: String(content || '').length });
+        githubRepoFetchTrace('git-native.read.success', { sessionId, repo, commit, path, transportId: transport.id, bytes: String(content || '').length });
       } catch (error) {
         failed += 1;
-        githubRepoFetchTrace('git-native.read.failed', { sessionId, repo, commit, path, error });
+        githubRepoFetchTrace('git-native.read.failed', { sessionId, repo, commit, path, transportId: transport.id, error });
         ws.logs.push(`Could not read Git-native artifact ${path}: ${error.message || String(error)}`);
       }
       const completed = count + failed;
@@ -34989,7 +35413,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
     updateDiscoveryProgressDom(ws);
     await progressYield(ws);
 
-    return { ok: true, count, failed, total: paths.length, commit, candidateFiles: candidates.length };
+    return { ok: true, count, failed, total: paths.length, commit, candidateFiles: candidates.length, transport };
   }
 
   async function discoverGitHubRepoIntoWorkspace(ws, options) {
@@ -35042,15 +35466,46 @@ ${githubOutboundFileExcerpt(file, 18000)}
     let failed = 0;
     let indexed = false;
     const repoFetchSessionId = githubRepoDiscoverySessionId(repo, ref, rootPaths);
-    githubRepoFetchTrace('session.start', { sessionId: repoFetchSessionId, repo, ref, rootPaths, sourceId: githubSource.id, accessMode: discoveryAccessMode, hardRefresh: Boolean(options.hardRefresh), refreshExisting: Boolean(options.refreshExisting) });
+    const repositoryTransportBudgetMs = Math.max(3000, Number(app.settings.repositoryTransportBudgetMs || 35000));
+    const repositoryTransportDeadlineAt = Date.now() + repositoryTransportBudgetMs;
+    githubRepoFetchTrace('session.start', { sessionId: repoFetchSessionId, repo, ref, rootPaths, sourceId: githubSource.id, accessMode: discoveryAccessMode, hardRefresh: Boolean(options.hardRefresh), refreshExisting: Boolean(options.refreshExisting), repositoryTransportBudgetMs });
 
     try {
-      const gitNative = await tryDiscoverGitHubRepoViaGitNative(ws, {
+      const repositorySnapshot = await tryDiscoverGitHubRepoViaRepositorySnapshot(ws, {
         repo,
-        ref: ref || 'master',
+        ref,
         rootPaths,
         githubSource,
         sessionId: repoFetchSessionId,
+        transportDeadlineAt: repositoryTransportDeadlineAt,
+        options
+      });
+      if (repositorySnapshot.ok) {
+        count = repositorySnapshot.count || 0;
+        failed = repositorySnapshot.failed || 0;
+        ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
+          phase: 'index',
+          indexLoaded: 0,
+          indexTotal: ws.files?.size || count,
+          sourceProgress: options.sourceProgress || ws.discoveryProgress?.sourceProgress || ''
+        });
+        await computeWorkspaceIndexWithDiscoveryProgress(ws);
+        indexed = true;
+        ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, { phase: 'policy' });
+        updateDiscoveryProgressDom(ws);
+        await progressYield(ws);
+        await discoverWorkspacePolicy(ws);
+        if (!count) toast(`No Tiinex markdown artifacts were indexed from the published snapshot for ${repo}.`, 'warn');
+        return;
+      }
+
+      const gitNative = await tryDiscoverGitHubRepoViaGitNative(ws, {
+        repo,
+        ref,
+        rootPaths,
+        githubSource,
+        sessionId: repoFetchSessionId,
+        transportDeadlineAt: repositoryTransportDeadlineAt,
         options
       });
       if (gitNative.ok) {
@@ -38737,11 +39192,10 @@ window.addEventListener('popstate', () => {
   }
 
   function startupShouldBootstrapGitNativeBeforeRoute() {
-    // Explicit route/source hashes should not trigger a default persisted Git-native
-    // bootstrap before the route owner runs. The route's source discovery can still
-    // use Git-native through its own source options, but skipping pre-route bootstrap
-    // avoids the visible init -> empty -> re-init pattern on slow/mobile networks.
-    return !startupRouteOwnsSourceLoading();
+    // Git runtime/vendor loading is transport-owned and lazy. Startup must not
+    // invent a default repository or fetch Git dependencies before the workspace
+    // has selected a matching Git transport.
+    return false;
   }
 
   function startupGitNativeBootstrapDecision() {
@@ -40347,14 +40801,13 @@ window.addEventListener('popstate', (event) => {
 
   installGitNativeRawFetchGate();
 
+  githubRepoFetchTrace('git-native.bootstrap.skip', {
+    reason: 'startup',
+    skippedReason: 'workspace-transport-lazy'
+  });
+
   Promise.resolve()
-    .then(() => startupShouldBootstrapGitNativeBeforeRoute()
-      ? ensurePersistedGitNativeDiscoveryRuntime('startup-before-config')
-      : githubRepoFetchTrace('git-native.bootstrap.skip', { reason: 'startup-before-config', skippedReason: 'explicit-route-owner' }))
     .then(() => loadViewerConfig())
-    .then(() => startupShouldBootstrapGitNativeBeforeRoute()
-      ? ensurePersistedGitNativeDiscoveryRuntime('startup-before-boot')
-      : githubRepoFetchTrace('git-native.bootstrap.skip', { reason: 'startup-before-boot', skippedReason: 'explicit-route-owner' }))
     .then(() => bootFromUrlOnce())
     .then(() => { if (typeof maybeOfferLocalStateRestore === 'function') maybeOfferLocalStateRestore(); })
     .then(() => {

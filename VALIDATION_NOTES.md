@@ -14,3 +14,21 @@ Architecture readiness markers used by repository tooling:
 - publicBuildReady
 - cleanupReadyForProductWork
 - architectureReadyForProductWork
+
+Repository transport validation should cover:
+
+- workspace-relative snapshot metadata resolution and repository scope matching;
+- snapshot metadata identity, full commit, archive checksum, and safe zip extraction;
+- ordered Git-proxy selection with one active attempt, real abort, bounded total budget, and persisted cooldown;
+- `Reset cache` clearing transport cooldown for the selected repository;
+- canonical source identity remaining unchanged when a mirror or proxy supplies material;
+- published root and submodule snapshots excluding `.git` and `.mirrors`;
+- mirror publication selecting the remote default-branch HEAD rather than the superproject gitlink commit.
+- omitted workspace refs accepting snapshot metadata refs and native Git following the remote default branch instead of assuming `master`.
+
+Useful browser diagnostics:
+
+- `TiinexDiagnostics.repositoryTransportPlan('Tiinex/docs')`
+- `TiinexDiagnostics.repositoryTransportHealth()`
+- `TiinexDiagnostics.githubRepoFetchTraceJson()`
+

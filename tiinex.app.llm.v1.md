@@ -28,6 +28,21 @@ It is one implementation of Tiinex, not the whole project.
 - Browser-local drafts remain local storage state and are not embedded into exported `.workspace.md` files unless the export path explicitly says so.
 - Remote or published material should not be rewritten as local GitHub-backed authority unless the loaded source actually supports that claim.
 
+## Workspace And Transport Ownership
+
+Keep the app bootstrap configuration small. Runtime/vendor loading, safe transport budgets, and viewer defaults belong to the app. Portable repository knowledge belongs to `.workspace.md`.
+
+A workspace may declare ordered, repository-scoped snapshot and Git-proxy transports. Relative transport resources resolve against the workspace artifact URL. The viewer must try only matching declarations and must not guess mirrors for unrelated repositories.
+Snapshot transports precede Git-proxy transports. Order is significant within each kind. When a workspace omits a ref, a verified snapshot may declare the resolved ref and native Git should follow the remote default branch rather than inventing `master`.
+
+A transport is a delivery path, not provenance. Loading `owner/repo` through a published zip, an HTTP mirror, or a Git proxy must preserve its canonical repository, resolved commit, Parent, and Origin. The transport used may be recorded separately.
+
+Published repository snapshots must reuse the same safe zip-import core as uploaded repository zip files. Snapshot transport provides current repository material; Git transport provides richer Git capabilities when needed. Both should converge on the same workspace material model rather than duplicate discovery or indexing logic.
+
+Issues and Discussions remain provider-adapter surfaces. Repository snapshot and Git-proxy declarations do not proxy or replace those adapters.
+
+Observed transport health, cooldowns, cache keys, credentials, and UI state are browser/runtime state and must not be serialized into `.workspace.md`.
+
 ## Semantics
 
 - Provenance means the visible trail around material: where it came from, what changed, what supports it, and what limits apply.

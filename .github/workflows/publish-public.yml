@@ -151,7 +151,6 @@ jobs:
             local ref="$4"
             local commit="$5"
             local selection="$6"
-            local exclude_mirrors="$7"
 
             local output_parent repository_name directory_path archive_path metadata_path
             local archive_name directory_name sha256 generated_at
@@ -173,25 +172,19 @@ jobs:
             rm -rf "$directory_path" "$archive_path" "$metadata_path"
             mkdir -p "$directory_path" "$output_parent"
 
-            if [ "$exclude_mirrors" = "true" ]; then
-              git -C "$repository_dir" archive --format=tar "$commit" -- . \
-                ':(exclude).mirrors' \
-                ':(exclude).mirrors/**' \
-                | tar -xf - -C "$directory_path"
+            # `.mirrors` is publish input, never repository material. Exclude it
+            # for both the publishing repo and mirrored repos so mirrors cannot
+            # recursively embed their own transport sources.
+            git -C "$repository_dir" archive --format=tar "$commit" -- . \
+              ':(exclude).mirrors' \
+              ':(exclude).mirrors/**' \
+              | tar -xf - -C "$directory_path"
 
-              git -C "$repository_dir" archive --format=zip \
-                --output="$archive_path" \
-                "$commit" -- . \
-                ':(exclude).mirrors' \
-                ':(exclude).mirrors/**'
-            else
-              git -C "$repository_dir" archive --format=tar "$commit" \
-                | tar -xf - -C "$directory_path"
-
-              git -C "$repository_dir" archive --format=zip \
-                --output="$archive_path" \
-                "$commit"
-            fi
+            git -C "$repository_dir" archive --format=zip \
+              --output="$archive_path" \
+              "$commit" -- . \
+              ':(exclude).mirrors' \
+              ':(exclude).mirrors/**'
 
             sha256="$(sha256sum "$archive_path" | awk '{print $1}')"
             generated_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -222,8 +215,7 @@ jobs:
             "$root_repository_url" \
             "$SOURCE_REF" \
             "$root_commit" \
-            "source-ref" \
-            "true"
+            "source-ref"
 
           if [ -f .gitmodules ]; then
             while IFS= read -r path_key; do
@@ -275,8 +267,7 @@ jobs:
                 "$module_url" \
                 "$resolved_ref" \
                 "$resolved_commit" \
-                "remote-default-branch" \
-                "false"
+                "remote-default-branch"
             done < <(git config -f .gitmodules --name-only --get-regexp '^submodule\..*\.path$' || true)
           fi
 

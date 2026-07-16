@@ -1235,13 +1235,19 @@ function validateMarkdownContinuityHygiene() {
     const validatorMatches = [...text.matchAll(validatorLinkPattern)].map((match) => match[0]);
     for (const target of validatorMatches) unpinnedSchemaHits.push(`${path} -> ${target}`);
     const relativeMatches = [...text.matchAll(relativeSchemaLinkPattern)].map((match) => match[0]);
-    for (const target of relativeMatches) unpinnedSchemaHits.push(`${path} -> ${target}`);
+    for (const target of relativeMatches) {
+      const href = parseMarkdownLink(target).href || '';
+      const resolved = joinPath(dirname(path), href);
+      if (!resolved || !existsSync(join(root, resolved))) {
+        unpinnedSchemaHits.push(`${path} -> ${target} (packaged target missing)`);
+      }
+    }
   }
   if (placeholderHits.length) {
     fail(`Packaged continuity markdown contains placeholder integrity values: ${placeholderHits.join(', ')}`);
   }
   if (unpinnedSchemaHits.length) {
-    fail(`Packaged schema links must be commit-pinned, not master/main: ${unpinnedSchemaHits.slice(0, 20).join(', ')}`);
+    fail(`Packaged schema links must be commit-pinned or resolve to a packaged local schema: ${unpinnedSchemaHits.slice(0, 20).join(', ')}`);
   }
 }
 
@@ -1661,6 +1667,43 @@ function validateArchitectureBoundaries() {
   note(`architecture layers checked: ${[...layerNames].sort().join(', ')}`);
 }
 
+function validateRepositoryTransportContracts() {
+  const app = read('app.js');
+  const index = read('index.html');
+  const schema = read('.topics/.schemas/tiinex.workspace.v1.schema.md');
+  const workspace = read('.topics/.workspaces/viewer.workspace.md');
+  const workflow = read('.github/workflows/publish-public.yml');
+
+  for (const token of ['## Repository Transports', '`snapshot`', '`git-proxy`', 'Snapshot transports precede Git-proxy transports', 'Relative `Metadata` and `Proxy` values resolve against the workspace artifact location']) {
+    if (!schema.includes(token)) fail(`workspace schema must document repository transport contract: ${token}`);
+  }
+  for (const token of ['## Repository Transports', '- Kind: snapshot', '- Metadata: ../../mirrors/github.com/Tiinex/docs.json', '- Kind: git-proxy', '- Proxy: https://cors.isomorphic-git.org']) {
+    if (!workspace.includes(token)) fail(`packaged workspace must declare the default repository transport: ${token}`);
+  }
+  for (const token of ['parseRepositoryTransports', 'repositoryTransportsFor', 'tryDiscoverGitHubRepoViaRepositorySnapshot', 'zipBufferToImportEntries', 'repositoryTransportPlan', 'gitNativeTransportCandidates', 'clearRepositoryTransportHealth', 'workspace-transport-lazy', 'repositoryTransportDeadlineAt', 'repositoryTransportBudgetMs']) {
+    if (!app.includes(token)) fail(`repository transport runtime contract missing: ${token}`);
+  }
+  if (/repo:\s*['"]Tiinex\/docs['"]/u.test(index) || /corsProxy:\s*['"]https:\/\/cors\.isomorphic-git\.org/u.test(index)) {
+    fail('repository identity and proxy selection must live in .workspace.md, not default app JSON');
+  }
+  if (/defaultGitNativeRepoForStartup|ensurePersistedGitNativeDiscoveryRuntime/u.test(app)) {
+    fail('startup must not invent a repository or eagerly load Git runtime before workspace transport selection');
+  }
+  if (!/function gitNativeConfiguredRepo\(config = \{\}\) \{[\s\S]{0,280}return String\(config\.repo \|\| ''\)\.trim\(\);/u.test(app)) {
+    fail('legacy app Git configuration may own only an explicitly configured repository');
+  }
+  if (!app.includes("const configUrl = normalizeViewerConfigUrl('.topics/.workspaces/viewer.workspace.md')")) {
+    fail('embedded workspace resources must resolve from an absolute workspace artifact URL');
+  }
+  const gitRuntime = read('src/app/git-native-runtime.js');
+  for (const token of ['timedFetchHttpClient', 'AbortController', 'transportSignal', 'cleanupFailedClone', "const requestedRef = clean(opts.ref || '')", 'ref: requestedRef || undefined', 'currentBranch']) {
+    if (!gitRuntime.includes(token)) fail(`Git transport abort/cleanup contract missing: ${token}`);
+  }
+  if (!workflow.includes("':(exclude).mirrors/**'")) fail('mirror publisher must exclude nested .mirrors build inputs from every published snapshot');
+  if (/exclude_mirrors/u.test(workflow)) fail('mirror publisher should use one invariant instead of per-repository .mirrors exclusion flags');
+  note('workspace-owned repository snapshots and scoped Git proxy contracts are valid');
+}
+
 function validatePublicBuildContracts() {
   const packageJson = JSON.parse(read('package.json'));
   const scripts = packageJson.scripts || {};
@@ -1801,6 +1844,7 @@ async function main() {
   validateArchitectureBoundaries();
   validateArchitectureProductReadiness();
   await validateGitSourceAdapterResearchContract();
+  validateRepositoryTransportContracts();
   validatePublicBuildContracts();
   validateJavascriptSyntax();
   validateJavascriptSurface();
