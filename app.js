@@ -19680,7 +19680,8 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     ].join('\n');
   }
 
-  function integrityHumanTitle(status) {
+  function integrityHumanTitle(status, diagnostics = null) {
+    if (status === 'mismatch' && diagnostics?.parentEdgeMismatch) return 'Parent target stale';
     const labels = {
       'byte-integrity-verified': 'Byte integrity verified',
       mismatch: 'Checksum mismatch',
@@ -19764,7 +19765,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
           ${modal.loading ? '<p class="empty-small">Computing browser-side integrity diagnostics…</p>' : ''}
           ${diagnostics ? `
             <div class="integrity-summary ${escapeAttr(status)}">
-              <strong>${escapeHtml(integrityHumanTitle(status))}</strong>
+              <strong>${escapeHtml(integrityHumanTitle(status, diagnostics))}</strong>
               <span>${escapeHtml(integrityHumanMessage(diagnostics))}</span>
             </div>
             ${renderIntegrityMethodAuthority(diagnostics)}
@@ -31488,6 +31489,69 @@ ${integrityFooterForPath(parent, path)}`,
     );
   }
 
+  function githubExactFileSpecFromParentFields(values = []) {
+    for (const value of values || []) {
+      const spec = parseGitHubExactFileSpec(value || '');
+      if (spec?.path) return spec;
+    }
+    return null;
+  }
+
+  function githubExportParentDescriptorFromMarkdown(markdown = '', currentPath = '') {
+    const text = normalizeNewlines(markdown || '').trim();
+    if (!text || !markdownDeclaresContinuityParent(text)) return null;
+    const envelope = text.split(/\n---/)[0] || '';
+    const fields = extractEnvelopeFields(envelope);
+    const traceRaw = fields.parent?.Trace || fields.parent?.['Parent Trace'] || '';
+    const traceLink = parseMarkdownLink(traceRaw);
+    const traceHref = stripMarkdownInline(traceLink.href || traceRaw || '').trim();
+    const traceLabel = stripMarkdownInline(traceLink.text || traceRaw || '').trim();
+    const originValues = Object.keys(fields.parentOrigin || {}).map((key) => fields.parentOrigin[key]).filter(Boolean);
+    const exact = githubExactFileSpecFromParentFields(originValues.concat([traceHref]));
+    const commentUrl = githubFirstIssueCommentUrlFromText([traceRaw, traceHref].concat(originValues).join('\n'));
+    const issueUrl = ([traceRaw, traceHref].concat(originValues).map((value) => parseGitHubIssueSpec(value || '')?.issueUrl || '').find(Boolean)) || '';
+    const rawPath = exact?.path || (!/^https?:\/\//i.test(traceHref) ? traceHref : '');
+    const path = exact?.path || normalizeRepoPath(stripUrlDecorations(rawPath || ''));
+    const title = traceLabel && traceLabel !== traceHref ? traceLabel : '';
+    const sourceUrl = exact?.browseUrl || githubExactFileSpecFromParentFields(originValues)?.browseUrl || '';
+    const rawUrl = exact?.rawUrl || githubExactFileSpecFromParentFields(originValues)?.rawUrl || '';
+    const url = commentUrl || issueUrl || '';
+    const parentSchema = fields.parent?.['Parent Schema'] || '';
+    const createdAt = fields.parent?.['Created At'] || '';
+    const hasConcreteReference = Boolean(path || sourceUrl || rawUrl || url || parentSchema || createdAt || traceRaw);
+    if (!hasConcreteReference) return null;
+    const selfPath = canonicalWorkspacePath(currentPath || '');
+    const parentPath = canonicalWorkspacePath(path || '');
+    if (parentPath && selfPath && sameImportedPath(parentPath, selfPath)) return null;
+    return {
+      explicit: true,
+      source: 'markdown-parent-block',
+      path,
+      title,
+      sourceUrl,
+      rawUrl,
+      url,
+      commentId: githubIssueCommentIdFromUrl(url),
+      trace: traceRaw,
+      traceHref,
+      parentSchema,
+      createdAt
+    };
+  }
+
+  function githubParentDescriptorMatchesNode(descriptor = null, node = null) {
+    if (!descriptor || !node) return false;
+    const path = canonicalWorkspacePath(node.path || node.file?.path || '');
+    const descriptorPath = canonicalWorkspacePath(descriptor.path || '');
+    if (path && descriptorPath && sameImportedPath(path, descriptorPath)) return true;
+    const values = [
+      node.recoveredFromUrl, node.sourceOrigin, node.rawUrl, node.browseUrl,
+      node.file?.recoveredFromUrl, node.file?.sourceOrigin, node.file?.rawUrl, node.file?.browseUrl
+    ].filter(Boolean).map((value) => normalizeGitHubUrlForComparison(value));
+    const descriptorValues = [descriptor.url, descriptor.sourceUrl, descriptor.rawUrl].filter(Boolean).map((value) => normalizeGitHubUrlForComparison(value));
+    return descriptorValues.some((value) => value && values.includes(value));
+  }
+
   function githubExportParentFromMarkdown(ws, markdown = '', currentNode = null, currentPath = '') {
     if (!ws || !markdown) return null;
     const resolved = resolveGitHubIssueParentNodeForRecoveredArtifact(ws, markdown, null, null, markdown).node || null;
@@ -31503,11 +31567,15 @@ ${integrityFooterForPath(parent, path)}`,
     const raw = githubExportEffectiveMarkdown(file, node);
     const currentPath = canonicalWorkspacePath(file?.path || file?.name || node?.path || node?.file?.path || '');
     const declaresParent = markdownDeclaresContinuityParent(raw);
-    // Export boundary follows the current artifact markdown. If a local draft
-    // was explicitly detached/rooted, prefer the draft text and never resurrect
-    // stale graph parents from the imported publication container or previous
-    // source snapshot.
-    let resolvedParent = declaresParent ? (githubExportParentFromMarkdown(ws, raw, node, currentPath) || node?.parentNode || null) : null;
+    const markdownParent = declaresParent ? githubExportParentDescriptorFromMarkdown(raw, currentPath) : null;
+    // Export boundary follows the current artifact markdown. If the markdown
+    // declares a concrete parent that cannot be resolved in the current workspace,
+    // preserve that explicit descriptor instead of resurrecting stale graph
+    // parents from an imported source snapshot.
+    let resolvedParent = declaresParent ? githubExportParentFromMarkdown(ws, raw, node, currentPath) : null;
+    if (resolvedParent && markdownParent && !githubParentDescriptorMatchesNode(markdownParent, resolvedParent)) {
+      resolvedParent = null;
+    }
     if (resolvedParent) {
       const parentPath = canonicalWorkspacePath(resolvedParent.path || resolvedParent.file?.path || '');
       if ((parentPath && currentPath && sameImportedPath(parentPath, currentPath))
@@ -31516,16 +31584,22 @@ ${integrityFooterForPath(parent, path)}`,
       }
     }
     const parent = resolvedParent;
-    const parentUrl = parent ? (githubNodeIssueCommentUrl(parent) || githubFirstIssueCommentUrlFromText(raw)) : '';
-    const parentPath = parent?.path || '';
-    const parentTitle = parent ? (parent.title || markdownTitleFromFile(parent.file || parent || {}) || '') : '';
-    const parentSourceUrl = parent ? (parent.browseUrl || parent.sourceOrigin || parent.file?.browseUrl || parent.file?.sourceOrigin || '') : '';
-    const parentRawUrl = parent ? (parent.rawUrl || parent.file?.rawUrl || '') : '';
+    const nodeCommentUrl = parent ? githubNodeIssueCommentUrl(parent) : '';
+    const descriptorUrl = markdownParent?.url || '';
+    const descriptorCommentUrl = githubIssueCommentIdFromUrl(descriptorUrl) ? descriptorUrl : '';
+    const descriptorIssueUrl = descriptorUrl && !descriptorCommentUrl ? descriptorUrl : '';
+    const parentUrl = nodeCommentUrl || descriptorCommentUrl;
+    const parentPath = markdownParent?.path || parent?.path || '';
+    const parentTitle = parent ? (parent.title || markdownTitleFromFile(parent.file || parent || {}) || markdownParent?.title || '') : (markdownParent?.title || '');
+    const parentSourceUrl = markdownParent?.sourceUrl || (parent ? (parent.browseUrl || parent.sourceOrigin || parent.file?.browseUrl || parent.file?.sourceOrigin || '') : '') || descriptorIssueUrl;
+    const parentRawUrl = markdownParent?.rawUrl || (parent ? (parent.rawUrl || parent.file?.rawUrl || '') : '') || descriptorIssueUrl;
+    const parentCommentId = githubIssueCommentIdFromUrl(parentUrl) || markdownParent?.commentId || '';
     return {
       node,
       parent,
+      parentDescriptor: markdownParent,
       parentUrl,
-      parentCommentId: githubIssueCommentIdFromUrl(parentUrl),
+      parentCommentId,
       parentPath,
       parentTitle,
       parentSourceUrl,
