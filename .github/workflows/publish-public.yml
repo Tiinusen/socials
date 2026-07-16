@@ -2,12 +2,18 @@ name: Publish Public Branch
 
 on:
   push:
+    branches:
+      - master
+    paths-ignore:
+      - README.md
+      - LICENSE
+      - NOTICE
   workflow_dispatch:
     inputs:
       source_ref:
         description: Branch, tag, or commit to publish from
         required: false
-        default: ""
+        default: "master"
 
 permissions:
   contents: write
