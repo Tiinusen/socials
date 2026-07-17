@@ -48,7 +48,7 @@ They are not the identity boundary of Tiinex, and this site should not be descri
 - `index.html` is the first-contact page for the public viewer.
 - `app.js` and `src/` hold the client runtime.
 - `styles.css` carries the site styling.
-- `samples/` and `.topics/` provide portable artifacts and workspace material for testing and discovery.
+- `.topics/` may provide packaged workspace or lineage material when this repository chooses to carry it. Samples and redirect-only routes should not be committed just to support the public deployment; publish-time variables can project those surfaces when needed.
 
 ## Adapter And Source Layout
 
@@ -65,36 +65,111 @@ Adapter implementations should preserve external container, publication item, em
 
 ## Forking And Instance Customization
 
-A fork can stay close to the canonical viewer while carrying its own lineage and presentation.
+A fork can stay close to the canonical viewer while carrying its own lineage, domain, mirrors, and workspace pointers. Keep `master` or `main` clean as the upstream-sync branch. Use a working branch such as `workbench` for instance-specific changes.
 
-Keep viewer/runtime files close to upstream and place instance-owned material in bounded surfaces such as `.topics/`, workspace artifacts, local untracked `.mirrors/` worktrees, branding assets, and GitHub Actions variables. Avoid committing instance-specific custom domains or viewer source defaults when an environment variable can own them. Deleting or heavily rewriting shared runtime files makes future upstream syncs conflict-prone.
+The publisher supports combinations rather than separate modes:
 
-The publisher supports combinations: viewer plus lineage/static material plus mirrors, static lineage material plus mirrors, or mirrors only when no public static material is present. The publishing repository is always mirrored automatically. When no mirror variable, secret, manual input, or explicit compatibility flag is set, the publisher emits only the repository itself and excludes local `.mirrors/` build inputs from that snapshot. Forks can add instance-owned mirrors without modifying the repository by setting the GitHub Actions repository variable or secret `TIINEX_REPOSITORY_MIRRORS`; use one mirror per line, such as `Tiinusen/socials` or `github.com/example/repo = https://github.com/example/repo.git`. Workspace `## Repository Mirrors` and older `.gitmodules` mirror entries remain supported as opt-in compatibility inputs, but committed mirror submodules are source/build inputs and can make GitHub Pages' default Jekyll checkout recurse into stale or self-referential gitlinks. Remove unwanted mirror submodules through Git rather than deleting only their working folders, because `.gitmodules` and gitlinks are the actual declarations.
+- viewer app plus static lineage material plus mirrors;
+- static lineage material plus mirrors;
+- mirrors only when no public static material is present.
 
-For a new fork:
+The publishing repository is always mirrored automatically. Local `.mirrors/` inputs and root-level `.gitmodules` never belong in the public deploy root. Extra mirrors should usually be configured through GitHub Actions variables rather than committed as submodules.
 
-1. Enable GitHub Actions in the fork.
-2. Prefer GitHub Pages `Deploy from a branch` using `public` at `/ (root)`. The publish workflow updates that branch automatically on pushes to any non-`public` branch so a fork can publish the active working branch.
-3. Set `TIINEX_PUBLISH_SOURCE_REF` only when an instance should publish one pinned branch instead of whichever branch was pushed.
-4. Keep local `.mirrors/` worktrees untracked unless the fork intentionally owns Git submodules.
-5. Add fork-specific mirrors through the `TIINEX_REPOSITORY_MIRRORS` repository variable or secret instead of editing upstream files.
-6. Use `TIINEX_WORKSPACE_REPOSITORY_MIRRORS=true` only when the instance intentionally wants workspace-declared mirrors included in the published mirror set.
-7. Use `TIINEX_PAGES_DEPLOY=true` only when the repository's `github-pages` environment allows direct Actions deployments from the chosen publish branch.
-8. Preserve the repository `LICENSE` and applicable `NOTICE` attribution for inherited viewer code.
+### Quick Start: Forked Instance
 
-Optional repository variables:
+1. Fork this repository.
+2. Keep `master`/`main` aligned with `Tiinex/site`.
+3. Create a working branch, recommended: `workbench`.
+4. Enable GitHub Actions.
+5. In **Settings → Pages**, prefer **Source: GitHub Actions** for first-class Pages deployment. The workflow still force-publishes an inspectable `public` branch as a fallback/audit surface.
+6. Add repository variables for instance-specific config, for example `PAGES_CNAME` and `TIINEX_WORKSPACE_POINTER_PRIMARY`.
+7. Push the working branch. If this is a fork with more than one non-`public` branch, pushes to `master` are skipped unless explicitly pinned; pushes to the working branch publish that branch.
 
-- `TIINEX_PUBLISH_SOURCE_REF`: optional branch name to publish instead of whichever branch was pushed. For push events, only a push to the pinned branch updates `public`; pushes to other non-`public` branches exit cleanly without publishing. Manual runs can still use the `source_ref` input for a branch, tag, or commit.
-- `TIINEX_REPOSITORY_MIRRORS`: newline-separated extra mirrors. Accepts `owner/repo`, `github.com/owner/repo`, `https://host/owner/repo.git`, or `identity = clone-url`. This may be a repository variable or secret.
+### Publish Source Selection
+
+Default behavior is intentionally conservative around upstream-sync branches:
+
+- `Tiinex/site` auto-publishes only `master` unless `TIINEX_PUBLISH_SOURCE_REF` overrides it.
+- Other repositories publish `master` only when `master` is the only non-`public` branch.
+- If a fork has other non-`public` branches, `master` is treated as upstream-sync material and skipped; the pushed working branch publishes instead.
+- `public` never triggers publish.
+- `TIINEX_PUBLISH_SOURCE_REF=<branch>` pins publication to one configured source ref and skips other branch pushes cleanly.
+- `TIINEX_CANONICAL_SOURCE_REF` may rename the canonical upstream-sync branch when a repo uses `main` instead of `master`.
+
+Recommended fork branch names: `workbench` for the active instance branch, or a domain-specific branch such as `socials`. Avoid `forked`; it describes the relationship, not the role.
+
+### Pages Deployment
+
+The workflow builds `.site-publish`, uploads it with the official GitHub Pages artifact path, deploys through `actions/deploy-pages`, and also publishes the same artifact to the `public` branch. The `public` branch is therefore an inspectable record of what was deployed, not the only deploy mechanism.
+
+Set `TIINEX_PAGES_DEPLOY=branch-only` or `false` when a repository is still using branch-source Pages or its `github-pages` environment blocks direct Actions deployments.
+
+### Repository Variables
+
+Use repository variables for public instance config. Use secrets only when values truly need secrecy; public site config and public mirror names usually do not.
+
+- `PAGES_CNAME`: custom domain written to `.site-publish/CNAME`. Source `CNAME` is ignored unless `TIINEX_USE_SOURCE_CNAME=true`, so forks do not inherit upstream domains by accident.
+- `TIINEX_USE_SOURCE_CNAME`: copy a committed source `CNAME` only when explicitly wanted.
+- `TIINEX_PUBLISH_SOURCE_REF`: optional pinned publish branch/ref.
+- `TIINEX_CANONICAL_SOURCE_REF`: canonical upstream-sync branch, default `master`.
+- `TIINEX_REPOSITORY_MIRRORS`: newline-separated extra mirrors. Accepts `owner/repo`, `github.com/owner/repo`, `https://host/owner/repo.git`, or `identity = clone-url`.
 - `TIINEX_WORKSPACE_REPOSITORY_MIRRORS`: set to `true` to include workspace `## Repository Mirrors` declarations. Omitted means disabled.
 - `TIINEX_GITMODULES_REPOSITORY_MIRRORS`: set to `true` to include older `.gitmodules` mirror declarations. Omitted means disabled.
-- `PAGES_CNAME`: custom domain to write into the deployed artifact. Source `CNAME` is ignored unless `TIINEX_USE_SOURCE_CNAME=true`, so forks do not inherit upstream domains by accident.
-- `TIINEX_USE_SOURCE_CNAME`: optional source-CNAME mode for instances that intentionally want a committed `CNAME` copied into the deploy artifact.
-- `TIINEX_PUBLIC_STATIC_PATHS`: optional newline/comma-separated allowlist for non-viewer static publication. Omitted means the workflow auto-copies common lineage/static roots such as `.topics`, `assets`, `samples`, and selected root markdown/assets when present.
+- `TIINEX_PUBLIC_STATIC_PATHS`: optional newline/comma-separated allowlist for non-viewer static publication. Omitted means common lineage/static roots are copied when present.
+- `TIINEX_PUBLIC_REDIRECTS`: newline-separated redirect folders to generate at publish time, for example `discord = https://discord.gg/example`. This avoids committing route-only redirect directories.
 - `TIINEX_VIEWER_TITLE`, `TIINEX_VIEWER_GIT_REPO`, `TIINEX_VIEWER_GIT_REF`, `TIINEX_VIEWER_GIT_ROOTS`: optional viewer build defaults. Omitted means the built viewer derives repository/ref defaults from the publishing repository and source ref.
-- `TIINEX_WORKSPACE_POINTER_PRIMARY`, `TIINEX_WORKSPACE_POINTER_SECONDARY`, `TIINEX_WORKSPACE_POINTERS`: ordered GitHub issue pointers that the runtime resolves at page load. The issue body should declare `Workspace URL:` or `Workspace:` and may point to a GitHub blob/raw `.workspace.md`; the app then loads that workspace without GitHub Actions generating a workspace artifact.
+- `TIINEX_WORKSPACE_POINTER_PRIMARY`, `TIINEX_WORKSPACE_POINTER_SECONDARY`, `TIINEX_WORKSPACE_POINTERS`: ordered GitHub issue pointers that the runtime resolves at page load. The issue body should declare `Workspace URL:` or `Workspace:` and may point to a GitHub blob/raw `.workspace.md`.
 - `TIINEX_DEFAULT_WORKSPACE`, `TIINEX_FALLBACK_WORKSPACE`, `TIINEX_WORKSPACE_FALLBACKS`, `TIINEX_LOCAL_WORKSPACE_PATH`: ordered direct workspace fallbacks. These become runtime workspace candidates, not a generated `.workspace.md` file.
-- `TIINEX_PAGES_DEPLOY`: set to `true` to run official `actions/deploy-pages` deployment. Omitted means disabled; the `public` branch is still updated automatically.
+- `TIINEX_PAGES_DEPLOY`: defaults to direct GitHub Pages Actions deployment. Set to `branch-only`, `false`, `no`, `off`, or `0` to keep only the inspectable `public` branch update.
+
+### Tiinex/site Suggested Variables
+
+```text
+PAGES_CNAME=tiinex.dev
+TIINEX_PUBLISH_SOURCE_REF=master
+TIINEX_WORKSPACE_POINTER_PRIMARY=https://github.com/Tiinex/site/issues/<workspace-pointer-issue>
+TIINEX_REPOSITORY_MIRRORS=
+Tiinex/docs
+Tiinex/ai-provenance
+```
+
+### Tiinusen/socials Suggested Variables
+
+```text
+PAGES_CNAME=tiinusen.com
+TIINEX_WORKSPACE_POINTER_PRIMARY=https://github.com/Tiinusen/socials/issues/1
+```
+
+Add `TIINEX_PUBLISH_SOURCE_REF=workbench` only when that instance should publish one branch and ignore pushes to other branches.
+
+### Issue Workspace Pointer Format
+
+Issue body example:
+
+```md
+## Tiinex Workspace Pointer
+
+- Workspace URL: https://github.com/Tiinusen/socials/blob/workbench/.topics/.workspaces/viewer.workspace.md
+```
+
+The issue is a pointer/config source. The workspace file remains the Tiinex artifact. GitHub Actions should not generate a `.workspace.md` just because an environment variable exists.
+
+### Iterating With ChatGPT Web
+
+1. Upload the current source zip and any screenshots/log excerpts.
+2. State the intended invariant, not only the symptom.
+3. Ask for a new merge-ready zip.
+4. Apply the zip to the branch being tested.
+5. Run the validation commands below and capture browser/workflow evidence.
+6. Feed the result back with the latest zip if another pass is needed.
+
+### Iterating With GitHub Copilot
+
+1. Work on the instance branch, not the upstream-sync branch.
+2. Ask Copilot for the smallest change that preserves the publish/runtime invariants above.
+3. Require it to update validation when the behavior can regress.
+4. Run the validation commands below before committing.
+5. Keep public config in repository variables instead of committing instance-specific source files.
 
 ## Development And Validation
 
