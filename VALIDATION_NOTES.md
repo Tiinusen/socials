@@ -88,3 +88,8 @@ Warm persistent Git reuse is recorded as `local-git`; it does not report a fresh
 - Redirect-only public folders such as `discord/` should be generated from `TIINEX_PUBLIC_REDIRECTS` instead of being committed as source material.
 - `samples/` is no longer part of the repository root or default public-copy contract.
 - README quick-start guidance should describe fork setup, working branch naming, repo variables, ChatGPT review pass, and Copilot review pass without making instance-specific config part of source.
+
+## V11 root policy document allowance
+
+- Conventional root policy documents such as `LINEAGE_POLICY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and `SECURITY.md` are allowed root metadata rather than unexpected package material.
+- Static hygiene should still reject ad hoc markdown reports or scratch documents in the package root; root policy allowances are explicit, not a broad markdown wildcard.
