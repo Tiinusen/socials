@@ -105,3 +105,9 @@ The publish workflow now updates the inspectable `public` branch first and then 
 - `tiinex.workspace.v1` is available in the ordinary artifact wizard, so new workspace files use the same draft/export/publish path as other artifacts.
 - Workspace cards remain special in presentation: their Edit form summarizes the active workspace set and offers `Update with current`, which stages the current workspace/viewer state into the selected `.workspace.md` without exporting.
 - `Save local draft` is the persistence boundary. Export/download/GitHub publication remains a separate explicit action.
+
+## V17 workspace export ownership repair
+
+- Restored the workspace shell export button to the canonical export adapter flow.
+- Workspace artifact creation/editing remains owned by Create/Edit card flows; the old save-artifact dialog is not used by the shell export action.
+- Added a static guard so `saveWorkspace()` cannot regress to opening the workspace artifact save dialog.

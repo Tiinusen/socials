@@ -1772,6 +1772,8 @@ function validateArchitectureBoundaries() {
   if (!appJs.includes("action === 'workspace-config-save'") || !appJs.includes('await saveNodeEdit(ws, node, markdown)')) fail('workspace configuration save must reuse local artifact draft persistence.');
   if (appJs.includes('>Save workspace</button>')) fail('topbar Save workspace button must not remain; workspace artifacts are created or edited through normal artifact cards.');
   if (!appJs.includes('workspace-config-update-current')) fail('workspace artifact editor must expose Update with current staging.');
+  if (!/async function saveWorkspace\(wsId\) \{[\s\S]{0,360}?app\.modal = defaultExportModal\(ws\.id\);[\s\S]{0,120}?render\(\);/u.test(appJs)) fail('workspace shell export action must open the canonical export adapter modal.');
+  if (/async function saveWorkspace\(wsId\) \{[\s\S]{0,260}?openWorkspaceSaveArtifactModal/u.test(appJs)) fail('workspace shell export action must not open the workspace artifact save dialog.');
   if (!appJs.includes('Current workspace set staged in this workspace artifact')) fail('Update with current must stage the active workspace set before local draft save.');
   if (!appJs.includes("'tiinex.workspace.v1': schemaPolicyEntry('tiinex.workspace.v1', 'Workspace', 'core-artifact', 'tiinex.root.v1', 'Portable workspace entrypoint.', 'yes'")) fail('workspace artifacts must be creatable through the ordinary artifact wizard.');
   if (!appJs.includes('Workspace entries use the same draft/export/publish path as other artifacts')) fail('artifact wizard copy must explain workspace artifacts use the normal draft/export path.');

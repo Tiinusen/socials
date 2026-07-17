@@ -67,7 +67,7 @@ Adapter implementations should preserve external container, publication item, em
 
 Workspace files are ordinary Tiinex draft artifacts in the local source. Create a new `tiinex.workspace.v1` through **Create → New Tiinex artifact → Workspace**, or edit an existing workspace card with **Edit**. The header no longer has a separate Save Workspace path.
 
-A workspace card's editor can stage the current viewer/workspace set with **Update with current**. Nothing is exported or published at that point; **Save local draft** persists the `.workspace.md` through the same local draft path as other artifacts, and the normal Export action later handles download or GitHub publication.
+A workspace card's editor can stage the current viewer/workspace set with **Update with current**. Nothing is exported or published at that point; **Save local draft** persists the `.workspace.md` through the same local draft path as other artifacts. The workspace shell export button remains the normal Export adapter for download or GitHub publication.
 
 GitHub issue publication should keep a clean reader-facing summary with the full Tiinex source payload collapsed below it, matching the issue-body pattern used by Tiinex/docs issue roots.
 
