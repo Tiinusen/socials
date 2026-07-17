@@ -1548,9 +1548,14 @@ function validateEmbeddedWorkspaceMirror() {
     fail('Could not parse EMBEDDED_DEFAULT_WORKSPACE_MD from app.js');
     return;
   }
-  const workspace = read('.topics/.workspaces/viewer.workspace.md');
+  const workspacePath = join(root, '.topics/.workspaces/viewer.workspace.md');
+  if (!existsSync(workspacePath)) {
+    note('packaged default workspace absent; runtime workspace candidates or embedded fallback may own startup');
+    return;
+  }
+  const workspace = readFileSync(workspacePath, 'utf8');
   if (embedded !== workspace) {
-    fail('EMBEDDED_DEFAULT_WORKSPACE_MD must exactly mirror .topics/.workspaces/viewer.workspace.md');
+    fail('EMBEDDED_DEFAULT_WORKSPACE_MD must exactly mirror .topics/.workspaces/viewer.workspace.md when a packaged default workspace is present');
   }
 }
 
@@ -1830,33 +1835,45 @@ function validateArchitectureBoundaries() {
 function validateRepositoryTransportContracts() {
   const app = read('app.js');
   const index = read('index.html');
-  const schema = read('.topics/.schemas/tiinex.workspace.v1.schema.md');
-  const workspace = read('.topics/.workspaces/viewer.workspace.md');
   const workflow = read('.github/workflows/publish-public.yml');
+  const schemaPath = join(root, '.topics/.schemas/tiinex.workspace.v1.schema.md');
+  const workspacePath = join(root, '.topics/.workspaces/viewer.workspace.md');
+  const schema = existsSync(schemaPath) ? readFileSync(schemaPath, 'utf8') : '';
+  const workspace = existsSync(workspacePath) ? readFileSync(workspacePath, 'utf8') : '';
   if (existsSync(join(root, '.gitmodules'))) {
     fail('source branch must not track .gitmodules; mirror sources belong in workspace artifacts or GitHub Actions variables');
   }
   if (existsSync(join(root, '.topics/repository-mirrors.json'))) {
     fail('repository mirror source declarations must live in the workspace artifact, not a sidecar repository-mirrors.json file');
   }
-  for (const token of ['## Repository Mirrors', 'Each mirror should be a third-level heading under `## Repository Mirrors`', '`Repository`', '`URL`', 'A repository mirror declaration is not a workspace entrypoint, not a runtime transport, and not provenance', 'Deployment hosts may append additional mirrors through host configuration']) {
-    if (!schema.includes(token)) fail(`workspace schema must document repository mirror declarations: ${token}`);
+  if (schema) {
+    for (const token of ['## Repository Mirrors', 'Each mirror should be a third-level heading under `## Repository Mirrors`', '`Repository`', '`URL`', 'A repository mirror declaration is not a workspace entrypoint, not a runtime transport, and not provenance', 'Deployment hosts may append additional mirrors through host configuration']) {
+      if (!schema.includes(token)) fail(`workspace schema must document repository mirror declarations: ${token}`);
+    }
+    for (const token of ['## Repository Transports', '`snapshot`', '`git-proxy`', 'Snapshot transports precede Git-proxy transports', 'Relative `Metadata` and `Proxy` values resolve against the workspace artifact location', '### Co-hosted mirror convention', './mirrors/<source-host>/<owner>/<repository>.json', './.mirrors/<source-host>/<owner>/<repository>.json', 'Viewers must not crawl directory indexes']) {
+      if (!schema.includes(token)) fail(`workspace schema must document repository transport contract: ${token}`);
+    }
+  } else {
+    note('packaged workspace schema absent; skipping schema-bound repository transport documentation checks for this branch');
   }
-  for (const token of ['## Repository Mirrors', '### Tiinex docs', '- Repository: Tiinex/docs', '- URL: https://github.com/Tiinex/docs.git', '### Tiinex ai-provenance', '- Repository: Tiinex/ai-provenance', '- URL: https://github.com/Tiinex/ai-provenance.git']) {
-    if (!workspace.includes(token)) fail(`packaged workspace must declare repository mirror source: ${token}`);
-  }
-  if (/Repository:\s*Tiinusen\/socials|URL:\s*https:\/\/github\.com\/Tiinusen\/socials\.git/u.test(workspace)) {
-    fail('packaged workspace must not declare the publishing fork as an extra repository mirror');
+  if (workspace) {
+    for (const token of ['## Repository Mirrors', '### Tiinex docs', '- Repository: Tiinex/docs', '- URL: https://github.com/Tiinex/docs.git', '### Tiinex ai-provenance', '- Repository: Tiinex/ai-provenance', '- URL: https://github.com/Tiinex/ai-provenance.git']) {
+      if (!workspace.includes(token)) fail(`packaged workspace must declare repository mirror source: ${token}`);
+    }
+    if (/Repository:\s*Tiinusen\/socials|URL:\s*https:\/\/github\.com\/Tiinusen\/socials\.git/u.test(workspace)) {
+      fail('packaged workspace must not declare the publishing fork as an extra repository mirror');
+    }
+  } else {
+    note('packaged workspace absent; runtime workspace candidates or issue pointers may own workspace bootstrap');
   }
 
-  for (const token of ['## Repository Transports', '`snapshot`', '`git-proxy`', 'Snapshot transports precede Git-proxy transports', 'Relative `Metadata` and `Proxy` values resolve against the workspace artifact location', '### Co-hosted mirror convention', './mirrors/<source-host>/<owner>/<repository>.json', './.mirrors/<source-host>/<owner>/<repository>.json', 'Viewers must not crawl directory indexes']) {
-    if (!schema.includes(token)) fail(`workspace schema must document repository transport contract: ${token}`);
-  }
-  for (const token of ['## Repository Transports', '- Kind: git-proxy', '- Proxy: https://cors.isomorphic-git.org']) {
-    if (!workspace.includes(token)) fail(`packaged workspace must declare the default repository transport: ${token}`);
-  }
-  if (workspace.includes('- Kind: snapshot') || workspace.includes('mirrors/github.com/Tiinex/docs.json')) {
-    fail('packaged workspace should exercise the schema-defined co-hosted mirror convention instead of duplicating its own repo mirror URL');
+  if (workspace) {
+    for (const token of ['## Repository Transports', '- Kind: git-proxy', '- Proxy: https://cors.isomorphic-git.org']) {
+      if (!workspace.includes(token)) fail(`packaged workspace must declare the default repository transport: ${token}`);
+    }
+    if (workspace.includes('- Kind: snapshot') || workspace.includes('mirrors/github.com/Tiinex/docs.json')) {
+      fail('packaged workspace should exercise the schema-defined co-hosted mirror convention instead of duplicating its own repo mirror URL');
+    }
   }
   for (const token of ['parseRepositoryTransports', 'repositoryTransportsFor', 'coHostedRepositorySnapshotTransports', "convention: 'co-hosted-source'", "convention: 'co-hosted-public'", 'tryDiscoverGitHubRepoViaRepositorySnapshot', 'zipBufferToImportEntries', 'repositoryTransportPlan', 'gitNativeTransportCandidates', 'clearRepositoryTransportHealth', 'workspace-transport-lazy', 'repositoryTransportDeadlineAt', 'repositoryTransportBudgetMs', 'local-file-http-snapshot-unavailable', "phase: 'snapshot-connect'", "phase: 'snapshot-transfer'", "phase: 'snapshot-processing'", 'repository-snapshot.convention-miss', 'repositorySnapshotMetadataTimeoutMs: 5000', 'repositorySnapshotTimeoutMs: 35000']) {
     if (!app.includes(token)) fail(`repository transport runtime contract missing: ${token}`);
@@ -1888,6 +1905,7 @@ function validateRepositoryTransportContracts() {
   if (forgeMirror[0]?.metadataUrl !== 'https://viewer.example/app/mirrors/gitlab.com/example/repo.json') {
     fail('Co-hosted mirror paths must preserve the canonical source host instead of being GitHub-only.');
   }
+
   const fileMirrors = mirrorContext.__mirrorConvention.coHostedRepositorySnapshotTransports('Tiinex/docs', {
     baseUrl: 'file:///tmp/tiinex/index.html',
     includeSourceRoot: true
@@ -2017,6 +2035,8 @@ function validateRepositoryTransportContracts() {
     'TIINEX_PUBLISH_SOURCE_REF',
     'TIINEX_USE_SOURCE_CNAME',
     'TIINEX_PUBLIC_STATIC_PATHS',
+    'TIINEX_PUBLIC_REDIRECTS',
+    'TIINEX_CANONICAL_SOURCE_REF',
     'TIINEX_VIEWER_GIT_REPO',
     'TIINEX_VIEWER_GIT_REF',
     'TIINEX_VIEWER_GIT_ROOTS',
@@ -2026,14 +2046,21 @@ function validateRepositoryTransportContracts() {
     'Static publish material:',
     'publish_enabled=false',
     'Skipping publish for $GITHUB_REF_NAME',
+    'Tiinex/site only auto-publishes',
+    'other non-public working branches exist',
+    'TIINEX_PAGES_DEPLOY:-auto',
+    'branch-only',
     'publish_enabled: ${{ steps.settings.outputs.publish_enabled }}',
     "if: steps.settings.outputs.publish_enabled == 'true'",
-    'actions/upload-pages-artifact@v3',
+    'actions/upload-pages-artifact@v4',
     'actions/deploy-pages@v4',
+    'actions/configure-pages@v5',
+    'TIINEX_PUBLIC_REDIRECTS',
     'pages: write',
     'id-token: write',
     'TIINEX_PAGES_DEPLOY',
     'pages_deploy_enabled=false',
+    'pages_deploy_enabled=true',
     'TIINEX_WORKSPACE_REPOSITORY_MIRRORS',
     'TIINEX_GITMODULES_REPOSITORY_MIRRORS',
     'Workspace Repository Mirrors are disabled',
@@ -2077,14 +2104,14 @@ function validateRepositoryTransportContracts() {
     fail('public deploy root must be sanitized before branch publication, Pages artifact upload, and Pages deployment');
   }
   if (!workflow.includes("if: steps.settings.outputs.publish_enabled == 'true' && steps.settings.outputs.pages_deploy_enabled == 'true'") || !workflow.includes("if: needs.publish.outputs.publish_enabled == 'true' && needs.publish.outputs.pages_deploy_enabled == 'true'")) {
-    fail('official Pages deployment must be opt-in and must not run when a pinned source ref skips the publish path');
+    fail('official Pages deployment must be gated by publish_enabled and pages_deploy_enabled so the inspectable public branch remains the fallback');
   }
   if (!app.includes('tiinexConfiguredBuildIdentity') || !app.includes('TIINEX_APP_BUILD_DEFAULT')) fail('app build identity must be configurable by published viewer options');
   if (app.includes("const TIINEX_APP_BUILD = Object.freeze({") && app.includes("repository: 'Tiinex/site'")) fail('app build identity must not hardcode Tiinex/site as the only source repository');
   if (workflow.includes("github.ref_name == github.event.repository.default_branch")) {
     fail('fork publish must not be limited to the repository default branch; non-public working branches should be publishable');
   }
-  note('workspace-owned repository snapshots, persistent transport decisions, co-hosted mirror discovery, workspace-owned and configured mirror sources, fork-safe self-mirror handling, branch publication from non-public branches, pinned source-ref publication, and opt-in official Pages deployment contracts are valid');
+  note('workspace-owned repository snapshots, persistent transport decisions, co-hosted mirror discovery, workspace-owned and configured mirror sources, fork-safe self-mirror handling, branch publication from non-public branches, pinned source-ref publication, and Actions-first Pages deployment with inspectable public branch fallback contracts are valid');
 }
 
 function validatePublicBuildContracts() {
@@ -2104,7 +2131,7 @@ function validatePublicBuildContracts() {
   if (!buildScript.includes("argValue('--out', '.site-publish')")) fail('build-public must default to .site-publish and accept --out for checks');
   if (!buildScript.includes('tiinex.bundle.js')) fail('build-public must create tiinex.bundle.js');
   if (!buildScript.includes('window.TIINEX_VIEWER_OPTIONS')) fail('build-public must include viewer options before app.js in the bundle');
-  for (const token of ['copyPathIfExists', 'TIINEX_VIEWER_GIT_REPO', 'TIINEX_VIEWER_GIT_REF', 'TIINEX_VIEWER_GIT_ROOTS', 'TIINEX_VIEWER_TITLE', 'TIINEX_BUILD_REPOSITORY', 'TIINEX_BUILD_CHANNEL', 'buildIdentity', 'PAGES_CNAME', 'TIINEX_USE_SOURCE_CNAME']) {
+  for (const token of ['copyPathIfExists', 'TIINEX_VIEWER_GIT_REPO', 'TIINEX_VIEWER_GIT_REF', 'TIINEX_VIEWER_GIT_ROOTS', 'TIINEX_VIEWER_TITLE', 'TIINEX_BUILD_REPOSITORY', 'TIINEX_BUILD_CHANNEL', 'buildIdentity', 'PAGES_CNAME', 'TIINEX_USE_SOURCE_CNAME', 'TIINEX_PUBLIC_REDIRECTS']) {
     if (!buildScript.includes(token)) fail(`build-public must support repo-agnostic publish configuration: ${token}`);
   }
   if (/repo:\s*['"]Tiinex\/docs['"]/u.test(buildScript)) {
@@ -2140,7 +2167,6 @@ function validateRootPackageShape() {
     'llms.txt',
     'package.json',
     'README.md',
-    'samples',
     'src',
     'styles.css',
     'tiinex.app.llm.v1.md',
@@ -2156,8 +2182,7 @@ function validateRootPackageShape() {
     'CNAME',
     'favicon.ico',
     'LICENSE',
-    'NOTICE',
-    'discord'
+    'NOTICE'
   ]);
 
   const ignoredInfrastructureRootEntries = new Set([
@@ -2257,7 +2282,11 @@ async function main() {
   console.log('✓ no public scaffold/debug markers detected');
   console.log('✓ root package markdown is intentional');
   console.log('✓ packaged continuity markdown and app integrity lifecycle contracts are valid');
-  console.log('✓ embedded default workspace mirrors packaged workspace markdown');
+  if (existsSync(join(root, '.topics/.workspaces/viewer.workspace.md'))) {
+    console.log('✓ embedded default workspace mirrors packaged workspace markdown');
+  } else {
+    console.log('✓ packaged default workspace is optional when runtime candidates own workspace bootstrap');
+  }
   console.log('✓ architecture boundary manifest and product-readiness contracts are valid');
   console.log('✓ public build and publish workflow contracts are valid');
   console.log('\nStatic validation passed. Browser golden-flow validation is still required for UI behavior.');
