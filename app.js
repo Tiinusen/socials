@@ -16966,6 +16966,21 @@ ${bodySections}
     return '';
   }
 
+  function embeddedWorkspaceMarkdownFromPointerIssueBody(body = '') {
+    const embedded = typeof extractAllEmbeddedTiinexMarkdownFromGitHubBody === 'function'
+      ? extractAllEmbeddedTiinexMarkdownFromGitHubBody(body)
+      : [];
+    for (const markdown of embedded) {
+      if (looksLikeWorkspaceMarkdown(markdown)) return normalizeNewlines(markdown || '').trim();
+    }
+    const single = typeof extractEmbeddedTiinexMarkdownFromGitHubComment === 'function'
+      ? extractEmbeddedTiinexMarkdownFromGitHubComment(body)
+      : '';
+    if (single && looksLikeWorkspaceMarkdown(single)) return normalizeNewlines(single || '').trim();
+    const direct = normalizeNewlines(body || '').trim();
+    return looksLikeWorkspaceMarkdown(direct) ? direct : '';
+  }
+
   async function resolveWorkspaceIssuePointer(candidate, visited = new Set()) {
     const issueUrl = workspaceBootstrapCandidateUrl(candidate);
     const spec = parseGitHubIssueSpec(issueUrl);
@@ -16974,18 +16989,35 @@ ${bodySections}
     visited.add(spec.issueUrl);
     const issue = (await fetchGitHubJson(spec.apiIssueUrl, { hardRefresh: true })).data;
     const workspaceUrl = workspaceUrlFromPointerMarkdown(issue?.body || '', spec.issueUrl);
-    if (!workspaceUrl) throw new Error(`GitHub issue ${spec.repo}#${spec.issueNumber} did not declare a workspace URL.`);
-    if (parseGitHubIssueSpec(workspaceUrl)) {
-      return await resolveWorkspaceIssuePointer({ kind: 'github-issue-pointer', url: workspaceUrl, role: candidate.role, label: candidate.label, source: spec.issueUrl }, visited);
+    if (workspaceUrl) {
+      if (parseGitHubIssueSpec(workspaceUrl)) {
+        return await resolveWorkspaceIssuePointer({ kind: 'github-issue-pointer', url: workspaceUrl, role: candidate.role, label: candidate.label, source: spec.issueUrl }, visited);
+      }
+      return {
+        url: normalizeViewerConfigUrl(workspaceUrl),
+        sourceUrl: spec.issueUrl,
+        source: `github-issue:${spec.repo}#${spec.issueNumber}`,
+        issueTitle: issue?.title || '',
+        issueNumber: spec.issueNumber,
+        repo: spec.repo
+      };
     }
-    return {
-      url: normalizeViewerConfigUrl(workspaceUrl),
-      sourceUrl: spec.issueUrl,
-      source: `github-issue:${spec.repo}#${spec.issueNumber}`,
-      issueTitle: issue?.title || '',
-      issueNumber: spec.issueNumber,
-      repo: spec.repo
-    };
+
+    const embeddedWorkspace = embeddedWorkspaceMarkdownFromPointerIssueBody(issue?.body || '');
+    if (embeddedWorkspace) {
+      return {
+        url: spec.issueUrl,
+        sourceUrl: spec.issueUrl,
+        source: `github-issue-embedded-workspace:${spec.repo}#${spec.issueNumber}`,
+        issueTitle: issue?.title || '',
+        issueNumber: spec.issueNumber,
+        repo: spec.repo,
+        markdown: embeddedWorkspace,
+        resolvedKind: 'embedded-workspace-markdown'
+      };
+    }
+
+    throw new Error(`GitHub issue ${spec.repo}#${spec.issueNumber} did not declare a workspace URL or embed a tiinex.workspace.v1 source payload.`);
   }
 
   async function resolveWorkspaceBootstrapCandidate(candidate) {
@@ -18120,11 +18152,18 @@ ${bodySections}
         const url = resolved.url;
         attempt.resolvedUrl = url;
         attempt.resolvedSource = resolved.source || '';
-        if (location.protocol === 'file:' && isFileProtocolUrl(url)) {
-          throw new Error('Cannot fetch a .workspace.md file from file://. Use embedded default, drag/drop, or host over http://localhost.');
+        attempt.resolvedKind = resolved.resolvedKind || '';
+        let markdown = resolved.markdown || '';
+        if (markdown) {
+          attempt.inline = true;
+          attempt.bytes = markdown.length;
+        } else {
+          if (location.protocol === 'file:' && isFileProtocolUrl(url)) {
+            throw new Error('Cannot fetch a .workspace.md file from file://. Use embedded default, drag/drop, or host over http://localhost.');
+          }
+          markdown = await fetchText(url, 'viewer workspace');
+          attempt.bytes = markdown.length;
         }
-        const markdown = await fetchText(url, 'viewer workspace');
-        attempt.bytes = markdown.length;
         if (!looksLikeWorkspaceMarkdown(markdown)) {
           throw new Error('Resolved workspace candidate did not contain Tiinex workspace markdown.');
         }
