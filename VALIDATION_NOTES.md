@@ -111,3 +111,8 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - Restored the workspace shell export button to the canonical export adapter flow.
 - Workspace artifact creation/editing remains owned by Create/Edit card flows; the old save-artifact dialog is not used by the shell export action.
 - Added a static guard so `saveWorkspace()` cannot regress to opening the workspace artifact save dialog.
+
+## v19 workspace edit continuity polish
+
+- Workspace artifact editor now exposes a Summary field so the card subtitle and GitHub presentation are user-authored instead of falling back to the generated "Portable workspace export..." line.
+- Saving a workspace artifact updates the Continuity Context Summary while preserving normal local draft behavior; export/publish remains a separate action.
