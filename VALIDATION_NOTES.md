@@ -93,9 +93,15 @@ Warm persistent Git reuse is recorded as `local-git`; it does not report a fresh
 
 The publish workflow now updates the inspectable `public` branch first and then requests the `Deploy Public Pages` workflow through `repository_dispatch`. The deployment workflow checks out `public` and uses the official GitHub Pages artifact/deploy actions from the default-branch workflow context so working-branch pushes do not directly hit `github-pages` environment branch restrictions.
 
-## V14 Workspace Save Artifact Flow
+## V14/V15 Workspace Save Findings
 
-- Header `Save workspace` creates or replaces a `tiinex.workspace.v1` draft leaf inside an explicit target workspace; it must not download directly, publish to GitHub, or open the export modal automatically.
-- If no workspace is open, saving creates a local workspace for the workspace artifact. If one workspace is open, it is preselected. If multiple workspaces are open, the modal exposes the target selector and requires an explicit placement/replacement choice.
-- Replacement of an existing `.workspace.md` is explicit. Matching paths are not overwritten silently.
+- The header Save Workspace path proved too custom even after export was split out. Workspace files need to be visible artifacts in the active flow, not a hidden runtime context or a side export lane.
+- Saved workspace leaves must remain normal local artifacts (`local` source, `.workspace.md` validation, local state persistence, selected local node), so canceling a later export cannot mark the save itself as exported or published.
 - GitHub issue previews for workspace artifacts should show human-facing workspace sections and keep technical restore state/source caches inside the collapsed Tiinex source payload.
+
+## V16 workspace artifacts use normal create/edit
+
+- The header `Save workspace` action is removed.
+- `tiinex.workspace.v1` is available in the ordinary artifact wizard, so new workspace files use the same draft/export/publish path as other artifacts.
+- Workspace cards remain special in presentation: their Edit form summarizes the active workspace set and offers `Update with current`, which stages the current workspace/viewer state into the selected `.workspace.md` without exporting.
+- `Save local draft` is the persistence boundary. Export/download/GitHub publication remains a separate explicit action.

@@ -979,7 +979,7 @@
     const state = app.workspaceSaveArtifact || { events: [], last: null, createdWorkspaces: 0, createdArtifacts: 0, replacedArtifacts: 0, savedArtifacts: 0 };
     return {
       schema: 'tiinex.workspace-save-artifact.report.v1',
-      policy: 'Save Workspace creates or replaces a tiinex.workspace.v1 draft artifact inside an explicit target workspace only. It does not download, publish, or open export automatically; users export later through the normal workspace export action.',
+      policy: 'Save Workspace creates or replaces a tiinex.workspace.v1 local draft artifact inside an explicit target workspace using the same local artifact path as Create/Edit. It does not download, publish, or open export automatically; users export later through the normal workspace Export action.',
       createdWorkspaces: Number(state.createdWorkspaces || 0),
       createdArtifacts: Number(state.createdArtifacts || 0),
       replacedArtifacts: Number(state.replacedArtifacts || 0),
@@ -15438,9 +15438,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       app.localState.createIntent = true;
       return Promise.resolve(createWorkspaceFromInputs()).finally(() => { app.localState.createIntent = false; scheduleLocalStateSave(); });
     }
-    if (action === 'export-config') {
+    if (action === 'save-workspace-artifact' || action === 'export-config') {
       event.preventDefault();
-      return exportCurrentLensConfig();
+      event.stopPropagation();
+      return openWorkspaceSaveArtifactModal({ reason: action });
     }
     if (action === 'replace-import' || action === 'import-as-sibling' || action === 'cancel-import') {
       return handleImportConflictAction(action);
@@ -15655,7 +15656,6 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           ${renderViewerBrand()}
           <div class="top-actions workspace-top-actions-layout workspace-top-actions-toolbar">
             <button class="tv-btn primary" data-action="open-source-modal" title="Create or add a workspace/source"><i class="fa-solid fa-plus"></i>Create</button>
-            <button class="tv-btn subtle" data-action="export-config" title="Create or replace a workspace leaf draft before exporting through the normal workspace flow."><i class="fa-regular fa-floppy-disk"></i>Save workspace</button>
             <button class="tv-btn subtle" data-action="open-share-modal" data-scope="active" title="Review share eligibility before copying a public or exact-view link." aria-label="Open Share options"><i class="fa-solid fa-share-nodes"></i>Share</button>
           </div>
           ${renderHelpButton()}
@@ -16182,7 +16182,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   }
 
   async function exportCurrentLensConfig() {
-    return openWorkspaceSaveArtifactModal();
+    // Backwards-compatible entrypoint name. Header Save Workspace now creates
+    // a local workspace leaf draft only; Export remains a separate user action.
+    return openWorkspaceSaveArtifactModal({ reason: 'compat-export-config' });
   }
 
   function renderWorkspaceSaveArtifactModal(modal) {
@@ -16281,28 +16283,35 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (!isWorkspaceFilename(artifactPath)) throw new Error('Workspace artifact path must end with .workspace.md.');
     const existingAtPath = Array.from(ws.files?.values?.() || []).find((file) => normalizeAssetPath(file?.path || '') === artifactPath);
     if (!replacePath && existingAtPath) throw new Error('That artifact path already exists. Choose the existing artifact to replace, or enter a different path.');
+    const replacedFile = replacePath ? Array.from(ws.files?.values?.() || []).find((file) => normalizeAssetPath(file?.path || '') === replacePath) : null;
     if (replacePath) removeWorkspaceArtifactAtPath(ws, replacePath);
-    const sourceId = makeSourceId('workspace-save', `${ws.id}:${artifactPath}`);
-    addFileToWorkspace(ws, {
-      path: artifactPath,
-      content: modal.markdown || '',
-      sourceId,
-      sourceKind: 'draft',
-      sourceLabel: 'Saved workspace artifact',
-      sourceOrigin: 'Save Workspace action',
-      sourceAccessMode: 'local-working-tree',
-      sourceResolutionKind: 'workspace-save-artifact',
-      importedAt: new Date().toISOString(),
-      generatedAt: new Date().toISOString()
+    const sourceId = localSource(ws).id;
+    const savedFile = upsertWorkspaceTextFile(ws, artifactPath, modal.markdown || '', sourceId, {
+      sourceOrigin: replacedFile?.sourceOrigin || replacedFile?.browseUrl || replacedFile?.rawUrl || 'Save Workspace action',
+      shadowSourceStorageKey: replacedFile?.storageKey || '',
+      shadowSourceKey: replacedFile?.storageKey || '',
+      shadowSourceId: replacedFile?.sourceId || '',
+      shadowSourcePath: replacedFile?.path || '',
+      shadowSourceOrigin: replacedFile?.sourceOrigin || replacedFile?.browseUrl || replacedFile?.rawUrl || '',
+      localDraftOf: replacedFile ? (replacedFile.sourceOrigin || replacedFile.browseUrl || replacedFile.rawUrl || replacedFile.storageKey || '') : '',
+      localEditDraft: Boolean(replacedFile && replacedFile.sourceId && replacedFile.sourceId !== sourceId)
     });
+    if (savedFile) {
+      savedFile.sourceResolutionKind = 'workspace-save-artifact';
+      savedFile.generatedAt = new Date().toISOString();
+    }
     computeWorkspaceIndex(ws);
-    const savedNode = (ws.nodes || []).find((node) => normalizeAssetPath(node.path || '') === artifactPath);
-    if (savedNode) ws.selectedNodeId = savedNode.id;
-    app.activeWorkspaceId = ws.id;
-    recordWorkspaceSaveArtifact(replacePath ? 'replace-artifact' : 'create-artifact', { workspaceId: ws.id, workspace: workspaceDisplayLabel(ws), path: artifactPath, sourceId });
-    recordWorkspaceSaveArtifact('save-artifact', { workspaceId: ws.id, workspace: workspaceDisplayLabel(ws), path: artifactPath, sourceId, exportOpened: false });
+    markWorkspaceIntegrityDirty(ws, 'workspace-save-artifact');
+    const savedNode = Array.from(ws.nodeById?.values?.() || []).find((node) => node.sourceId === sourceId && normalizeAssetPath(node.path || '') === artifactPath)
+      || (ws.nodes || []).find((node) => normalizeAssetPath(node.path || '') === artifactPath);
+    if (savedNode) selectSavedLocalNode(ws, savedNode, 'workspace-save-artifact');
+    else app.activeWorkspaceId = ws.id;
+    recordWorkspaceSaveArtifact(replacePath ? 'replace-artifact' : 'create-artifact', { workspaceId: ws.id, workspace: workspaceDisplayLabel(ws), path: artifactPath, sourceId, normalLocalArtifactFlow: true });
+    recordWorkspaceSaveArtifact('save-artifact', { workspaceId: ws.id, workspace: workspaceDisplayLabel(ws), path: artifactPath, sourceId, exportOpened: false, normalLocalArtifactFlow: true });
     app.modal = null;
-    scheduleLocalStateSaveAfterWorkspaceMutation();
+    if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
+    if (typeof saveLocalStateNow === 'function') saveLocalStateNow();
+    if (typeof setRouteState === 'function') setRouteState('replace');
     render();
     toast(`${replacePath ? 'Replaced' : 'Created'} workspace artifact ${artifactPath}. Use Export when you are ready to publish or download it.`, 'ok');
     return { ws, path: artifactPath, sourceId };
@@ -16615,6 +16624,26 @@ ${bodySections}
   }
 
 
+  function workspaceConfigCurrentSummaryHtml(modal) {
+    const workspaces = app.workspaces || [];
+    const sourceCount = workspaces.reduce((total, ws) => total + (ws?.sources instanceof Map ? ws.sources.size : Array.isArray(ws?.sources) ? ws.sources.length : 0), 0);
+    const artifactCount = workspaces.reduce((total, ws) => total + (Array.isArray(ws?.nodes) ? ws.nodes.length : ws?.nodeById instanceof Map ? ws.nodeById.size : 0), 0);
+    const workspaceArtifactCount = workspaces.reduce((total, ws) => total + Array.from(ws?.nodeById?.values?.() || []).filter((node) => isWorkspaceNode(node)).length, 0);
+    const fileState = modal?.sourceBacked ? (modal?.existingDraft ? 'source + local draft' : 'source-backed') : 'local draft';
+    const updated = modal?.updatedFromCurrent ? '<span class="summary-chip ok"><i class="fa-solid fa-circle-check"></i>current view staged</span>' : '<span class="summary-chip"><i class="fa-solid fa-layer-group"></i>file content unchanged</span>';
+    return `<section class="export-section workspace-config-summary-section">
+      <h3>Workspace material</h3>
+      <div class="export-summary compact-export-summary workspace-config-summary">
+        <div><strong>${workspaces.length}</strong><span>open workspaces</span></div>
+        <div><strong>${sourceCount}</strong><span>sources</span></div>
+        <div><strong>${artifactCount}</strong><span>visible artifacts</span></div>
+        <div><strong>${workspaceArtifactCount}</strong><span>workspace artifacts</span></div>
+      </div>
+      <p class="form-text">This artifact is ${escapeHtml(fileState)}. <strong>Update with current</strong> stages the current workspace set into this .workspace.md; <strong>Save local draft</strong> persists it through the normal local artifact path.</p>
+      <div class="workspace-config-stage-status">${updated}</div>
+    </section>`;
+  }
+
   function renderWorkspaceConfigEditorModal(modal) {
     const draft = modal.draft || {};
     return `<div class="modal-backdrop-custom focus-modal workspace-config-editor-backdrop" role="dialog" aria-modal="true" aria-labelledby="workspace-config-editor-title">
@@ -16628,6 +16657,7 @@ ${bodySections}
           <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
         </div>
         <div class="export-body workspace-config-editor-body">
+          ${workspaceConfigCurrentSummaryHtml(modal)}
           <section class="export-section">
             <h3>Identity</h3>
             <div class="schema-grid two-col">
@@ -16650,7 +16680,8 @@ ${bodySections}
         </div>
         <div class="modal-footer-actions export-actions">
           <button class="tv-btn primary" data-action="workspace-config-save"><i class="fa-solid fa-floppy-disk"></i>Save local draft</button>
-          <button class="tv-btn constructive" data-action="workspace-config-apply"><i class="fa-solid fa-eye"></i>Apply preview</button>
+          <button class="tv-btn constructive" data-action="workspace-config-update-current"><i class="fa-solid fa-rotate"></i>Update with current</button>
+          <button class="tv-btn subtle" data-action="workspace-config-apply"><i class="fa-solid fa-eye"></i>Apply preview</button>
           <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
         </div>
       </div>
@@ -16664,6 +16695,22 @@ ${bodySections}
 
   registerActionHandler(async function workspaceConfigEditorAction(event, next) {
     const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'workspace-config-update-current') {
+      event.preventDefault(); event.stopPropagation();
+      if (!app.modal || app.modal.type !== 'workspace-config-editor') return;
+      try {
+        const current = await buildCurrentLensConfigMarkdown();
+        const staged = updateWorkspaceConfigMarkdown(current, app.modal.draft || {});
+        app.modal.originalMarkdown = staged;
+        app.modal.draft = workspaceConfigDraftFromMarkdown(staged, app.modal.configUrl || location.href);
+        app.modal.updatedFromCurrent = true;
+        toast('Current workspace set staged in this workspace artifact. Save local draft to persist it.', 'ok');
+        render();
+      } catch (error) {
+        toast(`Could not stage current workspace: ${error.message}`, 'warn');
+      }
+      return;
+    }
     if (action === 'workspace-config-save' || action === 'workspace-config-apply') {
       event.preventDefault(); event.stopPropagation();
       if (!app.modal || app.modal.type !== 'workspace-config-editor') return;
@@ -27899,7 +27946,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     'tiinex.pointer.v1': schemaPolicyEntry('tiinex.pointer.v1', 'Pointer', 'core-artifact', 'tiinex.root.v1', 'Thin redirect or anchor toward an upstream trace or origin.', 'yes', 'advanced', 'yes', 'ordinary-wizard', 'Pointer is mainly for reference or redirect behavior, not for rich continuation content.'),
     'tiinex.signal.v1': schemaPolicyEntry('tiinex.signal.v1', 'Signal', 'core-artifact', 'tiinex.root.v1', 'Weak bounded observation that should not be overread as feedback.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Signal is useful but should not crowd ordinary create choices until policy UI can explain the boundary.'),
     'tiinex.lineage.upgrade.deferral.v1': schemaPolicyEntry('tiinex.lineage.upgrade.deferral.v1', 'Lineage Upgrade Deferral', 'core-artifact', 'tiinex.root.v1', 'Bounded deferral for lineage-upgrade work that must not hide integrity errors.', 'yes', 'advanced', 'advanced', 'ordinary-wizard', 'Lineage deferral is an ordinary choice only when the current work is explicitly deferring an upgrade.'),
-    'tiinex.workspace.v1': schemaPolicyEntry('tiinex.workspace.v1', 'Workspace', 'core-artifact', 'tiinex.root.v1', 'Portable workspace entrypoint.', 'advanced', 'no', 'no', 'workspace-create', 'Workspace creation has its own surface and should not appear as an ordinary trace leaf.'),
+    'tiinex.workspace.v1': schemaPolicyEntry('tiinex.workspace.v1', 'Workspace', 'core-artifact', 'tiinex.root.v1', 'Portable workspace entrypoint.', 'yes', 'no', 'no', 'ordinary-wizard', 'Workspace is creatable through the ordinary artifact wizard so it follows the same draft/export/publish path as other local artifacts.'),
     'tiinex.relation.v1': schemaPolicyEntry('tiinex.relation.v1', 'Relation', 'relation-validation-governance', 'tiinex.root.v1', 'Typed non-parent relationship.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Relation should protect Parent by representing typed links only when a relation surface is intentional.'),
     'tiinex.validation.method.v1': schemaPolicyEntry('tiinex.validation.method.v1', 'Validation Method', 'relation-validation-governance', 'tiinex.root.v1', 'Validation method definition with scope and failure modes.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Validation methods define how checks should be read; they are support artifacts, not ordinary narrative leaves.'),
     'tiinex.schema.family.v1': schemaPolicyEntry('tiinex.schema.family.v1', 'Schema Family', 'relation-validation-governance', 'tiinex.root.v1', 'Schema family, governance, and creatability description.', 'advanced', 'advanced', 'advanced', 'advanced-candidate', 'Schema-family artifacts govern schemas and create policy, so ordinary creation should require explicit intent.'),
@@ -28504,8 +28551,8 @@ ${listBlock(f.consequences)}`,
       icon: 'fa-folder-tree',
       suffix: '.workspace.md',
       kind: 'workspace',
-      humanArtifact: false,
-      summary: 'Markdown-first local/review workspace description.',
+      humanArtifact: true,
+      summary: 'Markdown-first workspace entrypoint for opening, arranging, and presenting material.',
       bodyLabel: 'Workspace body',
       body: '## Workspace Scope\n\nWhat this workspace contains.\n\n## Sources\n\n- \n\n## Notes\n\nWhat the next reader should know.',
       fields: [
@@ -28629,7 +28676,7 @@ ${wizardBlank(f.notes)}`,
     return {
       kicker: 'Add',
       title: 'Create Tiinex artifact',
-      lead: 'Choose a human-authored Tiinex artifact type.',
+      lead: 'Choose a Tiinex artifact type.',
       icon: 'fa-file-circle-plus',
       button: 'Review markdown'
     };
@@ -28855,7 +28902,7 @@ ${wizardBlank(f.notes)}`,
 
     if (modal?.mode === 'continue' || modal?.mode === 'reference') {
       const slug = slugifyTitle(title || selected.label);
-      if (kind === 'workspace') return `.topics/workspaces/${slug}.workspace.md`;
+      if (kind === 'workspace') return `.topics/.workspaces/${slug}.workspace.md`;
       return `.topics/${slug}.trace.md`;
     }
 
@@ -29305,7 +29352,7 @@ ${wizardBlank(f.notes)}`,
 
   function wizardTypeStep(ws, modal, options, selectedId) {
     return `<section class="wizard-step wizard-step-page wizard-type-step">
-      <div class="wizard-step-head"><span>1</span><div><strong>Choose Tiinex artifact type</strong><p>Human-authored artifact shapes only. Runtime-oriented schemas stay hidden here.</p></div></div>
+      <div class="wizard-step-head"><span>1</span><div><strong>Choose Tiinex artifact type</strong><p>Create a local draft leaf. Workspace entries use the same draft/export/publish path as other artifacts.</p></div></div>
       <div class="wizard-schema-grid paged">
         ${options.map((option) => `<button type="button" class="wizard-schema-card ${option.id === selectedId ? 'selected' : ''}" data-action="wizard-select-schema" data-schema="${escapeAttr(option.id)}" data-ws="${escapeAttr(ws.id)}" title="Use ${escapeAttr(option.label)}">
           <i class="fa-solid ${escapeAttr(option.icon)}"></i>
@@ -30840,7 +30887,7 @@ ${integrityFooterForPath(parent, path)}`,
   function uniqueWizardRootPath(ws, modal, option, title) {
     const kind = wizardKindForSchema(option.id);
     const folder = defaultArtifactFolder(ws, modal);
-    if (kind === 'workspace') return uniquePathInFolder(ws, folder, title || option.label || 'workspace', '.workspace.md');
+    if (kind === 'workspace') return uniquePathInFolder(ws, modal?.folderPath || '.topics/.workspaces', title || option.label || 'workspace', '.workspace.md');
     const numeric = nextNumericTracePath(ws, folder);
     if (numeric) return numeric;
     return uniquePathInFolder(ws, folder, title || option.label || 'artifact', '.trace.md');

@@ -63,11 +63,11 @@ Older `.topics/github-issues/...` paths remain readable for compatibility.
 
 Adapter implementations should preserve external container, publication item, embedded Tiinex artifact, origin, parent, and attached assets as distinct concepts. When a selected export batch contains parent/child artifacts, the adapter should preserve that lineage segment as one publication transaction when the target supports nested items.
 
-## Workspace Save And Export
+## Workspace Artifacts And Export
 
-`Save workspace` creates or replaces a `tiinex.workspace.v1` draft leaf inside an explicit target workspace. It does not download, publish, or open the export adapter automatically. After saving, use the workspace's normal Export action to download or prepare GitHub issue/comment publication.
+Workspace files are ordinary Tiinex draft artifacts in the local source. Create a new `tiinex.workspace.v1` through **Create → New Tiinex artifact → Workspace**, or edit an existing workspace card with **Edit**. The header no longer has a separate Save Workspace path.
 
-This keeps workspace snapshots on the same artifact path as other local drafts: choose a target workspace, choose whether to create or replace an existing `.workspace.md`, review the resulting local draft, then export when ready.
+A workspace card's editor can stage the current viewer/workspace set with **Update with current**. Nothing is exported or published at that point; **Save local draft** persists the `.workspace.md` through the same local draft path as other artifacts, and the normal Export action later handles download or GitHub publication.
 
 GitHub issue publication should keep a clean reader-facing summary with the full Tiinex source payload collapsed below it, matching the issue-body pattern used by Tiinex/docs issue roots.
 
