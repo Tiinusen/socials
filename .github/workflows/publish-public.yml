@@ -2,6 +2,8 @@ name: Publish Public Branch
 
 on:
   push:
+    branches-ignore:
+      - public
   workflow_dispatch:
     inputs:
       source_ref:
@@ -28,10 +30,11 @@ concurrency:
 
 jobs:
   publish:
-    if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'branch' && github.ref_name != 'public')
     runs-on: ubuntu-latest
     outputs:
       pages_deploy_enabled: ${{ steps.settings.outputs.pages_deploy_enabled }}
+      publish_enabled: ${{ steps.settings.outputs.publish_enabled }}
     env:
       PAGES_CNAME: ${{ vars.PAGES_CNAME || '' }}
       TIINEX_REPOSITORY_MIRRORS: ${{ vars.TIINEX_REPOSITORY_MIRRORS || secrets.TIINEX_REPOSITORY_MIRRORS || '' }}
@@ -40,6 +43,7 @@ jobs:
       TIINEX_GITMODULES_REPOSITORY_MIRRORS: ${{ vars.TIINEX_GITMODULES_REPOSITORY_MIRRORS || '' }}
       TIINEX_PAGES_DEPLOY: ${{ vars.TIINEX_PAGES_DEPLOY || secrets.TIINEX_PAGES_DEPLOY || '' }}
       TIINEX_WORKFLOW_PAGES_DEPLOY: ${{ github.event.inputs.deploy_pages || '' }}
+      TIINEX_PUBLISH_SOURCE_REF: ${{ vars.TIINEX_PUBLISH_SOURCE_REF || secrets.TIINEX_PUBLISH_SOURCE_REF || '' }}
 
     steps:
       - name: Resolve source ref
@@ -47,8 +51,23 @@ jobs:
         shell: bash
         run: |
           source_ref="${{ github.event.inputs.source_ref }}"
-          if [ -z "$source_ref" ] && [ "${{ github.event_name }}" = "push" ]; then
-            source_ref="$GITHUB_REF_NAME"
+          pinned_source_ref="${TIINEX_PUBLISH_SOURCE_REF:-}"
+          publish_enabled=true
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            if [ -n "$pinned_source_ref" ]; then
+              source_ref="$pinned_source_ref"
+              if [ "$GITHUB_REF_NAME" != "$pinned_source_ref" ]; then
+                publish_enabled=false
+                echo "Skipping publish for $GITHUB_REF_NAME because TIINEX_PUBLISH_SOURCE_REF is pinned to $pinned_source_ref."
+              fi
+            elif [ -z "$source_ref" ]; then
+              source_ref="$GITHUB_REF_NAME"
+            fi
+          fi
+
+          if [ -z "$source_ref" ]; then
+            source_ref="$pinned_source_ref"
           fi
           if [ -z "$source_ref" ]; then
             source_ref="${{ github.event.repository.default_branch }}"
@@ -69,13 +88,20 @@ jobs:
 
           echo "source_ref=$source_ref" >> "$GITHUB_OUTPUT"
           echo "pages_deploy_enabled=$pages_deploy_enabled" >> "$GITHUB_OUTPUT"
+          echo "publish_enabled=$publish_enabled" >> "$GITHUB_OUTPUT"
           if [ "$pages_deploy_enabled" = true ]; then
             echo "Direct GitHub Pages deployment is enabled for this run."
           else
             echo "Direct GitHub Pages deployment is disabled; public branch publication remains enabled."
           fi
+          if [ "$publish_enabled" = true ]; then
+            echo "Publishing source ref: $source_ref"
+          else
+            echo "Publish disabled for this push; no public branch update will be attempted."
+          fi
 
       - name: Check out source
+        if: steps.settings.outputs.publish_enabled == 'true'
         uses: actions/checkout@v6
         with:
           ref: ${{ steps.settings.outputs.source_ref }}
@@ -83,6 +109,7 @@ jobs:
           submodules: false
 
       - name: Detect publish mode
+        if: steps.settings.outputs.publish_enabled == 'true'
         id: publish_mode
         shell: bash
         run: |
@@ -108,21 +135,21 @@ jobs:
           fi
 
       - name: Set up Node.js
-        if: steps.publish_mode.outputs.viewer_build == 'true'
+        if: steps.settings.outputs.publish_enabled == 'true' && steps.publish_mode.outputs.viewer_build == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: 20
 
       - name: Validate app syntax
-        if: steps.publish_mode.outputs.viewer_build == 'true'
+        if: steps.settings.outputs.publish_enabled == 'true' && steps.publish_mode.outputs.viewer_build == 'true'
         run: node --check app.js
 
       - name: Build public viewer
-        if: steps.publish_mode.outputs.viewer_build == 'true'
+        if: steps.settings.outputs.publish_enabled == 'true' && steps.publish_mode.outputs.viewer_build == 'true'
         run: npm run build:public
 
       - name: Prepare mirror-only publish artifact
-        if: steps.publish_mode.outputs.viewer_build != 'true'
+        if: steps.settings.outputs.publish_enabled == 'true' && steps.publish_mode.outputs.viewer_build != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -131,7 +158,7 @@ jobs:
           touch .site-publish/.nojekyll
 
       - name: Remove inherited custom domain from forks
-        if: steps.publish_mode.outputs.viewer_build == 'true' && github.event.repository.fork && vars.PAGES_CNAME == ''
+        if: steps.settings.outputs.publish_enabled == 'true' && steps.publish_mode.outputs.viewer_build == 'true' && github.event.repository.fork && vars.PAGES_CNAME == ''
         shell: bash
         run: rm -f .site-publish/CNAME
 
@@ -147,6 +174,7 @@ jobs:
       #   - the superproject's recorded gitlink commit is intentionally not used;
       #   - ordinary submodules outside .mirrors are ignored by this publisher.
       - name: Build repository mirrors
+        if: steps.settings.outputs.publish_enabled == 'true'
         shell: bash
         env:
           SOURCE_REF: ${{ steps.settings.outputs.source_ref }}
@@ -595,6 +623,7 @@ jobs:
           done | sort
 
       - name: Sanitize public deploy root
+        if: steps.settings.outputs.publish_enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -611,6 +640,7 @@ jobs:
           fi
 
       - name: Validate repository mirrors
+        if: steps.settings.outputs.publish_enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -701,7 +731,7 @@ jobs:
           printf 'Validated %s repository mirror(s).\n' "${#metadata_files[@]}"
 
       - name: Check public viewer artifact
-        if: steps.publish_mode.outputs.viewer_build == 'true'
+        if: steps.settings.outputs.publish_enabled == 'true' && steps.publish_mode.outputs.viewer_build == 'true'
         run: |
           npm test
           node --check .site-publish/tiinex.bundle.js
@@ -709,6 +739,7 @@ jobs:
           npm run storage:scan
 
       - name: Publish public branch
+        if: steps.settings.outputs.publish_enabled == 'true'
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -719,13 +750,13 @@ jobs:
             Publish public branch from ${{ steps.settings.outputs.source_ref }} @ ${{ github.sha }}
 
       - name: Upload Pages artifact
-        if: steps.settings.outputs.pages_deploy_enabled == 'true'
+        if: steps.settings.outputs.publish_enabled == 'true' && steps.settings.outputs.pages_deploy_enabled == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: .site-publish
 
   deploy-pages:
-    if: needs.publish.outputs.pages_deploy_enabled == 'true'
+    if: needs.publish.outputs.publish_enabled == 'true' && needs.publish.outputs.pages_deploy_enabled == 'true'
     needs: publish
     runs-on: ubuntu-latest
     permissions:

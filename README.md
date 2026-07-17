@@ -74,15 +74,17 @@ The publishing repository is always mirrored automatically. When no mirror varia
 For a new fork:
 
 1. Enable GitHub Actions in the fork.
-2. Prefer GitHub Pages `Deploy from a branch` using `public` at `/ (root)`. The publish workflow updates that branch automatically on default-branch pushes.
-3. Keep local `.mirrors/` worktrees untracked unless the fork intentionally owns Git submodules.
-4. Add fork-specific mirrors through the `TIINEX_REPOSITORY_MIRRORS` repository variable or secret instead of editing upstream files.
-5. Use `TIINEX_WORKSPACE_REPOSITORY_MIRRORS=true` only when the instance intentionally wants workspace-declared mirrors included in the published mirror set.
-6. Use `TIINEX_PAGES_DEPLOY=true` only when the repository's `github-pages` environment allows direct Actions deployments from the default branch.
-7. Preserve the repository `LICENSE` and applicable `NOTICE` attribution for inherited viewer code.
+2. Prefer GitHub Pages `Deploy from a branch` using `public` at `/ (root)`. The publish workflow updates that branch automatically on pushes to any non-`public` branch so a fork can publish the active working branch.
+3. Set `TIINEX_PUBLISH_SOURCE_REF` only when an instance should publish one pinned branch instead of whichever branch was pushed.
+4. Keep local `.mirrors/` worktrees untracked unless the fork intentionally owns Git submodules.
+5. Add fork-specific mirrors through the `TIINEX_REPOSITORY_MIRRORS` repository variable or secret instead of editing upstream files.
+6. Use `TIINEX_WORKSPACE_REPOSITORY_MIRRORS=true` only when the instance intentionally wants workspace-declared mirrors included in the published mirror set.
+7. Use `TIINEX_PAGES_DEPLOY=true` only when the repository's `github-pages` environment allows direct Actions deployments from the chosen publish branch.
+8. Preserve the repository `LICENSE` and applicable `NOTICE` attribution for inherited viewer code.
 
 Optional repository variables:
 
+- `TIINEX_PUBLISH_SOURCE_REF`: optional branch name to publish instead of whichever branch was pushed. For push events, only a push to the pinned branch updates `public`; pushes to other non-`public` branches exit cleanly without publishing. Manual runs can still use the `source_ref` input for a branch, tag, or commit.
 - `TIINEX_REPOSITORY_MIRRORS`: newline-separated extra mirrors. Accepts `owner/repo`, `github.com/owner/repo`, `https://host/owner/repo.git`, or `identity = clone-url`. This may be a repository variable or secret.
 - `TIINEX_WORKSPACE_REPOSITORY_MIRRORS`: set to `true` to include workspace `## Repository Mirrors` declarations. Omitted means disabled.
 - `TIINEX_GITMODULES_REPOSITORY_MIRRORS`: set to `true` to include older `.gitmodules` mirror declarations. Omitted means disabled.
