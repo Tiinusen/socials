@@ -23476,3 +23476,49 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
     font-size: 0.65rem;
   }
 }
+
+/* v21: workspace artifact editor follows the normal artifact flow on small screens. */
+.workspace-config-lineage-section .workspace-lineage-lock {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: .45rem .75rem;
+  align-items: center;
+  border: 1px solid rgba(205, 151, 255, .18);
+  border-radius: 14px;
+  padding: .75rem .85rem;
+  margin-bottom: .75rem;
+  background: rgba(108, 48, 139, .12);
+}
+.workspace-config-lineage-section .workspace-lineage-lock span,
+.workspace-config-lineage-section .workspace-lineage-lock small { color: var(--muted); }
+.workspace-config-lineage-section .workspace-lineage-lock small { grid-column: 1 / -1; }
+.workspace-config-lineage-section .workspace-lineage-lock strong { color: var(--text); font-size: .9rem; }
+@media (max-width: 760px) {
+  .workspace-config-editor-panel {
+    width: min(100vw - 1rem, 100%);
+    max-height: calc(100dvh - 1rem);
+    border-radius: 18px;
+  }
+  .workspace-config-editor-body {
+    max-height: calc(100dvh - 10.5rem);
+    overflow: auto;
+    padding-inline: .8rem;
+  }
+  .workspace-config-editor-body .schema-grid.two-col,
+  .workspace-config-editor-body .export-summary.compact-export-summary {
+    grid-template-columns: 1fr;
+  }
+  .workspace-config-editor-panel .modal-footer-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: .55rem;
+    background: linear-gradient(180deg, rgba(20, 17, 29, .86), rgba(20, 17, 29, .98));
+  }
+  .workspace-config-lineage-section .workspace-lineage-lock,
+  .workspace-config-lineage-section .wizard-parent-row.single-line {
+    grid-template-columns: 1fr;
+  }
+}
