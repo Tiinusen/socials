@@ -3182,11 +3182,18 @@
 
   function nodeShowsAuthoringDraftState(ws, node) {
     if (!node) return false;
-    const sourceId = String(node.sourceId || node.file?.sourceId || '').trim();
-    const sourceKind = String(node.sourceKind || node.file?.sourceKind || '').trim();
+    const file = node.file || {};
+    const sourceId = String(node.sourceId || file.sourceId || '').trim();
+    const sourceKind = String(node.sourceKind || file.sourceKind || '').trim();
     if (typeof nodeIsLocalShadowDraft === 'function' && nodeIsLocalShadowDraft(ws, node)) return true;
+    if (node.localEditDraft || file.localEditDraft || node.localDraftOf || file.localDraftOf || node.shadowSourceKey || file.shadowSourceKey) return true;
     if (sourceId === 'draft' || sourceKind === 'draft') return true;
     if (node.isGenerated && !nodeHasSourceBackedMaterial(node)) return true;
+    // Browser-local material is authored state until it has been explicitly
+    // exported/published and re-imported as a source-backed artifact. A valid
+    // checksum footer on a local working copy proves local byte stability, not
+    // publication, so it must not surface as the primary "byte ok" badge.
+    if ((sourceId === 'local' || sourceKind === 'local') && !nodeHasSourceBackedMaterial(node)) return true;
     return false;
   }
 
@@ -16299,7 +16306,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       shadowSourcePath: replacedFile?.path || '',
       shadowSourceOrigin: replacedFile?.sourceOrigin || replacedFile?.browseUrl || replacedFile?.rawUrl || '',
       localDraftOf: replacedFile ? (replacedFile.sourceOrigin || replacedFile.browseUrl || replacedFile.rawUrl || replacedFile.storageKey || '') : '',
-      localEditDraft: Boolean(replacedFile && replacedFile.sourceId && replacedFile.sourceId !== sourceId)
+      localEditDraft: true
     });
     if (savedFile) {
       savedFile.sourceResolutionKind = 'workspace-save-artifact';
@@ -16841,7 +16848,7 @@ Answer the reader should see in workspace help or GitHub presentation.">${escape
       }
       if (!ws || !node) return toast('No workspace artifact selected.', 'warn');
       const sourceBacked = Boolean(original) || !nodeIsLocalEditableMaterial(ws, node);
-      await saveNodeEdit(ws, node, markdown, modal.parentEdited ? { parentNodeId: modal.parentNodeId || '', parentPath: modal.parentPath || '' } : {});
+      await saveNodeEdit(ws, node, markdown, Object.assign({ forceLocalDraft: true }, modal.parentEdited ? { parentNodeId: modal.parentNodeId || '', parentPath: modal.parentPath || '' } : {}));
       app.modal = null;
       if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
       if (typeof saveLocalStateNow === 'function') saveLocalStateNow();
@@ -20383,9 +20390,17 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
 
     shareActions.push(share({ label: 'Share', icon: 'fa-solid fa-share-nodes', className: 'share-action', dataset: Object.assign({ action: 'open-share-modal', scope: 'artifact' }, base), title: 'Review share eligibility for this artifact' }));
 
+    const continueAction = write({ label: 'Continue', icon: 'fa-solid fa-code-branch', className: 'mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'continue' }, base, transitionDataset('continue')), disabled: node.hasModernEnvelope === false, title: transitionActionTitle('continue', 'Create a continuation leaf from this artifact') });
+    const referenceAction = write({ label: 'Reference', icon: 'fa-solid fa-link', className: 'mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'reference' }, base, transitionDataset('reference')), title: transitionActionTitle('reference', 'Create a reference leaf pointing at this artifact') });
+
     if (isWorkspaceNode(node)) {
       editActions.push(edit({ label: 'Edit', icon: 'fa-solid fa-pen-to-square', className: 'workspace-config-action edit-action', dataset: Object.assign({ action: 'configure-workspace-artifact' }, base), title: 'Edit this workspace artifact' }));
+      // Workspace artifacts are lineage-capable root artifacts. Keep Continue and
+      // Reference before workspace-specific Open/Merge so they remain visible on
+      // narrow cards instead of being pushed to the tail of the action row.
       writeActions.push(
+        continueAction,
+        referenceAction,
         write({ label: 'Open', icon: 'fa-solid fa-layer-group', className: 'workspace-open-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'open-workspace-artifact' }, base), title: 'Open this .workspace.md entrypoint as the current workspace set; non-draft workspaces may close' }),
         write({ label: 'Merge', icon: 'fa-solid fa-code-merge', className: 'workspace-merge-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'merge-workspace-artifact' }, base), title: 'Merge this .workspace.md into the current workspace set without closing existing workspaces' })
       );
@@ -20399,10 +20414,9 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       destructiveActions.push(destructive({ label: 'Remove', icon: 'fa-regular fa-trash-can', className: 'danger remove-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'remove-local-node' }, base), title: 'Remove this local/uploaded node from the current workspace' }));
     }
 
-    writeActions.push(
-      write({ label: 'Continue', icon: 'fa-solid fa-code-branch', className: 'mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'continue' }, base, transitionDataset('continue')), disabled: node.hasModernEnvelope === false, title: transitionActionTitle('continue', 'Create a continuation leaf from this artifact') }),
-      write({ label: 'Reference', icon: 'fa-solid fa-link', className: 'mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'reference' }, base, transitionDataset('reference')), title: transitionActionTitle('reference', 'Create a reference leaf pointing at this artifact') })
-    );
+    if (!isWorkspaceNode(node)) {
+      writeActions.push(continueAction, referenceAction);
+    }
 
     if (discoveryFindingHasUseAsTargets(node)) {
       writeActions.push(write({ label: 'Use as', icon: 'fa-solid fa-wand-magic-sparkles', className: 'use-as-action mutating-action conditional-mutating-action transition-action', dataset: Object.assign({ action: 'open-use-as-picker' }, base, transitionDataset('use-as')), title: transitionActionTitle('use-as', 'Create a new artifact that explicitly uses this finding as its basis') }));
@@ -21989,6 +22003,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
   }
 
   function effectiveIntegrityStatus(node) {
+    if (typeof nodeShowsAuthoringDraftState === 'function' && nodeShowsAuthoringDraftState(null, node)) return 'draft-pending';
     return node?.integrityStatus || initialIntegrityStatusForNode(node);
   }
 
@@ -26423,7 +26438,7 @@ ${integrityFooter()}`;
       shadowSourcePath: node.shadowSourcePath || node.file?.shadowSourcePath || '',
       shadowSourceOrigin: node.shadowSourceOrigin || node.file?.shadowSourceOrigin || '',
       localDraftOf: node.localDraftOf || node.file?.localDraftOf || '',
-      localEditDraft: Boolean(node.localEditDraft || node.file?.localEditDraft || node.shadowSourceKey || node.file?.shadowSourceKey || node.localDraftOf || node.file?.localDraftOf)
+      localEditDraft: Boolean(options.forceLocalDraft || node.localEditDraft || node.file?.localEditDraft || node.shadowSourceKey || node.file?.shadowSourceKey || node.localDraftOf || node.file?.localDraftOf)
     };
     const meta = !directLocalEdit ? {
       sourceOrigin,
