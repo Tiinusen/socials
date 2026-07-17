@@ -58,3 +58,5 @@ Warm persistent Git reuse is recorded as `local-git`; it does not report a fresh
 
 
 - Fork-safe mirror publication ignores self-referential mirror declarations because the root repository is already published, and sanitizes root-level `.gitmodules`/`.mirrors` from the deploy artifact.
+
+- Fork-safe mirror publication defaults to publishing only the repository itself when no mirror variable/secret/manual input is configured; workspace and `.gitmodules` mirrors are explicit opt-ins, and direct GitHub Pages deployment is disabled unless `TIINEX_PAGES_DEPLOY=true`.

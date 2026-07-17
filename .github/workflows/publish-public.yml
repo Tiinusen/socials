@@ -12,6 +12,10 @@ on:
         description: Optional additional repository mirrors, one per line; use owner/repo or repo = clone-url
         required: false
         default: ""
+      deploy_pages:
+        description: Optional direct GitHub Pages deploy; use true only when github-pages environment allows this branch
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -26,10 +30,16 @@ jobs:
   publish:
     if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
+    outputs:
+      pages_deploy_enabled: ${{ steps.settings.outputs.pages_deploy_enabled }}
     env:
       PAGES_CNAME: ${{ vars.PAGES_CNAME || '' }}
-      TIINEX_REPOSITORY_MIRRORS: ${{ vars.TIINEX_REPOSITORY_MIRRORS || '' }}
+      TIINEX_REPOSITORY_MIRRORS: ${{ vars.TIINEX_REPOSITORY_MIRRORS || secrets.TIINEX_REPOSITORY_MIRRORS || '' }}
       TIINEX_WORKFLOW_REPOSITORY_MIRRORS: ${{ github.event.inputs.extra_mirrors || '' }}
+      TIINEX_WORKSPACE_REPOSITORY_MIRRORS: ${{ vars.TIINEX_WORKSPACE_REPOSITORY_MIRRORS || '' }}
+      TIINEX_GITMODULES_REPOSITORY_MIRRORS: ${{ vars.TIINEX_GITMODULES_REPOSITORY_MIRRORS || '' }}
+      TIINEX_PAGES_DEPLOY: ${{ vars.TIINEX_PAGES_DEPLOY || secrets.TIINEX_PAGES_DEPLOY || '' }}
+      TIINEX_WORKFLOW_PAGES_DEPLOY: ${{ github.event.inputs.deploy_pages || '' }}
 
     steps:
       - name: Resolve source ref
@@ -48,7 +58,22 @@ jobs:
             exit 1
           fi
 
+          pages_deploy="${TIINEX_WORKFLOW_PAGES_DEPLOY:-}"
+          if [ -z "$pages_deploy" ]; then
+            pages_deploy="${TIINEX_PAGES_DEPLOY:-}"
+          fi
+          case "${pages_deploy,,}" in
+            true|yes|on|1) pages_deploy_enabled=true ;;
+            *) pages_deploy_enabled=false ;;
+          esac
+
           echo "source_ref=$source_ref" >> "$GITHUB_OUTPUT"
+          echo "pages_deploy_enabled=$pages_deploy_enabled" >> "$GITHUB_OUTPUT"
+          if [ "$pages_deploy_enabled" = true ]; then
+            echo "Direct GitHub Pages deployment is enabled for this run."
+          else
+            echo "Direct GitHub Pages deployment is disabled; public branch publication remains enabled."
+          fi
 
       - name: Check out source
         uses: actions/checkout@v6
@@ -112,11 +137,12 @@ jobs:
 
       # Copyable mirror convention:
       #   - the publishing repository is always emitted as its own mirror;
-      #   - workspace artifacts may declare additional repository mirrors in
-      #     ## Repository Mirrors without forcing source branches to carry
-      #     Git submodule gitlinks;
-      #   - legacy .mirrors/<host>/<owner>/<repo> entries in .gitmodules remain
-      #     readable as a compatibility input;
+      #   - configured repository variables/secrets or manual inputs may add
+      #     instance-owned mirrors without modifying source files;
+      #   - workspace artifacts may declare ## Repository Mirrors as an opt-in
+      #     compatibility input; .gitmodules mirrors are also opt-in;
+      #   - if no mirror configuration is provided, only the publishing repository
+      #     is mirrored and .mirrors is excluded from that snapshot;
       #   - mirror sources are cloned from their current remote default branch;
       #   - the superproject's recorded gitlink commit is intentionally not used;
       #   - ordinary submodules outside .mirrors are ignored by this publisher.
@@ -518,34 +544,50 @@ jobs:
           while IFS=$'	' read -r public_identity module_url declaration_source; do
             [ -n "$public_identity" ] || continue
             publish_remote_mirror "$public_identity" "$module_url" "$declaration_source"
-          done < <(emit_workspace_mirror_sources)
-
-          while IFS=$'	' read -r public_identity module_url declaration_source; do
-            [ -n "$public_identity" ] || continue
-            publish_remote_mirror "$public_identity" "$module_url" "$declaration_source"
           done < <(emit_configured_mirror_sources)
 
-          if [ -f .gitmodules ]; then
-            while IFS= read -r path_key; do
-              [ -n "$path_key" ] || continue
+          workspace_mirrors_enabled="${TIINEX_WORKSPACE_REPOSITORY_MIRRORS:-}"
+          case "${workspace_mirrors_enabled,,}" in
+            true|yes|on|1)
+              while IFS=$'	' read -r public_identity module_url declaration_source; do
+                [ -n "$public_identity" ] || continue
+                publish_remote_mirror "$public_identity" "$module_url" "$declaration_source"
+              done < <(emit_workspace_mirror_sources)
+              ;;
+            *)
+              echo "Workspace Repository Mirrors are disabled; set TIINEX_WORKSPACE_REPOSITORY_MIRRORS=true to include them."
+              ;;
+          esac
 
-              module_name="${path_key#submodule.}"
-              module_name="${module_name%.path}"
-              module_path="$(git config -f .gitmodules --get "$path_key")"
+          gitmodules_mirrors_enabled="${TIINEX_GITMODULES_REPOSITORY_MIRRORS:-}"
+          case "${gitmodules_mirrors_enabled,,}" in
+            true|yes|on|1)
+              if [ -f .gitmodules ]; then
+                while IFS= read -r path_key; do
+                  [ -n "$path_key" ] || continue
 
-              case "$module_path" in
-                .mirrors/*) ;;
-                *)
-                  printf 'Ignoring non-mirror submodule: %s\n' "$module_path"
-                  continue
-                  ;;
-              esac
+                  module_name="${path_key#submodule.}"
+                  module_name="${module_name%.path}"
+                  module_path="$(git config -f .gitmodules --get "$path_key")"
 
-              module_url="$(git config -f .gitmodules --get "submodule.$module_name.url")"
-              public_identity="${module_path#.mirrors/}"
-              publish_remote_mirror "$public_identity" "$module_url" ".gitmodules:$module_path"
-            done < <(git config -f .gitmodules --name-only --get-regexp '^submodule\..*\.path$' || true)
-          fi
+                  case "$module_path" in
+                    .mirrors/*) ;;
+                    *)
+                      printf 'Ignoring non-mirror submodule: %s\n' "$module_path"
+                      continue
+                      ;;
+                  esac
+
+                  module_url="$(git config -f .gitmodules --get "submodule.$module_name.url")"
+                  public_identity="${module_path#.mirrors/}"
+                  publish_remote_mirror "$public_identity" "$module_url" ".gitmodules:$module_path"
+                done < <(git config -f .gitmodules --name-only --get-regexp '^submodule\..*\.path$' || true)
+              fi
+              ;;
+            *)
+              echo "Gitmodules mirror compatibility input is disabled; set TIINEX_GITMODULES_REPOSITORY_MIRRORS=true to include it."
+              ;;
+          esac
 
           echo "Repository mirror output:"
           for public_identity in "${!published_identities[@]}"; do
@@ -677,15 +719,13 @@ jobs:
             Publish public branch from ${{ steps.settings.outputs.source_ref }} @ ${{ github.sha }}
 
       - name: Upload Pages artifact
-        if: vars.TIINEX_PAGES_DEPLOY != 'false'
+        if: steps.settings.outputs.pages_deploy_enabled == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: .site-publish
 
   deploy-pages:
-    if: >-
-      (github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch)
-      && vars.TIINEX_PAGES_DEPLOY != 'false'
+    if: needs.publish.outputs.pages_deploy_enabled == 'true'
     needs: publish
     runs-on: ubuntu-latest
     permissions:

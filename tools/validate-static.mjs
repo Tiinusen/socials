@@ -2007,6 +2007,7 @@ function validateRepositoryTransportContracts() {
     'Validate repository mirrors',
     'Publishing repository mirror is missing',
     'TIINEX_REPOSITORY_MIRRORS',
+    'secrets.TIINEX_REPOSITORY_MIRRORS',
     'emit_configured_mirror_sources',
     'github-actions-variable:TIINEX_REPOSITORY_MIRRORS',
     'extra_mirrors',
@@ -2015,6 +2016,11 @@ function validateRepositoryTransportContracts() {
     'pages: write',
     'id-token: write',
     'TIINEX_PAGES_DEPLOY',
+    'pages_deploy_enabled=false',
+    'TIINEX_WORKSPACE_REPOSITORY_MIRRORS',
+    'TIINEX_GITMODULES_REPOSITORY_MIRRORS',
+    'Workspace Repository Mirrors are disabled',
+    'Gitmodules mirror compatibility input is disabled',
     'touch .site-publish/.nojekyll',
     'github.event.repository.fork',
     'rm -f .site-publish/CNAME',
@@ -2026,11 +2032,14 @@ function validateRepositoryTransportContracts() {
     if (!workflow.includes(token)) fail(`portable mirror workflow contract missing: ${token}`);
   }
   const rootPublishIndex = workflow.indexOf('"$GITHUB_WORKSPACE"');
-  const workspaceMirrorsIndex = workflow.indexOf('done < <(emit_workspace_mirror_sources)');
   const configuredMirrorsIndex = workflow.indexOf('done < <(emit_configured_mirror_sources)');
-  const optionalMirrorsIndex = workflow.indexOf('          if [ -f .gitmodules ]; then');
-  if (rootPublishIndex < 0 || workspaceMirrorsIndex < 0 || configuredMirrorsIndex < 0 || optionalMirrorsIndex < 0 || !(rootPublishIndex < workspaceMirrorsIndex && workspaceMirrorsIndex < configuredMirrorsIndex && configuredMirrorsIndex < optionalMirrorsIndex)) {
-    fail('publishing repository root mirror must be built before workspace mirror declarations, configured variable mirrors, and optional .gitmodules mirrors');
+  const workspaceMirrorsIndex = workflow.indexOf('done < <(emit_workspace_mirror_sources)');
+  const optionalMirrorsIndex = workflow.indexOf('if [ -f .gitmodules ]; then');
+  if (rootPublishIndex < 0 || configuredMirrorsIndex < 0 || workspaceMirrorsIndex < 0 || optionalMirrorsIndex < 0 || !(rootPublishIndex < configuredMirrorsIndex && configuredMirrorsIndex < workspaceMirrorsIndex && workspaceMirrorsIndex < optionalMirrorsIndex)) {
+    fail('publishing repository root mirror must be built before configured variable mirrors, opt-in workspace mirror declarations, and opt-in .gitmodules mirrors');
+  }
+  if (!workflow.includes('case "${workspace_mirrors_enabled,,}"') || !workflow.includes('case "${gitmodules_mirrors_enabled,,}"')) {
+    fail('workspace and .gitmodules mirror compatibility inputs must be explicit opt-ins');
   }
   if (/repository-mirrors\.json/u.test(workflow)) {
     fail('portable mirror workflow must read mirror sources from workspace artifacts, not repository-mirrors.json');
@@ -2050,7 +2059,10 @@ function validateRepositoryTransportContracts() {
   if (sanitizeDeployIndex < 0 || publishBranchIndex < 0 || uploadPagesIndex < 0 || deployPagesIndex < 0 || !(sanitizeDeployIndex < publishBranchIndex && publishBranchIndex < uploadPagesIndex && uploadPagesIndex < deployPagesIndex)) {
     fail('public deploy root must be sanitized before branch publication, Pages artifact upload, and Pages deployment');
   }
-  note('workspace-owned repository snapshots, persistent transport decisions, co-hosted mirror discovery, workspace-owned and configured mirror sources, fork-safe self-mirror handling, branch publication, and official Pages deployment contracts are valid');
+  if (!workflow.includes("if: steps.settings.outputs.pages_deploy_enabled == 'true'") || !workflow.includes("if: needs.publish.outputs.pages_deploy_enabled == 'true'")) {
+    fail('official Pages deployment must be opt-in so environment branch restrictions do not fail the default fork publish path');
+  }
+  note('workspace-owned repository snapshots, persistent transport decisions, co-hosted mirror discovery, workspace-owned and configured mirror sources, fork-safe self-mirror handling, branch publication, and opt-in official Pages deployment contracts are valid');
 }
 
 function validatePublicBuildContracts() {

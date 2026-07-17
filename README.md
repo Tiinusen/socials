@@ -69,22 +69,25 @@ A fork can stay close to the canonical viewer while carrying its own lineage and
 
 Keep viewer/runtime files close to upstream and place instance-owned material in bounded surfaces such as `.topics/`, workspace artifacts, local untracked `.mirrors/` worktrees, branding assets, and `CNAME`. Deleting or heavily rewriting shared runtime files makes future upstream syncs conflict-prone.
 
-The publishing repository is always mirrored automatically. Default public mirrors should be declared in the workspace artifact under `## Repository Mirrors` so forked source branches do not have to carry `.mirrors` Git submodule gitlinks or sidecar JSON. Forks can add instance-owned mirrors without modifying the repository by setting the GitHub Actions repository variable `TIINEX_REPOSITORY_MIRRORS`; use one mirror per line, such as `Tiinusen/socials` or `github.com/example/repo = https://github.com/example/repo.git`. Older `.gitmodules` mirror entries remain readable by the publisher for compatibility, but committed mirror submodules are source/build inputs and can make GitHub Pages' default Jekyll checkout recurse into stale or self-referential gitlinks. Remove unwanted mirror submodules through Git rather than deleting only their working folders, because `.gitmodules` and gitlinks are the actual declarations.
+The publishing repository is always mirrored automatically. When no mirror variable, secret, manual input, or explicit compatibility flag is set, the publisher emits only the repository itself and excludes local `.mirrors/` build inputs from that snapshot. Forks can add instance-owned mirrors without modifying the repository by setting the GitHub Actions repository variable or secret `TIINEX_REPOSITORY_MIRRORS`; use one mirror per line, such as `Tiinusen/socials` or `github.com/example/repo = https://github.com/example/repo.git`. Workspace `## Repository Mirrors` and older `.gitmodules` mirror entries remain supported as opt-in compatibility inputs, but committed mirror submodules are source/build inputs and can make GitHub Pages' default Jekyll checkout recurse into stale or self-referential gitlinks. Remove unwanted mirror submodules through Git rather than deleting only their working folders, because `.gitmodules` and gitlinks are the actual declarations.
 
 For a new fork:
 
 1. Enable GitHub Actions in the fork.
-2. Configure GitHub Pages to use `GitHub Actions` as the publishing source. The publish workflow also writes an inspectable `public` branch, but Pages deployment is driven by the workflow artifact by default.
+2. Prefer GitHub Pages `Deploy from a branch` using `public` at `/ (root)`. The publish workflow updates that branch automatically on default-branch pushes.
 3. Keep local `.mirrors/` worktrees untracked unless the fork intentionally owns Git submodules.
-4. Use the workspace artifact `## Repository Mirrors` section for default mirror repositories.
-5. Add fork-specific mirrors through the `TIINEX_REPOSITORY_MIRRORS` repository variable instead of editing upstream files.
-6. Preserve the repository `LICENSE` and applicable `NOTICE` attribution for inherited viewer code.
+4. Add fork-specific mirrors through the `TIINEX_REPOSITORY_MIRRORS` repository variable or secret instead of editing upstream files.
+5. Use `TIINEX_WORKSPACE_REPOSITORY_MIRRORS=true` only when the instance intentionally wants workspace-declared mirrors included in the published mirror set.
+6. Use `TIINEX_PAGES_DEPLOY=true` only when the repository's `github-pages` environment allows direct Actions deployments from the default branch.
+7. Preserve the repository `LICENSE` and applicable `NOTICE` attribution for inherited viewer code.
 
 Optional repository variables:
 
-- `TIINEX_REPOSITORY_MIRRORS`: newline-separated extra mirrors. Accepts `owner/repo`, `github.com/owner/repo`, `https://host/owner/repo.git`, or `identity = clone-url`.
+- `TIINEX_REPOSITORY_MIRRORS`: newline-separated extra mirrors. Accepts `owner/repo`, `github.com/owner/repo`, `https://host/owner/repo.git`, or `identity = clone-url`. This may be a repository variable or secret.
+- `TIINEX_WORKSPACE_REPOSITORY_MIRRORS`: set to `true` to include workspace `## Repository Mirrors` declarations. Omitted means disabled.
+- `TIINEX_GITMODULES_REPOSITORY_MIRRORS`: set to `true` to include older `.gitmodules` mirror declarations. Omitted means disabled.
 - `PAGES_CNAME`: custom domain to write into the deployed artifact; forks omit inherited `CNAME` when this is empty.
-- `TIINEX_PAGES_DEPLOY`: set to `false` to skip the official GitHub Pages deployment and only update the `public` branch.
+- `TIINEX_PAGES_DEPLOY`: set to `true` to run official `actions/deploy-pages` deployment. Omitted means disabled; the `public` branch is still updated automatically.
 
 ## Development And Validation
 
