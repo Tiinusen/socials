@@ -92,6 +92,8 @@ Optional repository variables:
 - `TIINEX_USE_SOURCE_CNAME`: optional source-CNAME mode for instances that intentionally want a committed `CNAME` copied into the deploy artifact.
 - `TIINEX_PUBLIC_STATIC_PATHS`: optional newline/comma-separated allowlist for non-viewer static publication. Omitted means the workflow auto-copies common lineage/static roots such as `.topics`, `assets`, `samples`, and selected root markdown/assets when present.
 - `TIINEX_VIEWER_TITLE`, `TIINEX_VIEWER_GIT_REPO`, `TIINEX_VIEWER_GIT_REF`, `TIINEX_VIEWER_GIT_ROOTS`: optional viewer build defaults. Omitted means the built viewer derives repository/ref defaults from the publishing repository and source ref.
+- `TIINEX_WORKSPACE_POINTER_PRIMARY`, `TIINEX_WORKSPACE_POINTER_SECONDARY`, `TIINEX_WORKSPACE_POINTERS`: ordered GitHub issue pointers that the runtime resolves at page load. The issue body should declare `Workspace URL:` or `Workspace:` and may point to a GitHub blob/raw `.workspace.md`; the app then loads that workspace without GitHub Actions generating a workspace artifact.
+- `TIINEX_DEFAULT_WORKSPACE`, `TIINEX_FALLBACK_WORKSPACE`, `TIINEX_WORKSPACE_FALLBACKS`, `TIINEX_LOCAL_WORKSPACE_PATH`: ordered direct workspace fallbacks. These become runtime workspace candidates, not a generated `.workspace.md` file.
 - `TIINEX_PAGES_DEPLOY`: set to `true` to run official `actions/deploy-pages` deployment. Omitted means disabled; the `public` branch is still updated automatically.
 
 ## Development And Validation
