@@ -93,3 +93,10 @@ GitHub issue imports should write new source material under `.topics/.github/.is
 ## Architecture Readiness
 
 Treat `architectureReadyForProductWork` as the aggregate readiness signal, while preserving the individual architecture diagnostics and their known limits.
+
+## Repository material transport visibility
+
+Repository transport is delivery state, not source identity. After repository discovery, the existing source rail shows one compact material indicator: `local Git`, `Pages mirror`, `Git proxy`, or `GitHub raw`. Warm browser-local Git reuse must be reported as local material and must not be counted as a fresh proxy success.
+
+Use `TiinexDiagnostics.repositoryTransportDecisionReport()` to inspect the selected transport, reason, resolved commit, candidate plan, and unchanged canonical origin. Do not add a separate transport dashboard to ordinary desktop or mobile reading UX.
+

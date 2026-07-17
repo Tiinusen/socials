@@ -14899,6 +14899,69 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return state[key];
   }
 
+  function repositoryTransportPresentation(transport = {}) {
+    const kind = String(transport?.kind || '').trim().toLowerCase();
+    if (!kind) return null;
+    const commit = String(transport.commit || '').trim();
+    const reason = String(transport.reason || '').trim();
+    const detail = [];
+    let label = 'repository transport';
+    let description = 'Repository material transport';
+    let icon = 'fa-solid fa-route';
+    let className = 'transport-generic';
+
+    if (kind === 'local-git') {
+      label = 'local Git';
+      description = 'Persistent browser-local Git object store';
+      icon = 'fa-solid fa-hard-drive';
+      className = 'transport-local-git';
+    } else if (kind === 'snapshot') {
+      const pages = Boolean(transport.inferred || transport.convention === 'github-pages-default');
+      label = pages ? 'Pages mirror' : 'snapshot';
+      description = pages ? 'Published GitHub Pages repository snapshot' : 'Published repository snapshot';
+      icon = 'fa-solid fa-box-archive';
+      className = pages ? 'transport-pages-mirror' : 'transport-snapshot';
+    } else if (kind === 'git-proxy') {
+      label = 'Git proxy';
+      description = String(transport.label || '').trim() || 'Browser Git proxy';
+      icon = 'fa-solid fa-code-branch';
+      className = 'transport-git-proxy';
+    } else if (kind === 'github-raw') {
+      label = 'GitHub raw';
+      description = 'Bounded GitHub raw-file fallback';
+      icon = 'fa-solid fa-file-arrow-down';
+      className = 'transport-github-raw';
+    }
+
+    detail.push(`Material: ${description}`);
+    if (reason) detail.push(`Reason: ${reason}`);
+    if (commit) detail.push(`Commit: ${commit}`);
+    if (transport.metadataUrl) detail.push(`Metadata: ${transport.metadataUrl}`);
+    if (transport.proxyUrl && kind === 'git-proxy') detail.push(`Proxy: ${transport.proxyUrl}`);
+    detail.push('Canonical source remains unchanged');
+    return { kind, label, description, icon, className, title: detail.join(' · '), commit };
+  }
+
+  function repositoryTransportDecisionReport(workspaceId = '') {
+    const ws = workspaceId ? getWorkspace(workspaceId) : (getWorkspace(app.activeWorkspaceId || '') || app.workspaces?.[0] || null);
+    if (!ws) return { workspaceId: workspaceId || '', selected: null, reason: 'workspace-not-found' };
+    const repo = normalizeRepositoryTransportIdentity(ws.repo || ws.discoverySource?.repo || '');
+    const source = Array.from(ws.sources?.values?.() || []).find((item) => item?.kind === 'github' && (!repo || normalizeRepositoryTransportIdentity(item.repo || '') === repo)) || null;
+    const selected = ws.repositoryTransport ? Object.assign({}, ws.repositoryTransport, { presentation: repositoryTransportPresentation(ws.repositoryTransport) }) : null;
+    return {
+      workspaceId: ws.id,
+      workspaceLabel: ws.label || '',
+      repository: repo,
+      canonicalOrigin: source?.origin || (repo ? `https://github.com/${repo}` : ''),
+      resolvedCommit: ws.resolvedCommit || selected?.commit || '',
+      sourceAccessMode: ws.sourceAccessMode || '',
+      sourceResolutionKind: ws.sourceResolutionKind || '',
+      selected,
+      plan: repo ? repositoryTransportPlan(repo) : null,
+      canonicalOriginPreserved: Boolean(!selected || !selected.metadataUrl || selected.metadataUrl !== (source?.origin || ''))
+    };
+  }
+
   function repositoryTransportPlan(repo) {
     const declared = Array.from(app.viewerIdentity?.repositoryTransports || []);
     return {
@@ -14930,6 +14993,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
   window.TiinexDiagnostics = Object.assign(window.TiinexDiagnostics || {}, {
     repositoryTransportPlan,
+    repositoryTransportDecisionReport,
     repositoryTransportHealth: () => readRepositoryTransportHealth(),
     clearRepositoryTransportHealth
   });
@@ -24762,6 +24826,12 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
 
 
 
+  function renderRepositoryTransportPill(ws) {
+    const presentation = repositoryTransportPresentation(ws?.repositoryTransport || {});
+    if (!presentation) return '';
+    return `<span class="workspace-transport-pill ${escapeAttr(presentation.className)}" title="${escapeAttr(presentation.title)}" aria-label="${escapeAttr(presentation.title)}"><i class="${escapeAttr(presentation.icon)}"></i><span>${escapeHtml(presentation.label)}</span></span>`;
+  }
+
   function renderWorkspaceSourceStrip(ws) {
     ensureWorkspaceSources(ws);
     const sources = Array.from(ws.sources?.values?.() || [])
@@ -24786,6 +24856,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
           <button class="source-close-btn" data-action="close-source" data-ws="${escapeAttr(ws.id)}" data-source="${escapeAttr(source.id)}" title="Close this source from the workspace" aria-label="Close source ${escapeAttr(source.label || source.id)}"><i class="fa-solid fa-xmark"></i></button>
         </span>`;
       }).join('')}
+      ${renderRepositoryTransportPill(ws)}
     </div>`;
   }
 
@@ -35787,17 +35858,21 @@ ${githubOutboundFileExcerpt(file, 18000)}
       return { ok: false, skipped: true, reason };
     }
 
-    rememberRepositoryTransportSuccess(repo, Object.assign({ kind: 'git-proxy', proxyUrl: selected.transport.corsProxy || '' }, selected.transport), {
-      commit: snapshot.commit || selected.options.ref,
-      transferLoaded: selected.observation?.loaded || 0,
-      transferBytesPerSecond: selected.observation?.bytesPerSecond || 0,
-      networkElapsedMs: selected.observation?.networkElapsedMs || 0
-    });
     const gitNativeOptions = Object.assign({}, selected.options);
     delete gitNativeOptions.transportSignal;
     gitNativeOptions.reloadRuntime = true;
     const transport = selected.transport;
     const commit = snapshot.commit || gitNativeOptions.ref;
+    const usedNetworkTransport = snapshot.networkOperation !== 'none' && snapshot.networkOperationSucceeded === true;
+    const reusedLocalGit = Boolean(snapshot.reusedExistingClone) && !usedNetworkTransport;
+    if (usedNetworkTransport) {
+      rememberRepositoryTransportSuccess(repo, Object.assign({ kind: 'git-proxy', proxyUrl: transport.corsProxy || '' }, transport), {
+        commit,
+        transferLoaded: selected.observation?.loaded || 0,
+        transferBytesPerSecond: selected.observation?.bytesPerSecond || 0,
+        networkElapsedMs: selected.observation?.networkElapsedMs || 0
+      });
+    }
     const candidates = Array.from(new Set(snapshot.candidates.map((path) => normalizeRepoPath(path)).filter(Boolean))).sort((a, b) => a.localeCompare(b));
     const paths = candidates.filter((path) => {
       const rawUrl = githubRawUrl(repo, commit, path);
@@ -35817,7 +35892,11 @@ ${githubOutboundFileExcerpt(file, 18000)}
       candidateFiles: candidates.length,
       pathsToRead: paths.length,
       elapsedMs: snapshot.elapsedMs || 0,
+      reusedExistingClone: Boolean(snapshot.reusedExistingClone),
       refreshedExistingClone: Boolean(snapshot.refreshedExistingClone),
+      networkOperation: snapshot.networkOperation || 'unknown',
+      networkOperationSucceeded: Boolean(snapshot.networkOperationSucceeded),
+      selectedMaterialTransport: reusedLocalGit ? 'local-git' : 'git-proxy',
       sourceState: snapshot.sourceState || 'git-native-local-object-store',
       corsProxyConfigured: Boolean(snapshot.corsProxyConfigured),
       hiddenProxy: false,
@@ -35836,7 +35915,9 @@ ${githubOutboundFileExcerpt(file, 18000)}
     ws.sourceResolutionKind = 'git-native-local-object-store';
     ws.sourceResultBoundary = 'bounded Git object-store snapshot';
     ws.sourceCacheBoundary = 'browser-local-git-object-store';
-    ws.repositoryTransport = { kind: 'git-proxy', id: transport.id, label: transport.label, proxyUrl: transport.corsProxy, commit };
+    ws.repositoryTransport = reusedLocalGit
+      ? { kind: 'local-git', id: `local:${transport.id}`, label: 'Local Git object store', commit, reason: snapshot.networkOperation === 'fetch' ? 'refresh-failed-retained-object-store' : 'reused-persistent-object-store', upstreamTransportId: transport.id, upstreamTransportLabel: transport.label }
+      : { kind: 'git-proxy', id: transport.id, label: transport.label, proxyUrl: transport.corsProxy, commit, reason: snapshot.networkOperation === 'fetch' ? 'refreshed-existing-object-store' : 'cloned-through-configured-proxy' };
     Object.assign(ws.discoverySource || {}, {
       ref: requestedRef,
       requestedRef,
@@ -35854,7 +35935,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
       sourceAccessMode: 'git-object-store',
       sourceResolutionKind: 'git-native-local-object-store',
       sourceBoundary: gitNativeBoundary,
-      transportUsed: transport.corsProxy
+      transportUsed: reusedLocalGit ? 'browser-local-git-object-store' : transport.corsProxy
     });
     rememberGitNativeRepoMaterialOwner({
       repo,
@@ -35873,7 +35954,9 @@ ${githubOutboundFileExcerpt(file, 18000)}
       transportId: transport.id
     });
 
-    ws.logs.push(`Git-native repo discovery resolved ${repo}${ref ? '@' + ref : ''} to ${commit} through ${transport.label} and found ${candidates.length} Tiinex markdown artifact file(s).`);
+    ws.logs.push(reusedLocalGit
+      ? `Git-native repo discovery reused the browser-local object store for ${repo}${ref ? '@' + ref : ''} at ${commit} and found ${candidates.length} Tiinex markdown artifact file(s); no repository network transport was used.`
+      : `Git-native repo discovery resolved ${repo}${ref ? '@' + ref : ''} to ${commit} through ${transport.label} and found ${candidates.length} Tiinex markdown artifact file(s).`);
     ws.discoveryProgress = { phase: 'git-read', loaded: 0, total: paths.length, failed: 0, sourceProgress: context.options?.sourceProgress || '' };
     updateDiscoveryProgressDom(ws);
     await progressYield(ws);

@@ -664,10 +664,14 @@
     const depth = Math.max(1, Number(opts.depth || opts.cloneDepth || runtime.options.cloneDepth || 1));
     const started = Date.now();
     let commit = '';
+    let reusedExistingClone = false;
+    let networkOperation = 'none';
+    let networkOperationSucceeded = false;
     if (opts.reuseExistingClone !== false) {
       try {
         pushLabEvent(events, { phase: 'clone.reuse-check.start', ref, dir: runtime.dir });
         commit = await runtime.git.resolveRef({ fs: runtime.fs, dir: runtime.dir, ref, cache: runtime.cache });
+        reusedExistingClone = true;
         pushLabEvent(events, { phase: 'clone.reuse-existing', commit });
       } catch (error) {
         pushLabEvent(events, { phase: 'clone.reuse-check.miss', error: error?.message || String(error) });
@@ -676,6 +680,7 @@
     let refreshedExistingClone = false;
     if (commit && opts.refreshExistingClone === true) {
       try {
+        networkOperation = 'fetch';
         pushLabEvent(events, { phase: 'fetch-current.start', remote, ref, depth, dir: runtime.dir });
         await runtime.git.fetch({
           fs: runtime.fs,
@@ -692,6 +697,7 @@
           onProgress
         });
         commit = await runtime.git.resolveRef({ fs: runtime.fs, dir: runtime.dir, ref, cache: runtime.cache });
+        networkOperationSucceeded = true;
         refreshedExistingClone = true;
         pushLabEvent(events, { phase: 'fetch-current.complete', commit });
       } catch (error) {
@@ -702,6 +708,7 @@
 
     if (!commit) {
       try {
+        networkOperation = 'clone';
         pushLabEvent(events, { phase: 'clone.start', remote, ref, depth, dir: runtime.dir });
         await runtime.git.clone({
           fs: runtime.fs,
@@ -719,6 +726,7 @@
           batchSize: Math.max(1, Number(opts.batchSize || 100)),
           onProgress
         });
+        networkOperationSucceeded = true;
         pushLabEvent(events, { phase: 'clone.complete' });
       } catch (error) {
         error.stage = error.stage || 'clone';
@@ -774,7 +782,10 @@
       candidateFiles: candidates.length,
       elapsedMs: Date.now() - started,
       progressEvents: events.slice(-40),
+      reusedExistingClone,
       refreshedExistingClone,
+      networkOperation,
+      networkOperationSucceeded,
       sourceState: 'git-native-local-object-store',
       hiddenProxy: false,
       corsProxyConfigured: Boolean(runtime.corsProxy)

@@ -957,6 +957,51 @@ async function validateGitSourceAdapterResearchContract() {
   }
   if (graceTransfer.exceeded) fail('Git low-throughput policy must not abort before its grace period expires.');
 
+  const fakeFs = { promises: { async mkdir() {} } };
+  let warmCloneCalls = 0;
+  let warmFetchCalls = 0;
+  const warmWindow = {
+    TIINEX_VIEWER_OPTIONS: { gitNative: {} },
+    Buffer,
+    GitHttp: {},
+    git: {
+      async resolveRef() { return 'a'.repeat(40); },
+      async currentBranch() { return 'master'; },
+      async listFiles() { return ['.topics/demo/001.trace.md']; },
+      async clone() { warmCloneCalls += 1; },
+      async fetch() { warmFetchCalls += 1; }
+    }
+  };
+  vm.runInNewContext(browserGitNative, {
+    window: warmWindow, URL, TextDecoder, TextEncoder, Uint8Array, ArrayBuffer, Blob, AbortController, Map, Set, Promise, Object, Array, String, Number, Boolean, Date, Math, RegExp, Error, Buffer, setTimeout, clearTimeout, setInterval, clearInterval
+  }, { filename: 'src/app/git-native-runtime.js#warm-object-store' });
+  const warmSnapshot = await warmWindow.TiinexGitNativeRuntime.acquireSnapshot({ repo: 'Tiinex/docs', ref: 'master', rootPaths: ['.topics'], fs: fakeFs, corsProxy: 'https://proxy.example' });
+  if (!warmSnapshot.reusedExistingClone || warmSnapshot.networkOperation !== 'none' || warmSnapshot.networkOperationSucceeded || warmCloneCalls || warmFetchCalls) {
+    fail('Warm Git snapshot reuse must explicitly report local object-store material with zero network operation.');
+  }
+
+  let coldResolved = false;
+  let coldCloneCalls = 0;
+  const coldWindow = {
+    TIINEX_VIEWER_OPTIONS: { gitNative: {} },
+    Buffer,
+    GitHttp: {},
+    git: {
+      async resolveRef() { if (!coldResolved) throw new Error('missing'); return 'b'.repeat(40); },
+      async currentBranch() { return 'master'; },
+      async listFiles() { return ['.topics/demo/001.trace.md']; },
+      async clone() { coldCloneCalls += 1; coldResolved = true; },
+      async fetch() {}
+    }
+  };
+  vm.runInNewContext(browserGitNative, {
+    window: coldWindow, URL, TextDecoder, TextEncoder, Uint8Array, ArrayBuffer, Blob, AbortController, Map, Set, Promise, Object, Array, String, Number, Boolean, Date, Math, RegExp, Error, Buffer, setTimeout, clearTimeout, setInterval, clearInterval
+  }, { filename: 'src/app/git-native-runtime.js#cold-clone' });
+  const coldSnapshot = await coldWindow.TiinexGitNativeRuntime.acquireSnapshot({ repo: 'Tiinex/docs', ref: 'master', rootPaths: ['.topics'], fs: fakeFs, corsProxy: 'https://proxy.example' });
+  if (coldSnapshot.reusedExistingClone || coldSnapshot.networkOperation !== 'clone' || !coldSnapshot.networkOperationSucceeded || coldCloneCalls !== 1) {
+    fail('Cold Git snapshot acquisition must explicitly report one successful clone network operation.');
+  }
+
   const exactStart = appJs.indexOf("  const EXACT_HISTORICAL_CACHE_NAME = 'tiinex.exact-historical-files';");
   const exactEnd = appJs.indexOf('  async function tryReadGithubRawViaGitNative', exactStart);
   if (exactStart < 0 || exactEnd <= exactStart) fail('Could not isolate exact historical file resolver for runtime validation.');
@@ -1817,10 +1862,10 @@ function validateRepositoryTransportContracts() {
   }
 
   const gitRuntime = read('src/app/git-native-runtime.js');
-  for (const token of ['timedFetchHttpClient', 'gitTransportTimingPolicy', 'gitTransportLowSpeedState', 'response-start-timeout', 'idle-timeout', 'low-throughput', 'max-network-duration', 'reader?.cancel?.(error)', 'if (abortReason) throw abortReason', 'AbortController', 'transportSignal', 'cleanupFailedClone', "const requestedRef = clean(opts.ref || '')", 'ref: requestedRef || undefined', 'currentBranch']) {
+  for (const token of ['timedFetchHttpClient', 'gitTransportTimingPolicy', 'gitTransportLowSpeedState', 'response-start-timeout', 'idle-timeout', 'low-throughput', 'max-network-duration', 'reader?.cancel?.(error)', 'if (abortReason) throw abortReason', 'AbortController', 'transportSignal', 'cleanupFailedClone', "const requestedRef = clean(opts.ref || '')", 'ref: requestedRef || undefined', 'currentBranch', 'reusedExistingClone', 'networkOperationSucceeded', "networkOperation = 'none'", "networkOperation = 'fetch'", "networkOperation = 'clone'"]) {
     if (!gitRuntime.includes(token)) fail(`Git transport abort/cleanup contract missing: ${token}`);
   }
-  for (const token of ['gitNativeResponseStartTimeoutMs: 6000', 'gitNativeIdleTimeoutMs: 8000', 'gitNativeLowSpeedGraceMs: 12000', 'gitNativeMinBytesPerSecond: 65536', 'repositoryTransportCooldownMs: 60000', 'repositoryTransportFailureShouldCooldown', 'git-native.transport.telemetry', 'repository-transport.fallback-selected', "phase === 'git-transfer'", "phase === 'git-processing'"]) {
+  for (const token of ['gitNativeResponseStartTimeoutMs: 6000', 'gitNativeIdleTimeoutMs: 8000', 'gitNativeLowSpeedGraceMs: 12000', 'gitNativeMinBytesPerSecond: 65536', 'repositoryTransportCooldownMs: 60000', 'repositoryTransportFailureShouldCooldown', 'git-native.transport.telemetry', 'repository-transport.fallback-selected', "phase === 'git-transfer'", "phase === 'git-processing'", 'repositoryTransportDecisionReport', 'repositoryTransportPresentation', 'workspace-transport-pill', "kind: 'local-git'", 'selectedMaterialTransport', 'usedNetworkTransport', 'snapshot.networkOperationSucceeded === true'] ) {
     if (!app.includes(token)) fail(`progress-aware repository transport contract missing: ${token}`);
   }
   const gitDiscoveryStart = app.indexOf('  async function tryDiscoverGitHubRepoViaGitNative(ws, context = {}) {');
@@ -1833,6 +1878,28 @@ function validateRepositoryTransportContracts() {
   if (!gitDiscoverySource.includes('cooldownApplied = repositoryTransportFailureShouldCooldown(error)')) {
     fail('Only transport-class failures may put a Git proxy into cooldown.');
   }
+  if (!gitDiscoverySource.includes('if (usedNetworkTransport)') || !gitDiscoverySource.includes("kind: 'local-git'")) {
+    fail('Warm Git object-store reuse must be recorded as local material and must not claim a fresh proxy success.');
+  }
+  const sourceStripStart = app.indexOf('  function renderWorkspaceSourceStrip(ws) {');
+  const sourceStripEnd = app.indexOf('  function localDeletionComparableValues(', sourceStripStart);
+  if (sourceStripStart < 0 || sourceStripEnd <= sourceStripStart || !app.slice(sourceStripStart, sourceStripEnd).includes('renderRepositoryTransportPill(ws)')) {
+    fail('The selected repository transport must render in the existing workspace source strip.');
+  }
+  if ((app.match(/renderRepositoryTransportPill\(ws\)/g) || []).length !== 2) {
+    fail('Repository transport presentation must have exactly one source-strip call site plus its function declaration.');
+  }
+  const presentationStart = app.indexOf('  function repositoryTransportPresentation(transport = {}) {');
+  const presentationEnd = app.indexOf('  function repositoryTransportPlan(repo) {', presentationStart);
+  if (presentationStart < 0 || presentationEnd <= presentationStart) fail('Could not isolate repository transport presentation helper.');
+  const presentationContext = { String, Boolean, Object };
+  vm.runInNewContext(`${app.slice(presentationStart, presentationEnd)}
+  globalThis.__transportPresentation = { repositoryTransportPresentation };`, presentationContext, { filename: 'app.js#repository-transport-presentation' });
+  const presentation = presentationContext.__transportPresentation.repositoryTransportPresentation;
+  if (presentation({ kind: 'local-git' })?.label !== 'local Git') fail('Warm object-store material must present as local Git.');
+  if (presentation({ kind: 'snapshot', inferred: true, convention: 'github-pages-default' })?.label !== 'Pages mirror') fail('Inferred GitHub Pages snapshots must present as Pages mirror.');
+  if (presentation({ kind: 'git-proxy' })?.label !== 'Git proxy') fail('Network Git material must present as Git proxy.');
+  if (presentation({ kind: 'github-raw' })?.label !== 'GitHub raw') fail('Raw fallback material must present as GitHub raw.');
   const failureKindStart = app.indexOf('  function repositoryTransportFailureKind(error) {');
   const failureKindEnd = app.indexOf('  function rememberRepositoryTransportFailure(', failureKindStart);
   if (failureKindStart < 0 || failureKindEnd <= failureKindStart) fail('Could not isolate repository transport failure classification.');
@@ -1872,7 +1939,7 @@ function validateRepositoryTransportContracts() {
   if (workflow.includes('Mirror submodule must live below .mirrors/')) {
     fail('copyable mirror workflow must ignore ordinary submodules outside .mirrors instead of rejecting the repository');
   }
-  note('workspace-owned repository snapshots, default GitHub Pages discovery, and portable root-mirror publication contracts are valid');
+  note('workspace-owned repository snapshots, persistent transport decisions, default GitHub Pages discovery, and portable root-mirror publication contracts are valid');
 }
 
 function validatePublicBuildContracts() {

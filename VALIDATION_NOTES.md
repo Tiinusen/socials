@@ -45,3 +45,9 @@ Useful browser diagnostics:
 - `TiinexDiagnostics.githubRepoFetchTraceJson()`
 - `TiinexDiagnostics.gitNativeRawBridgeReport()`
 
+## Repository transport decision visibility
+
+The selected repository material path remains visible after discovery in the existing source strip. The compact indicator distinguishes `local Git`, `Pages mirror`, `Git proxy`, and `GitHub raw` without adding a new desktop or mobile panel.
+
+Warm persistent Git reuse is recorded as `local-git`; it does not report a fresh proxy success when no repository network operation occurred. `TiinexDiagnostics.repositoryTransportDecisionReport()` exposes the selected material path, resolved commit, canonical origin, candidate plan, and source boundary for regression review.
+
