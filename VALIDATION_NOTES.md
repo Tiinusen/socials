@@ -89,9 +89,9 @@ Warm persistent Git reuse is recorded as `local-git`; it does not report a fresh
 - `samples/` is no longer part of the repository root or default public-copy contract.
 - README quick-start guidance should describe fork setup, working branch naming, repo variables, ChatGPT review pass, and Copilot review pass without making instance-specific config part of source.
 
-## v13 Pages Deployment Dispatch
+## v18 single-workflow Pages deployment
 
-The publish workflow now updates the inspectable `public` branch first and then requests the `Deploy Public Pages` workflow through `repository_dispatch`. The deployment workflow checks out `public` and uses the official GitHub Pages artifact/deploy actions from the default-branch workflow context so working-branch pushes do not directly hit `github-pages` environment branch restrictions.
+The publish workflow now updates the inspectable `public` branch, uploads the same `.site-publish` directory as the GitHub Pages artifact, and deploys it through a downstream `deploy-pages` job in the same workflow file. This removes the repository-dispatch handoff and makes push-triggered publication fully automatic while preserving `public` as the audit branch. Instance repositories that publish from working branches such as `personal` should allow those branches in the `github-pages` environment, or use no deployment-branch restriction.
 
 ## V14/V15 Workspace Save Findings
 
@@ -105,3 +105,9 @@ The publish workflow now updates the inspectable `public` branch first and then 
 - `tiinex.workspace.v1` is available in the ordinary artifact wizard, so new workspace files use the same draft/export/publish path as other artifacts.
 - Workspace cards remain special in presentation: their Edit form summarizes the active workspace set and offers `Update with current`, which stages the current workspace/viewer state into the selected `.workspace.md` without exporting.
 - `Save local draft` is the persistence boundary. Export/download/GitHub publication remains a separate explicit action.
+
+## V17 workspace export ownership repair
+
+- Restored the workspace shell export button to the canonical export adapter flow.
+- Workspace artifact creation/editing remains owned by Create/Edit card flows; the old save-artifact dialog is not used by the shell export action.
+- Added a static guard so `saveWorkspace()` cannot regress to opening the workspace artifact save dialog.

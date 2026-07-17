@@ -939,11 +939,24 @@ jobs:
           commit_message: >-
             Publish public branch from ${{ steps.settings.outputs.source_ref }} @ ${{ github.sha }}
 
-      - name: Request GitHub Pages deployment
+      - name: Configure GitHub Pages
         if: steps.settings.outputs.publish_enabled == 'true' && steps.settings.outputs.pages_deploy_enabled == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh api             --method POST             "repos/${GITHUB_REPOSITORY}/dispatches"             -f event_type='tiinex-public-pages-deploy'
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        if: steps.settings.outputs.publish_enabled == 'true' && steps.settings.outputs.pages_deploy_enabled == 'true'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: .site-publish
+
+  deploy-pages:
+    needs: publish
+    if: needs.publish.outputs.publish_enabled == 'true' && needs.publish.outputs.pages_deploy_enabled == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.pages_deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: pages_deployment
+        uses: actions/deploy-pages@v4
