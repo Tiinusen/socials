@@ -39,6 +39,8 @@ For `github.com/<owner>/<repo>`, the viewer may also probe the schema-defined de
 
 A transport is a delivery path, not provenance. Loading `owner/repo` through a published zip, an HTTP mirror, or a Git proxy must preserve its canonical repository, resolved commit, Parent, and Origin. The transport used may be recorded separately.
 
+Warm browser-local Git is a cache/material preflight, not a remote transport. Ordinary discovery must reuse it before probing Pages metadata or starting network Git. Explicit hard refresh may bypass this preflight so the user can request a current remote snapshot.
+
 Published repository snapshots must reuse the same safe zip-import core as uploaded repository zip files. Snapshot transport provides current repository material; Git transport provides richer Git capabilities when needed. Both should converge on the same workspace material model rather than duplicate discovery or indexing logic.
 
 The repository mirror workflow is copyable infrastructure rather than a viewer-only build. It must always publish the repository that contains the workflow as a root mirror. Viewer repositories may additionally build the public app, and `.mirrors` submodules may add further repositories, but neither viewer files nor `.mirrors` are prerequisites for root publication. Ordinary submodules outside `.mirrors` are unrelated and must be ignored by mirror discovery.

@@ -35654,6 +35654,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
     const bridge = window.TiinexGitNativeRuntime;
     const repo = context.repo || '';
     const ref = context.ref || '';
+    const localOnly = context.localOnly === true;
     const rootPaths = Array.isArray(context.rootPaths) ? context.rootPaths : parseRootPaths(context.rootPath || '.topics');
     const githubSource = context.githubSource || context.source || null;
     const sessionId = context.sessionId || githubRepoDiscoverySessionId(repo, ref, rootPaths);
@@ -35665,9 +35666,10 @@ ${githubOutboundFileExcerpt(file, 18000)}
     const persistedGitNativeOptions = effectiveGitNativeDiscoveryConfig(context.options?.gitNativeOptions || {});
     const transports = gitNativeTransportCandidates(repo, persistedGitNativeOptions);
     if (!transports.length) {
-      githubRepoFetchTrace('git-native.skip', { sessionId, repo, ref, rootPaths, reason: 'no-matching-git-proxy-transport' });
-      ws.logs.push(`No matching Git proxy transport is declared for ${repo}. Falling back to bounded GitHub raw reads.`);
-      return { ok: false, skipped: true, reason: 'no-matching-git-proxy-transport' };
+      const reason = 'no-matching-git-proxy-transport';
+      githubRepoFetchTrace(localOnly ? 'git-native.local-preflight.skip' : 'git-native.skip', { sessionId, repo, ref, rootPaths, reason });
+      if (!localOnly) ws.logs.push(`No matching Git proxy transport is declared for ${repo}. Falling back to bounded GitHub raw reads.`);
+      return { ok: false, skipped: true, reason };
     }
 
     const configuredBudgetMs = Math.max(3000, Number(app.settings.repositoryTransportBudgetMs || 35000));
@@ -35685,7 +35687,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
 
     for (const transport of transports) {
       const healthTransport = Object.assign({ kind: 'git-proxy', proxyUrl: transport.corsProxy || '' }, transport);
-      if (repositoryTransportCoolingDown(repo, healthTransport, context.options || {})) {
+      if (!localOnly && repositoryTransportCoolingDown(repo, healthTransport, context.options || {})) {
         const health = repositoryTransportHealth(repo, healthTransport);
         githubRepoFetchTrace('git-native.transport.skip', { sessionId, repo, ref, transportId: transport.id, reason: 'transport-cooldown', cooldownUntil: health?.cooldownUntil || 0 });
         ws.logs.push(`Git transport ${transport.label} is cooling down after a recent failure.`);
@@ -35770,9 +35772,10 @@ ${githubOutboundFileExcerpt(file, 18000)}
         lowSpeedGraceMs,
         minBytesPerSecond,
         onTransportEvent: observeTransport,
-        cleanupFailedClone: true,
+        cleanupFailedClone: !localOnly,
         reuseExistingClone: context.options?.reuseExistingGitNativeClone !== false,
-        refreshExistingClone: Boolean(context.options?.hardRefresh),
+        refreshExistingClone: !localOnly && Boolean(context.options?.hardRefresh),
+        localOnly,
         sampleReads: 0
       });
 
@@ -35789,7 +35792,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
         continue;
       }
 
-      githubRepoFetchTrace('git-native.snapshot.start', {
+      githubRepoFetchTrace(localOnly ? 'git-native.local-preflight.start' : 'git-native.snapshot.start', {
         sessionId,
         repo,
         ref: gitNativeOptions.ref,
@@ -35810,8 +35813,8 @@ ${githubOutboundFileExcerpt(file, 18000)}
         hiddenVendorLoad: false
       });
 
-      ws.logs.push(`Trying Git transport ${transport.label} for ${repo}; network policy: ${Math.round(responseStartTimeoutMs / 1000)}s response start, ${Math.round(idleTimeoutMs / 1000)}s idle, ${Math.round(lowSpeedGraceMs / 1000)}s low-speed grace, ${Math.round(maxNetworkDurationMs / 1000)}s network cap.`);
-      gitNativeOptions.reloadRuntime = true;
+      if (!localOnly) ws.logs.push(`Trying Git transport ${transport.label} for ${repo}; network policy: ${Math.round(responseStartTimeoutMs / 1000)}s response start, ${Math.round(idleTimeoutMs / 1000)}s idle, ${Math.round(lowSpeedGraceMs / 1000)}s low-speed grace, ${Math.round(maxNetworkDurationMs / 1000)}s network cap.`);
+      gitNativeOptions.reloadRuntime = !localOnly;
       try {
         const candidate = await bridge.acquireSnapshot(gitNativeOptions);
         if (!candidate?.ok || !Array.isArray(candidate.candidates)) throw new Error(candidate?.error || 'git-native snapshot did not return candidate files');
@@ -35819,6 +35822,21 @@ ${githubOutboundFileExcerpt(file, 18000)}
         snapshot = candidate;
         break;
       } catch (error) {
+        if (localOnly) {
+          lastReason = error?.localSnapshotMiss ? 'no-browser-local-git-snapshot' : (error?.message || String(error));
+          githubRepoFetchTrace(error?.localSnapshotMiss ? 'git-native.local-preflight.miss' : 'git-native.local-preflight.failed', {
+            sessionId,
+            repo,
+            ref: gitNativeOptions.ref,
+            rootPaths,
+            transportId: transport.id,
+            transportLabel: transport.label,
+            reason: lastReason,
+            stage: error?.stage || '',
+            name: error?.name || ''
+          });
+          continue;
+        }
         if (transportObservation.failureKind && error && typeof error === 'object' && !error.transportFailureKind) {
           error.transportFailure = true;
           error.transportFailureKind = transportObservation.failureKind;
@@ -35853,14 +35871,14 @@ ${githubOutboundFileExcerpt(file, 18000)}
     }
 
     if (!selected || !snapshot) {
-      const reason = lastReason || 'all-matching-git-proxy-transports-failed';
-      ws.logs.push(`Git-native repo discovery unavailable for ${repo}: ${reason}. Falling back to bounded GitHub raw reads.`);
+      const reason = lastReason || (localOnly ? 'no-browser-local-git-snapshot' : 'all-matching-git-proxy-transports-failed');
+      if (!localOnly) ws.logs.push(`Git-native repo discovery unavailable for ${repo}: ${reason}. Falling back to bounded GitHub raw reads.`);
       return { ok: false, skipped: true, reason };
     }
 
     const gitNativeOptions = Object.assign({}, selected.options);
     delete gitNativeOptions.transportSignal;
-    gitNativeOptions.reloadRuntime = true;
+    gitNativeOptions.reloadRuntime = !localOnly;
     const transport = selected.transport;
     const commit = snapshot.commit || gitNativeOptions.ref;
     const usedNetworkTransport = snapshot.networkOperation !== 'none' && snapshot.networkOperationSucceeded === true;
@@ -36065,7 +36083,44 @@ ${githubOutboundFileExcerpt(file, 18000)}
     const repositoryTransportDeadlineAt = Date.now() + repositoryTransportBudgetMs;
     githubRepoFetchTrace('session.start', { sessionId: repoFetchSessionId, repo, ref, rootPaths, sourceId: githubSource.id, accessMode: discoveryAccessMode, hardRefresh: Boolean(options.hardRefresh), refreshExisting: Boolean(options.refreshExisting), repositoryTransportBudgetMs });
 
+    async function finalizeGitNativeMaterial(result) {
+      if (!result?.ok) return false;
+      count = result.count || 0;
+      failed = result.failed || 0;
+      ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
+        phase: 'index',
+        indexLoaded: 0,
+        indexTotal: ws.files?.size || count,
+        sourceProgress: options.sourceProgress || ws.discoveryProgress?.sourceProgress || ''
+      });
+      await computeWorkspaceIndexWithDiscoveryProgress(ws);
+      indexed = true;
+
+      ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, { phase: 'policy' });
+      updateDiscoveryProgressDom(ws);
+      await progressYield(ws);
+      await discoverWorkspacePolicy(ws);
+
+      if (!count && !failed) toast(`No new Tiinex markdown artifacts loaded from ${repo}.`, 'warn');
+      if (failed) toast(`${failed} Tiinex markdown artifact file(s) could not be read from local Git object store for ${repo}.`, 'warn');
+      return true;
+    }
+
     try {
+      if (!options.hardRefresh) {
+        const localGit = await tryDiscoverGitHubRepoViaGitNative(ws, {
+          repo,
+          ref,
+          rootPaths,
+          githubSource,
+          sessionId: repoFetchSessionId,
+          transportDeadlineAt: repositoryTransportDeadlineAt,
+          localOnly: true,
+          options
+        });
+        if (await finalizeGitNativeMaterial(localGit)) return;
+      }
+
       const repositorySnapshot = await tryDiscoverGitHubRepoViaRepositorySnapshot(ws, {
         repo,
         ref,
@@ -36103,27 +36158,7 @@ ${githubOutboundFileExcerpt(file, 18000)}
         transportDeadlineAt: repositoryTransportDeadlineAt,
         options
       });
-      if (gitNative.ok) {
-        count = gitNative.count || 0;
-        failed = gitNative.failed || 0;
-        ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
-          phase: 'index',
-          indexLoaded: 0,
-          indexTotal: ws.files?.size || count,
-          sourceProgress: options.sourceProgress || ws.discoveryProgress?.sourceProgress || ''
-        });
-        await computeWorkspaceIndexWithDiscoveryProgress(ws);
-        indexed = true;
-
-        ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, { phase: 'policy' });
-        updateDiscoveryProgressDom(ws);
-        await progressYield(ws);
-        await discoverWorkspacePolicy(ws);
-
-        if (!count && !failed) toast(`No new Tiinex markdown artifacts loaded from ${repo}.`, 'warn');
-        if (failed) toast(`${failed} Tiinex markdown artifact file(s) could not be read from local Git object store for ${repo}.`, 'warn');
-        return;
-      }
+      if (await finalizeGitNativeMaterial(gitNative)) return;
 
       ws.repositoryTransport = { kind: 'github-raw', label: 'GitHub raw fallback', reason: gitNative.reason || repositorySnapshot.reason || 'repository-transports-unavailable' };
       ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {

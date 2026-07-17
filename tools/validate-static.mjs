@@ -980,6 +980,32 @@ async function validateGitSourceAdapterResearchContract() {
     fail('Warm Git snapshot reuse must explicitly report local object-store material with zero network operation.');
   }
 
+  let localOnlyCloneCalls = 0;
+  const localOnlyWindow = {
+    TIINEX_VIEWER_OPTIONS: { gitNative: {} },
+    Buffer,
+    GitHttp: {},
+    git: {
+      async resolveRef() { throw new Error('missing'); },
+      async currentBranch() { return ''; },
+      async listFiles() { return []; },
+      async clone() { localOnlyCloneCalls += 1; },
+      async fetch() { throw new Error('local-only must not fetch'); }
+    }
+  };
+  vm.runInNewContext(browserGitNative, {
+    window: localOnlyWindow, URL, TextDecoder, TextEncoder, Uint8Array, ArrayBuffer, Blob, AbortController, Map, Set, Promise, Object, Array, String, Number, Boolean, Date, Math, RegExp, Error, Buffer, setTimeout, clearTimeout, setInterval, clearInterval
+  }, { filename: 'src/app/git-native-runtime.js#local-only-miss' });
+  let localOnlyMiss = null;
+  try {
+    await localOnlyWindow.TiinexGitNativeRuntime.acquireSnapshot({ repo: 'Tiinex/docs', ref: 'master', rootPaths: ['.topics'], fs: fakeFs, localOnly: true });
+  } catch (error) {
+    localOnlyMiss = error;
+  }
+  if (!localOnlyMiss?.localSnapshotMiss || localOnlyMiss?.networkOperation !== 'none' || localOnlyCloneCalls !== 0) {
+    fail('Local Git preflight misses must be explicit and must never clone or fetch.');
+  }
+
   let coldResolved = false;
   let coldCloneCalls = 0;
   const coldWindow = {
@@ -1880,6 +1906,21 @@ function validateRepositoryTransportContracts() {
   }
   if (!gitDiscoverySource.includes('if (usedNetworkTransport)') || !gitDiscoverySource.includes("kind: 'local-git'")) {
     fail('Warm Git object-store reuse must be recorded as local material and must not claim a fresh proxy success.');
+  }
+  for (const token of ["const localOnly = context.localOnly === true", 'cleanupFailedClone: !localOnly', 'refreshExistingClone: !localOnly', 'localOnly,', "git-native.local-preflight.miss"]) {
+    if (!gitDiscoverySource.includes(token)) fail(`Local Git preflight contract missing: ${token}`);
+  }
+  const discoveryCoordinatorStart = app.indexOf('  async function discoverGitHubRepoIntoWorkspace(ws, options) {');
+  const discoveryCoordinatorEnd = app.indexOf('  function ', discoveryCoordinatorStart + 60);
+  const discoveryCoordinatorSource = app.slice(discoveryCoordinatorStart, discoveryCoordinatorEnd > discoveryCoordinatorStart ? discoveryCoordinatorEnd : app.length);
+  const localPreflightIndex = discoveryCoordinatorSource.indexOf('localOnly: true');
+  const snapshotAttemptIndex = discoveryCoordinatorSource.indexOf('tryDiscoverGitHubRepoViaRepositorySnapshot');
+  const networkGitIndex = discoveryCoordinatorSource.lastIndexOf('tryDiscoverGitHubRepoViaGitNative');
+  if (localPreflightIndex < 0 || snapshotAttemptIndex < 0 || networkGitIndex < 0 || !(localPreflightIndex < snapshotAttemptIndex && snapshotAttemptIndex < networkGitIndex)) {
+    fail('Repository discovery order must be warm local Git, then snapshot mirrors, then network Git.');
+  }
+  if (!discoveryCoordinatorSource.includes('if (!options.hardRefresh)')) {
+    fail('Explicit hard refresh must bypass the warm local Git preflight.');
   }
   const sourceStripStart = app.indexOf('  function renderWorkspaceSourceStrip(ws) {');
   const sourceStripEnd = app.indexOf('  function localDeletionComparableValues(', sourceStripStart);

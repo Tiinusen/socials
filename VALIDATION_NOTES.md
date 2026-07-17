@@ -19,6 +19,7 @@ Repository transport validation should cover:
 
 - workspace-relative snapshot metadata resolution and repository scope matching;
 - default GitHub Pages mirror derivation for project and account sites, with explicit snapshots taking precedence and no directory crawling;
+- warm browser-local Git being checked before any remote mirror metadata request, while explicit hard refresh bypasses that preflight;
 - conventional mirror misses remaining quiet and falling through to Git without changing canonical source identity;
 - progress-aware snapshot archive transfer so a healthy large zip is not rejected by a fixed short wall-clock timeout;
 - snapshot metadata identity, full commit, archive checksum, and safe zip extraction;

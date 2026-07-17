@@ -650,7 +650,7 @@
     const requestedRef = clean(opts.ref || '');
     const ref = requestedRef || 'HEAD';
     const runtime = await ensureRuntime(Object.assign({}, opts, { repo }));
-    if (isGithubRemote(remote) && !runtime.corsProxy && !opts.allowDirectGithubClone) {
+    if (isGithubRemote(remote) && !runtime.corsProxy && !opts.allowDirectGithubClone && opts.localOnly !== true) {
       const error = new Error('GitHub browser git clone needs an explicit CORS proxy or allowDirectGithubClone=true. Tiinex will not choose a hidden proxy.');
       error.needsExplicitCorsProxy = true;
       error.remote = remote;
@@ -704,6 +704,15 @@
         pushLabEvent(events, { phase: 'fetch-current.failed', error: error?.message || String(error), retainedCommit: commit });
         if (opts.requireFreshSnapshot === true) throw error;
       }
+    }
+
+    if (!commit && opts.localOnly === true) {
+      const error = new Error(`No browser-local Git snapshot is available for ${repo}${requestedRef ? `@${requestedRef}` : ''}.`);
+      error.localSnapshotMiss = true;
+      error.stage = 'local-reuse';
+      error.networkOperation = 'none';
+      error.progressEvents = events.slice(-40);
+      throw error;
     }
 
     if (!commit) {
