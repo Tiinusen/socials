@@ -16506,10 +16506,24 @@ ${bodySections}
 
 
 
+  function workspaceConfigSummaryFromMarkdown(markdown) {
+    const text = normalizeNewlines(markdown || '');
+    const envelopeEnd = text.indexOf('\n---');
+    const envelopeText = envelopeEnd >= 0 ? text.slice(0, envelopeEnd) : text.slice(0, Math.min(text.length, 2600));
+    try {
+      const fields = extractEnvelopeFields(envelopeText);
+      return String(fields?.current?.Summary || '').trim();
+    } catch (_) {
+      const match = envelopeText.match(/^\s*-\s*Summary\s*:\s*(.+?)\s*$/mi);
+      return match ? match[1].trim() : '';
+    }
+  }
+
   function workspaceConfigDraftFromMarkdown(markdown, configUrl = location.href) {
     const parsed = parseViewerConfigMarkdown(markdown || '', configUrl || location.href);
     return {
       title: parsed.displayName || parsed.heading || 'Tiinex Viewer',
+      summary: workspaceConfigSummaryFromMarkdown(markdown || ''),
       browserTitle: parsed.browserTitle || '',
       publicBaseUrl: parsed.publicBaseUrl || parsed.viewerBaseUrl || parsed.shareBaseUrl || '',
       workspaceHome: parsed.workspaceHome || '',
@@ -16537,6 +16551,37 @@ ${bodySections}
       }
     }
     return `${markdown}\n\n# ${String(title || 'Tiinex Viewer').trim() || 'Tiinex Viewer'}\n`;
+  }
+
+
+  function replaceContinuityCurrentSummary(markdown, summary) {
+    const value = String(summary || '').trim();
+    if (!value) return markdown;
+    const lines = markdownLines(markdown || '');
+    const envelopeEnd = lines.findIndex((line, index) => index > 0 && /^---+\s*$/.test(line.trim()));
+    const limit = envelopeEnd >= 0 ? envelopeEnd : Math.min(lines.length, 80);
+    let currentLine = -1;
+    for (let i = 0; i < limit; i += 1) {
+      if (/^\s*-\s*Current\s*$/.test(lines[i])) { currentLine = i; break; }
+    }
+    if (currentLine < 0) return markdown;
+    let end = limit;
+    for (let i = currentLine + 1; i < limit; i += 1) {
+      if (/^\s*-\s+[^-]/.test(lines[i]) && !/^\s*-\s*(?:Current Schema|Schema|Created At|Why|Summary|Authors)\s*:/i.test(lines[i])) { end = i; break; }
+    }
+    for (let i = currentLine + 1; i < end; i += 1) {
+      if (/^\s*-\s*Summary\s*:/i.test(lines[i])) {
+        const indent = (lines[i].match(/^\s*/) || ['  '])[0] || '  ';
+        lines[i] = `${indent}- Summary: ${value}`;
+        return lines.join('\n');
+      }
+    }
+    let insertAt = end;
+    for (let i = currentLine + 1; i < end; i += 1) {
+      if (/^\s*-\s*(?:Why|Created At|Current Schema|Schema)\s*:/i.test(lines[i])) insertAt = i + 1;
+    }
+    lines.splice(insertAt, 0, `  - Summary: ${value}`);
+    return lines.join('\n');
   }
 
   function replaceMarkdownSection(markdown, heading, level, body, insertAfterHeading = '') {
@@ -16590,6 +16635,7 @@ ${bodySections}
 
   function updateWorkspaceConfigMarkdown(markdown, draft = {}) {
     let out = replaceBodyTitle(markdown || '', draft.title || 'Tiinex Viewer');
+    out = replaceContinuityCurrentSummary(out, draft.summary || workspaceConfigSummaryFromMarkdown(out));
     out = replaceMarkdownSection(out, 'Viewer Identity', 2, workspaceConfigIdentityMarkdown(draft), 'Tiinex Viewer');
     out = replaceMarkdownSection(out, 'Empty Stage', 2, workspaceConfigEmptyStageMarkdown(draft), 'Viewer Identity');
     if (String(draft.helpMarkdown || '').trim()) out = replaceMarkdownSection(out, 'Help', 2, String(draft.helpMarkdown || '').trim(), 'Workspace Entrypoints');
@@ -16667,6 +16713,7 @@ ${bodySections}
             <h3>Identity</h3>
             <div class="schema-grid two-col">
               <label>Workspace title<input class="form-control tv-input" data-field="workspaceConfig.title" value="${escapeAttr(draft.title || '')}" placeholder="Tiinex Viewer"></label>
+              <label>Summary<input class="form-control tv-input" data-field="workspaceConfig.summary" value="${escapeAttr(draft.summary || '')}" placeholder="What should this workspace communicate?"></label>
               <label>Browser title<input class="form-control tv-input" data-field="workspaceConfig.browserTitle" value="${escapeAttr(draft.browserTitle || '')}" placeholder="Tiinex"></label>
               <label>Public viewer URL<input class="form-control tv-input" data-field="workspaceConfig.publicBaseUrl" value="${escapeAttr(draft.publicBaseUrl || '')}" placeholder="https://tiinex.dev/"></label>
               <label>Workspace home<input class="form-control tv-input" data-field="workspaceConfig.workspaceHome" value="${escapeAttr(draft.workspaceHome || '')}" placeholder="https://tiinex.dev/"></label>

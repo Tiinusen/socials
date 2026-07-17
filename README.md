@@ -206,3 +206,7 @@ Repository tooling exposes these architecture readiness markers:
 ## Current Implementation Status
 
 Use the current source, validation output, and Git history for implementation status. Git owns change chronology, so do not add separate change-log files, release notes, or versioned implementation comments merely to duplicate commit history.
+
+### Workspace artifact editing note
+
+Workspace entrypoints are normal Tiinex artifacts. Use Create → Workspace to create one, or open an existing workspace artifact and choose Edit. The editor can stage the current workspace set with **Update with current**, but it only persists when **Save local draft** is clicked. Export and GitHub publishing remain the normal Export flow. The workspace Summary is user-authored and is what readers see first in cards and GitHub issue previews.
