@@ -128,6 +128,7 @@
   app.viewportResponsiveness = app.viewportResponsiveness || { events: [] };
   app.githubExportBinding = app.githubExportBinding || { snapshots: [], issueBodyBindings: 0, commentBindings: 0, removedLocalDrafts: 0 };
   app.workspaceOpenMerge = app.workspaceOpenMerge || { events: [], last: null, duplicateExports: 0, mergeImports: 0, openImports: 0 };
+  app.workspaceSaveArtifact = app.workspaceSaveArtifact || { events: [], last: null, createdWorkspaces: 0, createdArtifacts: 0, replacedArtifacts: 0, exportDialogsOpened: 0 };
 
   function tiinexBuildIdentity() {
     return Object.assign({}, tiinexConfiguredBuildIdentity(), {
@@ -974,6 +975,20 @@
     };
   }
 
+  function workspaceSaveArtifactReport() {
+    const state = app.workspaceSaveArtifact || { events: [], last: null, createdWorkspaces: 0, createdArtifacts: 0, replacedArtifacts: 0, exportDialogsOpened: 0 };
+    return {
+      schema: 'tiinex.workspace-save-artifact.report.v1',
+      policy: 'Save Workspace creates or replaces a tiinex.workspace.v1 draft artifact inside an explicit target workspace, then hands off to the normal export adapter flow; target workspace and replacement path are user-qualified, not inferred silently.',
+      createdWorkspaces: Number(state.createdWorkspaces || 0),
+      createdArtifacts: Number(state.createdArtifacts || 0),
+      replacedArtifacts: Number(state.replacedArtifacts || 0),
+      exportDialogsOpened: Number(state.exportDialogsOpened || 0),
+      last: state.last || null,
+      events: Array.isArray(state.events) ? state.events.slice(-20) : []
+    };
+  }
+
   function workspaceDropRoutingReport() {
     const merge = app.workspaceOpenMerge || { events: [], last: null };
     return {
@@ -1075,6 +1090,7 @@
     workspaceExportTopologyReport: () => workspaceExportTopologyReport(),
     workspaceOpenBoundaryReport: () => workspaceOpenBoundaryReport(),
     workspaceOpenMergeReport: () => workspaceOpenMergeReport(),
+    workspaceSaveArtifactReport: () => workspaceSaveArtifactReport(),
     workspaceDropRoutingReport: () => workspaceDropRoutingReport(),
     workspaceEntrypointShareReport: () => workspaceEntrypointShareReport(),
     lineagePolicyShareExportReport: () => lineagePolicyShareExportReport(),
@@ -16107,14 +16123,205 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   }
 
 
-  async function exportCurrentLensConfig() {
+  function workspaceSaveArtifactState() {
+    app.workspaceSaveArtifact = app.workspaceSaveArtifact || { events: [], last: null, createdWorkspaces: 0, createdArtifacts: 0, replacedArtifacts: 0, exportDialogsOpened: 0 };
+    return app.workspaceSaveArtifact;
+  }
+
+  function recordWorkspaceSaveArtifact(kind, details = {}) {
+    const state = workspaceSaveArtifactState();
+    if (kind === 'create-workspace') state.createdWorkspaces += 1;
+    if (kind === 'create-artifact') state.createdArtifacts += 1;
+    if (kind === 'replace-artifact') state.replacedArtifacts += 1;
+    if (kind === 'open-export-dialog') state.exportDialogsOpened += 1;
+    const event = Object.assign({ at: new Date().toISOString(), kind }, details || {});
+    state.last = event;
+    state.events.push(event);
+    if (state.events.length > 80) state.events.splice(0, state.events.length - 80);
+    return event;
+  }
+
+  function workspaceArtifactCandidates(ws) {
+    if (!ws?.files) return [];
+    return Array.from(ws.files.values())
+      .filter((file) => isWorkspaceFilename(file?.path || file?.name || '') || looksLikeWorkspaceMarkdown(file?.content || file?.text || ''))
+      .map((file) => ({
+        path: normalizeAssetPath(file.path || file.name || 'workspace.workspace.md'),
+        title: (typeof markdownTitleFromFile === 'function' ? markdownTitleFromFile(file) : '') || fileNameFromPath(file.path || file.name || 'workspace.workspace.md'),
+        sourceId: file.sourceId || '',
+        storageKey: file.storageKey || ''
+      }))
+      .sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  function workspaceSaveDefaultArtifactPath(displayName) {
+    return `.topics/.workspaces/${workspaceArtifactFilenameSafe(displayName || 'current-view')}`;
+  }
+
+  async function openWorkspaceSaveArtifactModal() {
     const markdown = await buildCurrentLensConfigMarkdown();
     const parsed = parseViewerConfigMarkdown(markdown, location.href);
-    const filename = workspaceArtifactFilenameSafe(parsed.displayName || 'current-view');
-    downloadText(filename, markdown, 'text/markdown;charset=utf-8');
-    const localOnly = /Local-only items omitted/.test(markdown);
-    toast(localOnly ? 'Exported .workspace.md. Local-only items are noted but not embedded.' : 'Exported current view as .workspace.md.', localOnly ? 'warn' : 'ok');
+    const displayName = parsed.displayName || parsed.heading || 'Current Tiinex View';
+    const workspaces = app.workspaces || [];
+    const targetWsId = workspaces.length ? (app.activeWorkspaceId || workspaces[0].id) : '__new__';
+    app.modal = {
+      type: 'workspace-save-artifact',
+      markdown,
+      displayName,
+      targetWsId,
+      replacePath: '',
+      artifactPath: workspaceSaveDefaultArtifactPath(displayName),
+      newWorkspaceLabel: 'Workspace artifacts'
+    };
+    render();
   }
+
+  async function exportCurrentLensConfig() {
+    return openWorkspaceSaveArtifactModal();
+  }
+
+  function renderWorkspaceSaveArtifactModal(modal) {
+    const workspaces = app.workspaces || [];
+    const selectedWs = modal.targetWsId === '__new__' ? null : getWorkspace(modal.targetWsId || '');
+    const existing = selectedWs ? workspaceArtifactCandidates(selectedWs) : [];
+    const selectedReplacePath = String(modal.replacePath || '');
+    const pathValue = selectedReplacePath || modal.artifactPath || workspaceSaveDefaultArtifactPath(modal.displayName || 'current-view');
+    const workspaceOptions = [
+      ...workspaces.map((ws) => `<option value="${escapeAttr(ws.id)}" ${modal.targetWsId === ws.id ? 'selected' : ''}>${escapeHtml(workspaceDisplayLabel(ws) || ws.label || 'Workspace')}</option>`),
+      `<option value="__new__" ${modal.targetWsId === '__new__' ? 'selected' : ''}>Create new workspace</option>`
+    ].join('');
+    const replacementOptions = [
+      `<option value="" ${selectedReplacePath ? '' : 'selected'}>Create a new workspace artifact</option>`,
+      ...existing.map((item) => `<option value="${escapeAttr(item.path)}" ${selectedReplacePath === item.path ? 'selected' : ''}>Replace ${escapeHtml(item.path)}</option>`)
+    ].join('');
+    const targetHelp = workspaces.length
+      ? 'Choose where this workspace artifact should live. Replacement is explicit and never inferred from filename alone.'
+      : 'No workspace is open; Tiinex will create a local workspace for this artifact before opening the normal export flow.';
+    return `<div class="modal-backdrop-custom focus-modal workspace-save-artifact-backdrop" role="dialog" aria-modal="true" aria-labelledby="workspace-save-artifact-title">
+      <div class="modal-panel export-panel workspace-save-artifact-panel">
+        <div class="modal-header-lite export-head compact-export-head">
+          <div>
+            <p class="kicker">Save workspace artifact</p>
+            <h2 class="modal-title-lite export-title" id="workspace-save-artifact-title"><span class="export-title-icon"><i class="fa-solid fa-layer-group"></i></span><span>Save workspace as artifact</span></h2>
+            <p class="text-secondary mb-0">Create or replace a <code>tiinex.workspace.v1</code> draft leaf, then continue through the normal export adapter.</p>
+          </div>
+          <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="export-body workspace-save-artifact-body">
+          <section class="export-section">
+            <h3>Target</h3>
+            <p class="muted">${escapeHtml(targetHelp)}</p>
+            <label class="field-label">Target workspace
+              <select class="form-control tv-input" data-field="workspaceSave.targetWsId">
+                ${workspaceOptions}
+              </select>
+            </label>
+            ${modal.targetWsId === '__new__' ? `<label class="field-label">New workspace name<input class="form-control tv-input" data-field="workspaceSave.newWorkspaceLabel" value="${escapeAttr(modal.newWorkspaceLabel || 'Workspace artifacts')}" placeholder="Workspace artifacts"></label>` : ''}
+          </section>
+          <section class="export-section">
+            <h3>Artifact placement</h3>
+            <label class="field-label">Create or replace
+              <select class="form-control tv-input" data-field="workspaceSave.replacePath" ${selectedWs ? '' : 'disabled'}>
+                ${replacementOptions}
+              </select>
+            </label>
+            <label class="field-label">Artifact path
+              <input class="form-control tv-input" data-field="workspaceSave.artifactPath" value="${escapeAttr(pathValue)}" ${selectedReplacePath ? 'readonly' : ''} placeholder=".topics/.workspaces/current-view.workspace.md">
+            </label>
+            <p class="form-text">Replacement keeps the existing path. Create-new lets you choose a path before the artifact is added to the selected workspace.</p>
+          </section>
+          <section class="export-summary compact-export-summary">
+            <div><strong>${escapeHtml(shortText(modal.displayName || 'Current view', 44))}</strong><span>workspace leaf</span></div>
+            <div><strong>${selectedReplacePath ? 'replace' : 'create'}</strong><span>operation</span></div>
+            <div><strong>${escapeHtml(selectedWs ? (workspaceDisplayLabel(selectedWs) || selectedWs.label || 'workspace') : (modal.newWorkspaceLabel || 'new workspace'))}</strong><span>target</span></div>
+            <div><strong>normal</strong><span>export flow next</span></div>
+          </section>
+        </div>
+        <div class="modal-footer-actions export-actions">
+          <button class="tv-btn primary" data-action="workspace-save-artifact-confirm"><i class="fa-solid fa-floppy-disk"></i>Save artifact and export</button>
+          <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function removeWorkspaceArtifactAtPath(ws, path) {
+    const target = normalizeAssetPath(path || '');
+    if (!ws || !target) return 0;
+    let removed = 0;
+    for (const [key, file] of Array.from(ws.files?.entries?.() || [])) {
+      if (normalizeAssetPath(file?.path || '') !== target) continue;
+      ws.files.delete(key);
+      removed += 1;
+    }
+    if (Array.isArray(ws.generated)) ws.generated = ws.generated.filter((item) => normalizeAssetPath(item?.path || '') !== target);
+    return removed;
+  }
+
+  function finalizeWorkspaceSaveArtifactModal(modal) {
+    if (!modal || modal.type !== 'workspace-save-artifact') return null;
+    const formTarget = document.querySelector('select[data-field="workspaceSave.targetWsId"]')?.value || modal.targetWsId || '';
+    const formReplacement = document.querySelector('select[data-field="workspaceSave.replacePath"]')?.value || modal.replacePath || '';
+    const formPath = document.querySelector('input[data-field="workspaceSave.artifactPath"]')?.value || modal.artifactPath || '';
+    const formName = document.querySelector('input[data-field="workspaceSave.newWorkspaceLabel"]')?.value || modal.newWorkspaceLabel || 'Workspace artifacts';
+    let ws = formTarget === '__new__' || !formTarget ? null : getWorkspace(formTarget);
+    if (!ws) {
+      ws = createWorkspace(String(formName || 'Workspace artifacts').trim() || 'Workspace artifacts', 'Workspace artifacts saved from the viewer.');
+      recordWorkspaceSaveArtifact('create-workspace', { workspaceId: ws.id, label: ws.label });
+    }
+    const replacePath = normalizeAssetPath(formReplacement || '');
+    const artifactPath = normalizeAssetPath(replacePath || formPath || workspaceSaveDefaultArtifactPath(modal.displayName || 'current-view'));
+    if (!isWorkspaceFilename(artifactPath)) throw new Error('Workspace artifact path must end with .workspace.md.');
+    const operation = replacePath ? 'replace-artifact' : 'create-artifact';
+    const existingAtPath = Array.from(ws.files?.values?.() || []).find((file) => normalizeAssetPath(file?.path || '') === artifactPath);
+    if (!replacePath && existingAtPath) throw new Error('That artifact path already exists. Choose the existing artifact to replace, or enter a different path.');
+    if (replacePath) removeWorkspaceArtifactAtPath(ws, replacePath);
+    const sourceId = makeSourceId('workspace-save', `${ws.id}:${artifactPath}`);
+    addFileToWorkspace(ws, {
+      path: artifactPath,
+      content: modal.markdown || '',
+      sourceId,
+      sourceKind: 'draft',
+      sourceLabel: 'Saved workspace artifact',
+      sourceOrigin: 'Save Workspace action',
+      sourceAccessMode: 'local-working-tree',
+      sourceResolutionKind: 'workspace-save-artifact',
+      importedAt: new Date().toISOString(),
+      generatedAt: new Date().toISOString()
+    });
+    computeWorkspaceIndex(ws);
+    const savedNode = (ws.nodes || []).find((node) => normalizeAssetPath(node.path || '') === artifactPath);
+    if (savedNode) ws.selectedNodeId = savedNode.id;
+    app.activeWorkspaceId = ws.id;
+    recordWorkspaceSaveArtifact(operation, { workspaceId: ws.id, workspace: workspaceDisplayLabel(ws), path: artifactPath, sourceId });
+    const exportModal = defaultExportModal(ws.id);
+    exportModal.mode = 'sources';
+    exportModal.sourceIds = [sourceId];
+    exportModal.includeAssets = false;
+    app.modal = exportModal;
+    recordWorkspaceSaveArtifact('open-export-dialog', { workspaceId: ws.id, path: artifactPath, sourceId, mode: exportModal.mode, deliveryTarget: exportModal.deliveryTarget || 'download' });
+    scheduleLocalStateSaveAfterWorkspaceMutation();
+    render();
+    toast(`${replacePath ? 'Replaced' : 'Created'} workspace artifact ${artifactPath}. Continue with export.`, 'ok');
+    return { ws, path: artifactPath, sourceId };
+  }
+
+  registerRenderModalWrapper(function renderModalWithWorkspaceSaveArtifact(modal, next) {
+    if (modal?.type === 'workspace-save-artifact') return renderWorkspaceSaveArtifactModal(modal);
+    return next(modal);
+  });
+
+  registerActionHandler(async function workspaceSaveArtifactAction(event, next) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action === 'workspace-save-artifact-confirm') {
+      event.preventDefault();
+      event.stopPropagation();
+      try { finalizeWorkspaceSaveArtifactModal(app.modal); }
+      catch (error) { toast(`Could not save workspace artifact: ${error.message}`, 'warn'); }
+      return;
+    }
+    return next(event);
+  });
 
   async function openWorkspaceFiles(files, options = {}) {
     const workspaces = Array.from(files || []);
@@ -25895,6 +26102,23 @@ ${integrityFooter()}`;
       app.modal.draft = app.modal.draft || {};
       app.modal.draft[key] = value || '';
       return true;
+    }
+    if (app.modal.type === 'workspace-save-artifact' && String(field || '').startsWith('workspaceSave.')) {
+      const key = String(field).slice('workspaceSave.'.length);
+      if (key === 'targetWsId') {
+        app.modal.targetWsId = value || '__new__';
+        app.modal.replacePath = '';
+        render();
+        return true;
+      }
+      if (key === 'replacePath') {
+        app.modal.replacePath = value || '';
+        if (value) app.modal.artifactPath = value;
+        render();
+        return true;
+      }
+      if (key === 'artifactPath') { app.modal.artifactPath = value || ''; return true; }
+      if (key === 'newWorkspaceLabel') { app.modal.newWorkspaceLabel = value || ''; return true; }
     }
     if (field === 'editNodeText') {
       app.modal.text = value;

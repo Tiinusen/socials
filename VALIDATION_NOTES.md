@@ -93,3 +93,10 @@ Warm persistent Git reuse is recorded as `local-git`; it does not report a fresh
 
 - Conventional root policy documents such as `LINEAGE_POLICY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and `SECURITY.md` are allowed root metadata rather than unexpected package material.
 - Static hygiene should still reject ad hoc markdown reports or scratch documents in the package root; root policy allowances are explicit, not a broad markdown wildcard.
+
+## V12 workspace artifact save target flow
+
+- Header Save workspace creates or replaces a `tiinex.workspace.v1` artifact inside an explicit target workspace, then opens the normal export adapter with that artifact source selected.
+- No open workspace creates a local target workspace for the artifact; one workspace is preselected; multiple workspaces require explicit target selection.
+- Existing workspace artifact replacement is explicit by path and cannot be inferred silently from filename collisions.
+- `TiinexDiagnostics.workspaceSaveArtifactReport()` records created/replaced artifact counts, created target workspaces, and export handoff events.
