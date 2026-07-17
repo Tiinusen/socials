@@ -45,6 +45,8 @@ Published repository snapshots must reuse the same safe zip-import core as uploa
 
 The repository mirror workflow is copyable infrastructure rather than a viewer-only build. It must always publish the repository that contains the workflow as a root mirror. Viewer repositories may additionally build the public app, and `.mirrors` submodules may add further repositories, but neither viewer files nor `.mirrors` are prerequisites for root publication. Ordinary submodules outside `.mirrors` are unrelated and must be ignored by mirror discovery.
 
+Forked viewer repositories may inherit mirror declarations that resolve to the fork itself. Treat those declarations as redundant: root publication already owns that identity, so do not clone or publish it twice. Root-level `.gitmodules` and `.mirrors` are source/build inputs and must not appear in the deploy root.
+
 Issues and Discussions remain provider-adapter surfaces. Repository snapshot and Git-proxy declarations do not proxy or replace those adapters.
 
 Observed transport health, cooldowns, cache keys, credentials, and UI state are browser/runtime state and must not be serialized into `.workspace.md`.

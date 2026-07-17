@@ -63,6 +63,22 @@ Older `.topics/github-issues/...` paths remain readable for compatibility.
 
 Adapter implementations should preserve external container, publication item, embedded Tiinex artifact, origin, parent, and attached assets as distinct concepts. When a selected export batch contains parent/child artifacts, the adapter should preserve that lineage segment as one publication transaction when the target supports nested items.
 
+## Forking And Instance Customization
+
+A fork can stay close to the canonical viewer while carrying its own lineage and presentation.
+
+Keep viewer/runtime files close to upstream and place instance-owned material in bounded surfaces such as `.topics/`, `.mirrors/`, workspace artifacts, branding assets, and `CNAME`. Deleting or heavily rewriting shared runtime files makes future upstream syncs conflict-prone.
+
+The publishing repository is always mirrored automatically. A `.mirrors` entry that resolves back to the publishing repository is redundant and is ignored by the workflow. Remove unwanted mirror submodules through Git rather than deleting only their working folders, because `.gitmodules` and gitlinks are the actual declarations.
+
+For a new fork:
+
+1. Enable GitHub Actions in the fork.
+2. Run `Publish Public Branch` once.
+3. Configure GitHub Pages to publish from `public` at `/ (root)`.
+4. Remove inherited mirror entries that the instance does not own or need.
+5. Preserve the repository `LICENSE` and applicable `NOTICE` attribution for inherited viewer code.
+
 ## Development And Validation
 
 Keep runtime behavior in the app code and public assets. Do not move behavior into docs-only files.

@@ -1989,7 +1989,11 @@ function validateRepositoryTransportContracts() {
     'Publishing repository mirror is missing',
     'touch .site-publish/.nojekyll',
     'github.event.repository.fork',
-    'rm -f .site-publish/CNAME'
+    'rm -f .site-publish/CNAME',
+    'Ignoring self mirror declaration',
+    'Sanitize public deploy root',
+    'rm -f .site-publish/.gitmodules',
+    'rm -rf .site-publish/.mirrors'
   ]) {
     if (!workflow.includes(token)) fail(`portable mirror workflow contract missing: ${token}`);
   }
@@ -2001,7 +2005,17 @@ function validateRepositoryTransportContracts() {
   if (workflow.includes('Mirror submodule must live below .mirrors/')) {
     fail('copyable mirror workflow must ignore ordinary submodules outside .mirrors instead of rejecting the repository');
   }
-  note('workspace-owned repository snapshots, persistent transport decisions, co-hosted mirror discovery, and portable root-mirror publication contracts are valid');
+  const selfMirrorGuardIndex = workflow.indexOf('if [ "$remote_identity" = "$root_identity" ]; then');
+  const extraMirrorCloneIndex = workflow.indexOf('git clone --depth 1 --single-branch --no-tags "$module_url" "$clone_dir"');
+  if (selfMirrorGuardIndex < 0 || extraMirrorCloneIndex < 0 || selfMirrorGuardIndex > extraMirrorCloneIndex) {
+    fail('fork-safe mirror publication must skip self-referential mirrors before cloning extras');
+  }
+  const sanitizeDeployIndex = workflow.indexOf('- name: Sanitize public deploy root');
+  const publishBranchIndex = workflow.indexOf('- name: Publish public branch');
+  if (sanitizeDeployIndex < 0 || publishBranchIndex < 0 || sanitizeDeployIndex > publishBranchIndex) {
+    fail('public deploy root must be sanitized before branch publication');
+  }
+  note('workspace-owned repository snapshots, persistent transport decisions, co-hosted mirror discovery, fork-safe self-mirror handling, and portable root-mirror publication contracts are valid');
 }
 
 function validatePublicBuildContracts() {

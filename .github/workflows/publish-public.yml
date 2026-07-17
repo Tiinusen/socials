@@ -300,6 +300,15 @@ jobs:
                 exit 1
               fi
 
+              # Forks can inherit a mirror declaration that becomes a self-reference
+              # after the fork is renamed. The publishing repository is already emitted
+              # unconditionally as the root mirror, so cloning it again is redundant and
+              # can fail when the inherited gitlink belongs to the pre-fork repository.
+              if [ "$remote_identity" = "$root_identity" ]; then
+                printf 'Ignoring self mirror declaration: %s (root mirror already published)\n' "$module_path"
+                continue
+              fi
+
               clone_dir="$temp_root/$public_identity"
               mkdir -p "$(dirname "$clone_dir")"
               git clone --depth 1 --single-branch --no-tags "$module_url" "$clone_dir"
@@ -321,6 +330,22 @@ jobs:
           for public_identity in "${!published_identities[@]}"; do
             printf '%s\n'               "$mirror_root/$public_identity.json"               "$mirror_root/$public_identity.zip"
           done | sort
+
+      - name: Sanitize public deploy root
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Source-side mirror declarations are build inputs, not deploy-root material.
+          # Keep repository copies under mirrors/... intact, but never expose root-level
+          # Git submodule metadata that can make GitHub Pages recurse into source gitlinks.
+          rm -rf .site-publish/.mirrors
+          rm -f .site-publish/.gitmodules
+
+          if [ -e .site-publish/.mirrors ] || [ -e .site-publish/.gitmodules ]; then
+            echo "Public deploy root still contains source mirror declarations." >&2
+            exit 1
+          fi
 
       - name: Validate repository mirrors
         shell: bash

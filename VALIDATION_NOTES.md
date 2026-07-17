@@ -52,3 +52,5 @@ The selected repository material path remains visible after discovery in the exi
 
 Warm persistent Git reuse is recorded as `local-git`; it does not report a fresh proxy success when no repository network operation occurred. `TiinexDiagnostics.repositoryTransportDecisionReport()` exposes the selected material path, resolved commit, canonical origin, candidate plan, and source boundary for regression review.
 
+
+- Fork-safe mirror publication ignores self-referential mirror declarations because the root repository is already published, and sanitizes root-level `.gitmodules`/`.mirrors` from the deploy artifact.
