@@ -9339,16 +9339,13 @@
     let sourceMatch;
     while ((sourceMatch = sourceRe.exec(text))) {
       const rest = text.slice(sourceMatch.index);
-      const fenceRe = /```(?:md|markdown)?\s*\n([\s\S]*?)\n```/gi;
-      const match = fenceRe.exec(rest);
-      if (match) push(match[1] || '');
+      for (const block of extractMarkdownFenceBlocks(rest, { languages: ['md', 'markdown', ''] })) push(block || '');
     }
-    const fenceRe = /```(?:md|markdown)?\s*\n([\s\S]*?)\n```/gi;
-    let match;
-    while ((match = fenceRe.exec(text))) push(match[1] || '');
+    for (const block of extractMarkdownFenceBlocks(text, { languages: ['md', 'markdown', ''] })) push(block || '');
     if (looksLikeStandaloneTiinexArtifact(text.trim())) push(text.trim());
     return out;
   }
+
 
   function readerMarkdownContent(raw = '') {
     const text = normalizeNewlines(raw || '');
@@ -10315,6 +10312,27 @@ ${body}
 ${fence}`;
   }
 
+  function extractMarkdownFenceBlocks(text = '', options = {}) {
+    const source = normalizeNewlines(text || '');
+    const allowed = new Set((options.languages || ['md', 'markdown', '']).map((item) => String(item || '').trim().toLowerCase()));
+    const blocks = [];
+    const openerRe = /(^|\n)(`{3,}|~{3,})([^\n]*)\n/g;
+    let match;
+    while ((match = openerRe.exec(source))) {
+      const fence = match[2];
+      const info = String(match[3] || '').trim().toLowerCase().split(/\s+/)[0] || '';
+      if (!allowed.has(info)) continue;
+      const bodyStart = openerRe.lastIndex;
+      const closeRe = new RegExp(`\n${escapeRegExp(fence)}[ \t]*(?=\n|$)`, 'g');
+      closeRe.lastIndex = bodyStart;
+      const close = closeRe.exec(source);
+      if (!close) break;
+      blocks.push(source.slice(bodyStart, close.index));
+      openerRe.lastIndex = close.index + close[0].length;
+    }
+    return blocks;
+  }
+
   function issueContributionParseLevel(body) {
     const text = String(body || '');
     if (/<!--\s*tiinex-(contribution|artifact|feedback)[\s-]v?\d*/i.test(text) || /^#\s+Continuity Context\s*$/m.test(text)) return 'structured';
@@ -10789,10 +10807,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (!/#\s+Continuity Context/i.test(text) || !/Current Schema:/i.test(text)) return '';
     const sourceSection = text.search(/^##\s+Source Markdown(?:\s+Excerpt|\s+Payload)?\s*$/im);
     const searchText = sourceSection >= 0 ? text.slice(sourceSection) : text;
-    const fenceRe = /```(?:md|markdown)?\s*\n([\s\S]*?)\n```/gi;
-    let match;
-    while ((match = fenceRe.exec(searchText))) {
-      const candidate = normalizeNewlines(match[1] || '').trim();
+    for (const block of extractMarkdownFenceBlocks(searchText, { languages: ['md', 'markdown', ''] })) {
+      const candidate = normalizeNewlines(block || '').trim();
       if (looksLikeStandaloneTiinexArtifact(candidate)) return candidate;
     }
     const direct = text.trim();
@@ -19442,9 +19458,7 @@ ${policyBoundary}` : ''}
 <details>
 <summary>Open markdown excerpt</summary>
 
-\`\`\`md
-${githubOutboundFileExcerpt(file)}
-\`\`\`
+${markdownFence(githubOutboundFileExcerpt(file, 60000), 'md')}
 
 </details>`;
     }).join('\n\n');
@@ -33676,10 +33690,8 @@ ${integrityFooterForPath(parent, path)}`,
     const evidenceStart = raw.search(/^##\s+Evidence Material\s*$/im);
     if (evidenceStart >= 0) {
       const evidence = raw.slice(evidenceStart);
-      const fenceRe = /```(?:md|markdown)?\s*\n([\s\S]*?)\n```/gi;
-      let match;
-      while ((match = fenceRe.exec(evidence))) {
-        const candidate = normalizeNewlines(match[1] || '').trim();
+      for (const block of extractMarkdownFenceBlocks(evidence, { languages: ['md', 'markdown', ''] })) {
+        const candidate = normalizeNewlines(block || '').trim();
         if (!candidate) continue;
         const directSchema = schemaKey(schemaIdFromText(candidate, '') || '');
         if (directSchema && directSchema !== 'discovery.finding') return true;
@@ -34454,9 +34466,7 @@ ${transitionBlock}
 
 ## Source Markdown
 
-\`\`\`md
-${githubOutboundFileExcerpt(file, 18000)}
-\`\`\`
+${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
 
 ## Publication Notes
 
