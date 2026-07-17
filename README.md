@@ -32,7 +32,7 @@ They are not the identity boundary of Tiinex, and this site should not be descri
 - Published or source-backed material may expose source links.
 - Parent and Origin are separate relations and must not be collapsed.
 - Workspace files are entrypoints when opened as workspaces, not ordinary leaves.
-- Policy lookup should use the nearest `LINEAGE_POLICY.md` or `LINEAGE_LICENSE.md` when one is available in the loaded material.
+- Policy lookup should use the nearest `LINEAGE_POLICY.md` or `LINEAGE_LICENSE.md` when one is available in the loaded material; conventional root policy documents are repository metadata, not scratch artifacts.
 - The app stays static and client-side; maintainer scripts are for packaging and validation, not runtime hosting logic.
 
 ## Stable Reading Order

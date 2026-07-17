@@ -201,7 +201,17 @@ function validateRequiredFiles() {
 }
 
 function validateRootMarkdown() {
-  const expected = new Set(['README.md', 'tiinex.app.llm.v1.md', 'tiinex.context.v1.md', 'tiinex.orientation.v1.md', 'VALIDATION_NOTES.md']);
+  const expected = new Set([
+    'README.md',
+    'tiinex.app.llm.v1.md',
+    'tiinex.context.v1.md',
+    'tiinex.orientation.v1.md',
+    'VALIDATION_NOTES.md',
+    'LINEAGE_POLICY.md',
+    'CONTRIBUTING.md',
+    'CODE_OF_CONDUCT.md',
+    'SECURITY.md'
+  ]);
   const rootMarkdown = readdirSync(root)
     .filter((entry) => entry.endsWith('.md'))
     .sort();
@@ -2182,7 +2192,11 @@ function validateRootPackageShape() {
     'CNAME',
     'favicon.ico',
     'LICENSE',
-    'NOTICE'
+    'NOTICE',
+    'LINEAGE_POLICY.md',
+    'CONTRIBUTING.md',
+    'CODE_OF_CONDUCT.md',
+    'SECURITY.md'
   ]);
 
   const ignoredInfrastructureRootEntries = new Set([
