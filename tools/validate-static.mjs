@@ -597,7 +597,7 @@ function validateWizardArchitecture() {
   if (nonOrdinaryManualPolicies.length) {
     fail('ordinary-wizard UI policy requires Manually Creatable: yes.');
   }
-  for (const id of ['tiinex.workspace.v1', 'raw']) {
+  for (const id of ['raw']) {
     const ordinaryPattern = new RegExp(`${escapeRegExp(id)}[\\s\\S]{0,180}ordinary-wizard`);
     if (ordinaryPattern.test(js)) fail(`${id} must not appear as an ordinary wizard schema card.`);
   }
@@ -1770,11 +1770,11 @@ function validateArchitectureBoundaries() {
   if (!appJs.includes('data-action="workspace-config-save"')) fail('workspace configuration editor must save through a local draft action.');
   if (appJs.includes('data-action="workspace-config-download"')) fail('workspace configuration editor must not bypass workspace draft persistence with a direct download action.');
   if (!appJs.includes("action === 'workspace-config-save'") || !appJs.includes('await saveNodeEdit(ws, node, markdown)')) fail('workspace configuration save must reuse local artifact draft persistence.');
-  if (!appJs.includes('workspaceSaveArtifactReport')) fail('Save workspace must expose artifact-save diagnostics.');
-  if (!appJs.includes("type: 'workspace-save-artifact'")) fail('Save workspace must create a target/replacement modal for workspace artifacts.');
-  if (!appJs.includes('Save artifact</button>')) fail('Save workspace confirmation must save only the artifact, not launch export.');
-  if (appJs.includes('Save artifact and export')) fail('Save workspace must not launch the export flow directly.');
-  if (!appJs.includes('Use Export when you are ready to publish or download it.')) fail('Save workspace toast must guide users back to the normal Export flow.');
+  if (appJs.includes('>Save workspace</button>')) fail('topbar Save workspace button must not remain; workspace artifacts are created or edited through normal artifact cards.');
+  if (!appJs.includes('workspace-config-update-current')) fail('workspace artifact editor must expose Update with current staging.');
+  if (!appJs.includes('Current workspace set staged in this workspace artifact')) fail('Update with current must stage the active workspace set before local draft save.');
+  if (!appJs.includes("'tiinex.workspace.v1': schemaPolicyEntry('tiinex.workspace.v1', 'Workspace', 'core-artifact', 'tiinex.root.v1', 'Portable workspace entrypoint.', 'yes'")) fail('workspace artifacts must be creatable through the ordinary artifact wizard.');
+  if (!appJs.includes('Workspace entries use the same draft/export/publish path as other artifacts')) fail('artifact wizard copy must explain workspace artifacts use the normal draft/export path.');
   if (!appJs.includes('githubWorkspacePresentationDelta')) fail('GitHub issue previews must have a workspace-specific human summary path.');
   const indexHtml = read('index.html');
   if (indexHtml.includes('id="viewer-entrypoint-notice"')) {
