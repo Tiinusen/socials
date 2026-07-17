@@ -171,6 +171,20 @@ The issue is a pointer/config source. The workspace file remains the Tiinex arti
 4. Run the validation commands below before committing.
 5. Keep public config in repository variables instead of committing instance-specific source files.
 
+
+## Saving Workspace Artifacts
+
+The header **Save workspace** action creates or replaces a `tiinex.workspace.v1` draft artifact inside a user-qualified target workspace, then opens the normal export adapter. It no longer performs a one-off `.workspace.md` download.
+
+Save target rules:
+
+- no open workspace: create a local workspace for the workspace artifact;
+- one workspace: preselect that workspace but still show placement and replacement choices;
+- multiple workspaces: ask which workspace receives the artifact;
+- replacement: explicit existing `.workspace.md` path selection, never guessed from a filename collision.
+
+This keeps workspace updates on the same path as other Tiinex artifacts: create or update a draft leaf, review it in a workspace, then export or publish it through the existing adapter flow.
+
 ## Development And Validation
 
 Keep runtime behavior in the app code and public assets. Do not move behavior into docs-only files.
