@@ -67,7 +67,7 @@ Adapter implementations should preserve external container, publication item, em
 
 Workspace files are ordinary Tiinex draft artifacts in the local source. Create a new `tiinex.workspace.v1` through **Create → New Tiinex artifact → Workspace**, or edit an existing workspace card with **Edit**. The header no longer has a separate Save Workspace path.
 
-A workspace card's editor can stage the current viewer/workspace set with **Update with current**. Nothing is exported or published at that point; **Save local draft** persists the `.workspace.md` through the same local draft path as other artifacts, and the normal Export action later handles download or GitHub publication.
+A workspace card's editor can stage the current viewer/workspace set with **Update with current**. Nothing is exported or published at that point; **Save local draft** persists the `.workspace.md` through the same local draft path as other artifacts. The workspace shell export button remains the normal Export adapter for download or GitHub publication.
 
 GitHub issue publication should keep a clean reader-facing summary with the full Tiinex source payload collapsed below it, matching the issue-body pattern used by Tiinex/docs issue roots.
 
@@ -89,7 +89,7 @@ The publishing repository is always mirrored automatically. Local `.mirrors/` in
 2. Keep `master`/`main` aligned with `Tiinex/site`.
 3. Create a working branch for your instance, for example `personal`, `workbench`, or `site`.
 4. Enable GitHub Actions.
-5. In **Settings → Pages**, prefer **Source: GitHub Actions** for first-class Pages deployment. The workflow still force-publishes an inspectable `public` branch as an audit surface. The `github-pages` environment should allow the repository default branch, because deployment is requested by a repository dispatch after `public` is updated.
+5. In **Settings → Pages**, prefer **Source: GitHub Actions** for first-class Pages deployment. The workflow still force-publishes an inspectable `public` branch as an audit surface. The `github-pages` environment must allow the source branch that runs the workflow, or use no deployment-branch restriction for fork/instance repositories. The workflow updates `public` first, then deploys the same `.site-publish` artifact in a second job inside the same workflow run.
 6. Add repository variables for instance-specific config, for example `PAGES_CNAME` and `TIINEX_WORKSPACE_POINTER_PRIMARY`.
 7. Push the working branch. If this is a fork with more than one non-`public` branch, pushes to `master` are skipped unless explicitly pinned; pushes to the working branch publish that branch.
 
@@ -108,9 +108,9 @@ Recommended fork branch names describe the instance or role, for example `person
 
 ### Pages Deployment
 
-The publish workflow builds `.site-publish` and force-publishes the same artifact to the `public` branch. When `TIINEX_PAGES_DEPLOY` is enabled, it then requests the separate `Deploy Public Pages` workflow through a repository dispatch. That deployment workflow runs from the repository default-branch workflow context, checks out `public`, uploads the public branch as the official GitHub Pages artifact, and deploys through `actions/deploy-pages`.
+The publish workflow builds `.site-publish`, force-publishes the same artifact to the inspectable `public` branch, uploads that exact artifact for GitHub Pages, and deploys it through `actions/deploy-pages` in the same workflow file. The deployment job waits for the public branch publication job, so the branch remains the audit surface for what was deployed.
 
-This avoids binding the `github-pages` environment to whichever working branch triggered publication, while preserving `public` as the inspectable record of what was deployed. Set `TIINEX_PAGES_DEPLOY=branch-only` or `false` when a repository is still using branch-source Pages or does not want Actions deployment.
+Because Pages deployment happens in the same workflow run that was triggered by the source branch, repositories that publish from instance branches such as `personal` should let the `github-pages` environment allow that branch, or use no deployment-branch restriction. `Tiinex/site` can keep the environment restricted to `master` because only `master` auto-publishes there. Set `TIINEX_PAGES_DEPLOY=branch-only` or `false` when a repository is still using branch-source Pages or does not want Actions deployment.
 
 ### Repository Variables
 

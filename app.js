@@ -6641,7 +6641,12 @@
   }
 
   async function saveWorkspace(wsId) {
-    return openWorkspaceSaveArtifactModal({ targetWsId: wsId || app.activeWorkspaceId || '' });
+    // The workspace shell download/export button owns the existing export adapter flow.
+    // Workspace artifacts are created/edited from artifact cards, not from this action.
+    const ws = getWorkspace(wsId);
+    if (!ws) return toast('No workspace selected.', 'warn');
+    app.modal = defaultExportModal(ws.id);
+    render();
   }
 
 
@@ -24373,7 +24378,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
             <button class="tv-btn small subtle display-options-action ${displayCount ? 'active' : ''}" data-action="open-display-options" data-ws="${escapeAttr(ws.id)}" title="${escapeAttr(displayTitle)}" aria-label="Display options"><i class="fa-solid fa-sliders"></i>${displayCount ? `<small>${displayCount}</small>` : ''}</button>
             <button class="tv-btn small subtle workspace-share-action" data-action="open-share-modal" data-scope="workspace" data-ws="${escapeAttr(ws.id)}" title="Review share eligibility for this workspace" aria-label="Share workspace"><i class="fa-solid fa-share-nodes"></i></button>
             ${renderPolicyBadge(ws)}
-            <button class="tv-btn small workspace-export-action" data-action="save-workspace" data-ws="${escapeAttr(ws.id)}" ${generatedCount || (ws.assets && ws.assets.size) ? '' : 'disabled'} title="Save workspace bundle"><i class="fa-solid fa-download"></i></button>
+            <button class="tv-btn small workspace-export-action" data-action="save-workspace" data-ws="${escapeAttr(ws.id)}" ${generatedCount || (ws.assets && ws.assets.size) ? '' : 'disabled'} title="Export workspace"><i class="fa-solid fa-download"></i></button>
             <button class="tv-btn small workspace-add-btn icon-only action-intent-write" data-action="open-source-modal" data-ws="${escapeAttr(ws.id)}" title="Add material, source, or local root node to this workspace" aria-label="Add material, source, or local root node to this workspace"><i class="fa-solid fa-plus"></i></button>
             <button class="tv-btn small subtle" data-action="toggle-workspace-mode" data-mode="compact" data-ws="${escapeAttr(ws.id)}" title="Collapse workspace into a narrow board column"><i class="fa-solid fa-down-left-and-up-right-to-center"></i></button>
             <button class="tv-btn small subtle" data-action="remove-workspace" data-ws="${escapeAttr(ws.id)}" title="Remove workspace"><i class="fa-solid fa-xmark"></i></button>
