@@ -89,9 +89,9 @@ Warm persistent Git reuse is recorded as `local-git`; it does not report a fresh
 - `samples/` is no longer part of the repository root or default public-copy contract.
 - README quick-start guidance should describe fork setup, working branch naming, repo variables, ChatGPT review pass, and Copilot review pass without making instance-specific config part of source.
 
-## v13 Pages Deployment Dispatch
+## v18 single-workflow Pages deployment
 
-The publish workflow now updates the inspectable `public` branch first and then requests the `Deploy Public Pages` workflow through `repository_dispatch`. The deployment workflow checks out `public` and uses the official GitHub Pages artifact/deploy actions from the default-branch workflow context so working-branch pushes do not directly hit `github-pages` environment branch restrictions.
+The publish workflow now updates the inspectable `public` branch, uploads the same `.site-publish` directory as the GitHub Pages artifact, and deploys it through a downstream `deploy-pages` job in the same workflow file. This removes the repository-dispatch handoff and makes push-triggered publication fully automatic while preserving `public` as the audit branch. Instance repositories that publish from working branches such as `personal` should allow those branches in the `github-pages` environment, or use no deployment-branch restriction.
 
 ## V14/V15 Workspace Save Findings
 

@@ -1854,7 +1854,6 @@ function validateRepositoryTransportContracts() {
   const app = read('app.js');
   const index = read('index.html');
   const workflow = read('.github/workflows/publish-public.yml');
-  const pagesDeployWorkflow = read('.github/workflows/deploy-public-pages.yml');
   const schemaPath = join(root, '.topics/.schemas/tiinex.workspace.v1.schema.md');
   const workspacePath = join(root, '.topics/.workspaces/viewer.workspace.md');
   const schema = existsSync(schemaPath) ? readFileSync(schemaPath, 'utf8') : '';
@@ -2071,9 +2070,17 @@ function validateRepositoryTransportContracts() {
     'branch-only',
     'publish_enabled: ${{ steps.settings.outputs.publish_enabled }}',
     "if: steps.settings.outputs.publish_enabled == 'true'",
-    'Request GitHub Pages deployment',
-    'repos/${GITHUB_REPOSITORY}/dispatches',
-    "event_type='tiinex-public-pages-deploy'",
+    'Configure GitHub Pages',
+    'Upload Pages artifact',
+    'Deploy to GitHub Pages',
+    'deploy-pages:',
+    'needs: publish',
+    'needs.publish.outputs.publish_enabled',
+    'actions/configure-pages@v5',
+    'actions/upload-pages-artifact@v4',
+    'actions/deploy-pages@v4',
+    'environment:',
+    'name: github-pages',
     'TIINEX_PUBLIC_REDIRECTS',
     'pages: write',
     'id-token: write',
@@ -2117,36 +2124,23 @@ function validateRepositoryTransportContracts() {
   }
   const sanitizeDeployIndex = workflow.indexOf('- name: Sanitize public deploy root');
   const publishBranchIndex = workflow.indexOf('- name: Publish public branch');
-  const dispatchPagesIndex = workflow.indexOf('- name: Request GitHub Pages deployment');
-  if (sanitizeDeployIndex < 0 || publishBranchIndex < 0 || dispatchPagesIndex < 0 || !(sanitizeDeployIndex < publishBranchIndex && publishBranchIndex < dispatchPagesIndex)) {
-    fail('public deploy root must be sanitized before public branch publication and Pages deployment dispatch');
+  const uploadPagesIndex = workflow.indexOf('- name: Upload Pages artifact');
+  const deployPagesIndex = workflow.indexOf('  deploy-pages:');
+  if (sanitizeDeployIndex < 0 || publishBranchIndex < 0 || uploadPagesIndex < 0 || deployPagesIndex < 0 || !(sanitizeDeployIndex < publishBranchIndex && publishBranchIndex < uploadPagesIndex && uploadPagesIndex < deployPagesIndex)) {
+    fail('public deploy root must be sanitized, published to public, uploaded as a Pages artifact, and then deployed in one workflow');
   }
-  if (!workflow.includes("if: steps.settings.outputs.publish_enabled == 'true' && steps.settings.outputs.pages_deploy_enabled == 'true'")) {
-    fail('Pages deployment dispatch must be gated by publish_enabled and pages_deploy_enabled so the inspectable public branch remains the fallback');
+  if (!workflow.includes("if: steps.settings.outputs.publish_enabled == 'true' && steps.settings.outputs.pages_deploy_enabled == 'true'") || !workflow.includes("if: needs.publish.outputs.publish_enabled == 'true' && needs.publish.outputs.pages_deploy_enabled == 'true'")) {
+    fail('Pages artifact upload and deploy job must be gated by publish_enabled and pages_deploy_enabled so the inspectable public branch remains the fallback');
   }
-  for (const token of [
-    'name: Deploy Public Pages',
-    'repository_dispatch:',
-    'tiinex-public-pages-deploy',
-    'workflow_dispatch:',
-    'ref: public',
-    'actions/configure-pages@v5',
-    'actions/upload-pages-artifact@v4',
-    'actions/deploy-pages@v4',
-    'environment:',
-    'name: github-pages',
-    'contents: read',
-    'pages: write',
-    'id-token: write'
-  ]) {
-    if (!pagesDeployWorkflow.includes(token)) fail(`public Pages deploy workflow contract missing: ${token}`);
+  if (/repository_dispatch:|tiinex-public-pages-deploy|repos\/\$\{GITHUB_REPOSITORY\}\/dispatches/u.test(workflow)) {
+    fail('Pages deployment must stay in the same workflow file instead of relying on repository_dispatch ordering');
   }
   if (!app.includes('tiinexConfiguredBuildIdentity') || !app.includes('TIINEX_APP_BUILD_DEFAULT')) fail('app build identity must be configurable by published viewer options');
   if (app.includes("const TIINEX_APP_BUILD = Object.freeze({") && app.includes("repository: 'Tiinex/site'")) fail('app build identity must not hardcode Tiinex/site as the only source repository');
   if (workflow.includes("github.ref_name == github.event.repository.default_branch")) {
     fail('fork publish must not be limited to the repository default branch; non-public working branches should be publishable');
   }
-  note('workspace-owned repository snapshots, persistent transport decisions, co-hosted mirror discovery, workspace-owned and configured mirror sources, fork-safe self-mirror handling, branch publication from non-public branches, pinned source-ref publication, and Actions-first Pages deployment with inspectable public branch fallback contracts are valid');
+  note('workspace-owned repository snapshots, persistent transport decisions, co-hosted mirror discovery, workspace-owned and configured mirror sources, fork-safe self-mirror handling, branch publication from non-public branches, pinned source-ref publication, and single-workflow Actions Pages deployment with inspectable public branch fallback contracts are valid');
 }
 
 function validatePublicBuildContracts() {
@@ -2181,7 +2175,6 @@ function validatePublicBuildContracts() {
   if (!checkScript.includes('node --check public bundle failed')) fail('public build checker must syntax-check the bundle');
 
   const workflow = read('.github/workflows/publish-public.yml');
-  const pagesDeployWorkflow = read('.github/workflows/deploy-public-pages.yml');
   for (const required of ['npm test', 'npm run build:public', 'publish_dir: .site-publish', 'publish_branch: public']) {
     if (!workflow.includes(required)) fail(`publish workflow must include ${required}`);
   }
