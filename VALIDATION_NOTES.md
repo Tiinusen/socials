@@ -18,7 +18,7 @@ Architecture readiness markers used by repository tooling:
 Repository transport validation should cover:
 
 - workspace-relative snapshot metadata resolution and repository scope matching;
-- default GitHub Pages mirror derivation for project and account sites, with explicit snapshots taking precedence and no directory crawling;
+- co-hosted mirror derivation from the viewer base, with explicit snapshots first, locally served `.mirrors/` metadata/archive support, public `mirrors/` support, no directory crawling, and no false `file://` fetchability;
 - warm browser-local Git being checked before any remote mirror metadata request, while explicit hard refresh bypasses that preflight;
 - conventional mirror misses remaining quiet and falling through to Git without changing canonical source identity;
 - progress-aware snapshot archive transfer so a healthy large zip is not rejected by a fixed short wall-clock timeout;
@@ -48,7 +48,7 @@ Useful browser diagnostics:
 
 ## Repository transport decision visibility
 
-The selected repository material path remains visible after discovery in the existing source strip. The compact indicator distinguishes `local Git`, `Pages mirror`, `Git proxy`, and `GitHub raw` without adding a new desktop or mobile panel.
+The selected repository material path remains visible after discovery in the existing source strip. The compact indicator distinguishes `local Git`, `local mirror`, `site mirror`, `Git proxy`, and `GitHub raw` without adding a new desktop or mobile panel.
 
 Warm persistent Git reuse is recorded as `local-git`; it does not report a fresh proxy success when no repository network operation occurred. `TiinexDiagnostics.repositoryTransportDecisionReport()` exposes the selected material path, resolved commit, canonical origin, candidate plan, and source boundary for regression review.
 

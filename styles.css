@@ -23453,7 +23453,8 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
   background: rgba(22, 163, 74, 0.08);
 }
 
-.workspace-transport-pill.transport-pages-mirror,
+.workspace-transport-pill.transport-local-mirror,
+.workspace-transport-pill.transport-site-mirror,
 .workspace-transport-pill.transport-snapshot {
   border-color: rgba(56, 189, 248, 0.25);
   background: rgba(14, 116, 144, 0.09);

@@ -1834,34 +1834,54 @@ function validateRepositoryTransportContracts() {
   const workspace = read('.topics/.workspaces/viewer.workspace.md');
   const workflow = read('.github/workflows/publish-public.yml');
 
-  for (const token of ['## Repository Transports', '`snapshot`', '`git-proxy`', 'Snapshot transports precede Git-proxy transports', 'Relative `Metadata` and `Proxy` values resolve against the workspace artifact location', '### GitHub Pages mirror convention', 'https://<owner-lowercase>.github.io/<repository>/mirrors/github.com/<owner>/<repository>.json', 'Viewers must not crawl directory indexes']) {
+  for (const token of ['## Repository Transports', '`snapshot`', '`git-proxy`', 'Snapshot transports precede Git-proxy transports', 'Relative `Metadata` and `Proxy` values resolve against the workspace artifact location', '### Co-hosted mirror convention', './mirrors/<source-host>/<owner>/<repository>.json', './.mirrors/<source-host>/<owner>/<repository>.json', 'Viewers must not crawl directory indexes']) {
     if (!schema.includes(token)) fail(`workspace schema must document repository transport contract: ${token}`);
   }
   for (const token of ['## Repository Transports', '- Kind: git-proxy', '- Proxy: https://cors.isomorphic-git.org']) {
     if (!workspace.includes(token)) fail(`packaged workspace must declare the default repository transport: ${token}`);
   }
   if (workspace.includes('- Kind: snapshot') || workspace.includes('mirrors/github.com/Tiinex/docs.json')) {
-    fail('packaged workspace should exercise the schema-defined GitHub Pages mirror convention instead of duplicating its own repo mirror URL');
+    fail('packaged workspace should exercise the schema-defined co-hosted mirror convention instead of duplicating its own repo mirror URL');
   }
-  for (const token of ['parseRepositoryTransports', 'repositoryTransportsFor', 'githubPagesDefaultSnapshotTransport', "convention: 'github-pages-default'", 'tryDiscoverGitHubRepoViaRepositorySnapshot', 'zipBufferToImportEntries', 'repositoryTransportPlan', 'gitNativeTransportCandidates', 'clearRepositoryTransportHealth', 'workspace-transport-lazy', 'repositoryTransportDeadlineAt', 'repositoryTransportBudgetMs', 'local-file-http-snapshot-unavailable', "phase: 'snapshot-connect'", "phase: 'snapshot-transfer'", "phase: 'snapshot-processing'", 'repository-snapshot.convention-miss', 'repositorySnapshotMetadataTimeoutMs: 5000', 'repositorySnapshotTimeoutMs: 35000']) {
+  for (const token of ['parseRepositoryTransports', 'repositoryTransportsFor', 'coHostedRepositorySnapshotTransports', "convention: 'co-hosted-source'", "convention: 'co-hosted-public'", 'tryDiscoverGitHubRepoViaRepositorySnapshot', 'zipBufferToImportEntries', 'repositoryTransportPlan', 'gitNativeTransportCandidates', 'clearRepositoryTransportHealth', 'workspace-transport-lazy', 'repositoryTransportDeadlineAt', 'repositoryTransportBudgetMs', 'local-file-http-snapshot-unavailable', "phase: 'snapshot-connect'", "phase: 'snapshot-transfer'", "phase: 'snapshot-processing'", 'repository-snapshot.convention-miss', 'repositorySnapshotMetadataTimeoutMs: 5000', 'repositorySnapshotTimeoutMs: 35000']) {
     if (!app.includes(token)) fail(`repository transport runtime contract missing: ${token}`);
   }
   const identityStart = app.indexOf("  function normalizeRepositoryTransportIdentity(value, defaultHost = 'github.com') {");
   const transportParseStart = app.indexOf('  function parseRepositoryTransports(', identityStart);
   if (identityStart < 0 || transportParseStart <= identityStart) fail('Could not isolate repository mirror convention helpers.');
-  const mirrorContext = { URL, Number, encodeURIComponent, stripMarkdownInline: (value) => String(value || '') };
+  const mirrorContext = { URL, Number, Boolean, encodeURIComponent, stripMarkdownInline: (value) => String(value || '') };
   vm.runInNewContext(`${app.slice(identityStart, transportParseStart)}
-  globalThis.__mirrorConvention = { githubPagesDefaultSnapshotTransport };`, mirrorContext, { filename: 'app.js#github-pages-mirror-convention' });
-  const projectMirror = mirrorContext.__mirrorConvention.githubPagesDefaultSnapshotTransport('Tiinex/docs');
-  if (projectMirror?.metadataUrl !== 'https://tiinex.github.io/docs/mirrors/github.com/Tiinex/docs.json' || !projectMirror?.inferred) {
-    fail('GitHub project repositories must derive the default Pages mirror metadata URL.');
+  globalThis.__mirrorConvention = { coHostedRepositorySnapshotTransports };`, mirrorContext, { filename: 'app.js#co-hosted-mirror-convention' });
+  const publicMirrors = mirrorContext.__mirrorConvention.coHostedRepositorySnapshotTransports('Tiinex/docs', {
+    baseUrl: 'https://tiinex.github.io/site/',
+    includeSourceRoot: false
+  });
+  if (publicMirrors.length !== 1 || publicMirrors[0]?.metadataUrl !== 'https://tiinex.github.io/site/mirrors/github.com/Tiinex/docs.json' || publicMirrors[0]?.convention !== 'co-hosted-public') {
+    fail('Published viewers must derive the co-hosted mirror from the effective application base URL.');
   }
-  const accountMirror = mirrorContext.__mirrorConvention.githubPagesDefaultSnapshotTransport('Octocat/Octocat.github.io');
-  if (accountMirror?.metadataUrl !== 'https://octocat.github.io/mirrors/github.com/Octocat/Octocat.github.io.json') {
-    fail('GitHub account-site repositories must omit the project path from the default Pages mirror URL.');
+  const localMirrors = mirrorContext.__mirrorConvention.coHostedRepositorySnapshotTransports('Tiinex/docs', {
+    baseUrl: 'http://localhost:8080/',
+    includeSourceRoot: true
+  });
+  if (localMirrors.length !== 2 || localMirrors[0]?.metadataUrl !== 'http://localhost:8080/.mirrors/github.com/Tiinex/docs.json' || localMirrors[1]?.metadataUrl !== 'http://localhost:8080/mirrors/github.com/Tiinex/docs.json') {
+    fail('Local/source viewers must probe .mirrors before the public mirrors path.');
   }
-  if (mirrorContext.__mirrorConvention.githubPagesDefaultSnapshotTransport('https://gitlab.com/example/repo.git')) {
-    fail('GitHub Pages mirror convention must not be inferred for other forges.');
+  const forgeMirror = mirrorContext.__mirrorConvention.coHostedRepositorySnapshotTransports('https://gitlab.com/example/repo.git', {
+    baseUrl: 'https://viewer.example/app/',
+    includeSourceRoot: false
+  });
+  if (forgeMirror[0]?.metadataUrl !== 'https://viewer.example/app/mirrors/gitlab.com/example/repo.json') {
+    fail('Co-hosted mirror paths must preserve the canonical source host instead of being GitHub-only.');
+  }
+  const fileMirrors = mirrorContext.__mirrorConvention.coHostedRepositorySnapshotTransports('Tiinex/docs', {
+    baseUrl: 'file:///tmp/tiinex/index.html',
+    includeSourceRoot: true
+  });
+  if (fileMirrors.length) {
+    fail('file:// runtimes must not pretend sibling mirror metadata is fetchable without user-granted folder or zip intake.');
+  }
+  if (app.includes('.github.io/${encodeURIComponent') || app.includes("convention: 'github-pages-default'")) {
+    fail('Repository mirror discovery must not infer a repo-owned GitHub Pages site.');
   }
 
   if (/repo:\s*['"]Tiinex\/docs['"]/u.test(index) || /corsProxy:\s*['"]https:\/\/cors\.isomorphic-git\.org/u.test(index)) {
@@ -1938,7 +1958,8 @@ function validateRepositoryTransportContracts() {
   globalThis.__transportPresentation = { repositoryTransportPresentation };`, presentationContext, { filename: 'app.js#repository-transport-presentation' });
   const presentation = presentationContext.__transportPresentation.repositoryTransportPresentation;
   if (presentation({ kind: 'local-git' })?.label !== 'local Git') fail('Warm object-store material must present as local Git.');
-  if (presentation({ kind: 'snapshot', inferred: true, convention: 'github-pages-default' })?.label !== 'Pages mirror') fail('Inferred GitHub Pages snapshots must present as Pages mirror.');
+  if (presentation({ kind: 'snapshot', inferred: true, convention: 'co-hosted-source' })?.label !== 'local mirror') fail('Local co-hosted snapshots must present as local mirror.');
+  if (presentation({ kind: 'snapshot', inferred: true, convention: 'co-hosted-public' })?.label !== 'site mirror') fail('Published co-hosted snapshots must present as site mirror.');
   if (presentation({ kind: 'git-proxy' })?.label !== 'Git proxy') fail('Network Git material must present as Git proxy.');
   if (presentation({ kind: 'github-raw' })?.label !== 'GitHub raw') fail('Raw fallback material must present as GitHub raw.');
   const failureKindStart = app.indexOf('  function repositoryTransportFailureKind(error) {');
@@ -1980,7 +2001,7 @@ function validateRepositoryTransportContracts() {
   if (workflow.includes('Mirror submodule must live below .mirrors/')) {
     fail('copyable mirror workflow must ignore ordinary submodules outside .mirrors instead of rejecting the repository');
   }
-  note('workspace-owned repository snapshots, persistent transport decisions, default GitHub Pages discovery, and portable root-mirror publication contracts are valid');
+  note('workspace-owned repository snapshots, persistent transport decisions, co-hosted mirror discovery, and portable root-mirror publication contracts are valid');
 }
 
 function validatePublicBuildContracts() {

@@ -35,11 +35,11 @@ Keep the app bootstrap configuration small. Runtime/vendor loading, safe transpo
 A workspace may declare ordered, repository-scoped snapshot and Git-proxy transports. Relative transport resources resolve against the workspace artifact URL. The viewer must try only matching declarations and must not guess mirrors for unrelated repositories.
 Snapshot transports precede Git-proxy transports. Order is significant within each kind. When a workspace omits a ref, a verified snapshot may declare the resolved ref and native Git should follow the remote default branch rather than inventing `master`.
 
-For `github.com/<owner>/<repo>`, the viewer may also probe the schema-defined default GitHub Pages snapshot location after explicit snapshots and before Git. This is one metadata request at `<owner-lowercase>.github.io/<repo>/mirrors/github.com/<owner>/<repo>.json`, not directory crawling. Missing convention mirrors are quiet capability misses, not source failures. Redirects may reach configured custom domains, but viewers must not guess them.
+After explicit workspace snapshots, the viewer may probe co-hosted snapshot metadata relative to the viewer base: `./mirrors/<source-host>/<owner>/<repo>.json`. A source checkout served over local HTTP may first probe `./.mirrors/<source-host>/<owner>/<repo>.json`. Both paths use the same metadata-and-archive contract; a checked-out submodule directory alone is not silently treated as a verified snapshot. These are bounded metadata probes, not directory crawling. Missing convention mirrors are quiet capability misses, and canonical repository identity remains unchanged. Pure `file://` operation continues through explicit folder/zip intake because browsers do not grant silent sibling-file access.
 
 A transport is a delivery path, not provenance. Loading `owner/repo` through a published zip, an HTTP mirror, or a Git proxy must preserve its canonical repository, resolved commit, Parent, and Origin. The transport used may be recorded separately.
 
-Warm browser-local Git is a cache/material preflight, not a remote transport. Ordinary discovery must reuse it before probing Pages metadata or starting network Git. Explicit hard refresh may bypass this preflight so the user can request a current remote snapshot.
+Warm browser-local Git is a cache/material preflight, not a remote transport. Ordinary discovery must reuse it before probing co-hosted mirror metadata or starting network Git. Explicit hard refresh may bypass this preflight so the user can request a current remote snapshot.
 
 Published repository snapshots must reuse the same safe zip-import core as uploaded repository zip files. Snapshot transport provides current repository material; Git transport provides richer Git capabilities when needed. Both should converge on the same workspace material model rather than duplicate discovery or indexing logic.
 
@@ -98,7 +98,7 @@ Treat `architectureReadyForProductWork` as the aggregate readiness signal, while
 
 ## Repository material transport visibility
 
-Repository transport is delivery state, not source identity. After repository discovery, the existing source rail shows one compact material indicator: `local Git`, `Pages mirror`, `Git proxy`, or `GitHub raw`. Warm browser-local Git reuse must be reported as local material and must not be counted as a fresh proxy success.
+Repository transport is delivery state, not source identity. After repository discovery, the existing source rail shows one compact material indicator: `local Git`, `local mirror`, `site mirror`, `Git proxy`, or `GitHub raw`. Warm browser-local Git reuse must be reported as local material and must not be counted as a fresh proxy success.
 
 Use `TiinexDiagnostics.repositoryTransportDecisionReport()` to inspect the selected transport, reason, resolved commit, candidate plan, and unchanged canonical origin. Do not add a separate transport dashboard to ordinary desktop or mobile reading UX.
 

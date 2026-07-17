@@ -14685,50 +14685,91 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return new RegExp(`^${escaped}$`, 'i').test(normalizedIdentity);
   }
 
-  function githubRepositoryIdentityParts(value) {
+  function repositoryTransportIdentityParts(value, defaultHost = 'github.com') {
     const raw = stripMarkdownInline(String(value || '')).trim();
     if (!raw) return null;
     if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(raw)) {
       const [owner, repository] = raw.replace(/\.git$/i, '').split('/');
-      return owner && repository ? { host: 'github.com', owner, repository } : null;
+      return owner && repository ? { host: defaultHost, path: [owner, repository] } : null;
     }
     let candidate = raw;
     if (/^[^@\s]+@[^:\s]+:.+/.test(candidate)) candidate = `ssh://${candidate.replace(':', '/')}`;
     try {
       const url = new URL(candidate);
-      if (String(url.hostname || '').toLowerCase() !== 'github.com') return null;
-      const parts = String(url.pathname || '').split('/').filter(Boolean);
-      if (parts.length < 2) return null;
-      return { host: 'github.com', owner: parts[0], repository: parts[1].replace(/\.git$/i, '') };
+      const host = String(url.hostname || '').toLowerCase();
+      const path = String(url.pathname || '').split('/').filter(Boolean).map((part, index, parts) => index === parts.length - 1 ? part.replace(/\.git$/i, '') : part);
+      return host && path.length >= 2 ? { host, path } : null;
     } catch (_) {
       return null;
     }
   }
 
-  function githubPagesDefaultSnapshotTransport(repo) {
-    const parts = githubRepositoryIdentityParts(repo);
-    if (!parts?.owner || !parts?.repository) return null;
-    const ownerHost = parts.owner.toLowerCase();
-    const repositoryLower = parts.repository.toLowerCase();
-    const accountSiteRepository = `${ownerHost}.github.io`;
-    const siteBase = repositoryLower === accountSiteRepository
-      ? `https://${ownerHost}.github.io/`
-      : `https://${ownerHost}.github.io/${encodeURIComponent(parts.repository)}/`;
-    const metadataUrl = new URL(`mirrors/github.com/${encodeURIComponent(parts.owner)}/${encodeURIComponent(parts.repository)}.json`, siteBase).toString();
-    return Object.freeze({
-      id: `github-pages-default-${ownerHost}-${repositoryLower}`,
-      label: 'GitHub Pages mirror',
+  function applicationMirrorBaseUrl() {
+    const fallback = typeof location !== 'undefined' ? location.href : '';
+    const configured = typeof document !== 'undefined' ? String(document.baseURI || '') : '';
+    try {
+      const base = new URL('.', configured || fallback);
+      base.hash = '';
+      base.search = '';
+      return base.toString();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function localSourceMirrorContext() {
+    if (typeof location === 'undefined' || !['http:', 'https:'].includes(location.protocol)) return false;
+    const host = String(location.hostname || '').toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.localhost');
+  }
+
+  function coHostedRepositorySnapshotTransports(repo, options = {}) {
+    const parts = repositoryTransportIdentityParts(repo);
+    const baseUrl = String(options.baseUrl || applicationMirrorBaseUrl()).trim();
+    if (!parts?.host || !parts.path?.length || !baseUrl) return [];
+    try {
+      if (!['http:', 'https:'].includes(new URL(baseUrl).protocol)) return [];
+    } catch (_) {
+      return [];
+    }
+    const identityPath = [parts.host, ...parts.path].map((segment) => encodeURIComponent(segment)).join('/');
+    const includeSourceRoot = options.includeSourceRoot === undefined ? localSourceMirrorContext() : Boolean(options.includeSourceRoot);
+    const candidates = [];
+    if (includeSourceRoot) {
+      candidates.push(Object.freeze({
+        id: `co-hosted-source-${normalizeRepositoryTransportIdentity(repo).replace(/[^a-z0-9]+/gi, '-')}`,
+        label: 'Local mirror',
+        kind: 'snapshot',
+        order: Number.MAX_SAFE_INTEGER - 1,
+        repository: parts.path.slice(-2).join('/'),
+        repositoryIdentity: normalizeRepositoryTransportIdentity(repo),
+        match: '',
+        metadataUrl: new URL(`.mirrors/${identityPath}.json`, baseUrl).toString(),
+        proxyUrl: '',
+        workspaceUrl: '',
+        inferred: true,
+        coHosted: true,
+        localSource: true,
+        convention: 'co-hosted-source'
+      }));
+    }
+    candidates.push(Object.freeze({
+      id: `co-hosted-public-${normalizeRepositoryTransportIdentity(repo).replace(/[^a-z0-9]+/gi, '-')}`,
+      label: 'Site mirror',
       kind: 'snapshot',
       order: Number.MAX_SAFE_INTEGER,
-      repository: `${parts.owner}/${parts.repository}`,
-      repositoryIdentity: normalizeRepositoryTransportIdentity(`${parts.owner}/${parts.repository}`),
+      repository: parts.path.slice(-2).join('/'),
+      repositoryIdentity: normalizeRepositoryTransportIdentity(repo),
       match: '',
-      metadataUrl,
+      metadataUrl: new URL(`mirrors/${identityPath}.json`, baseUrl).toString(),
       proxyUrl: '',
       workspaceUrl: '',
       inferred: true,
-      convention: 'github-pages-default'
-    });
+      coHosted: true,
+      localSource: false,
+      convention: 'co-hosted-public'
+    }));
+    return candidates;
   }
 
   function parseRepositoryTransports(markdown, configUrl) {
@@ -14782,8 +14823,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       return repositoryTransportPatternMatches(transport.match, identity);
     }).sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
     if (!kind || kind === 'snapshot') {
-      const inferred = githubPagesDefaultSnapshotTransport(repo);
-      if (inferred && !matching.some((transport) => transport.kind === 'snapshot' && transport.metadataUrl === inferred.metadataUrl)) matching.push(inferred);
+      for (const inferred of coHostedRepositorySnapshotTransports(repo)) {
+        if (!matching.some((transport) => transport.kind === 'snapshot' && transport.metadataUrl === inferred.metadataUrl)) matching.push(inferred);
+      }
     }
     return matching.sort((a, b) => {
       if (!kind) {
@@ -14916,11 +14958,12 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       icon = 'fa-solid fa-hard-drive';
       className = 'transport-local-git';
     } else if (kind === 'snapshot') {
-      const pages = Boolean(transport.inferred || transport.convention === 'github-pages-default');
-      label = pages ? 'Pages mirror' : 'snapshot';
-      description = pages ? 'Published GitHub Pages repository snapshot' : 'Published repository snapshot';
+      const localMirror = transport.convention === 'co-hosted-source' || transport.localSource === true;
+      const siteMirror = transport.convention === 'co-hosted-public' || transport.coHosted === true;
+      label = localMirror ? 'local mirror' : siteMirror ? 'site mirror' : 'snapshot';
+      description = localMirror ? 'Local co-hosted repository snapshot' : siteMirror ? 'Repository snapshot hosted beside the viewer' : 'Published repository snapshot';
       icon = 'fa-solid fa-box-archive';
-      className = pages ? 'transport-pages-mirror' : 'transport-snapshot';
+      className = localMirror ? 'transport-local-mirror' : siteMirror ? 'transport-site-mirror' : 'transport-snapshot';
     } else if (kind === 'git-proxy') {
       label = 'Git proxy';
       description = String(transport.label || '').trim() || 'Browser Git proxy';
@@ -14968,7 +15011,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       repository: normalizeRepositoryTransportIdentity(repo),
       snapshotTimeoutMs: Number(app.settings.repositorySnapshotTimeoutMs || 35000),
       snapshotMetadataTimeoutMs: Number(app.settings.repositorySnapshotMetadataTimeoutMs || 5000),
-      inferredGitHubPagesSnapshot: githubPagesDefaultSnapshotTransport(repo),
+      inferredCoHostedSnapshots: coHostedRepositorySnapshotTransports(repo),
       gitTransportMaxNetworkDurationMs: Number(app.settings.gitNativeTransportTimeoutMs || 35000),
       gitTransportResponseStartTimeoutMs: Number(app.settings.gitNativeResponseStartTimeoutMs || 6000),
       gitTransportIdleTimeoutMs: Number(app.settings.gitNativeIdleTimeoutMs || 8000),

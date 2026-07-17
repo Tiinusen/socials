@@ -198,30 +198,37 @@ Rules:
 - Missing `Enabled` means enabled.
 - Older viewers may ignore this optional section without reinterpreting the workspace sources.
 
-### GitHub Pages mirror convention
+### Co-hosted mirror convention
 
-For a public GitHub repository, a viewer may probe one conventional published snapshot before Git transport when no earlier declared snapshot succeeds.
+A viewer may probe repository snapshots hosted beside the viewer before starting network Git.
 
-For `github.com/<owner>/<repository>`, the default project-site metadata URL is:
-
-```text
-https://<owner-lowercase>.github.io/<repository>/mirrors/github.com/<owner>/<repository>.json
-```
-
-For the account-site repository `<owner>.github.io`, the repository path segment is omitted:
+For repository identity `<source-host>/<owner>/<repository>`, the public co-hosted metadata path is:
 
 ```text
-https://<owner-lowercase>.github.io/mirrors/github.com/<owner>/<owner>.github.io.json
+./mirrors/<source-host>/<owner>/<repository>.json
 ```
+
+The path resolves from the viewer application's effective base URL, not from the canonical repository URL and not from the current hash route. This keeps the same convention valid at an origin root, a project subpath, a custom domain, or `http://localhost`.
+
+In a local/source checkout, a viewer may additionally probe:
+
+```text
+./.mirrors/<source-host>/<owner>/<repository>.json
+```
+
+The dot-directory form is local build input and must not become the assumed public path. It uses the same metadata-and-archive contract as `mirrors/`.
 
 Rules:
 
-- Explicit matching `snapshot` declarations precede the convention-derived candidate.
-- The probe is one metadata request. Viewers must not crawl directory indexes or guess unrelated mirror hosts.
+- Explicit matching `snapshot` declarations precede convention-derived candidates.
+- Warm browser-local Git precedes all remote or co-hosted probes unless the user explicitly requests refresh.
+- In a local/source context, `.mirrors/` precedes `mirrors/`; in a published context only `mirrors/` is inferred.
+- The probe is one metadata request per candidate. Viewers must not crawl directory indexes or guess unrelated hosts.
+- A checked-out repository directory by itself is not a deterministic browser snapshot: without metadata/archive or user-granted folder access, a browser cannot safely enumerate arbitrary local files.
 - A missing or unavailable conventional mirror is not a source-integrity failure. The viewer should continue to matching Git transports and then bounded material fallback.
-- The default `github.io` URL is the discovery address. Normal HTTP redirects may lead to a repository custom domain; viewers must not invent custom domains.
-- The metadata and archive must still satisfy the same repository identity, full commit, checksum, safe extraction, and source-boundary rules as declared snapshots.
-- This convention applies only to `github.com` repository identities. Other forges require explicit transports or their own documented conventions.
+- Relative resources in metadata resolve from the metadata document URL.
+- The metadata and archive must satisfy repository identity, full commit, checksum, safe extraction, and source-boundary rules.
+- `file://` runtimes may be unable to fetch local metadata because browsers isolate local files. Manual folder/zip import remains the no-server fallback; a local HTTP server may use both `.mirrors/` and `mirrors/` conventions.
 
 ## Source Policy
 
