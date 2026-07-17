@@ -103,6 +103,69 @@ function writeOptionalCname(out) {
   return Boolean(cname);
 }
 
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/gu, '&amp;')
+    .replace(/</gu, '&lt;')
+    .replace(/>/gu, '&gt;')
+    .replace(/"/gu, '&quot;');
+}
+
+function parseRedirectLine(line) {
+  const raw = String(line || '').trim();
+  if (!raw || raw.startsWith('#')) return null;
+  let left = '';
+  let right = '';
+  for (const separator of ['=', '|']) {
+    if (raw.includes(separator)) {
+      [left, right] = raw.split(separator, 2).map((part) => part.trim());
+      break;
+    }
+  }
+  if (!left && !right) {
+    const parts = raw.split(/\s+/u);
+    if (parts.length < 2) throw new Error(`Invalid TIINEX_PUBLIC_REDIRECTS line: ${raw}`);
+    left = parts.shift();
+    right = parts.join(' ');
+  }
+  const target = String(right || '').trim();
+  const route = String(left || '').trim().replace(/^\/+|\/+$/gu, '');
+  if (!route || route === '.') throw new Error(`Redirect path must not target public root: ${raw}`);
+  if (route.split('/').includes('..')) throw new Error(`Unsafe redirect path: ${raw}`);
+  if (!/^https?:\/\//iu.test(target)) throw new Error(`Redirect target must be absolute HTTP(S): ${raw}`);
+  return { route, target };
+}
+
+function writePublicRedirects(out) {
+  const redirects = envValue('TIINEX_PUBLIC_REDIRECTS');
+  if (!redirects) return 0;
+  let count = 0;
+  for (const line of redirects.split(/\n/u)) {
+    const redirect = parseRedirectLine(line);
+    if (!redirect) continue;
+    const redirectDir = join(out, redirect.route);
+    const escaped = escapeHtml(redirect.target);
+    mkdirSync(redirectDir, { recursive: true });
+    writeFileSync(join(redirectDir, 'index.html'), `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="0; url=${escaped}">
+  <meta name="robots" content="noindex">
+  <link rel="canonical" href="${escaped}">
+  <title>Redirecting</title>
+</head>
+<body>
+  <p>Redirecting to <a href="${escaped}">${escaped}</a>.</p>
+</body>
+</html>
+`, 'utf8');
+    count += 1;
+  }
+  return count;
+}
+
 function stripLocalScripts(html) {
   let output = html;
   for (const script of scriptOrder) {
@@ -184,12 +247,14 @@ function main() {
   for (const file of ['styles.css', 'llms.txt', 'tiinex.app.llm.v1.md', 'tiinex.context.v1.md', 'tiinex.orientation.v1.md', 'tiinex.orientation.manifest.v1.json', 'robots.txt', 'favicon.ico']) {
     copyPathIfExists(file, out);
   }
-  for (const dir of ['assets', '.topics', 'samples']) {
+  for (const dir of ['assets', '.topics']) {
     copyPathIfExists(dir, out);
   }
 
   writeFileSync(join(out, '.nojekyll'), '', 'utf8');
   writeOptionalCname(out);
+  const redirectCount = writePublicRedirects(out);
+  if (redirectCount) console.log(`Generated ${redirectCount} public redirect(s).`);
 
   console.log(`Built public site: ${basename(out)}`);
 }

@@ -15,7 +15,7 @@ on:
         required: false
         default: ""
       deploy_pages:
-        description: Optional direct GitHub Pages deploy; use true only when github-pages environment allows this branch
+        description: Optional direct GitHub Pages deploy override; false keeps branch publication only
         required: false
         default: ""
 
@@ -36,9 +36,12 @@ jobs:
       pages_deploy_enabled: ${{ steps.settings.outputs.pages_deploy_enabled }}
       publish_enabled: ${{ steps.settings.outputs.publish_enabled }}
     env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PAGES_CNAME: ${{ vars.PAGES_CNAME || '' }}
       TIINEX_USE_SOURCE_CNAME: ${{ vars.TIINEX_USE_SOURCE_CNAME || '' }}
       TIINEX_PUBLIC_STATIC_PATHS: ${{ vars.TIINEX_PUBLIC_STATIC_PATHS || '' }}
+      TIINEX_PUBLIC_REDIRECTS: ${{ vars.TIINEX_PUBLIC_REDIRECTS || '' }}
+      TIINEX_CANONICAL_SOURCE_REF: ${{ vars.TIINEX_CANONICAL_SOURCE_REF || '' }}
       TIINEX_VIEWER_TITLE: ${{ vars.TIINEX_VIEWER_TITLE || '' }}
       TIINEX_VIEWER_GIT_REPO: ${{ vars.TIINEX_VIEWER_GIT_REPO || '' }}
       TIINEX_VIEWER_GIT_REF: ${{ vars.TIINEX_VIEWER_GIT_REF || '' }}
@@ -65,9 +68,32 @@ jobs:
         id: settings
         shell: bash
         run: |
+          set -euo pipefail
+
           source_ref="${{ github.event.inputs.source_ref }}"
           pinned_source_ref="${TIINEX_PUBLISH_SOURCE_REF:-}"
+          canonical_source_ref="${TIINEX_CANONICAL_SOURCE_REF:-master}"
           publish_enabled=true
+
+          list_publishable_branches() {
+            local repo_url auth_header
+            repo_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+            if [ -n "${GITHUB_TOKEN:-}" ]; then
+              auth_header="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+              git -c "http.${GITHUB_SERVER_URL}/.extraheader=AUTHORIZATION: basic $auth_header" \
+                ls-remote --heads "$repo_url" \
+                | awk '{print $2}' \
+                | sed 's#^refs/heads/##' \
+                | grep -v '^public$' \
+                | sort -u
+            else
+              git ls-remote --heads "$repo_url" \
+                | awk '{print $2}' \
+                | sed 's#^refs/heads/##' \
+                | grep -v '^public$' \
+                | sort -u
+            fi
+          }
 
           if [ "${{ github.event_name }}" = "push" ]; then
             if [ -n "$pinned_source_ref" ]; then
@@ -76,8 +102,28 @@ jobs:
                 publish_enabled=false
                 echo "Skipping publish for $GITHUB_REF_NAME because TIINEX_PUBLISH_SOURCE_REF is pinned to $pinned_source_ref."
               fi
-            elif [ -z "$source_ref" ]; then
-              source_ref="$GITHUB_REF_NAME"
+            elif [ "$GITHUB_REPOSITORY" = "Tiinex/site" ]; then
+              source_ref="$canonical_source_ref"
+              if [ "$GITHUB_REF_NAME" != "$canonical_source_ref" ]; then
+                publish_enabled=false
+                echo "Skipping publish for $GITHUB_REF_NAME because Tiinex/site only auto-publishes $canonical_source_ref without an override."
+              fi
+            else
+              mapfile -t publishable_branches < <(list_publishable_branches || printf '%s\n' "$GITHUB_REF_NAME")
+              if [ "${#publishable_branches[@]}" -eq 1 ]; then
+                source_ref="${publishable_branches[0]}"
+                if [ "$GITHUB_REF_NAME" != "$source_ref" ]; then
+                  publish_enabled=false
+                  echo "Skipping publish for $GITHUB_REF_NAME because $source_ref is the only non-public branch."
+                fi
+              elif [ "${#publishable_branches[@]}" -gt 1 ] && [ "$GITHUB_REF_NAME" = "$canonical_source_ref" ]; then
+                source_ref="$GITHUB_REF_NAME"
+                publish_enabled=false
+                echo "Skipping $canonical_source_ref because other non-public working branches exist; push a working branch or set TIINEX_PUBLISH_SOURCE_REF."
+              else
+                source_ref="$GITHUB_REF_NAME"
+                echo "Publishing pushed working branch $source_ref because this fork has multiple non-public branches."
+              fi
             fi
           fi
 
@@ -85,7 +131,7 @@ jobs:
             source_ref="$pinned_source_ref"
           fi
           if [ -z "$source_ref" ]; then
-            source_ref="${{ github.event.repository.default_branch }}"
+            source_ref="$canonical_source_ref"
           fi
           if [ -z "$source_ref" ]; then
             echo "Unable to resolve a source ref." >&2
@@ -94,11 +140,11 @@ jobs:
 
           pages_deploy="${TIINEX_WORKFLOW_PAGES_DEPLOY:-}"
           if [ -z "$pages_deploy" ]; then
-            pages_deploy="${TIINEX_PAGES_DEPLOY:-}"
+            pages_deploy="${TIINEX_PAGES_DEPLOY:-auto}"
           fi
           case "${pages_deploy,,}" in
-            true|yes|on|1) pages_deploy_enabled=true ;;
-            *) pages_deploy_enabled=false ;;
+            false|no|off|0|branch|branch-only) pages_deploy_enabled=false ;;
+            *) pages_deploy_enabled=true ;;
           esac
 
           echo "source_ref=$source_ref" >> "$GITHUB_OUTPUT"
@@ -107,7 +153,7 @@ jobs:
           if [ "$pages_deploy_enabled" = true ]; then
             echo "Direct GitHub Pages deployment is enabled for this run."
           else
-            echo "Direct GitHub Pages deployment is disabled; public branch publication remains enabled."
+            echo "Direct GitHub Pages deployment is disabled; public branch publication remains enabled as the inspectable fallback."
           fi
           if [ "$publish_enabled" = true ]; then
             echo "Publishing source ref: $source_ref"
@@ -206,7 +252,7 @@ jobs:
               'index.html', 'styles.css', 'robots.txt', 'favicon.ico', 'llms.txt',
               'README.md', 'LICENSE', 'NOTICE', 'LINEAGE_POLICY.md',
               'tiinex.app.llm.v1.md', 'tiinex.context.v1.md', 'tiinex.orientation.v1.md', 'tiinex.orientation.manifest.v1.json',
-              '.topics', 'assets', 'samples', 'discord'
+              '.topics', 'assets'
           ]
           configured = os.environ.get('TIINEX_PUBLIC_STATIC_PATHS', '').strip()
           paths = [item.strip() for chunk in configured.splitlines() for item in chunk.split(',') if item.strip()] if configured else default_paths
@@ -245,6 +291,60 @@ jobs:
           cname = cname or source_cname
           if cname:
               (out / 'CNAME').write_text(cname + '\n', encoding='utf-8')
+
+          def html_escape(value):
+              return (value.replace('&', '&amp;')
+                           .replace('<', '&lt;')
+                           .replace('>', '&gt;')
+                           .replace('"', '&quot;'))
+
+          def parse_redirect(line):
+              line = str(line or '').strip()
+              if not line or line.startswith('#'):
+                  return None
+              for sep in ('=', '|'):
+                  if sep in line:
+                      left, right = [part.strip() for part in line.split(sep, 1)]
+                      break
+              else:
+                  parts = line.split(None, 1)
+                  if len(parts) != 2:
+                      raise SystemExit(f'Invalid TIINEX_PUBLIC_REDIRECTS line: {line}')
+                  left, right = parts[0].strip(), parts[1].strip()
+              target = right
+              rel = safe_rel(left.strip('/'))
+              if not str(rel) or str(rel) == '.':
+                  raise SystemExit(f'Redirect path must not target public root: {line}')
+              if not (target.startswith('https://') or target.startswith('http://')):
+                  raise SystemExit(f'Redirect target must be absolute HTTP(S): {line}')
+              return rel, target
+
+          redirects = os.environ.get('TIINEX_PUBLIC_REDIRECTS', '')
+          for line in redirects.splitlines():
+              parsed = parse_redirect(line)
+              if not parsed:
+                  continue
+              rel, target = parsed
+              redirect_dir = out / rel
+              if redirect_dir.exists() and not redirect_dir.is_dir():
+                  raise SystemExit(f'Redirect path collides with file: {rel}')
+              redirect_dir.mkdir(parents=True, exist_ok=True)
+              escaped = html_escape(target)
+              html = f'''<!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta http-equiv="refresh" content="0; url={escaped}">
+            <meta name="robots" content="noindex">
+            <link rel="canonical" href="{escaped}">
+            <title>Redirecting</title>
+          </head>
+          <body>
+            <p>Redirecting to <a href="{escaped}">{escaped}</a>.</p>
+          </body>
+          </html>
+          '''
+              (redirect_dir / 'index.html').write_text(html, encoding='utf-8')
           PY
 
       - name: Remove inherited custom domain from forks
@@ -839,9 +939,13 @@ jobs:
           commit_message: >-
             Publish public branch from ${{ steps.settings.outputs.source_ref }} @ ${{ github.sha }}
 
+      - name: Configure GitHub Pages
+        if: steps.settings.outputs.publish_enabled == 'true' && steps.settings.outputs.pages_deploy_enabled == 'true'
+        uses: actions/configure-pages@v5
+
       - name: Upload Pages artifact
         if: steps.settings.outputs.publish_enabled == 'true' && steps.settings.outputs.pages_deploy_enabled == 'true'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: .site-publish
 

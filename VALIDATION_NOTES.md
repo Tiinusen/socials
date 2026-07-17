@@ -59,7 +59,7 @@ Warm persistent Git reuse is recorded as `local-git`; it does not report a fresh
 
 - Fork-safe mirror publication ignores self-referential mirror declarations because the root repository is already published, and sanitizes root-level `.gitmodules`/`.mirrors` from the deploy artifact.
 
-- Fork-safe mirror publication defaults to publishing only the repository itself when no mirror variable/secret/manual input is configured; workspace and `.gitmodules` mirrors are explicit opt-ins, and direct GitHub Pages deployment is disabled unless `TIINEX_PAGES_DEPLOY=true`.
+- Fork-safe mirror publication defaults to publishing only the repository itself when no mirror variable/secret/manual input is configured; workspace and `.gitmodules` mirrors are explicit opt-ins, and direct GitHub Pages deployment can be disabled with `TIINEX_PAGES_DEPLOY=branch-only` while the inspectable `public` branch remains available.
 
 - Fork-safe branch publication now runs on pushes to any non-`public` branch by default, while `TIINEX_PUBLISH_SOURCE_REF` can pin publication to one configured source ref and skip other branch pushes without changing `public`.
 
@@ -71,3 +71,20 @@ Warm persistent Git reuse is recorded as `local-git`; it does not report a fresh
 - Build-time workspace variables are projected into `window.TiinexWorkspace.candidates`, not into a generic env blob and not into a generated `.workspace.md` artifact.
 - Runtime tries candidates in order: query pointers, query direct workspace URLs, configured runtime candidates, direct runtime workspaces, and packaged local workspace fallbacks.
 - GitHub issue pointers are transport/config sources only. The issue body must point to a real workspace artifact using `Workspace URL:` or `Workspace:`; the app resolves that pointer at runtime and logs candidate-level diagnostics.
+
+## V9 repo-agnostic viewer validation
+
+- Viewer builds no longer require `.topics/.workspaces/viewer.workspace.md` when runtime workspace candidates or issue pointers own bootstrap.
+- `npm test` must pass for a viewer branch that has app/tooling files but no packaged `.topics` workspace, provided workspace bootstrap can be supplied by runtime candidates such as `TIINEX_WORKSPACE_POINTER_PRIMARY`.
+- Optional publish roots such as `.topics`, `assets`, and `favicon.ico` are copied when present, but their absence must not make the public build checker fail; `samples/` is not a default root.
+
+## V10 Actions-first publication and instance branch policy
+
+- Direct GitHub Pages Actions deployment is the default when not explicitly disabled, and the workflow still publishes the same `.site-publish` artifact to `public` as an inspectable fallback/audit branch.
+- `public` never triggers the publisher.
+- `Tiinex/site` auto-publishes only the canonical source ref, default `master`, unless `TIINEX_PUBLISH_SOURCE_REF` overrides the source ref.
+- Forks and non-canonical instances publish the canonical source ref only when it is the only non-`public` branch; once a working branch exists, pushes to the canonical branch are skipped and pushes to working branches publish those branches.
+- `TIINEX_CANONICAL_SOURCE_REF` lets repos use `main` or another upstream-sync branch name without changing workflow code.
+- Redirect-only public folders such as `discord/` should be generated from `TIINEX_PUBLIC_REDIRECTS` instead of being committed as source material.
+- `samples/` is no longer part of the repository root or default public-copy contract.
+- README quick-start guidance should describe fork setup, working branch naming, repo variables, ChatGPT review pass, and Copilot review pass without making instance-specific config part of source.
