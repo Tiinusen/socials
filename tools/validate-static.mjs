@@ -1996,8 +1996,8 @@ function validateRepositoryTransportContracts() {
     'Detect publish mode',
     'viewer_build=false',
     'Prepare mirror-only publish artifact',
-    "if: steps.publish_mode.outputs.viewer_build == 'true'",
-    "if: steps.publish_mode.outputs.viewer_build != 'true'",
+    "steps.publish_mode.outputs.viewer_build == 'true'",
+    "steps.publish_mode.outputs.viewer_build != 'true'",
     'Root publication is unconditional',
     '## Repository Mirrors',
     'emit_workspace_mirror_sources',
@@ -2011,6 +2011,14 @@ function validateRepositoryTransportContracts() {
     'emit_configured_mirror_sources',
     'github-actions-variable:TIINEX_REPOSITORY_MIRRORS',
     'extra_mirrors',
+    'branches-ignore:',
+    "github.ref_type == 'branch'",
+    "github.ref_name != 'public'",
+    'TIINEX_PUBLISH_SOURCE_REF',
+    'publish_enabled=false',
+    'Skipping publish for $GITHUB_REF_NAME',
+    'publish_enabled: ${{ steps.settings.outputs.publish_enabled }}',
+    "if: steps.settings.outputs.publish_enabled == 'true'",
     'actions/upload-pages-artifact@v3',
     'actions/deploy-pages@v4',
     'pages: write',
@@ -2059,10 +2067,13 @@ function validateRepositoryTransportContracts() {
   if (sanitizeDeployIndex < 0 || publishBranchIndex < 0 || uploadPagesIndex < 0 || deployPagesIndex < 0 || !(sanitizeDeployIndex < publishBranchIndex && publishBranchIndex < uploadPagesIndex && uploadPagesIndex < deployPagesIndex)) {
     fail('public deploy root must be sanitized before branch publication, Pages artifact upload, and Pages deployment');
   }
-  if (!workflow.includes("if: steps.settings.outputs.pages_deploy_enabled == 'true'") || !workflow.includes("if: needs.publish.outputs.pages_deploy_enabled == 'true'")) {
-    fail('official Pages deployment must be opt-in so environment branch restrictions do not fail the default fork publish path');
+  if (!workflow.includes("if: steps.settings.outputs.publish_enabled == 'true' && steps.settings.outputs.pages_deploy_enabled == 'true'") || !workflow.includes("if: needs.publish.outputs.publish_enabled == 'true' && needs.publish.outputs.pages_deploy_enabled == 'true'")) {
+    fail('official Pages deployment must be opt-in and must not run when a pinned source ref skips the publish path');
   }
-  note('workspace-owned repository snapshots, persistent transport decisions, co-hosted mirror discovery, workspace-owned and configured mirror sources, fork-safe self-mirror handling, branch publication, and opt-in official Pages deployment contracts are valid');
+  if (workflow.includes("github.ref_name == github.event.repository.default_branch")) {
+    fail('fork publish must not be limited to the repository default branch; non-public working branches should be publishable');
+  }
+  note('workspace-owned repository snapshots, persistent transport decisions, co-hosted mirror discovery, workspace-owned and configured mirror sources, fork-safe self-mirror handling, branch publication from non-public branches, pinned source-ref publication, and opt-in official Pages deployment contracts are valid');
 }
 
 function validatePublicBuildContracts() {
