@@ -16543,23 +16543,169 @@ ${bodySections}
     }
   }
 
+
+
+  function workspaceRuntimeHostConfig() {
+    const host = window.TiinexWorkspace || window.tiinexWorkspace || window.TIINEX_WORKSPACE || {};
+    if (typeof host === 'string') return { defaultWorkspace: host };
+    if (host && typeof host === 'object') return host;
+    return {};
+  }
+
+  function workspaceBootstrapCandidateUrl(candidate) {
+    if (!candidate) return '';
+    if (typeof candidate === 'string') return candidate;
+    return candidate.url || candidate.href || candidate.workspaceUrl || candidate.workspace || candidate.viewerWorkspace || candidate.defaultWorkspace || candidate.pointer || candidate.issue || '';
+  }
+
+  function workspaceBootstrapCandidatePath(candidate) {
+    if (!candidate || typeof candidate === 'string') return '';
+    return candidate.path || candidate.localPath || '';
+  }
+
+  function normalizeWorkspaceBootstrapCandidate(input, defaults = {}) {
+    const original = input;
+    if (!input) return null;
+    let candidate = typeof input === 'string' ? { url: input } : Object.assign({}, input);
+    const path = workspaceBootstrapCandidatePath(candidate);
+    const url = workspaceBootstrapCandidateUrl(candidate);
+    const role = candidate.role || defaults.role || 'candidate';
+    let kind = candidate.kind || candidate.type || defaults.kind || '';
+    if (!kind) {
+      if (path) kind = 'local-path';
+      else if (parseGitHubIssueSpec(url)) kind = 'github-issue-pointer';
+      else kind = 'workspace-url';
+    }
+    kind = String(kind || '').trim().toLowerCase().replace(/_/g, '-');
+    if (kind === 'issue' || kind === 'github-issue' || kind === 'issue-pointer') kind = 'github-issue-pointer';
+    if (kind === 'workspace' || kind === 'viewer-workspace' || kind === 'direct-workspace') kind = 'workspace-url';
+    if (kind === 'local') kind = 'local-path';
+    const normalized = {
+      kind,
+      role,
+      label: candidate.label || defaults.label || role,
+      source: candidate.source || defaults.source || '',
+      original
+    };
+    if (path) normalized.path = String(path).trim();
+    if (url) normalized.url = String(url).trim();
+    if (!normalized.url && !normalized.path) return null;
+    return normalized;
+  }
+
+  function workspaceBootstrapConfiguredCandidates() {
+    const params = new URLSearchParams(location.search || '');
+    const candidates = [];
+    const add = (input, defaults = {}) => {
+      const normalized = normalizeWorkspaceBootstrapCandidate(input, defaults);
+      if (normalized) candidates.push(normalized);
+    };
+
+    const explicitPointer = params.get('workspacePointer') || params.get('issueWorkspace') || params.get('viewerWorkspacePointer') || params.get('workspaceIssue');
+    if (explicitPointer) add({ kind: 'github-issue-pointer', url: explicitPointer }, { role: 'query-primary', label: 'Query workspace pointer', source: 'query' });
+
+    const explicitWorkspace = params.get('viewerWorkspace') || params.get('workspace') || params.get('viewerConfig') || params.get('config') || params.get('identity');
+    if (explicitWorkspace) add({ kind: 'workspace-url', url: explicitWorkspace }, { role: 'query-workspace', label: 'Query workspace', source: 'query' });
+
+    const host = workspaceRuntimeHostConfig();
+    if (Array.isArray(host.candidates)) {
+      host.candidates.forEach((candidate, index) => add(candidate, { role: `runtime-${index + 1}`, source: 'window.TiinexWorkspace.candidates' }));
+    }
+    if (host.pointer) add(host.pointer, { kind: 'github-issue-pointer', role: 'runtime-pointer', label: 'Runtime workspace pointer', source: 'window.TiinexWorkspace.pointer' });
+    if (Array.isArray(host.pointers)) {
+      host.pointers.forEach((pointer, index) => add(pointer, { kind: 'github-issue-pointer', role: `runtime-pointer-${index + 1}`, source: 'window.TiinexWorkspace.pointers' }));
+    }
+    for (const key of ['defaultWorkspace', 'workspace', 'viewerWorkspace']) {
+      if (host[key]) add({ kind: 'workspace-url', url: host[key] }, { role: `runtime-${key}`, label: key, source: `window.TiinexWorkspace.${key}` });
+    }
+    if (host.fallbackWorkspace) add({ kind: 'workspace-url', url: host.fallbackWorkspace }, { role: 'runtime-fallback', label: 'Runtime fallback workspace', source: 'window.TiinexWorkspace.fallbackWorkspace' });
+    if (Array.isArray(host.fallbacks)) {
+      host.fallbacks.forEach((fallback, index) => add(fallback, { kind: 'workspace-url', role: `runtime-fallback-${index + 1}`, source: 'window.TiinexWorkspace.fallbacks' }));
+    }
+
+    add({ kind: 'local-path', path: '.topics/.workspaces/viewer.workspace.md' }, { role: 'packaged-workspace', label: 'Packaged workspace', source: 'default' });
+    add({ kind: 'local-path', path: 'viewer.workspace.md' }, { role: 'packaged-root-workspace', label: 'Packaged root workspace', source: 'default' });
+
+    const seen = new Set();
+    return candidates.filter((candidate) => {
+      const key = `${candidate.kind}\n${candidate.url || ''}\n${candidate.path || ''}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function workspaceUrlFromPointerMarkdown(markdown, baseUrl) {
+    const text = normalizeMarkdown(markdown || '');
+    const fieldNames = '(?:Workspace URL|Workspace Url|Viewer Workspace URL|Viewer Workspace Url|Tiinex Workspace URL|Tiinex Workspace Url|Workspace|Viewer Workspace|Tiinex Workspace|Workspace Artifact|Workspace Entrypoint)';
+    const fieldPattern = new RegExp(`^\\s*(?:[-*]\\s*)?${fieldNames}\\s*:\\s*(.+?)\\s*$`, 'imu');
+    const field = text.match(fieldPattern);
+    if (field?.[1]) return markdownConfigValue(field[1], baseUrl);
+
+    const headingPattern = /^(?:#{2,3})\s+Tiinex Workspace Pointer\s*$([\s\S]*?)(?=^#{1,3}\s+|$)/imu;
+    const section = text.match(headingPattern)?.[1] || '';
+    if (section) {
+      const inSection = section.match(fieldPattern);
+      if (inSection?.[1]) return markdownConfigValue(inSection[1], baseUrl);
+      const link = section.match(/\[[^\]]*workspace[^\]]*\]\(([^)]+)\)/iu) || section.match(/(https?:\/\/\S+\.workspace\.md(?:[?#]\S*)?)/iu);
+      if (link?.[1]) return markdownConfigValue(link[1], baseUrl);
+    }
+
+    const directWorkspaceUrl = text.match(/https?:\/\/\S+?\.workspace\.md(?:[?#][^\s)<>]+)?/iu);
+    if (directWorkspaceUrl?.[0]) return markdownConfigValue(directWorkspaceUrl[0], baseUrl);
+    const githubBlobWorkspace = text.match(/https?:\/\/github\.com\/[^\s)<>]+?\/blob\/[^\s)<>]+?\.workspace\.md(?:[?#][^\s)<>]+)?/iu);
+    if (githubBlobWorkspace?.[0]) return markdownConfigValue(githubBlobWorkspace[0], baseUrl);
+    return '';
+  }
+
+  async function resolveWorkspaceIssuePointer(candidate, visited = new Set()) {
+    const issueUrl = workspaceBootstrapCandidateUrl(candidate);
+    const spec = parseGitHubIssueSpec(issueUrl);
+    if (!spec) throw new Error(`Workspace pointer is not a GitHub issue URL: ${issueUrl}`);
+    if (visited.has(spec.issueUrl)) throw new Error(`Workspace pointer loop detected at ${spec.issueUrl}`);
+    visited.add(spec.issueUrl);
+    const issue = (await fetchGitHubJson(spec.apiIssueUrl, { hardRefresh: true })).data;
+    const workspaceUrl = workspaceUrlFromPointerMarkdown(issue?.body || '', spec.issueUrl);
+    if (!workspaceUrl) throw new Error(`GitHub issue ${spec.repo}#${spec.issueNumber} did not declare a workspace URL.`);
+    if (parseGitHubIssueSpec(workspaceUrl)) {
+      return await resolveWorkspaceIssuePointer({ kind: 'github-issue-pointer', url: workspaceUrl, role: candidate.role, label: candidate.label, source: spec.issueUrl }, visited);
+    }
+    return {
+      url: normalizeViewerConfigUrl(workspaceUrl),
+      sourceUrl: spec.issueUrl,
+      source: `github-issue:${spec.repo}#${spec.issueNumber}`,
+      issueTitle: issue?.title || '',
+      issueNumber: spec.issueNumber,
+      repo: spec.repo
+    };
+  }
+
+  async function resolveWorkspaceBootstrapCandidate(candidate) {
+    const normalized = normalizeWorkspaceBootstrapCandidate(candidate);
+    if (!normalized) throw new Error('Empty workspace bootstrap candidate.');
+    if (normalized.kind === 'github-issue-pointer') {
+      const resolved = await resolveWorkspaceIssuePointer(normalized);
+      return Object.assign({}, normalized, resolved, { resolvedKind: 'workspace-url' });
+    }
+    const rawUrl = normalized.path || normalized.url;
+    return Object.assign({}, normalized, {
+      url: normalizeViewerConfigUrl(rawUrl),
+      source: normalized.source || normalized.role || normalized.kind,
+      resolvedKind: 'workspace-url'
+    });
+  }
+
   function pageHasExplicitWorkspaceQuery() {
     try {
       const params = new URLSearchParams(location.search || '');
-      return ['viewerWorkspace', 'workspace', 'viewerConfig', 'config', 'identity'].some((key) => params.has(key) && String(params.get(key) || '').trim());
+      return ['viewerWorkspace', 'workspace', 'viewerConfig', 'config', 'identity', 'workspacePointer', 'issueWorkspace', 'viewerWorkspacePointer', 'workspaceIssue'].some((key) => params.has(key) && String(params.get(key) || '').trim());
     } catch (_) {
       return false;
     }
   }
 
   function viewerWorkspaceUrlFromLocation() {
-    const params = new URLSearchParams(location.search);
-    const explicit = params.get('viewerWorkspace') || params.get('workspace') || params.get('viewerConfig') || params.get('config') || params.get('identity');
-    if (explicit) return explicit;
-
-    const host = window.TiinexWorkspace || window.tiinexWorkspace || window.TIINEX_WORKSPACE || {};
-    if (typeof host === 'string') return host;
-    return host.defaultWorkspace || host.workspace || host.viewerWorkspace || '';
+    return workspaceBootstrapConfiguredCandidates().find((candidate) => candidate.kind !== 'github-issue-pointer')?.url || '';
   }
 
 
@@ -17639,42 +17785,59 @@ ${bodySections}
   }
 
   async function loadViewerConfig() {
-    const explicitOrHost = viewerWorkspaceUrlFromLocation();
+    const candidates = workspaceBootstrapConfiguredCandidates();
     const configuredByUrl = pageHasExplicitWorkspaceQuery();
-    const configuredByHost = Boolean(explicitOrHost) && !configuredByUrl;
-    const defaultCandidates = ['.topics/.workspaces/viewer.workspace.md', 'viewer.workspace.md'];
+    const configuredByHost = candidates.some((candidate) => String(candidate.source || '').startsWith('window.TiinexWorkspace'));
+    const diagnostics = { startedAt: new Date().toISOString(), candidates: candidates.map((candidate) => ({ kind: candidate.kind, role: candidate.role, label: candidate.label, url: candidate.url || '', path: candidate.path || '', source: candidate.source || '' })), attempts: [], selected: null };
+    app.viewerIdentity.workspaceBootstrap = diagnostics;
 
     if (shouldUseEmbeddedDefaultWorkspace()) {
       try {
         await applyEmbeddedDefaultWorkspace({ applyWorkspaceState: startupShouldApplyViewerWorkspaceState() });
+        diagnostics.selected = { kind: 'embedded-default', role: 'file-mode', source: 'embedded' };
       } catch (error) {
+        diagnostics.attempts.push({ kind: 'embedded-default', ok: false, error: error?.message || String(error || '') });
         app.viewerIdentity.error = error?.message || String(error || '');
         applyViewerCustomCss('');
       }
       return;
     }
 
-    const candidates = (configuredByUrl || configuredByHost) ? [explicitOrHost] : defaultCandidates;
-
     let lastError = null;
     for (const candidate of candidates) {
-      const url = normalizeViewerConfigUrl(candidate);
-      app.viewerIdentity.configUrl = url;
+      const attempt = { kind: candidate.kind, role: candidate.role, label: candidate.label || '', source: candidate.source || '', url: candidate.url || '', path: candidate.path || '', startedAt: new Date().toISOString(), ok: false };
+      diagnostics.attempts.push(attempt);
       try {
+        const resolved = await resolveWorkspaceBootstrapCandidate(candidate);
+        const url = resolved.url;
+        attempt.resolvedUrl = url;
+        attempt.resolvedSource = resolved.source || '';
         if (location.protocol === 'file:' && isFileProtocolUrl(url)) {
           throw new Error('Cannot fetch a .workspace.md file from file://. Use embedded default, drag/drop, or host over http://localhost.');
         }
         const markdown = await fetchText(url, 'viewer workspace');
+        attempt.bytes = markdown.length;
+        if (!looksLikeWorkspaceMarkdown(markdown)) {
+          throw new Error('Resolved workspace candidate did not contain Tiinex workspace markdown.');
+        }
         const parsed = parseViewerConfigMarkdown(markdown, url);
         await applyParsedViewerConfig(parsed, url, { applyWorkspaceState: startupShouldApplyViewerWorkspaceState() });
+        attempt.ok = true;
+        diagnostics.selected = Object.assign({}, attempt, { selectedAt: new Date().toISOString() });
+        app.viewerIdentity.workspaceBootstrap = diagnostics;
         return;
       } catch (error) {
         lastError = error;
-        if (configuredByUrl || configuredByHost || location.protocol === 'file:') break;
+        attempt.error = error?.message || String(error || '');
+        attempt.completedAt = new Date().toISOString();
+        // Explicit query candidates still participate in the same ordered fallback
+        // chain. A bad primary must not block secondary or packaged candidates.
+        if (location.protocol === 'file:') break;
       }
     }
 
     app.viewerIdentity.error = lastError?.message || String(lastError || '');
+    app.viewerIdentity.workspaceBootstrap = diagnostics;
     syncDocumentTitle('viewer-config-fallback');
     applyViewerCustomCss('');
   }
