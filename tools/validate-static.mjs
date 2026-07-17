@@ -1848,7 +1848,31 @@ function validateRepositoryTransportContracts() {
   }
   if (!workflow.includes("':(exclude).mirrors/**'")) fail('mirror publisher must exclude nested .mirrors build inputs from every published snapshot');
   if (/exclude_mirrors/u.test(workflow)) fail('mirror publisher should use one invariant instead of per-repository .mirrors exclusion flags');
-  note('workspace-owned repository snapshots, default GitHub Pages discovery, and scoped Git proxy contracts are valid');
+  for (const token of [
+    'Detect publish mode',
+    'viewer_build=false',
+    'Prepare mirror-only publish artifact',
+    "if: steps.publish_mode.outputs.viewer_build == 'true'",
+    "if: steps.publish_mode.outputs.viewer_build != 'true'",
+    'Root publication is unconditional',
+    'Ignoring non-mirror submodule',
+    'Validate repository mirrors',
+    'Publishing repository mirror is missing',
+    'touch .site-publish/.nojekyll',
+    'github.event.repository.fork',
+    'rm -f .site-publish/CNAME'
+  ]) {
+    if (!workflow.includes(token)) fail(`portable mirror workflow contract missing: ${token}`);
+  }
+  const rootPublishIndex = (/publish_snapshot\s*\\\s*\n\s*"\$GITHUB_WORKSPACE"/u.exec(workflow) || {}).index ?? -1;
+  const optionalMirrorsIndex = workflow.indexOf('          if [ -f .gitmodules ]; then');
+  if (rootPublishIndex < 0 || optionalMirrorsIndex < 0 || rootPublishIndex > optionalMirrorsIndex) {
+    fail('publishing repository root mirror must be built before optional .gitmodules mirrors');
+  }
+  if (workflow.includes('Mirror submodule must live below .mirrors/')) {
+    fail('copyable mirror workflow must ignore ordinary submodules outside .mirrors instead of rejecting the repository');
+  }
+  note('workspace-owned repository snapshots, default GitHub Pages discovery, and portable root-mirror publication contracts are valid');
 }
 
 function validatePublicBuildContracts() {

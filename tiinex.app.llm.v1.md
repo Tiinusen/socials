@@ -41,6 +41,8 @@ A transport is a delivery path, not provenance. Loading `owner/repo` through a p
 
 Published repository snapshots must reuse the same safe zip-import core as uploaded repository zip files. Snapshot transport provides current repository material; Git transport provides richer Git capabilities when needed. Both should converge on the same workspace material model rather than duplicate discovery or indexing logic.
 
+The repository mirror workflow is copyable infrastructure rather than a viewer-only build. It must always publish the repository that contains the workflow as a root mirror. Viewer repositories may additionally build the public app, and `.mirrors` submodules may add further repositories, but neither viewer files nor `.mirrors` are prerequisites for root publication. Ordinary submodules outside `.mirrors` are unrelated and must be ignored by mirror discovery.
+
 Issues and Discussions remain provider-adapter surfaces. Repository snapshot and Git-proxy declarations do not proxy or replace those adapters.
 
 Observed transport health, cooldowns, cache keys, credentials, and UI state are browser/runtime state and must not be serialized into `.workspace.md`.

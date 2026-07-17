@@ -2,24 +2,18 @@ name: Publish Public Branch
 
 on:
   push:
-    branches:
-      - master
-    paths-ignore:
-      - README.md
-      - LICENSE
-      - NOTICE
   workflow_dispatch:
     inputs:
       source_ref:
         description: Branch, tag, or commit to publish from
         required: false
-        default: "master"
+        default: ""
 
 permissions:
   contents: write
 
 concurrency:
-  group: publish-site-public
+  group: publish-public
   cancel-in-progress: true
 
 jobs:
@@ -55,22 +49,65 @@ jobs:
           fetch-depth: 0
           submodules: false
 
+      - name: Detect publish mode
+        id: publish_mode
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          viewer_build=false
+          if [ -f package.json ] \
+            && [ -f app.js ] \
+            && [ -f index.html ] \
+            && [ -f tools/build-public.mjs ] \
+            && [ -f tools/check-public-build.mjs ] \
+            && jq -e '.scripts["build:public"] and .scripts.test' package.json >/dev/null; then
+            viewer_build=true
+          fi
+
+          echo "viewer_build=$viewer_build" >> "$GITHUB_OUTPUT"
+          if [ "$viewer_build" = true ]; then
+            echo "mode=viewer-and-mirrors" >> "$GITHUB_OUTPUT"
+            echo "Publish mode: viewer build plus repository mirrors"
+          else
+            echo "mode=mirrors-only" >> "$GITHUB_OUTPUT"
+            echo "Publish mode: repository mirrors only"
+          fi
+
       - name: Set up Node.js
+        if: steps.publish_mode.outputs.viewer_build == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: 20
 
       - name: Validate app syntax
+        if: steps.publish_mode.outputs.viewer_build == 'true'
         run: node --check app.js
 
-      - name: Build public site
+      - name: Build public viewer
+        if: steps.publish_mode.outputs.viewer_build == 'true'
         run: npm run build:public
 
+      - name: Prepare mirror-only publish artifact
+        if: steps.publish_mode.outputs.viewer_build != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .site-publish
+          mkdir -p .site-publish
+          touch .site-publish/.nojekyll
+
+      - name: Remove inherited custom domain from forks
+        if: steps.publish_mode.outputs.viewer_build == 'true' && github.event.repository.fork && vars.PAGES_CNAME == ''
+        shell: bash
+        run: rm -f .site-publish/CNAME
+
       # Copyable mirror convention:
-      #   .mirrors/<host>/<owner>/<repo> in .gitmodules declares a source.
-      #   The remote's current default branch is cloned at publish time; the
-      #   superproject's recorded gitlink commit is intentionally not used.
-      #   The publishing repository itself is emitted through the same layout.
+      #   - the publishing repository is always emitted as its own mirror;
+      #   - .mirrors/<host>/<owner>/<repo> entries in .gitmodules add mirrors;
+      #   - mirror submodules are cloned from their current remote default branch;
+      #   - the superproject's recorded gitlink commit is intentionally not used;
+      #   - ordinary submodules outside .mirrors are ignored by this publisher.
       - name: Build repository mirrors
         shell: bash
         env:
@@ -84,6 +121,7 @@ jobs:
           temp_root="$RUNNER_TEMP/tiinex-mirror-build"
           rm -rf "$mirror_root" "$temp_root"
           mkdir -p "$mirror_root" "$temp_root"
+          touch "$GITHUB_WORKSPACE/.site-publish/.nojekyll"
           declare -A published_identities=()
 
           normalize_remote_identity() {
@@ -178,9 +216,9 @@ jobs:
             rm -rf "$directory_path" "$archive_path" "$metadata_path"
             mkdir -p "$directory_path" "$output_parent"
 
-            # `.mirrors` is publish input, never repository material. Exclude it
-            # for both the publishing repo and mirrored repos so mirrors cannot
-            # recursively embed their own transport sources.
+            # Mirror inputs are not repository material. Exclude them from every
+            # root and submodule snapshot so mirrors cannot recursively embed
+            # their own transport sources. Git metadata is never in git archive.
             git -C "$repository_dir" archive --format=tar "$commit" -- . \
               ':(exclude).mirrors' \
               ':(exclude).mirrors/**' \
@@ -215,6 +253,8 @@ jobs:
           root_commit="$(git rev-parse HEAD)"
           root_repository_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
 
+          # Root publication is unconditional. .mirrors and .gitmodules are
+          # optional inputs for additional repositories, never prerequisites.
           publish_snapshot \
             "$GITHUB_WORKSPACE" \
             "$root_identity" \
@@ -230,16 +270,16 @@ jobs:
               module_name="${path_key#submodule.}"
               module_name="${module_name%.path}"
               module_path="$(git config -f .gitmodules --get "$path_key")"
-              module_url="$(git config -f .gitmodules --get "submodule.$module_name.url")"
 
               case "$module_path" in
                 .mirrors/*) ;;
                 *)
-                  echo "Mirror submodule must live below .mirrors/: $module_path" >&2
-                  exit 1
+                  printf 'Ignoring non-mirror submodule: %s\n' "$module_path"
+                  continue
                   ;;
               esac
 
+              module_url="$(git config -f .gitmodules --get "submodule.$module_name.url")"
               public_identity="${module_path#.mirrors/}"
               case "/$public_identity/" in
                 */../*|*//*|*\\*)
@@ -278,9 +318,102 @@ jobs:
           fi
 
           echo "Repository mirror output:"
-          find "$mirror_root" -type f -name '*.zip' | sort
+          for public_identity in "${!published_identities[@]}"; do
+            printf '%s\n'               "$mirror_root/$public_identity.json"               "$mirror_root/$public_identity.zip"
+          done | sort
 
-      - name: Check public publish artifact
+      - name: Validate repository mirrors
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mirror_root="$GITHUB_WORKSPACE/.site-publish/mirrors"
+          server_host="${GITHUB_SERVER_URL#*://}"
+          server_host="${server_host%%/*}"
+          server_host="${server_host%%:*}"
+          root_metadata="$mirror_root/$server_host/$GITHUB_REPOSITORY.json"
+
+          if [ ! -f "$root_metadata" ]; then
+            echo "Publishing repository mirror is missing: $root_metadata" >&2
+            exit 1
+          fi
+
+          mapfile -t metadata_files < <(
+            while IFS= read -r metadata_path; do
+              stem="$(basename "$metadata_path" .json)"
+              parent="$(dirname "$metadata_path")"
+              if [ -f "$parent/$stem.zip" ] && [ -d "$parent/$stem" ]; then
+                printf '%s\n' "$metadata_path"
+              fi
+            done < <(find "$mirror_root" -type f -name '*.json' | sort)
+          )
+          if [ "${#metadata_files[@]}" -eq 0 ]; then
+            echo "No repository mirror metadata was produced." >&2
+            exit 1
+          fi
+
+          validation_root="$RUNNER_TEMP/tiinex-mirror-validation"
+          rm -rf "$validation_root"
+          mkdir -p "$validation_root"
+
+          for metadata_path in "${metadata_files[@]}"; do
+            jq -e '
+              .type == "tiinex.repository.snapshot"
+              and .version == 1
+              and (.repository | type == "string" and length > 0)
+              and (.ref | type == "string" and length > 0)
+              and (.commit | type == "string" and test("^[0-9a-fA-F]{40}$"))
+              and (.archive | type == "string" and length > 0)
+              and (.directory | type == "string" and length > 0)
+              and (.sha256 | type == "string" and test("^[0-9a-fA-F]{64}$"))
+              and (.selection == "source-ref" or .selection == "remote-default-branch")
+            ' "$metadata_path" >/dev/null
+
+            stem="$(basename "$metadata_path" .json)"
+            parent="$(dirname "$metadata_path")"
+            archive_name="$(jq -r '.archive' "$metadata_path")"
+            directory_name="$(jq -r '.directory' "$metadata_path")"
+            expected_sha256="$(jq -r '.sha256' "$metadata_path")"
+
+            if [ "$archive_name" != "$stem.zip" ] || [ "$directory_name" != "$stem/" ]; then
+              echo "Mirror metadata names do not match $stem: $metadata_path" >&2
+              exit 1
+            fi
+
+            archive_path="$parent/$archive_name"
+            directory_path="$parent/${directory_name%/}"
+            [ -f "$archive_path" ] || { echo "Missing mirror archive: $archive_path" >&2; exit 1; }
+            [ -d "$directory_path" ] || { echo "Missing mirror directory: $directory_path" >&2; exit 1; }
+
+            actual_sha256="$(sha256sum "$archive_path" | awk '{print $1}')"
+            if [ "$actual_sha256" != "$expected_sha256" ]; then
+              echo "Mirror checksum mismatch: $archive_path" >&2
+              exit 1
+            fi
+
+            unzip -tqq "$archive_path"
+            if unzip -Z1 "$archive_path" | grep -Eq '(^|/)\.git(/|$)|(^|/)\.mirrors(/|$)'; then
+              echo "Mirror archive contains excluded Git or mirror input material: $archive_path" >&2
+              exit 1
+            fi
+
+            archive_list="$validation_root/$stem.archive.txt"
+            directory_list="$validation_root/$stem.directory.txt"
+            unzip -Z1 "$archive_path" | sed '/\/$/d' | sort > "$archive_list"
+            (
+              cd "$directory_path"
+              find . \( -type f -o -type l \) -printf '%P\n' | sort
+            ) > "$directory_list"
+            if ! diff -u "$directory_list" "$archive_list"; then
+              echo "Mirror directory and archive differ: $metadata_path" >&2
+              exit 1
+            fi
+          done
+
+          printf 'Validated %s repository mirror(s).\n' "${#metadata_files[@]}"
+
+      - name: Check public viewer artifact
+        if: steps.publish_mode.outputs.viewer_build == 'true'
         run: |
           npm test
           node --check .site-publish/tiinex.bundle.js
