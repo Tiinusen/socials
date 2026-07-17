@@ -94,9 +94,10 @@ try {
     }
     if (!bundle.includes('workspace-config-save') || bundle.includes('workspace-config-download')) fail('public bundle must save workspace configuration through local draft persistence.');
     if (!bundle.includes('await saveNodeEdit(ws, node, markdown)')) fail('public bundle workspace configuration save must reuse local artifact draft persistence.');
-    if (!bundle.includes('workspaceSaveArtifactReport')) fail('public bundle must expose Save Workspace artifact diagnostics.');
-    if (!bundle.includes("type: 'workspace-save-artifact'")) fail('public bundle Save Workspace must use the workspace artifact modal.');
-    if (!bundle.includes('Save artifact</button>') || bundle.includes('Save artifact and export')) fail('public bundle Save Workspace must save the artifact without auto-export.');
+    if (bundle.includes('>Save workspace</button>')) fail('public bundle must not expose a topbar Save workspace side path.');
+    if (!bundle.includes('workspace-config-update-current')) fail('public bundle workspace artifact editor must expose Update with current staging.');
+    if (!bundle.includes('Current workspace set staged in this workspace artifact')) fail('public bundle Update with current must stage the active workspace set before local draft save.');
+    if (!bundle.includes('Workspace entries use the same draft/export/publish path as other artifacts')) fail('public bundle artifact wizard copy must include the workspace normal-flow contract.');
     if (!bundle.includes('githubWorkspacePresentationDelta')) fail('public bundle must keep workspace-specific GitHub issue preview summaries.');
     const sections = [
       'src/app/core-runtime.js',
