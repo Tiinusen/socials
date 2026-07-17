@@ -128,7 +128,6 @@
   app.viewportResponsiveness = app.viewportResponsiveness || { events: [] };
   app.githubExportBinding = app.githubExportBinding || { snapshots: [], issueBodyBindings: 0, commentBindings: 0, removedLocalDrafts: 0 };
   app.workspaceOpenMerge = app.workspaceOpenMerge || { events: [], last: null, duplicateExports: 0, mergeImports: 0, openImports: 0 };
-  app.workspaceSaveArtifact = app.workspaceSaveArtifact || { events: [], last: null, createdWorkspaces: 0, createdArtifacts: 0, replacedArtifacts: 0, exportDialogsOpened: 0 };
 
   function tiinexBuildIdentity() {
     return Object.assign({}, tiinexConfiguredBuildIdentity(), {
@@ -975,15 +974,16 @@
     };
   }
 
+
   function workspaceSaveArtifactReport() {
-    const state = app.workspaceSaveArtifact || { events: [], last: null, createdWorkspaces: 0, createdArtifacts: 0, replacedArtifacts: 0, exportDialogsOpened: 0 };
+    const state = app.workspaceSaveArtifact || { events: [], last: null, createdWorkspaces: 0, createdArtifacts: 0, replacedArtifacts: 0, savedArtifacts: 0 };
     return {
       schema: 'tiinex.workspace-save-artifact.report.v1',
-      policy: 'Save Workspace creates or replaces a tiinex.workspace.v1 draft artifact inside an explicit target workspace, then hands off to the normal export adapter flow; target workspace and replacement path are user-qualified, not inferred silently.',
+      policy: 'Save Workspace creates or replaces a tiinex.workspace.v1 draft artifact inside an explicit target workspace only. It does not download, publish, or open export automatically; users export later through the normal workspace export action.',
       createdWorkspaces: Number(state.createdWorkspaces || 0),
       createdArtifacts: Number(state.createdArtifacts || 0),
       replacedArtifacts: Number(state.replacedArtifacts || 0),
-      exportDialogsOpened: Number(state.exportDialogsOpened || 0),
+      savedArtifacts: Number(state.savedArtifacts || 0),
       last: state.last || null,
       events: Array.isArray(state.events) ? state.events.slice(-20) : []
     };
@@ -6641,10 +6641,7 @@
   }
 
   async function saveWorkspace(wsId) {
-    const ws = getWorkspace(wsId);
-    if (!ws) return toast('No workspace selected.', 'warn');
-    app.modal = defaultExportModal(ws.id);
-    render();
+    return openWorkspaceSaveArtifactModal({ targetWsId: wsId || app.activeWorkspaceId || '' });
   }
 
 
@@ -15658,7 +15655,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           ${renderViewerBrand()}
           <div class="top-actions workspace-top-actions-layout workspace-top-actions-toolbar">
             <button class="tv-btn primary" data-action="open-source-modal" title="Create or add a workspace/source"><i class="fa-solid fa-plus"></i>Create</button>
-            <button class="tv-btn subtle" data-action="export-config" title="Save current view/lens as a portable .workspace.md file. Local-only material is noted but not embedded."><i class="fa-regular fa-floppy-disk"></i>Save workspace</button>
+            <button class="tv-btn subtle" data-action="export-config" title="Create or replace a workspace leaf draft before exporting through the normal workspace flow."><i class="fa-regular fa-floppy-disk"></i>Save workspace</button>
             <button class="tv-btn subtle" data-action="open-share-modal" data-scope="active" title="Review share eligibility before copying a public or exact-view link." aria-label="Open Share options"><i class="fa-solid fa-share-nodes"></i>Share</button>
           </div>
           ${renderHelpButton()}
@@ -16123,8 +16120,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   }
 
 
+
   function workspaceSaveArtifactState() {
-    app.workspaceSaveArtifact = app.workspaceSaveArtifact || { events: [], last: null, createdWorkspaces: 0, createdArtifacts: 0, replacedArtifacts: 0, exportDialogsOpened: 0 };
+    app.workspaceSaveArtifact = app.workspaceSaveArtifact || { events: [], last: null, createdWorkspaces: 0, createdArtifacts: 0, replacedArtifacts: 0, savedArtifacts: 0 };
     return app.workspaceSaveArtifact;
   }
 
@@ -16133,7 +16131,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (kind === 'create-workspace') state.createdWorkspaces += 1;
     if (kind === 'create-artifact') state.createdArtifacts += 1;
     if (kind === 'replace-artifact') state.replacedArtifacts += 1;
-    if (kind === 'open-export-dialog') state.exportDialogsOpened += 1;
+    if (kind === 'save-artifact') state.savedArtifacts += 1;
     const event = Object.assign({ at: new Date().toISOString(), kind }, details || {});
     state.last = event;
     state.events.push(event);
@@ -16158,17 +16156,24 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return `.topics/.workspaces/${workspaceArtifactFilenameSafe(displayName || 'current-view')}`;
   }
 
-  async function openWorkspaceSaveArtifactModal() {
+  function workspaceSaveDefaultTargetWorkspaceId(options = {}) {
+    const workspaces = app.workspaces || [];
+    const requested = String(options.targetWsId || '').trim();
+    if (requested && getWorkspace(requested)) return requested;
+    if (!workspaces.length) return '__new__';
+    if (workspaces.length === 1) return workspaces[0].id;
+    return app.activeWorkspaceId && getWorkspace(app.activeWorkspaceId) ? app.activeWorkspaceId : workspaces[0].id;
+  }
+
+  async function openWorkspaceSaveArtifactModal(options = {}) {
     const markdown = await buildCurrentLensConfigMarkdown();
     const parsed = parseViewerConfigMarkdown(markdown, location.href);
     const displayName = parsed.displayName || parsed.heading || 'Current Tiinex View';
-    const workspaces = app.workspaces || [];
-    const targetWsId = workspaces.length ? (app.activeWorkspaceId || workspaces[0].id) : '__new__';
     app.modal = {
       type: 'workspace-save-artifact',
       markdown,
       displayName,
-      targetWsId,
+      targetWsId: workspaceSaveDefaultTargetWorkspaceId(options),
       replacePath: '',
       artifactPath: workspaceSaveDefaultArtifactPath(displayName),
       newWorkspaceLabel: 'Workspace artifacts'
@@ -16194,16 +16199,18 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       `<option value="" ${selectedReplacePath ? '' : 'selected'}>Create a new workspace artifact</option>`,
       ...existing.map((item) => `<option value="${escapeAttr(item.path)}" ${selectedReplacePath === item.path ? 'selected' : ''}>Replace ${escapeHtml(item.path)}</option>`)
     ].join('');
-    const targetHelp = workspaces.length
-      ? 'Choose where this workspace artifact should live. Replacement is explicit and never inferred from filename alone.'
-      : 'No workspace is open; Tiinex will create a local workspace for this artifact before opening the normal export flow.';
+    const targetHelp = workspaces.length > 1
+      ? 'Multiple workspaces are open. Choose the exact workspace that should receive this draft artifact.'
+      : workspaces.length === 1
+        ? 'The only open workspace is selected, but placement and replacement still require your explicit choice.'
+        : 'No workspace is open; Tiinex will create a local workspace that contains this draft artifact.';
     return `<div class="modal-backdrop-custom focus-modal workspace-save-artifact-backdrop" role="dialog" aria-modal="true" aria-labelledby="workspace-save-artifact-title">
       <div class="modal-panel export-panel workspace-save-artifact-panel">
         <div class="modal-header-lite export-head compact-export-head">
           <div>
-            <p class="kicker">Save workspace artifact</p>
-            <h2 class="modal-title-lite export-title" id="workspace-save-artifact-title"><span class="export-title-icon"><i class="fa-solid fa-layer-group"></i></span><span>Save workspace as artifact</span></h2>
-            <p class="text-secondary mb-0">Create or replace a <code>tiinex.workspace.v1</code> draft leaf, then continue through the normal export adapter.</p>
+            <p class="kicker">Workspace leaf</p>
+            <h2 class="modal-title-lite export-title" id="workspace-save-artifact-title"><span class="export-title-icon"><i class="fa-solid fa-layer-group"></i></span><span>Save workspace artifact</span></h2>
+            <p class="text-secondary mb-0">Create or replace a <code>tiinex.workspace.v1</code> local draft leaf. Exporting or publishing stays on the normal workspace Export path.</p>
           </div>
           <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
         </div>
@@ -16228,17 +16235,17 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
             <label class="field-label">Artifact path
               <input class="form-control tv-input" data-field="workspaceSave.artifactPath" value="${escapeAttr(pathValue)}" ${selectedReplacePath ? 'readonly' : ''} placeholder=".topics/.workspaces/current-view.workspace.md">
             </label>
-            <p class="form-text">Replacement keeps the existing path. Create-new lets you choose a path before the artifact is added to the selected workspace.</p>
+            <p class="form-text">Replacement keeps the existing path. Create-new requires a non-conflicting <code>.workspace.md</code> path.</p>
           </section>
           <section class="export-summary compact-export-summary">
             <div><strong>${escapeHtml(shortText(modal.displayName || 'Current view', 44))}</strong><span>workspace leaf</span></div>
             <div><strong>${selectedReplacePath ? 'replace' : 'create'}</strong><span>operation</span></div>
             <div><strong>${escapeHtml(selectedWs ? (workspaceDisplayLabel(selectedWs) || selectedWs.label || 'workspace') : (modal.newWorkspaceLabel || 'new workspace'))}</strong><span>target</span></div>
-            <div><strong>normal</strong><span>export flow next</span></div>
+            <div><strong>draft</strong><span>export later</span></div>
           </section>
         </div>
         <div class="modal-footer-actions export-actions">
-          <button class="tv-btn primary" data-action="workspace-save-artifact-confirm"><i class="fa-solid fa-floppy-disk"></i>Save artifact and export</button>
+          <button class="tv-btn primary" data-action="workspace-save-artifact-confirm"><i class="fa-solid fa-floppy-disk"></i>Save artifact</button>
           <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
         </div>
       </div>
@@ -16272,7 +16279,6 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const replacePath = normalizeAssetPath(formReplacement || '');
     const artifactPath = normalizeAssetPath(replacePath || formPath || workspaceSaveDefaultArtifactPath(modal.displayName || 'current-view'));
     if (!isWorkspaceFilename(artifactPath)) throw new Error('Workspace artifact path must end with .workspace.md.');
-    const operation = replacePath ? 'replace-artifact' : 'create-artifact';
     const existingAtPath = Array.from(ws.files?.values?.() || []).find((file) => normalizeAssetPath(file?.path || '') === artifactPath);
     if (!replacePath && existingAtPath) throw new Error('That artifact path already exists. Choose the existing artifact to replace, or enter a different path.');
     if (replacePath) removeWorkspaceArtifactAtPath(ws, replacePath);
@@ -16293,16 +16299,12 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const savedNode = (ws.nodes || []).find((node) => normalizeAssetPath(node.path || '') === artifactPath);
     if (savedNode) ws.selectedNodeId = savedNode.id;
     app.activeWorkspaceId = ws.id;
-    recordWorkspaceSaveArtifact(operation, { workspaceId: ws.id, workspace: workspaceDisplayLabel(ws), path: artifactPath, sourceId });
-    const exportModal = defaultExportModal(ws.id);
-    exportModal.mode = 'sources';
-    exportModal.sourceIds = [sourceId];
-    exportModal.includeAssets = false;
-    app.modal = exportModal;
-    recordWorkspaceSaveArtifact('open-export-dialog', { workspaceId: ws.id, path: artifactPath, sourceId, mode: exportModal.mode, deliveryTarget: exportModal.deliveryTarget || 'download' });
+    recordWorkspaceSaveArtifact(replacePath ? 'replace-artifact' : 'create-artifact', { workspaceId: ws.id, workspace: workspaceDisplayLabel(ws), path: artifactPath, sourceId });
+    recordWorkspaceSaveArtifact('save-artifact', { workspaceId: ws.id, workspace: workspaceDisplayLabel(ws), path: artifactPath, sourceId, exportOpened: false });
+    app.modal = null;
     scheduleLocalStateSaveAfterWorkspaceMutation();
     render();
-    toast(`${replacePath ? 'Replaced' : 'Created'} workspace artifact ${artifactPath}. Continue with export.`, 'ok');
+    toast(`${replacePath ? 'Replaced' : 'Created'} workspace artifact ${artifactPath}. Use Export when you are ready to publish or download it.`, 'ok');
     return { ws, path: artifactPath, sourceId };
   }
 
@@ -34080,8 +34082,32 @@ ${integrityFooterForPath(parent, path)}`,
   }
 
 
+  function githubWorkspacePresentationSection(raw, heading, limit = 900) {
+    const body = markdownSectionContent(artifactBodyMarkdownFromText(raw), heading, 2);
+    if (!body) return '';
+    const clean = stripGeneratedTransitionBoundaryForGithubPresentation(body).trim();
+    if (!clean) return '';
+    const text = clean.length <= limit ? clean : `${clean.slice(0, limit).trimEnd()}…`;
+    return `## ${heading}\n\n${text}`;
+  }
+
+  function githubWorkspacePresentationDelta(file, raw, limit = 1600) {
+    const sections = [
+      githubWorkspacePresentationSection(raw, 'What this workspace opens', 520),
+      githubWorkspacePresentationSection(raw, 'Workspace Entrypoints', 760),
+      githubWorkspacePresentationSection(raw, 'Workspaces', 520)
+    ].filter(Boolean);
+    const intro = sections.length
+      ? sections.join('\n\n')
+      : githubPresentationExcerpt(file?.summary || file?.description || 'Portable Tiinex workspace entrypoint.', limit);
+    const suffix = '\n\n_The technical restore state, source caches, and full workspace markdown are preserved in the collapsed Tiinex source payload below._';
+    const combined = `${intro}${suffix}`.trim();
+    return combined.length <= limit ? combined : `${combined.slice(0, limit).trimEnd()}…${suffix}`;
+  }
+
   function githubArtifactBodyDelta(file, limit = 1600) {
     const raw = normalizeNewlines(file?.content || file?.rawMarkdown || file?.body || '');
+    if (isWorkspaceFilename(file?.path || file?.name || '') || looksLikeWorkspaceMarkdown(raw)) return githubWorkspacePresentationDelta(file, raw, limit);
     const body = stripGeneratedTransitionBoundaryForGithubPresentation(artifactBodyMarkdownFromText(raw))
       .replace(/^#\s+.+\n?/, '')
       .replace(/^##\s+Next Artifacts\s*\n\s*-\s*$/im, '')
