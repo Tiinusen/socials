@@ -31,7 +31,9 @@ Repository transport validation should cover:
 - canonical source identity remaining unchanged when a mirror or proxy supplies material;
 - published root and submodule snapshots excluding `.git` and `.mirrors`;
 - the publishing repository always producing its own root mirror even when `.mirrors`, `.gitmodules`, viewer source, or Node tooling is absent;
-- workspace-owned `## Repository Mirrors` declarations providing additional mirror sources without forcing source branches to carry Git submodule gitlinks or sidecar JSON;
+- workspace-owned `## Repository Mirrors` declarations providing default mirror sources without forcing source branches to carry Git submodule gitlinks or sidecar JSON;
+- GitHub Actions `TIINEX_REPOSITORY_MIRRORS` configuration appending fork-owned mirrors without editing upstream workspace artifacts;
+- official GitHub Pages Actions artifact deployment while still publishing an inspectable `public` branch;
 - copyable workflow mode detection: viewer repositories build the app before mirrors, while lineage-only repositories publish mirrors without viewer-specific commands;
 - ordinary submodules outside `.mirrors` being ignored rather than making mirror publication fail;
 - mirror metadata, checksum, zip integrity, and directory/archive file parity being validated before publication;

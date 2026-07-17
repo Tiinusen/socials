@@ -1833,10 +1833,13 @@ function validateRepositoryTransportContracts() {
   const schema = read('.topics/.schemas/tiinex.workspace.v1.schema.md');
   const workspace = read('.topics/.workspaces/viewer.workspace.md');
   const workflow = read('.github/workflows/publish-public.yml');
+  if (existsSync(join(root, '.gitmodules'))) {
+    fail('source branch must not track .gitmodules; mirror sources belong in workspace artifacts or GitHub Actions variables');
+  }
   if (existsSync(join(root, '.topics/repository-mirrors.json'))) {
     fail('repository mirror source declarations must live in the workspace artifact, not a sidecar repository-mirrors.json file');
   }
-  for (const token of ['## Repository Mirrors', 'Each mirror should be a third-level heading under `## Repository Mirrors`', '`Repository`', '`URL`', 'A repository mirror declaration is not a workspace entrypoint, not a runtime transport, and not provenance']) {
+  for (const token of ['## Repository Mirrors', 'Each mirror should be a third-level heading under `## Repository Mirrors`', '`Repository`', '`URL`', 'A repository mirror declaration is not a workspace entrypoint, not a runtime transport, and not provenance', 'Deployment hosts may append additional mirrors through host configuration']) {
     if (!schema.includes(token)) fail(`workspace schema must document repository mirror declarations: ${token}`);
   }
   for (const token of ['## Repository Mirrors', '### Tiinex docs', '- Repository: Tiinex/docs', '- URL: https://github.com/Tiinex/docs.git', '### Tiinex ai-provenance', '- Repository: Tiinex/ai-provenance', '- URL: https://github.com/Tiinex/ai-provenance.git']) {
@@ -2003,6 +2006,15 @@ function validateRepositoryTransportContracts() {
     'Ignoring non-mirror submodule',
     'Validate repository mirrors',
     'Publishing repository mirror is missing',
+    'TIINEX_REPOSITORY_MIRRORS',
+    'emit_configured_mirror_sources',
+    'github-actions-variable:TIINEX_REPOSITORY_MIRRORS',
+    'extra_mirrors',
+    'actions/upload-pages-artifact@v3',
+    'actions/deploy-pages@v4',
+    'pages: write',
+    'id-token: write',
+    'TIINEX_PAGES_DEPLOY',
     'touch .site-publish/.nojekyll',
     'github.event.repository.fork',
     'rm -f .site-publish/CNAME',
@@ -2015,9 +2027,10 @@ function validateRepositoryTransportContracts() {
   }
   const rootPublishIndex = workflow.indexOf('"$GITHUB_WORKSPACE"');
   const workspaceMirrorsIndex = workflow.indexOf('done < <(emit_workspace_mirror_sources)');
+  const configuredMirrorsIndex = workflow.indexOf('done < <(emit_configured_mirror_sources)');
   const optionalMirrorsIndex = workflow.indexOf('          if [ -f .gitmodules ]; then');
-  if (rootPublishIndex < 0 || workspaceMirrorsIndex < 0 || optionalMirrorsIndex < 0 || !(rootPublishIndex < workspaceMirrorsIndex && workspaceMirrorsIndex < optionalMirrorsIndex)) {
-    fail('publishing repository root mirror must be built before workspace mirror declarations, which must precede optional .gitmodules mirrors');
+  if (rootPublishIndex < 0 || workspaceMirrorsIndex < 0 || configuredMirrorsIndex < 0 || optionalMirrorsIndex < 0 || !(rootPublishIndex < workspaceMirrorsIndex && workspaceMirrorsIndex < configuredMirrorsIndex && configuredMirrorsIndex < optionalMirrorsIndex)) {
+    fail('publishing repository root mirror must be built before workspace mirror declarations, configured variable mirrors, and optional .gitmodules mirrors');
   }
   if (/repository-mirrors\.json/u.test(workflow)) {
     fail('portable mirror workflow must read mirror sources from workspace artifacts, not repository-mirrors.json');
@@ -2032,10 +2045,12 @@ function validateRepositoryTransportContracts() {
   }
   const sanitizeDeployIndex = workflow.indexOf('- name: Sanitize public deploy root');
   const publishBranchIndex = workflow.indexOf('- name: Publish public branch');
-  if (sanitizeDeployIndex < 0 || publishBranchIndex < 0 || sanitizeDeployIndex > publishBranchIndex) {
-    fail('public deploy root must be sanitized before branch publication');
+  const uploadPagesIndex = workflow.indexOf('- name: Upload Pages artifact');
+  const deployPagesIndex = workflow.indexOf('uses: actions/deploy-pages@v4');
+  if (sanitizeDeployIndex < 0 || publishBranchIndex < 0 || uploadPagesIndex < 0 || deployPagesIndex < 0 || !(sanitizeDeployIndex < publishBranchIndex && publishBranchIndex < uploadPagesIndex && uploadPagesIndex < deployPagesIndex)) {
+    fail('public deploy root must be sanitized before branch publication, Pages artifact upload, and Pages deployment');
   }
-  note('workspace-owned repository snapshots, persistent transport decisions, co-hosted mirror discovery, workspace-owned mirror sources, fork-safe self-mirror handling, and portable root-mirror publication contracts are valid');
+  note('workspace-owned repository snapshots, persistent transport decisions, co-hosted mirror discovery, workspace-owned and configured mirror sources, fork-safe self-mirror handling, branch publication, and official Pages deployment contracts are valid');
 }
 
 function validatePublicBuildContracts() {

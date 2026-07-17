@@ -8,9 +8,15 @@ on:
         description: Branch, tag, or commit to publish from
         required: false
         default: ""
+      extra_mirrors:
+        description: Optional additional repository mirrors, one per line; use owner/repo or repo = clone-url
+        required: false
+        default: ""
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 concurrency:
   group: publish-public
@@ -22,6 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PAGES_CNAME: ${{ vars.PAGES_CNAME || '' }}
+      TIINEX_REPOSITORY_MIRRORS: ${{ vars.TIINEX_REPOSITORY_MIRRORS || '' }}
+      TIINEX_WORKFLOW_REPOSITORY_MIRRORS: ${{ github.event.inputs.extra_mirrors || '' }}
 
     steps:
       - name: Resolve source ref
@@ -413,6 +421,83 @@ jobs:
           PY
           }
 
+          emit_configured_mirror_sources() {
+            python3 - <<'PY'
+          import os
+          import re
+          import sys
+          from urllib.parse import urlparse
+
+          def strip_inline(value):
+              value = str(value or '').strip()
+              link = re.fullmatch(r'\[([^\]]+)\]\(([^)]+)\)', value)
+              if link:
+                  return link.group(2).strip()
+              return value.strip('`').strip()
+
+          def repo_identity(value):
+              raw = strip_inline(value).rstrip('/')
+              if not raw:
+                  return ''
+              if re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?', raw):
+                  return 'github.com/' + re.sub(r'\.git$', '', raw, flags=re.I)
+              if re.fullmatch(r'github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?', raw, flags=re.I):
+                  return re.sub(r'\.git$', '', raw, flags=re.I)
+              scp = re.fullmatch(r'[^@\s]+@([^:\s]+):(.+)', raw)
+              if scp:
+                  host = scp.group(1).split(':', 1)[0].lower()
+                  path = re.sub(r'\.git$', '', scp.group(2).strip('/'), flags=re.I)
+                  return f'{host}/{path}' if host and path else ''
+              parsed = urlparse(raw)
+              if parsed.scheme in {'http', 'https', 'ssh'} and parsed.hostname:
+                  path = re.sub(r'\.git$', '', parsed.path.strip('/'), flags=re.I)
+                  return f'{parsed.hostname.lower()}/{path}' if path else ''
+              return ''
+
+          def default_url(identity, original):
+              raw = strip_inline(original)
+              parsed = urlparse(raw)
+              if parsed.scheme in {'http', 'https', 'ssh'} and parsed.hostname:
+                  return raw
+              if raw.startswith('git@'):
+                  return raw
+              if identity.startswith('github.com/'):
+                  return 'https://' + identity + '.git'
+              return raw
+
+          def parse_line(line, source, line_number):
+              line = str(line or '').strip()
+              if not line or line.startswith('#'):
+                  return
+              for sep in ('=', '|'):
+                  if sep in line:
+                      left, right = [part.strip() for part in line.split(sep, 1)]
+                      break
+              else:
+                  parts = line.split()
+                  if len(parts) >= 2:
+                      left, right = parts[0], parts[1]
+                  else:
+                      left, right = line, ''
+              identity = repo_identity(left)
+              if not identity:
+                  print(f'{source}:{line_number}: Could not resolve configured mirror identity: {left}', file=sys.stderr)
+                  sys.exit(1)
+              url = strip_inline(right) if right else default_url(identity, left)
+              if not url:
+                  print(f'{source}:{line_number}: Configured mirror needs a clone URL for non-GitHub identity: {left}', file=sys.stderr)
+                  sys.exit(1)
+              print(f'{identity}\t{url}\t{source}:{line_number}')
+
+          configured = '\n'.join([
+              os.environ.get('TIINEX_REPOSITORY_MIRRORS', ''),
+              os.environ.get('TIINEX_WORKFLOW_REPOSITORY_MIRRORS', '')
+          ])
+          for line_number, line in enumerate(configured.splitlines(), 1):
+              parse_line(line, 'github-actions-variable:TIINEX_REPOSITORY_MIRRORS', line_number)
+          PY
+          }
+
           server_host="${GITHUB_SERVER_URL#*://}"
           server_host="${server_host%%/*}"
           server_host="${server_host%%:*}"
@@ -434,6 +519,11 @@ jobs:
             [ -n "$public_identity" ] || continue
             publish_remote_mirror "$public_identity" "$module_url" "$declaration_source"
           done < <(emit_workspace_mirror_sources)
+
+          while IFS=$'	' read -r public_identity module_url declaration_source; do
+            [ -n "$public_identity" ] || continue
+            publish_remote_mirror "$public_identity" "$module_url" "$declaration_source"
+          done < <(emit_configured_mirror_sources)
 
           if [ -f .gitmodules ]; then
             while IFS= read -r path_key; do
@@ -585,3 +675,26 @@ jobs:
           force_orphan: true
           commit_message: >-
             Publish public branch from ${{ steps.settings.outputs.source_ref }} @ ${{ github.sha }}
+
+      - name: Upload Pages artifact
+        if: vars.TIINEX_PAGES_DEPLOY != 'false'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .site-publish
+
+  deploy-pages:
+    if: >-
+      (github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch)
+      && vars.TIINEX_PAGES_DEPLOY != 'false'
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.pages_deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: pages_deployment
+        uses: actions/deploy-pages@v4

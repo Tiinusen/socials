@@ -185,6 +185,7 @@ Rules:
 - A repository mirror declaration is not a workspace entrypoint, not a runtime transport, and not provenance. It must not replace Canonical Origin, Parent, Origin, or source identity.
 - The repository that contains the publisher is mirrored automatically and should not be repeated here.
 - Older viewers may ignore this optional section without reinterpreting workspace sources.
+- Deployment hosts may append additional mirrors through host configuration such as GitHub Actions repository variables. Those host-level additions are deployment settings, not workspace artifact content, and must not be serialized into the workspace unless they are intended to become portable defaults.
 
 ## Repository Transports
 
