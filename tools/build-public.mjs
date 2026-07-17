@@ -68,6 +68,33 @@ function defaultRepositoryName() {
   return repo.split('/').filter(Boolean).slice(-1)[0] || 'Tiinex';
 }
 
+function workspaceBootstrapCandidatesFromEnv() {
+  const candidates = [];
+  const add = (kind, value, role, label) => {
+    const url = String(value || '').trim();
+    if (!url) return;
+    const candidate = { kind, role, label: label || role, source: `env:${role}` };
+    if (kind === 'local-path') candidate.path = url;
+    else candidate.url = url;
+    candidates.push(candidate);
+  };
+
+  add('github-issue-pointer', envValue('TIINEX_WORKSPACE_POINTER_PRIMARY'), 'primary', 'Primary workspace pointer');
+  add('github-issue-pointer', envValue('TIINEX_WORKSPACE_POINTER_SECONDARY'), 'secondary', 'Secondary workspace pointer');
+  envList('TIINEX_WORKSPACE_POINTERS').forEach((value, index) => {
+    add('github-issue-pointer', value, `pointer-${index + 1}`, `Workspace pointer ${index + 1}`);
+  });
+
+  add('workspace-url', envValue('TIINEX_DEFAULT_WORKSPACE'), 'default-workspace', 'Default workspace');
+  add('workspace-url', envValue('TIINEX_FALLBACK_WORKSPACE'), 'fallback-workspace', 'Fallback workspace');
+  envList('TIINEX_WORKSPACE_FALLBACKS').forEach((value, index) => {
+    add('workspace-url', value, `fallback-${index + 1}`, `Workspace fallback ${index + 1}`);
+  });
+
+  add('local-path', envValue('TIINEX_LOCAL_WORKSPACE_PATH'), 'local-packaged-workspace', 'Packaged workspace');
+  return candidates;
+}
+
 function writeOptionalCname(out) {
   const envCname = envValue('PAGES_CNAME');
   const sourceCname = truthyEnv('TIINEX_USE_SOURCE_CNAME') && existsSync(path('CNAME')) ? readFileSync(path('CNAME'), 'utf8').trim() : '';
@@ -108,6 +135,7 @@ function bundleSource() {
   if (ref) gitNative.ref = ref;
   if (rootPaths.length) gitNative.rootPaths = rootPaths;
   const buildSource = envValue('TIINEX_BUILD_REPOSITORY') || envValue('GITHUB_REPOSITORY') || 'local';
+  const workspaceCandidates = workspaceBootstrapCandidatesFromEnv();
   const options = {
     createWorkspace: true,
     browserTitle,
@@ -118,8 +146,22 @@ function bundleSource() {
       publicBuildOutputExcluded: true
     }
   };
-  parts.push(`\n;/* ---- viewer options ---- */\n`);
-  parts.push(`(function () {\n  const defaultGitNative = ${JSON.stringify(gitNative, null, 2)};\n  const existing = window.TIINEX_VIEWER_OPTIONS || {};\n  window.TIINEX_VIEWER_OPTIONS = Object.assign(${JSON.stringify(options, null, 2)}, existing);\n  window.TIINEX_VIEWER_OPTIONS.gitNative = Object.assign({}, defaultGitNative, existing.gitNative || existing.gitNativeRuntime || {});\n})();\n`);
+  parts.push(`
+;/* ---- viewer options ---- */
+`);
+  parts.push(`(function () {
+  const defaultGitNative = ${JSON.stringify(gitNative, null, 2)};
+  const workspaceCandidates = ${JSON.stringify(workspaceCandidates, null, 2)};
+  const existing = window.TIINEX_VIEWER_OPTIONS || {};
+  window.TIINEX_VIEWER_OPTIONS = Object.assign(${JSON.stringify(options, null, 2)}, existing);
+  window.TIINEX_VIEWER_OPTIONS.gitNative = Object.assign({}, defaultGitNative, existing.gitNative || existing.gitNativeRuntime || {});
+  const existingWorkspace = window.TiinexWorkspace || window.tiinexWorkspace || window.TIINEX_WORKSPACE || {};
+  if (workspaceCandidates.length) {
+    const existingCandidates = Array.isArray(existingWorkspace.candidates) ? existingWorkspace.candidates : [];
+    window.TiinexWorkspace = Object.assign({}, existingWorkspace, { candidates: workspaceCandidates.concat(existingCandidates) });
+  }
+})();
+`);
   parts.push(`\n;/* ---- app.js ---- */\n`);
   parts.push(read('app.js'));
   parts.push('\n');

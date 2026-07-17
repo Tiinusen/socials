@@ -65,3 +65,9 @@ Warm persistent Git reuse is recorded as `local-git`; it does not report a fresh
 
 - Repo-agnostic publication builds viewer identity, default Git source, CNAME, and optional static roots from GitHub Actions variables or repository facts rather than hardcoded Tiinex/site defaults.
 - Viewer-like repositories fail fast when required build tooling is partially missing, so a broken viewer branch cannot silently replace the public app with mirror-only output.
+
+## V8 workspace bootstrap candidate chain
+
+- Build-time workspace variables are projected into `window.TiinexWorkspace.candidates`, not into a generic env blob and not into a generated `.workspace.md` artifact.
+- Runtime tries candidates in order: query pointers, query direct workspace URLs, configured runtime candidates, direct runtime workspaces, and packaged local workspace fallbacks.
+- GitHub issue pointers are transport/config sources only. The issue body must point to a real workspace artifact using `Workspace URL:` or `Workspace:`; the app resolves that pointer at runtime and logs candidate-level diagnostics.
