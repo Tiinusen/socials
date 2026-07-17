@@ -689,8 +689,8 @@ function validateGitHubRecoveredContinuityContract() {
     fail('GitHub issue recovery must not strip an unresolved declared Parent and reseal it as a root.');
   }
   const stripParentCalls = (js.match(/stripContinuityParentBlock\(/g) || []).length;
-  if (stripParentCalls !== 2) {
-    fail(`Parent stripping must remain owned by the helper definition and explicit root/detach save path; found ${stripParentCalls} references.`);
+  if (stripParentCalls !== 3 || !js.includes('function replaceWorkspaceConfigContinuityParent')) {
+    fail(`Parent stripping must remain owned by the helper definition, explicit root/detach save path, and workspace artifact parent-edit path; found ${stripParentCalls} references.`);
   }
   if (!/resolveAdapterParentTraversalForWorkspace\(ws,\s*\{[\s\S]{0,220}?sourceId:\s*source\.id/u.test(js)) {
     fail('GitHub issue import must run source-bounded parent reconciliation after all issue artifacts are indexed.');
@@ -1769,7 +1769,7 @@ function validateArchitectureBoundaries() {
   if (!appJs.includes('startupHasExplicitRouteModal())) return false')) fail('explicit route modal must suppress local-state startup modal clearing');
   if (!appJs.includes('data-action="workspace-config-save"')) fail('workspace configuration editor must save through a local draft action.');
   if (appJs.includes('data-action="workspace-config-download"')) fail('workspace configuration editor must not bypass workspace draft persistence with a direct download action.');
-  if (!appJs.includes("action === 'workspace-config-save'") || !appJs.includes('await saveNodeEdit(ws, node, markdown)')) fail('workspace configuration save must reuse local artifact draft persistence.');
+  if (!appJs.includes("action === 'workspace-config-save'") || !appJs.includes('await saveNodeEdit(ws, node, markdown,')) fail('workspace configuration save must reuse local artifact draft persistence.');
   if (appJs.includes('>Save workspace</button>')) fail('topbar Save workspace button must not remain; workspace artifacts are created or edited through normal artifact cards.');
   if (!appJs.includes('workspace-config-update-current')) fail('workspace artifact editor must expose Update with current staging.');
   if (!/async function saveWorkspace\(wsId\) \{[\s\S]{0,360}?app\.modal = defaultExportModal\(ws\.id\);[\s\S]{0,120}?render\(\);/u.test(appJs)) fail('workspace shell export action must open the canonical export adapter modal.');

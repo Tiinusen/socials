@@ -979,7 +979,7 @@
     const state = app.workspaceSaveArtifact || { events: [], last: null, createdWorkspaces: 0, createdArtifacts: 0, replacedArtifacts: 0, savedArtifacts: 0 };
     return {
       schema: 'tiinex.workspace-save-artifact.report.v1',
-      policy: 'Save Workspace creates or replaces a tiinex.workspace.v1 local draft artifact inside an explicit target workspace using the same local artifact path as Create/Edit. It does not download, publish, or open export automatically; users export later through the normal workspace Export action.',
+      policy: 'Workspace artifacts use the normal local draft path. Workspace config edits can update identity, help/FAQ, current workspace state, and the artifact own continuity parent; export/publish stays separate.',
       createdWorkspaces: Number(state.createdWorkspaces || 0),
       createdArtifacts: Number(state.createdArtifacts || 0),
       replacedArtifacts: Number(state.replacedArtifacts || 0),
@@ -16643,6 +16643,46 @@ ${bodySections}
     return out;
   }
 
+
+  function replaceWorkspaceConfigContinuityParent(markdown, parent, childPath, modal = {}) {
+    let out = stripContinuityParentBlock(markdown || '');
+    if (!parent) return out;
+    const block = parentContinuityBlock(parent, childPath || modal?.path || '').trimEnd();
+    if (!block) return out;
+    const lines = markdownLines(out);
+    const envelopeEnd = lines.findIndex((line, index) => index > 0 && /^---+\s*$/.test(line.trim()));
+    const limit = envelopeEnd >= 0 ? envelopeEnd : Math.min(lines.length, 80);
+    let insertAt = -1;
+    for (let i = 0; i < limit; i += 1) {
+      if (/^\s*-\s*Envelope Schema\s*:/i.test(lines[i])) { insertAt = i + 1; break; }
+    }
+    if (insertAt < 0) return `${block}\n${out}`;
+    lines.splice(insertAt, 0, ...block.split('\n'));
+    return lines.join('\n');
+  }
+
+  function workspaceConfigContinuityParentPreview(ws, modal) {
+    const parent = wizardNodeById(ws, modal?.parentNodeId || '');
+    const parentPath = parent?.path || modal?.parentPath || '';
+    const state = parent ? 'resolved' : (parentPath ? 'hidden or unresolved' : 'none');
+    const label = parent ? (parent.title || parent.path || 'selected parent') : (parentPath ? parentPath : 'Root workspace / no parent');
+    const icon = parent ? 'fa-diagram-project' : (parentPath ? 'fa-triangle-exclamation' : 'fa-circle-dot');
+    const detach = (parent || parentPath) ? `<button type="button" class="tv-btn tiny subtle wizard-parent-detach" data-action="clear-wizard-parent" data-ws="${escapeAttr(ws?.id || '')}"><i class="fa-solid fa-link-slash"></i>Detach</button>` : '';
+    return `<section class="export-section workspace-config-lineage-section">
+      <h3>Lineage</h3>
+      <div class="workspace-lineage-lock"><span><i class="fa-solid fa-lock"></i> Schema family locked</span><strong>tiinex.workspace.v1</strong><small>This editor can update a workspace artifact, but it will not convert it into evidence, topic, or another schema family.</small></div>
+      <div class="wizard-parent-preview picker-ready compact" aria-label="Workspace continuity parent">
+        <div class="wizard-parent-scope-label"><i class="fa-solid fa-code-branch"></i><span>Continuity parent</span></div>
+        <div class="wizard-parent-row single-line">
+          <div class="wizard-parent-current ${parent ? 'resolved' : (parentPath ? 'unresolved' : 'none')}"><span>${escapeHtml(state)}</span><strong><i class="fa-solid ${escapeAttr(icon)}"></i>${escapeHtml(label)}</strong></div>
+          <button type="button" class="tv-btn tiny subtle wizard-parent-choose" data-action="open-continuity-parent-picker" data-ws="${escapeAttr(ws?.id || '')}"><i class="fa-solid fa-location-crosshairs"></i>${parent || parentPath ? 'Change parent' : 'Choose parent'}</button>
+          ${detach}
+        </div>
+        <small>A workspace may have its own parent/history. It does not become parent of every artifact it opens.</small>
+      </div>
+    </section>`;
+  }
+
   function workspaceConfigEditTarget(ws, node) {
     if (!ws || !node) return { node: null, original: null, sourceBacked: false, existingDraft: false };
     if (nodeIsLocalEditableMaterial(ws, node)) return { node, original: null, sourceBacked: false, existingDraft: Boolean(node.localEditDraft || node.localDraftOf || node.shadowSourceKey || node.shadowSourceId || node.shadowSourceOrigin) };
@@ -16659,6 +16699,7 @@ ${bodySections}
     const markdown = workspaceNodeMarkdown(ws, editNode);
     if (!looksLikeWorkspaceMarkdown(markdown)) return toast('This card is not a workspace entrypoint.', 'warn');
     const configUrl = workspaceNodeConfigUrl(ws, target.original || editNode);
+    const parentNode = editNode.parentNode || null;
     app.modal = {
       type: 'workspace-config-editor',
       wsId: ws.id,
@@ -16668,6 +16709,10 @@ ${bodySections}
       sourceBacked: Boolean(target.sourceBacked),
       existingDraft: Boolean(target.existingDraft),
       originalMarkdown: markdown,
+      parentNodeId: parentNode?.id || '',
+      parentPath: editNode.parentResolvedPath || editNode.parentHref || '',
+      parentTitle: parentNode?.title || parentNode?.path || '',
+      parentEdited: false,
       draft: workspaceConfigDraftFromMarkdown(markdown, configUrl)
     };
     updateUrlState({ replace: true });
@@ -16709,6 +16754,7 @@ ${bodySections}
         </div>
         <div class="export-body workspace-config-editor-body">
           ${workspaceConfigCurrentSummaryHtml(modal)}
+          ${workspaceConfigContinuityParentPreview(getWorkspace(modal.wsId || ''), modal)}
           <section class="export-section">
             <h3>Identity</h3>
             <div class="schema-grid two-col">
@@ -16724,6 +16770,13 @@ ${bodySections}
           <section class="export-section">
             <h3>Empty stage subtitles</h3>
             <textarea class="form-control tv-input" rows="5" data-field="workspaceConfig.subtitles" placeholder="One subtitle per line">${escapeHtml(draft.subtitles || '')}</textarea>
+          </section>
+          <section class="export-section">
+            <h3>Help / FAQ</h3>
+            <textarea class="form-control tv-input" rows="7" data-field="workspaceConfig.helpMarkdown" placeholder="### Question
+
+Answer the reader should see in workspace help or GitHub presentation.">${escapeHtml(draft.helpMarkdown || '')}</textarea>
+            <p class="form-text">Workspace help is content, not hidden app config. Keep it human-readable; Tiinex preserves it inside the .workspace.md.</p>
           </section>
           <section class="export-section">
             <h3>Custom CSS</h3>
@@ -16767,7 +16820,13 @@ ${bodySections}
       event.preventDefault(); event.stopPropagation();
       if (!app.modal || app.modal.type !== 'workspace-config-editor') return;
       const modal = app.modal;
-      const markdown = updateWorkspaceConfigMarkdown(modal.originalMarkdown || '', modal.draft || {});
+      const ws = getWorkspace(modal.wsId || '');
+      let node = ws?.nodeById?.get?.(modal.nodeId || '');
+      const original = ws?.nodeById?.get?.(modal.originalNodeId || '') || null;
+      const childPath = node?.path || original?.path || '';
+      const parent = wizardNodeById(ws, modal.parentNodeId || '');
+      let markdown = updateWorkspaceConfigMarkdown(modal.originalMarkdown || '', modal.draft || {});
+      if (modal.parentEdited) markdown = replaceWorkspaceConfigContinuityParent(markdown, parent, childPath, modal);
       if (action === 'workspace-config-apply') {
         const parsed = parseViewerConfigMarkdown(markdown, modal.configUrl || location.href);
         app.viewerIdentity = Object.assign(app.viewerIdentity || {}, parsed || {}, { loaded: true, configUrl: modal.configUrl || app.viewerIdentity?.configUrl || '' });
@@ -16777,15 +16836,12 @@ ${bodySections}
         render();
         return;
       }
-      const ws = getWorkspace(modal.wsId || '');
-      let node = ws?.nodeById?.get?.(modal.nodeId || '');
-      const original = ws?.nodeById?.get?.(modal.originalNodeId || '') || null;
       if (original && !nodeIsLocalEditableMaterial(ws, original)) {
         node = localShadowDraftForOriginal(ws, original) || node || original;
       }
       if (!ws || !node) return toast('No workspace artifact selected.', 'warn');
       const sourceBacked = Boolean(original) || !nodeIsLocalEditableMaterial(ws, node);
-      await saveNodeEdit(ws, node, markdown);
+      await saveNodeEdit(ws, node, markdown, modal.parentEdited ? { parentNodeId: modal.parentNodeId || '', parentPath: modal.parentPath || '' } : {});
       app.modal = null;
       if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
       if (typeof saveLocalStateNow === 'function') saveLocalStateNow();
@@ -20343,9 +20399,9 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       destructiveActions.push(destructive({ label: 'Remove', icon: 'fa-regular fa-trash-can', className: 'danger remove-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'remove-local-node' }, base), title: 'Remove this local/uploaded node from the current workspace' }));
     }
 
-    if (!isWorkspaceNode(node)) writeActions.push(
-      write({ label: 'Continue', icon: 'fa-solid fa-code-branch', className: 'mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'continue' }, base, transitionDataset('continue')), disabled: node.hasModernEnvelope === false, title: transitionActionTitle('continue', 'Create a continuation leaf from this trace') }),
-      write({ label: 'Reference', icon: 'fa-solid fa-link', className: 'mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'reference' }, base, transitionDataset('reference')), title: transitionActionTitle('reference', 'Create a reference leaf pointing at this trace') })
+    writeActions.push(
+      write({ label: 'Continue', icon: 'fa-solid fa-code-branch', className: 'mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'continue' }, base, transitionDataset('continue')), disabled: node.hasModernEnvelope === false, title: transitionActionTitle('continue', 'Create a continuation leaf from this artifact') }),
+      write({ label: 'Reference', icon: 'fa-solid fa-link', className: 'mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'reference' }, base, transitionDataset('reference')), title: transitionActionTitle('reference', 'Create a reference leaf pointing at this artifact') })
     );
 
     if (discoveryFindingHasUseAsTargets(node)) {
@@ -28037,7 +28093,7 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
     'tiinex.pointer.v1': schemaPolicyEntry('tiinex.pointer.v1', 'Pointer', 'core-artifact', 'tiinex.root.v1', 'Thin redirect or anchor toward an upstream trace or origin.', 'yes', 'advanced', 'yes', 'ordinary-wizard', 'Pointer is mainly for reference or redirect behavior, not for rich continuation content.'),
     'tiinex.signal.v1': schemaPolicyEntry('tiinex.signal.v1', 'Signal', 'core-artifact', 'tiinex.root.v1', 'Weak bounded observation that should not be overread as feedback.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Signal is useful but should not crowd ordinary create choices until policy UI can explain the boundary.'),
     'tiinex.lineage.upgrade.deferral.v1': schemaPolicyEntry('tiinex.lineage.upgrade.deferral.v1', 'Lineage Upgrade Deferral', 'core-artifact', 'tiinex.root.v1', 'Bounded deferral for lineage-upgrade work that must not hide integrity errors.', 'yes', 'advanced', 'advanced', 'ordinary-wizard', 'Lineage deferral is an ordinary choice only when the current work is explicitly deferring an upgrade.'),
-    'tiinex.workspace.v1': schemaPolicyEntry('tiinex.workspace.v1', 'Workspace', 'core-artifact', 'tiinex.root.v1', 'Portable workspace entrypoint.', 'yes', 'no', 'no', 'ordinary-wizard', 'Workspace is creatable through the ordinary artifact wizard so it follows the same draft/export/publish path as other local artifacts.'),
+    'tiinex.workspace.v1': schemaPolicyEntry('tiinex.workspace.v1', 'Workspace', 'core-artifact', 'tiinex.root.v1', 'Portable workspace entrypoint.', 'yes', 'yes', 'yes', 'ordinary-wizard', 'Workspace is a root-capable artifact. It may continue or reference another artifact, but it does not become parent of the material it opens.'),
     'tiinex.relation.v1': schemaPolicyEntry('tiinex.relation.v1', 'Relation', 'relation-validation-governance', 'tiinex.root.v1', 'Typed non-parent relationship.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Relation should protect Parent by representing typed links only when a relation surface is intentional.'),
     'tiinex.validation.method.v1': schemaPolicyEntry('tiinex.validation.method.v1', 'Validation Method', 'relation-validation-governance', 'tiinex.root.v1', 'Validation method definition with scope and failure modes.', 'advanced', 'advanced', 'yes', 'advanced-candidate', 'Validation methods define how checks should be read; they are support artifacts, not ordinary narrative leaves.'),
     'tiinex.schema.family.v1': schemaPolicyEntry('tiinex.schema.family.v1', 'Schema Family', 'relation-validation-governance', 'tiinex.root.v1', 'Schema family, governance, and creatability description.', 'advanced', 'advanced', 'advanced', 'advanced-candidate', 'Schema-family artifacts govern schemas and create policy, so ordinary creation should require explicit intent.'),
@@ -29060,6 +29116,23 @@ ${wizardBlank(f.notes)}`,
     toast('Select the continuity parent. Storage placement stays separate.', 'ok');
   }
 
+
+  function enterWorkspaceConfigContinuityParentPicker(ws, modal) {
+    if (!ws || !modal || modal.type !== 'workspace-config-editor') return;
+    app.modal = null;
+    app.parentPicker = {
+      wsId: ws.id,
+      originWsId: ws.id,
+      mode: 'workspace-config-parent',
+      modal: Object.assign({}, modal),
+      title: modal.draft?.title || 'workspace artifact',
+      summary: modal.draft?.summary || '',
+      startedAt: Date.now()
+    };
+    render();
+    toast('Select the workspace artifact continuity parent. The workspace will not become parent of opened material.', 'ok');
+  }
+
   function parentPickerActiveFor(ws) {
     return Boolean(app.parentPicker);
   }
@@ -29134,14 +29207,15 @@ ${wizardBlank(f.notes)}`,
     const basis = wizardNodeById(basisWs, picker.useAsBasisNodeId || picker.referencedNodeId);
     const isUseAs = mode === 'use-as';
     const isWizardParent = mode === 'wizard-parent';
-    const icon = isWizardParent ? 'fa-diagram-project' : (isUseAs ? 'fa-wand-magic-sparkles' : 'fa-link');
-    const title = isWizardParent ? 'Select continuity parent' : (isUseAs ? 'Select parent for use-as artifact' : 'Select parent for reference');
-    const targetLabel = isWizardParent ? 'Draft' : (isUseAs ? 'Finding basis' : 'Reference target');
+    const isWorkspaceConfigParent = mode === 'workspace-config-parent';
+    const icon = (isWizardParent || isWorkspaceConfigParent) ? 'fa-diagram-project' : (isUseAs ? 'fa-wand-magic-sparkles' : 'fa-link');
+    const title = (isWizardParent || isWorkspaceConfigParent) ? 'Select continuity parent' : (isUseAs ? 'Select parent for use-as artifact' : 'Select parent for reference');
+    const targetLabel = (isWizardParent || isWorkspaceConfigParent) ? 'Draft' : (isUseAs ? 'Finding basis' : 'Reference target');
     const targetWs = isUseAs ? basisWs : referencedWs;
     const target = isUseAs ? basis : referenced;
     const originLabel = targetWs && targetWs.id !== ws.id ? ` · from ${workspaceDisplayLabel(targetWs)}` : '';
-    const targetText = isWizardParent ? `${picker.modal?.title || picker.modal?.summary || 'artifact draft'} · storage path remains unchanged` : `${target?.title || target?.path || 'selected artifact'}${originLabel}`;
-    const help = isWizardParent ? 'Choose a visible artifact as the continuity parent. Hidden/unresolved parents are not forced visible; they remain graph state until you reveal or rewire them explicitly.' : 'Choose any visible artifact in any workspace as the destination parent/anchor; using the same artifact is allowed for transition semantics.';
+    const targetText = (isWizardParent || isWorkspaceConfigParent) ? `${picker.modal?.title || picker.modal?.draft?.title || picker.modal?.summary || 'artifact draft'} · storage path remains unchanged` : `${target?.title || target?.path || 'selected artifact'}${originLabel}`;
+    const help = (isWizardParent || isWorkspaceConfigParent) ? "Choose a visible artifact as this artifact's continuity parent. Hidden/unresolved parents are not forced visible; they remain graph state until you reveal or rewire them explicitly." : 'Choose any visible artifact in any workspace as the destination parent/anchor; using the same artifact is allowed for transition semantics.';
     return `<div class="parent-picker-banner">
       <div><strong><i class="fa-solid ${icon}"></i>${escapeHtml(title)}</strong><p>${escapeHtml(targetLabel)}: ${escapeHtml(targetText)}. ${escapeHtml(help)}</p></div>
       <button class="tv-btn tiny subtle" data-action="cancel-parent-picker" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-xmark"></i>Cancel</button>
@@ -29161,11 +29235,11 @@ ${wizardBlank(f.notes)}`,
     const mode = app.parentPicker?.mode || 'reference';
     const wizardParent = mode === 'wizard-parent';
     return {
-      label: wizardParent ? 'Set parent' : 'Select as parent',
+      label: (wizardParent || mode === 'workspace-config-parent') ? 'Set parent' : 'Select as parent',
       icon: 'fa-solid fa-location-crosshairs',
       className: 'select-parent-action constructive',
       dataset: { action: 'select-parent-placement', ws: ws?.id || '', node: node?.id || '' },
-      title: wizardParent ? 'Use this artifact as the draft continuity parent' : (mode === 'use-as' ? 'Select as parent/target for use-as transition' : 'Select as parent/target for reference transition')
+      title: (wizardParent || mode === 'workspace-config-parent') ? 'Use this artifact as the draft continuity parent' : (mode === 'use-as' ? 'Select as parent/target for use-as transition' : 'Select as parent/target for reference transition')
     };
   }
 
@@ -29299,6 +29373,24 @@ ${wizardBlank(f.notes)}`,
         toast(`Parent selected: ${parent.title || parent.path}`, 'ok');
         return;
       }
+
+      if (mode === 'workspace-config-parent') {
+        const sourceModal = picker.modal || null;
+        if (!sourceModal || sourceModal.type !== 'workspace-config-editor') return toast('Could not restore the workspace draft after parent selection.', 'warn');
+        if (sourceModal.wsId && ws.id !== sourceModal.wsId) return toast("Choose a parent in the workspace artifact's workspace for now.", 'warn');
+        app.parentPicker = null;
+        app.modal = Object.assign({}, sourceModal, {
+          wsId: sourceModal.wsId || ws.id,
+          parentNodeId: parent.id,
+          parentPath: parent.path || '',
+          parentTitle: parent.title || parent.path || '',
+          parentEdited: true
+        });
+        updateUrlState({ replace: true });
+        render();
+        toast(`Parent selected: ${parent.title || parent.path}`, 'ok');
+        return;
+      }
       if (mode === 'use-as') {
         if (!basis) return toast('Could not resolve use-as basis.', 'warn');
         const schemaId = schemaIdFromCreate(picker.schemaId || '', '');
@@ -29336,9 +29428,9 @@ ${wizardBlank(f.notes)}`,
       event.preventDefault();
       event.stopPropagation();
       const picker = app.parentPicker || {};
-      const modal = picker.mode === 'wizard-parent' ? picker.modal : null;
+      const modal = (picker.mode === 'wizard-parent' || picker.mode === 'workspace-config-parent') ? picker.modal : null;
       app.parentPicker = null;
-      if (modal && modal.type === 'artifact-wizard') {
+      if (modal && (modal.type === 'artifact-wizard' || modal.type === 'workspace-config-editor')) {
         app.modal = modal;
         updateUrlState({ replace: true });
       }
@@ -29350,18 +29442,20 @@ ${wizardBlank(f.notes)}`,
       event.preventDefault();
       event.stopPropagation();
       const ws = getWorkspace(event.currentTarget.dataset.ws || app.modal?.wsId || app.activeWorkspaceId || '');
-      if (!ws || !app.modal || app.modal.type !== 'artifact-wizard') return toast('No draft is open for parent selection.', 'warn');
-      enterWizardContinuityParentPicker(ws, app.modal);
+      if (!ws || !app.modal || !['artifact-wizard', 'workspace-config-editor'].includes(app.modal.type)) return toast('No draft is open for parent selection.', 'warn');
+      if (app.modal.type === 'workspace-config-editor') enterWorkspaceConfigContinuityParentPicker(ws, app.modal);
+      else enterWizardContinuityParentPicker(ws, app.modal);
       return;
     }
 
     if (action === 'clear-wizard-parent') {
       event.preventDefault();
       event.stopPropagation();
-      if (!app.modal || app.modal.type !== 'artifact-wizard') return;
+      if (!app.modal || !['artifact-wizard', 'workspace-config-editor'].includes(app.modal.type)) return;
       app.modal.parentNodeId = '';
       app.modal.parentPath = '';
       app.modal.parentTitle = '';
+      if (app.modal.type === 'workspace-config-editor') app.modal.parentEdited = true;
       updateUrlState({ replace: true });
       render();
       toast('Continuity parent detached for this draft.', 'ok');

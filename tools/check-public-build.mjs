@@ -93,7 +93,7 @@ try {
       }
     }
     if (!bundle.includes('workspace-config-save') || bundle.includes('workspace-config-download')) fail('public bundle must save workspace configuration through local draft persistence.');
-    if (!bundle.includes('await saveNodeEdit(ws, node, markdown)')) fail('public bundle workspace configuration save must reuse local artifact draft persistence.');
+    if (!bundle.includes('await saveNodeEdit(ws, node, markdown,')) fail('public bundle workspace configuration save must reuse local artifact draft persistence.');
     if (bundle.includes('>Save workspace</button>')) fail('public bundle must not expose a topbar Save workspace side path.');
     if (!bundle.includes('workspace-config-update-current')) fail('public bundle workspace artifact editor must expose Update with current staging.');
     if (!bundle.includes('Current workspace set staged in this workspace artifact')) fail('public bundle Update with current must stage the active workspace set before local draft save.');
