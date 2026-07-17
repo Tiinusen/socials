@@ -40,6 +40,42 @@ function copyPath(source, outDir, target = source) {
   cpSync(from, to, { recursive: true });
 }
 
+function copyPathIfExists(source, outDir, target = source) {
+  if (!existsSync(path(source))) {
+    console.log(`Skipping absent optional publish source: ${source}`);
+    return false;
+  }
+  copyPath(source, outDir, target);
+  return true;
+}
+
+function envValue(name, fallback = '') {
+  return String(process.env[name] || fallback || '').trim();
+}
+
+function envList(name, fallback = []) {
+  const raw = envValue(name);
+  if (!raw) return fallback;
+  return raw.split(/[\n,]+/u).map((item) => item.trim()).filter(Boolean);
+}
+
+function truthyEnv(name) {
+  return /^(1|true|yes|on)$/iu.test(envValue(name));
+}
+
+function defaultRepositoryName() {
+  const repo = envValue('GITHUB_REPOSITORY') || envValue('TIINEX_BUILD_REPOSITORY');
+  return repo.split('/').filter(Boolean).slice(-1)[0] || 'Tiinex';
+}
+
+function writeOptionalCname(out) {
+  const envCname = envValue('PAGES_CNAME');
+  const sourceCname = truthyEnv('TIINEX_USE_SOURCE_CNAME') && existsSync(path('CNAME')) ? readFileSync(path('CNAME'), 'utf8').trim() : '';
+  const cname = envCname || sourceCname;
+  if (cname) writeFileSync(join(out, 'CNAME'), `${cname}\n`, 'utf8');
+  return Boolean(cname);
+}
+
 function stripLocalScripts(html) {
   let output = html;
   for (const script of scriptOrder) {
@@ -58,8 +94,32 @@ function bundleSource() {
     parts.push(read(script));
     parts.push('\n');
   }
+  const repository = envValue('TIINEX_VIEWER_GIT_REPO') || envValue('GITHUB_REPOSITORY');
+  const ref = envValue('TIINEX_VIEWER_GIT_REF') || envValue('SOURCE_REF') || envValue('GITHUB_REF_NAME');
+  const rootPaths = envList('TIINEX_VIEWER_GIT_ROOTS', ['.topics']);
+  const browserTitle = envValue('TIINEX_VIEWER_TITLE') || defaultRepositoryName();
+  const gitNative = {
+    enabled: envValue('TIINEX_VIEWER_GIT_ENABLED', repository ? 'true' : 'false') !== 'false',
+    loadFromUnpkg: true,
+    allowDefaultVendorUrls: true,
+    depth: Number(envValue('TIINEX_VIEWER_GIT_DEPTH', '1')) || 1
+  };
+  if (repository) gitNative.repo = repository;
+  if (ref) gitNative.ref = ref;
+  if (rootPaths.length) gitNative.rootPaths = rootPaths;
+  const buildSource = envValue('TIINEX_BUILD_REPOSITORY') || envValue('GITHUB_REPOSITORY') || 'local';
+  const options = {
+    createWorkspace: true,
+    browserTitle,
+    buildIdentity: {
+      repository: buildSource,
+      channel: envValue('TIINEX_BUILD_CHANNEL', 'source'),
+      builtFor: envValue('TIINEX_BUILD_LABEL', `${buildSource} public build`),
+      publicBuildOutputExcluded: true
+    }
+  };
   parts.push(`\n;/* ---- viewer options ---- */\n`);
-  parts.push(`(function () {\n  const defaultGitNative = {\n    enabled: true,\n    repo: 'Tiinex/docs',\n    ref: 'master',\n    rootPaths: ['.topics'],\n    loadFromUnpkg: true,\n    allowDefaultVendorUrls: true,\n    corsProxy: 'https://cors.isomorphic-git.org',\n    depth: 1\n  };\n  const existing = window.TIINEX_VIEWER_OPTIONS || {};\n  window.TIINEX_VIEWER_OPTIONS = Object.assign({ createWorkspace: true, browserTitle: 'Tiinex' }, existing);\n  window.TIINEX_VIEWER_OPTIONS.gitNative = Object.assign({}, defaultGitNative, existing.gitNative || existing.gitNativeRuntime || {});\n})();\n`);
+  parts.push(`(function () {\n  const defaultGitNative = ${JSON.stringify(gitNative, null, 2)};\n  const existing = window.TIINEX_VIEWER_OPTIONS || {};\n  window.TIINEX_VIEWER_OPTIONS = Object.assign(${JSON.stringify(options, null, 2)}, existing);\n  window.TIINEX_VIEWER_OPTIONS.gitNative = Object.assign({}, defaultGitNative, existing.gitNative || existing.gitNativeRuntime || {});\n})();\n`);
   parts.push(`\n;/* ---- app.js ---- */\n`);
   parts.push(read('app.js'));
   parts.push('\n');
@@ -73,22 +133,21 @@ function main() {
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
 
-  const publicIndex = stripLocalScripts(read('index.html'));
+  const buildSource = envValue('TIINEX_BUILD_REPOSITORY') || envValue('GITHUB_REPOSITORY') || 'local';
+  let publicIndex = stripLocalScripts(read('index.html'));
+  publicIndex = publicIndex.replace(/(<meta name=["']tiinex:build-source["'] content=["'])[^"']*(["']>)/u, `$1${buildSource}$2`);
   writeFileSync(join(out, 'index.html'), publicIndex, 'utf8');
   writeFileSync(join(out, 'tiinex.bundle.js'), bundleSource(), 'utf8');
 
-  for (const file of ['styles.css', 'llms.txt', 'tiinex.app.llm.v1.md', 'favicon.ico']) {
-    copyPath(file, out);
+  for (const file of ['styles.css', 'llms.txt', 'tiinex.app.llm.v1.md', 'tiinex.context.v1.md', 'tiinex.orientation.v1.md', 'tiinex.orientation.manifest.v1.json', 'robots.txt', 'favicon.ico']) {
+    copyPathIfExists(file, out);
   }
   for (const dir of ['assets', '.topics', 'samples']) {
-    copyPath(dir, out);
+    copyPathIfExists(dir, out);
   }
 
   writeFileSync(join(out, '.nojekyll'), '', 'utf8');
-  const envCname = (process.env.PAGES_CNAME || '').trim();
-  const sourceCname = existsSync(path('CNAME')) ? readFileSync(path('CNAME'), 'utf8').trim() : '';
-  const cname = envCname || sourceCname;
-  if (cname) writeFileSync(join(out, 'CNAME'), `${cname}\n`, 'utf8');
+  writeOptionalCname(out);
 
   console.log(`Built public site: ${basename(out)}`);
 }

@@ -37,6 +37,14 @@ jobs:
       publish_enabled: ${{ steps.settings.outputs.publish_enabled }}
     env:
       PAGES_CNAME: ${{ vars.PAGES_CNAME || '' }}
+      TIINEX_USE_SOURCE_CNAME: ${{ vars.TIINEX_USE_SOURCE_CNAME || '' }}
+      TIINEX_PUBLIC_STATIC_PATHS: ${{ vars.TIINEX_PUBLIC_STATIC_PATHS || '' }}
+      TIINEX_VIEWER_TITLE: ${{ vars.TIINEX_VIEWER_TITLE || '' }}
+      TIINEX_VIEWER_GIT_REPO: ${{ vars.TIINEX_VIEWER_GIT_REPO || '' }}
+      TIINEX_VIEWER_GIT_REF: ${{ vars.TIINEX_VIEWER_GIT_REF || '' }}
+      TIINEX_VIEWER_GIT_ROOTS: ${{ vars.TIINEX_VIEWER_GIT_ROOTS || '' }}
+      TIINEX_VIEWER_GIT_ENABLED: ${{ vars.TIINEX_VIEWER_GIT_ENABLED || '' }}
+      TIINEX_VIEWER_GIT_DEPTH: ${{ vars.TIINEX_VIEWER_GIT_DEPTH || '' }}
       TIINEX_REPOSITORY_MIRRORS: ${{ vars.TIINEX_REPOSITORY_MIRRORS || secrets.TIINEX_REPOSITORY_MIRRORS || '' }}
       TIINEX_WORKFLOW_REPOSITORY_MIRRORS: ${{ github.event.inputs.extra_mirrors || '' }}
       TIINEX_WORKSPACE_REPOSITORY_MIRRORS: ${{ vars.TIINEX_WORKSPACE_REPOSITORY_MIRRORS || '' }}
@@ -116,22 +124,40 @@ jobs:
           set -euo pipefail
 
           viewer_build=false
-          if [ -f package.json ] \
-            && [ -f app.js ] \
-            && [ -f index.html ] \
-            && [ -f tools/build-public.mjs ] \
-            && [ -f tools/check-public-build.mjs ] \
-            && jq -e '.scripts["build:public"] and .scripts.test' package.json >/dev/null; then
+          viewer_markers=false
+          if [ -f app.js ] || [ -f tools/build-public.mjs ] || [ -f tools/check-public-build.mjs ]; then
+            viewer_markers=true
+          fi
+          if [ -f package.json ] && jq -e '.scripts["build:public"] or .scripts["public:check"] or .scripts.test' package.json >/dev/null; then
+            viewer_markers=true
+          fi
+
+          if [ -f package.json ] && [ -f app.js ] && [ -f index.html ]; then
+            missing=()
+            [ -f tools/build-public.mjs ] || missing+=(tools/build-public.mjs)
+            [ -f tools/check-public-build.mjs ] || missing+=(tools/check-public-build.mjs)
+            if ! jq -e '.scripts["build:public"] and .scripts.test' package.json >/dev/null; then
+              missing+=(package.json:scripts.build:public/test)
+            fi
+            if [ "${#missing[@]}" -gt 0 ]; then
+              printf 'Viewer-like repository is missing required publish input(s): %s\n' "${missing[*]}" >&2
+              printf 'Either restore the viewer build tooling or remove the partial viewer markers so the publisher can run as static lineage/mirror material.\n' >&2
+              exit 1
+            fi
             viewer_build=true
+          elif [ "$viewer_markers" = true ]; then
+            echo "Partial viewer markers are present, but package.json + app.js + index.html are not all present." >&2
+            echo "Refusing to publish mirror/static output over a broken viewer branch." >&2
+            exit 1
           fi
 
           echo "viewer_build=$viewer_build" >> "$GITHUB_OUTPUT"
           if [ "$viewer_build" = true ]; then
-            echo "mode=viewer-and-mirrors" >> "$GITHUB_OUTPUT"
-            echo "Publish mode: viewer build plus repository mirrors"
+            echo "mode=viewer-static-and-mirrors" >> "$GITHUB_OUTPUT"
+            echo "Publish mode: viewer plus optional static material plus repository mirrors"
           else
-            echo "mode=mirrors-only" >> "$GITHUB_OUTPUT"
-            echo "Publish mode: repository mirrors only"
+            echo "mode=static-and-mirrors" >> "$GITHUB_OUTPUT"
+            echo "Publish mode: static lineage material plus repository mirrors"
           fi
 
       - name: Set up Node.js
@@ -146,16 +172,73 @@ jobs:
 
       - name: Build public viewer
         if: steps.settings.outputs.publish_enabled == 'true' && steps.publish_mode.outputs.viewer_build == 'true'
+        env:
+          SOURCE_REF: ${{ steps.settings.outputs.source_ref }}
+          TIINEX_BUILD_REPOSITORY: ${{ github.repository }}
         run: npm run build:public
 
-      - name: Prepare mirror-only publish artifact
+      - name: Prepare non-viewer publish artifact
         if: steps.settings.outputs.publish_enabled == 'true' && steps.publish_mode.outputs.viewer_build != 'true'
         shell: bash
+        env:
+          SOURCE_REF: ${{ steps.settings.outputs.source_ref }}
+          TIINEX_BUILD_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           rm -rf .site-publish
           mkdir -p .site-publish
           touch .site-publish/.nojekyll
+          python3 - <<'PY'
+          import os
+          import shutil
+          from pathlib import Path
+
+          root = Path('.').resolve()
+          out = root / '.site-publish'
+          default_paths = [
+              'index.html', 'styles.css', 'robots.txt', 'favicon.ico', 'llms.txt',
+              'README.md', 'LICENSE', 'NOTICE', 'LINEAGE_POLICY.md',
+              'tiinex.app.llm.v1.md', 'tiinex.context.v1.md', 'tiinex.orientation.v1.md', 'tiinex.orientation.manifest.v1.json',
+              '.topics', 'assets', 'samples', 'discord'
+          ]
+          configured = os.environ.get('TIINEX_PUBLIC_STATIC_PATHS', '').strip()
+          paths = [item.strip() for chunk in configured.splitlines() for item in chunk.split(',') if item.strip()] if configured else default_paths
+          excluded_names = {'.git', '.mirrors', '.site-publish', 'node_modules'}
+
+          def safe_rel(value):
+              candidate = Path(value)
+              if candidate.is_absolute() or '..' in candidate.parts:
+                  raise SystemExit(f'Unsafe public static path: {value}')
+              return candidate
+
+          def ignore(dirpath, names):
+              return {name for name in names if name in excluded_names}
+
+          copied = []
+          for raw in paths:
+              rel = safe_rel(raw)
+              src = root / rel
+              if not src.exists():
+                  print(f'Skipping absent optional static publish source: {raw}')
+                  continue
+              dst = out / rel
+              if src.is_dir():
+                  shutil.rmtree(dst, ignore_errors=True)
+                  dst.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copytree(src, dst, ignore=ignore)
+              else:
+                  dst.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(src, dst)
+              copied.append(raw)
+          print('Static publish material:', ', '.join(copied) if copied else '(none)')
+
+          cname = os.environ.get('PAGES_CNAME', '').strip()
+          use_source_cname = os.environ.get('TIINEX_USE_SOURCE_CNAME', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+          source_cname = (root / 'CNAME').read_text(encoding='utf-8').strip() if use_source_cname and (root / 'CNAME').exists() else ''
+          cname = cname or source_cname
+          if cname:
+              (out / 'CNAME').write_text(cname + '\n', encoding='utf-8')
+          PY
 
       - name: Remove inherited custom domain from forks
         if: steps.settings.outputs.publish_enabled == 'true' && steps.publish_mode.outputs.viewer_build == 'true' && github.event.repository.fork && vars.PAGES_CNAME == ''

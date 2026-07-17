@@ -1995,7 +1995,7 @@ function validateRepositoryTransportContracts() {
   for (const token of [
     'Detect publish mode',
     'viewer_build=false',
-    'Prepare mirror-only publish artifact',
+    'Prepare non-viewer publish artifact',
     "steps.publish_mode.outputs.viewer_build == 'true'",
     "steps.publish_mode.outputs.viewer_build != 'true'",
     'Root publication is unconditional',
@@ -2015,6 +2015,15 @@ function validateRepositoryTransportContracts() {
     "github.ref_type == 'branch'",
     "github.ref_name != 'public'",
     'TIINEX_PUBLISH_SOURCE_REF',
+    'TIINEX_USE_SOURCE_CNAME',
+    'TIINEX_PUBLIC_STATIC_PATHS',
+    'TIINEX_VIEWER_GIT_REPO',
+    'TIINEX_VIEWER_GIT_REF',
+    'TIINEX_VIEWER_GIT_ROOTS',
+    'Viewer-like repository is missing required publish input',
+    'mode=viewer-static-and-mirrors',
+    'mode=static-and-mirrors',
+    'Static publish material:',
     'publish_enabled=false',
     'Skipping publish for $GITHUB_REF_NAME',
     'publish_enabled: ${{ steps.settings.outputs.publish_enabled }}',
@@ -2070,6 +2079,8 @@ function validateRepositoryTransportContracts() {
   if (!workflow.includes("if: steps.settings.outputs.publish_enabled == 'true' && steps.settings.outputs.pages_deploy_enabled == 'true'") || !workflow.includes("if: needs.publish.outputs.publish_enabled == 'true' && needs.publish.outputs.pages_deploy_enabled == 'true'")) {
     fail('official Pages deployment must be opt-in and must not run when a pinned source ref skips the publish path');
   }
+  if (!app.includes('tiinexConfiguredBuildIdentity') || !app.includes('TIINEX_APP_BUILD_DEFAULT')) fail('app build identity must be configurable by published viewer options');
+  if (app.includes("const TIINEX_APP_BUILD = Object.freeze({") && app.includes("repository: 'Tiinex/site'")) fail('app build identity must not hardcode Tiinex/site as the only source repository');
   if (workflow.includes("github.ref_name == github.event.repository.default_branch")) {
     fail('fork publish must not be limited to the repository default branch; non-public working branches should be publishable');
   }
@@ -2093,6 +2104,12 @@ function validatePublicBuildContracts() {
   if (!buildScript.includes("argValue('--out', '.site-publish')")) fail('build-public must default to .site-publish and accept --out for checks');
   if (!buildScript.includes('tiinex.bundle.js')) fail('build-public must create tiinex.bundle.js');
   if (!buildScript.includes('window.TIINEX_VIEWER_OPTIONS')) fail('build-public must include viewer options before app.js in the bundle');
+  for (const token of ['copyPathIfExists', 'TIINEX_VIEWER_GIT_REPO', 'TIINEX_VIEWER_GIT_REF', 'TIINEX_VIEWER_GIT_ROOTS', 'TIINEX_VIEWER_TITLE', 'TIINEX_BUILD_REPOSITORY', 'TIINEX_BUILD_CHANNEL', 'buildIdentity', 'PAGES_CNAME', 'TIINEX_USE_SOURCE_CNAME']) {
+    if (!buildScript.includes(token)) fail(`build-public must support repo-agnostic publish configuration: ${token}`);
+  }
+  if (/repo:\s*['"]Tiinex\/docs['"]/u.test(buildScript)) {
+    fail('build-public must not hardcode Tiinex/docs as the published viewer repository');
+  }
   for (const section of ['src/app/core-runtime.js', 'src/app/services-runtime.js', 'src/app/state-runtime.js', 'src/app/ui-runtime.js', 'src/app/viewstate-runtime.js', 'app.js']) {
     if (!buildScript.includes(section)) fail(`build-public must include ${section}`);
   }
@@ -2107,7 +2124,7 @@ function validatePublicBuildContracts() {
   }
   if (/rsync\b/u.test(workflow)) fail('publish workflow must publish build output, not rsync the raw repository');
 
-  note('public build and publish workflow contracts are valid');
+  note('repo-agnostic public build and publish workflow contracts are valid');
 }
 
 function validateRootPackageShape() {

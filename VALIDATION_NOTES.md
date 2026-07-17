@@ -34,10 +34,10 @@ Repository transport validation should cover:
 - workspace-owned `## Repository Mirrors` declarations providing default mirror sources without forcing source branches to carry Git submodule gitlinks or sidecar JSON;
 - GitHub Actions `TIINEX_REPOSITORY_MIRRORS` configuration appending fork-owned mirrors without editing upstream workspace artifacts;
 - official GitHub Pages Actions artifact deployment while still publishing an inspectable `public` branch;
-- copyable workflow mode detection: viewer repositories build the app before mirrors, while lineage-only repositories publish mirrors without viewer-specific commands;
+- copyable workflow mode detection: viewer repositories build the app before mirrors, static lineage repositories publish their public material before mirrors, and mirror-only repositories still publish a root mirror without viewer-specific commands;
 - ordinary submodules outside `.mirrors` being ignored rather than making mirror publication fail;
 - mirror metadata, checksum, zip integrity, and directory/archive file parity being validated before publication;
-- forks not inheriting the source repository's custom-domain `CNAME` unless `PAGES_CNAME` is explicitly configured;
+- forks not inheriting the source repository's custom-domain `CNAME` unless `PAGES_CNAME` or `TIINEX_USE_SOURCE_CNAME=true` is explicitly configured;
 - mirror publication selecting the remote default-branch HEAD rather than the superproject gitlink commit;
 - fork source branches avoiding committed mirror gitlinks that GitHub Pages default checkout would recurse into before publish sanitization.
 - omitted workspace refs accepting snapshot metadata refs and native Git following the remote default branch instead of assuming `master`;
@@ -62,3 +62,6 @@ Warm persistent Git reuse is recorded as `local-git`; it does not report a fresh
 - Fork-safe mirror publication defaults to publishing only the repository itself when no mirror variable/secret/manual input is configured; workspace and `.gitmodules` mirrors are explicit opt-ins, and direct GitHub Pages deployment is disabled unless `TIINEX_PAGES_DEPLOY=true`.
 
 - Fork-safe branch publication now runs on pushes to any non-`public` branch by default, while `TIINEX_PUBLISH_SOURCE_REF` can pin publication to one configured source ref and skip other branch pushes without changing `public`.
+
+- Repo-agnostic publication builds viewer identity, default Git source, CNAME, and optional static roots from GitHub Actions variables or repository facts rather than hardcoded Tiinex/site defaults.
+- Viewer-like repositories fail fast when required build tooling is partially missing, so a broken viewer branch cannot silently replace the public app with mirror-only output.
