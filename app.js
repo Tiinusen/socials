@@ -10323,7 +10323,7 @@ ${fence}`;
       const info = String(match[3] || '').trim().toLowerCase().split(/\s+/)[0] || '';
       if (!allowed.has(info)) continue;
       const bodyStart = openerRe.lastIndex;
-      const closeRe = new RegExp(`\n${escapeRegExp(fence)}[ \t]*(?=\n|$)`, 'g');
+      const closeRe = new RegExp(`\n${escapeRegExpLiteral(fence)}[ \t]*(?=\n|$)`, 'g');
       closeRe.lastIndex = bodyStart;
       const close = closeRe.exec(source);
       if (!close) break;
