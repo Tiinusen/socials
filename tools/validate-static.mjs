@@ -2293,6 +2293,7 @@ async function main() {
   await validateGitSourceAdapterResearchContract();
   validateRepositoryTransportContracts();
   validatePublicBuildContracts();
+  checkRuntimeIssueMarkdownFenceContracts(read('app.js'));
   validateJavascriptSyntax();
   validateJavascriptSurface();
   validateMobileActionOwnership();
@@ -2329,3 +2330,17 @@ main().catch((error) => {
   console.error(error);
   process.exit(1);
 });
+
+
+function checkRuntimeIssueMarkdownFenceContracts(appJs) {
+  const badHelperCall = /(?<![\w$])escapeRegExp\s*\(/.test(appJs);
+  if (badHelperCall) {
+    fail('Runtime issue markdown fence parser references escapeRegExp(); use app.js escapeRegExpLiteral() helper instead.');
+  }
+  if (!/function\s+extractMarkdownFenceBlocks\s*\(/.test(appJs)) {
+    fail('Runtime issue markdown fence parser is missing extractMarkdownFenceBlocks().');
+  }
+  if (!/function\s+markdownFence\s*\(/.test(appJs)) {
+    fail('Runtime GitHub publication fence writer is missing markdownFence().');
+  }
+}
