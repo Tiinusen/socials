@@ -9004,6 +9004,11 @@
       toast(`Workspace state could not be parsed: ${parsed.viewerStateError}`, 'warn');
     } else if (parsed?.viewerState && options.applyWorkspaceState !== false) {
       await applyViewerStatePreservingLocal(parsed.viewerState, options);
+      // Workspace state application can restore route/local material after the
+      // identity has been parsed. Re-assert the workspace Browser Title after
+      // that work so public issue/bootstrap opens do not fall back to the
+      // packaged/default document title.
+      syncDocumentTitle('viewer-config-after-workspace-state');
     }
   }
 
@@ -13477,8 +13482,13 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         displayName: app.viewerIdentity?.displayName || '',
         heading: app.viewerIdentity?.heading || '',
         label: app.viewerIdentity?.label || '',
+        browserTitle: app.viewerIdentity?.browserTitle || '',
         icon: app.viewerIdentity?.icon || '',
         home: app.viewerIdentity?.home || '',
+        publicBaseUrl: app.viewerIdentity?.publicBaseUrl || '',
+        viewerBaseUrl: app.viewerIdentity?.viewerBaseUrl || '',
+        shareBaseUrl: app.viewerIdentity?.shareBaseUrl || '',
+        workspaceHome: app.viewerIdentity?.workspaceHome || '',
         accent: app.viewerIdentity?.accent || '',
         noWorkspaceSubtitle: app.viewerIdentity?.noWorkspaceSubtitle || '',
         noWorkspaceSubtitles: app.viewerIdentity?.noWorkspaceSubtitles || []
@@ -13630,6 +13640,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         }
       }
       if (state.viewerIdentity) app.viewerIdentity = Object.assign(app.viewerIdentity || {}, state.viewerIdentity);
+      if (state.viewerIdentity && typeof syncDocumentTitle === 'function') syncDocumentTitle('local-state-restore-current-workspaces');
     } finally {
       app.localState.restoring = false;
       flushLocalStatePostRestoreSave('restore-current-workspaces');
@@ -13855,6 +13866,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       (state.workspaces || []).forEach(restoreWorkspaceFromLocalState);
       if (state.viewerIdentity) {
         app.viewerIdentity = Object.assign(app.viewerIdentity || {}, state.viewerIdentity);
+        if (typeof syncDocumentTitle === 'function') syncDocumentTitle('open-local-state');
       }
     } finally {
       app.localState.restoring = false;
@@ -20412,9 +20424,19 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       // Workspace artifacts are lineage-capable root artifacts. Keep Continue and
       // Reference before workspace-specific Open/Merge so they remain visible on
       // narrow cards instead of being pushed to the tail of the action row.
+      const workspaceContinueAction = Object.assign({}, continueAction, {
+        iconOnly: true,
+        className: `${continueAction.className || ''} workspace-transition-icon-only`.trim(),
+        title: transitionActionTitle('continue', 'Continue from this workspace artifact')
+      });
+      const workspaceReferenceAction = Object.assign({}, referenceAction, {
+        iconOnly: true,
+        className: `${referenceAction.className || ''} workspace-transition-icon-only`.trim(),
+        title: transitionActionTitle('reference', 'Reference this workspace artifact')
+      });
       writeActions.push(
-        continueAction,
-        referenceAction,
+        workspaceContinueAction,
+        workspaceReferenceAction,
         write({ label: 'Open', icon: 'fa-solid fa-layer-group', className: 'workspace-open-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'open-workspace-artifact' }, base), title: 'Open this .workspace.md entrypoint as the current workspace set; non-draft workspaces may close' }),
         write({ label: 'Merge', icon: 'fa-solid fa-code-merge', className: 'workspace-merge-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'merge-workspace-artifact' }, base), title: 'Merge this .workspace.md into the current workspace set without closing existing workspaces' })
       );
