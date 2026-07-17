@@ -32,13 +32,13 @@ try {
   const bundlePath = join(out, 'tiinex.bundle.js');
   const stylesPath = join(out, 'styles.css');
 
-  for (const required of [indexPath, bundlePath, stylesPath, join(out, '.nojekyll'), join(out, 'assets'), join(out, '.topics'), join(out, 'samples'), join(out, 'llms.txt'), join(out, 'tiinex.app.llm.v1.md'), join(out, 'favicon.ico'), join(out, 'CNAME')]) {
+  for (const required of [indexPath, bundlePath, stylesPath, join(out, '.nojekyll'), join(out, 'assets'), join(out, '.topics'), join(out, 'samples'), join(out, 'llms.txt'), join(out, 'tiinex.app.llm.v1.md'), join(out, 'favicon.ico')]) {
     if (!existsSync(required)) fail(`Missing public build output: ${required}`);
   }
 
   if (existsSync(indexPath)) {
     const html = read(indexPath);
-    if (!html.includes('tiinex:build-source') || !html.includes('Tiinex/site')) fail('public index must include stable source identity metadata.');
+    if (!/<meta name=["']tiinex:build-source["'] content=["'][^"']+["']>/u.test(html)) fail('public index must include stable source identity metadata.');
     if (html.includes('id="viewer-entrypoint-notice"')) fail('public index must not restore the removed visible viewer entrypoint notice.');
     if (!/<section\s+id="tiinex-llm-entrypoint"[\s\S]*?\bhidden\b/u.test(html)) fail('public index must preserve the hidden Tiinex LLM entrypoint.');
     if (!html.includes('data-tiinex-llm-entrypoint="./llms.txt"')) fail('public index hidden Tiinex LLM entrypoint must retain the llms.txt binding.');
@@ -55,7 +55,7 @@ try {
     const syntax = spawnSync(process.execPath, ['--check', bundlePath], { encoding: 'utf8' });
     if (syntax.status !== 0) fail(`node --check public bundle failed:\n${syntax.stderr || syntax.stdout}`.trim());
     const bundle = read(bundlePath);
-    if (!bundle.includes("repository: 'Tiinex/site'") || !bundle.includes("channel: 'source'") || !bundle.includes('buildIdentityReport') || !bundle.includes('routeLoadPresentationReport')) fail('public bundle must include stable source identity and route-load diagnostics.');
+    if (!bundle.includes('buildIdentity') || !bundle.includes('buildIdentityReport') || !bundle.includes('routeLoadPresentationReport')) fail('public bundle must include configurable source identity and route-load diagnostics.');
     if (!bundle.includes('workspace-config-save') || bundle.includes('workspace-config-download')) fail('public bundle must save workspace configuration through local draft persistence.');
     if (!bundle.includes('await saveNodeEdit(ws, node, markdown)')) fail('public bundle workspace configuration save must reuse local artifact draft persistence.');
     const sections = [
@@ -87,7 +87,7 @@ try {
   console.log('✓ public build creates bundled site');
   console.log('✓ public index loads one local app bundle');
   console.log('✓ public bundle syntax and section order are valid');
-  console.log('✓ public build preserves CNAME, favicon, and stable source identity');
+  console.log('✓ public build preserves favicon, optional CNAME, and configurable source identity');
 } finally {
   rmSync(tmpRoot, { recursive: true, force: true });
 }

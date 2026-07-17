@@ -111,12 +111,17 @@
     openOriginalShadows: {}
   };
 
-  const TIINEX_APP_BUILD = Object.freeze({
-    repository: 'Tiinex/site',
+  const TIINEX_APP_BUILD_DEFAULT = Object.freeze({
+    repository: '',
     channel: 'source',
-    builtFor: 'Tiinex/site source repo',
+    builtFor: 'Tiinex viewer source',
     publicBuildOutputExcluded: true
   });
+
+  function tiinexConfiguredBuildIdentity() {
+    const configured = window.TIINEX_VIEWER_OPTIONS?.buildIdentity || {};
+    return Object.assign({}, TIINEX_APP_BUILD_DEFAULT, configured && typeof configured === 'object' ? configured : {});
+  }
 
   app.routeLoadPresentation = app.routeLoadPresentation || { sessions: [], active: null, renderEvents: [], contentClears: 0 };
   app.lifecycleResponsiveness = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
@@ -125,7 +130,7 @@
   app.workspaceOpenMerge = app.workspaceOpenMerge || { events: [], last: null, duplicateExports: 0, mergeImports: 0, openImports: 0 };
 
   function tiinexBuildIdentity() {
-    return Object.assign({}, TIINEX_APP_BUILD, {
+    return Object.assign({}, tiinexConfiguredBuildIdentity(), {
       location: `${location.origin}${location.pathname}${location.search}`,
       hashKind: location.hash ? String(location.hash).slice(0, 16) : '',
       hashLength: location.hash ? location.hash.length : 0,
@@ -720,10 +725,11 @@
   }
 
   function buildIdentityReport() {
+    const identity = tiinexBuildIdentity();
     return {
       schema: 'tiinex.build-identity.report.v1',
-      identity: tiinexBuildIdentity(),
-      appMarker: `${TIINEX_APP_BUILD.repository}:${TIINEX_APP_BUILD.channel}`,
+      identity,
+      appMarker: `${identity.repository || 'unbound'}:${identity.channel || 'source'}`,
       documentTitle: document.title || '',
       configuredBrowserTitle: app.viewerIdentity?.browserTitle || '',
       diagnostics: Object.keys(window.TiinexDiagnostics || {}).sort().filter((key) => /Report$|Summary$|Json$/.test(key)).slice(0, 120),
