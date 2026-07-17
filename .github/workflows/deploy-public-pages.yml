@@ -1,0 +1,42 @@
+name: Deploy Public Pages
+
+on:
+  repository_dispatch:
+    types:
+      - tiinex-public-pages-deploy
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy-pages:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.pages_deployment.outputs.page_url }}
+    steps:
+      - name: Check out public branch
+        uses: actions/checkout@v6
+        with:
+          ref: public
+          fetch-depth: 1
+          submodules: false
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload public branch as Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: .
+
+      - name: Deploy to GitHub Pages
+        id: pages_deployment
+        uses: actions/deploy-pages@v4

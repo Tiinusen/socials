@@ -1770,6 +1770,12 @@ function validateArchitectureBoundaries() {
   if (!appJs.includes('data-action="workspace-config-save"')) fail('workspace configuration editor must save through a local draft action.');
   if (appJs.includes('data-action="workspace-config-download"')) fail('workspace configuration editor must not bypass workspace draft persistence with a direct download action.');
   if (!appJs.includes("action === 'workspace-config-save'") || !appJs.includes('await saveNodeEdit(ws, node, markdown)')) fail('workspace configuration save must reuse local artifact draft persistence.');
+  if (!appJs.includes('workspaceSaveArtifactReport')) fail('Save workspace must expose artifact-save diagnostics.');
+  if (!appJs.includes("type: 'workspace-save-artifact'")) fail('Save workspace must create a target/replacement modal for workspace artifacts.');
+  if (!appJs.includes('Save artifact</button>')) fail('Save workspace confirmation must save only the artifact, not launch export.');
+  if (appJs.includes('Save artifact and export')) fail('Save workspace must not launch the export flow directly.');
+  if (!appJs.includes('Use Export when you are ready to publish or download it.')) fail('Save workspace toast must guide users back to the normal Export flow.');
+  if (!appJs.includes('githubWorkspacePresentationDelta')) fail('GitHub issue previews must have a workspace-specific human summary path.');
   const indexHtml = read('index.html');
   if (indexHtml.includes('id="viewer-entrypoint-notice"')) {
     fail('index.html must not restore the removed visible viewer entrypoint notice.');
@@ -1846,6 +1852,7 @@ function validateRepositoryTransportContracts() {
   const app = read('app.js');
   const index = read('index.html');
   const workflow = read('.github/workflows/publish-public.yml');
+  const pagesDeployWorkflow = read('.github/workflows/deploy-public-pages.yml');
   const schemaPath = join(root, '.topics/.schemas/tiinex.workspace.v1.schema.md');
   const workspacePath = join(root, '.topics/.workspaces/viewer.workspace.md');
   const schema = existsSync(schemaPath) ? readFileSync(schemaPath, 'utf8') : '';
@@ -2062,9 +2069,9 @@ function validateRepositoryTransportContracts() {
     'branch-only',
     'publish_enabled: ${{ steps.settings.outputs.publish_enabled }}',
     "if: steps.settings.outputs.publish_enabled == 'true'",
-    'actions/upload-pages-artifact@v4',
-    'actions/deploy-pages@v4',
-    'actions/configure-pages@v5',
+    'Request GitHub Pages deployment',
+    'repos/${GITHUB_REPOSITORY}/dispatches',
+    "event_type='tiinex-public-pages-deploy'",
     'TIINEX_PUBLIC_REDIRECTS',
     'pages: write',
     'id-token: write',
@@ -2108,13 +2115,29 @@ function validateRepositoryTransportContracts() {
   }
   const sanitizeDeployIndex = workflow.indexOf('- name: Sanitize public deploy root');
   const publishBranchIndex = workflow.indexOf('- name: Publish public branch');
-  const uploadPagesIndex = workflow.indexOf('- name: Upload Pages artifact');
-  const deployPagesIndex = workflow.indexOf('uses: actions/deploy-pages@v4');
-  if (sanitizeDeployIndex < 0 || publishBranchIndex < 0 || uploadPagesIndex < 0 || deployPagesIndex < 0 || !(sanitizeDeployIndex < publishBranchIndex && publishBranchIndex < uploadPagesIndex && uploadPagesIndex < deployPagesIndex)) {
-    fail('public deploy root must be sanitized before branch publication, Pages artifact upload, and Pages deployment');
+  const dispatchPagesIndex = workflow.indexOf('- name: Request GitHub Pages deployment');
+  if (sanitizeDeployIndex < 0 || publishBranchIndex < 0 || dispatchPagesIndex < 0 || !(sanitizeDeployIndex < publishBranchIndex && publishBranchIndex < dispatchPagesIndex)) {
+    fail('public deploy root must be sanitized before public branch publication and Pages deployment dispatch');
   }
-  if (!workflow.includes("if: steps.settings.outputs.publish_enabled == 'true' && steps.settings.outputs.pages_deploy_enabled == 'true'") || !workflow.includes("if: needs.publish.outputs.publish_enabled == 'true' && needs.publish.outputs.pages_deploy_enabled == 'true'")) {
-    fail('official Pages deployment must be gated by publish_enabled and pages_deploy_enabled so the inspectable public branch remains the fallback');
+  if (!workflow.includes("if: steps.settings.outputs.publish_enabled == 'true' && steps.settings.outputs.pages_deploy_enabled == 'true'")) {
+    fail('Pages deployment dispatch must be gated by publish_enabled and pages_deploy_enabled so the inspectable public branch remains the fallback');
+  }
+  for (const token of [
+    'name: Deploy Public Pages',
+    'repository_dispatch:',
+    'tiinex-public-pages-deploy',
+    'workflow_dispatch:',
+    'ref: public',
+    'actions/configure-pages@v5',
+    'actions/upload-pages-artifact@v4',
+    'actions/deploy-pages@v4',
+    'environment:',
+    'name: github-pages',
+    'contents: read',
+    'pages: write',
+    'id-token: write'
+  ]) {
+    if (!pagesDeployWorkflow.includes(token)) fail(`public Pages deploy workflow contract missing: ${token}`);
   }
   if (!app.includes('tiinexConfiguredBuildIdentity') || !app.includes('TIINEX_APP_BUILD_DEFAULT')) fail('app build identity must be configurable by published viewer options');
   if (app.includes("const TIINEX_APP_BUILD = Object.freeze({") && app.includes("repository: 'Tiinex/site'")) fail('app build identity must not hardcode Tiinex/site as the only source repository');
@@ -2156,6 +2179,7 @@ function validatePublicBuildContracts() {
   if (!checkScript.includes('node --check public bundle failed')) fail('public build checker must syntax-check the bundle');
 
   const workflow = read('.github/workflows/publish-public.yml');
+  const pagesDeployWorkflow = read('.github/workflows/deploy-public-pages.yml');
   for (const required of ['npm test', 'npm run build:public', 'publish_dir: .site-publish', 'publish_branch: public']) {
     if (!workflow.includes(required)) fail(`publish workflow must include ${required}`);
   }

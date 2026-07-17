@@ -94,6 +94,10 @@ try {
     }
     if (!bundle.includes('workspace-config-save') || bundle.includes('workspace-config-download')) fail('public bundle must save workspace configuration through local draft persistence.');
     if (!bundle.includes('await saveNodeEdit(ws, node, markdown)')) fail('public bundle workspace configuration save must reuse local artifact draft persistence.');
+    if (!bundle.includes('workspaceSaveArtifactReport')) fail('public bundle must expose Save Workspace artifact diagnostics.');
+    if (!bundle.includes("type: 'workspace-save-artifact'")) fail('public bundle Save Workspace must use the workspace artifact modal.');
+    if (!bundle.includes('Save artifact</button>') || bundle.includes('Save artifact and export')) fail('public bundle Save Workspace must save the artifact without auto-export.');
+    if (!bundle.includes('githubWorkspacePresentationDelta')) fail('public bundle must keep workspace-specific GitHub issue preview summaries.');
     const sections = [
       'src/app/core-runtime.js',
       'src/app/services-runtime.js',

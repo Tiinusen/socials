@@ -32,7 +32,7 @@ They are not the identity boundary of Tiinex, and this site should not be descri
 - Published or source-backed material may expose source links.
 - Parent and Origin are separate relations and must not be collapsed.
 - Workspace files are entrypoints when opened as workspaces, not ordinary leaves.
-- Policy lookup should use the nearest `LINEAGE_POLICY.md` or `LINEAGE_LICENSE.md` when one is available in the loaded material; conventional root policy documents are repository metadata, not scratch artifacts.
+- Policy lookup should use the nearest `LINEAGE_POLICY.md` or `LINEAGE_LICENSE.md` when one is available in the loaded material.
 - The app stays static and client-side; maintainer scripts are for packaging and validation, not runtime hosting logic.
 
 ## Stable Reading Order
@@ -63,9 +63,17 @@ Older `.topics/github-issues/...` paths remain readable for compatibility.
 
 Adapter implementations should preserve external container, publication item, embedded Tiinex artifact, origin, parent, and attached assets as distinct concepts. When a selected export batch contains parent/child artifacts, the adapter should preserve that lineage segment as one publication transaction when the target supports nested items.
 
+## Workspace Save And Export
+
+`Save workspace` creates or replaces a `tiinex.workspace.v1` draft leaf inside an explicit target workspace. It does not download, publish, or open the export adapter automatically. After saving, use the workspace's normal Export action to download or prepare GitHub issue/comment publication.
+
+This keeps workspace snapshots on the same artifact path as other local drafts: choose a target workspace, choose whether to create or replace an existing `.workspace.md`, review the resulting local draft, then export when ready.
+
+GitHub issue publication should keep a clean reader-facing summary with the full Tiinex source payload collapsed below it, matching the issue-body pattern used by Tiinex/docs issue roots.
+
 ## Forking And Instance Customization
 
-A fork can stay close to the canonical viewer while carrying its own lineage, domain, mirrors, and workspace pointers. Keep `master` or `main` clean as the upstream-sync branch. Use a working branch such as `workbench` for instance-specific changes.
+A fork can stay close to the canonical viewer while carrying its own lineage, domain, mirrors, and workspace pointers. Keep `master` or `main` clean as the upstream-sync branch. Use a working branch such as `personal`, `workbench`, `site`, or another instance-specific name for local/public changes.
 
 The publisher supports combinations rather than separate modes:
 
@@ -79,9 +87,9 @@ The publishing repository is always mirrored automatically. Local `.mirrors/` in
 
 1. Fork this repository.
 2. Keep `master`/`main` aligned with `Tiinex/site`.
-3. Create a working branch, recommended: `workbench`.
+3. Create a working branch for your instance, for example `personal`, `workbench`, or `site`.
 4. Enable GitHub Actions.
-5. In **Settings → Pages**, prefer **Source: GitHub Actions** for first-class Pages deployment. The workflow still force-publishes an inspectable `public` branch as a fallback/audit surface.
+5. In **Settings → Pages**, prefer **Source: GitHub Actions** for first-class Pages deployment. The workflow still force-publishes an inspectable `public` branch as an audit surface. The `github-pages` environment should allow the repository default branch, because deployment is requested by a repository dispatch after `public` is updated.
 6. Add repository variables for instance-specific config, for example `PAGES_CNAME` and `TIINEX_WORKSPACE_POINTER_PRIMARY`.
 7. Push the working branch. If this is a fork with more than one non-`public` branch, pushes to `master` are skipped unless explicitly pinned; pushes to the working branch publish that branch.
 
@@ -96,13 +104,13 @@ Default behavior is intentionally conservative around upstream-sync branches:
 - `TIINEX_PUBLISH_SOURCE_REF=<branch>` pins publication to one configured source ref and skips other branch pushes cleanly.
 - `TIINEX_CANONICAL_SOURCE_REF` may rename the canonical upstream-sync branch when a repo uses `main` instead of `master`.
 
-Recommended fork branch names: `workbench` for the active instance branch, or a domain-specific branch such as `socials`. Avoid `forked`; it describes the relationship, not the role.
+Recommended fork branch names describe the instance or role, for example `personal`, `workbench`, `site`, `socials`, or `staging`. Avoid `forked`; it describes the relationship, not the role.
 
 ### Pages Deployment
 
-The workflow builds `.site-publish`, uploads it with the official GitHub Pages artifact path, deploys through `actions/deploy-pages`, and also publishes the same artifact to the `public` branch. The `public` branch is therefore an inspectable record of what was deployed, not the only deploy mechanism.
+The publish workflow builds `.site-publish` and force-publishes the same artifact to the `public` branch. When `TIINEX_PAGES_DEPLOY` is enabled, it then requests the separate `Deploy Public Pages` workflow through a repository dispatch. That deployment workflow runs from the repository default-branch workflow context, checks out `public`, uploads the public branch as the official GitHub Pages artifact, and deploys through `actions/deploy-pages`.
 
-Set `TIINEX_PAGES_DEPLOY=branch-only` or `false` when a repository is still using branch-source Pages or its `github-pages` environment blocks direct Actions deployments.
+This avoids binding the `github-pages` environment to whichever working branch triggered publication, while preserving `public` as the inspectable record of what was deployed. Set `TIINEX_PAGES_DEPLOY=branch-only` or `false` when a repository is still using branch-source Pages or does not want Actions deployment.
 
 ### Repository Variables
 
@@ -120,7 +128,7 @@ Use repository variables for public instance config. Use secrets only when value
 - `TIINEX_VIEWER_TITLE`, `TIINEX_VIEWER_GIT_REPO`, `TIINEX_VIEWER_GIT_REF`, `TIINEX_VIEWER_GIT_ROOTS`: optional viewer build defaults. Omitted means the built viewer derives repository/ref defaults from the publishing repository and source ref.
 - `TIINEX_WORKSPACE_POINTER_PRIMARY`, `TIINEX_WORKSPACE_POINTER_SECONDARY`, `TIINEX_WORKSPACE_POINTERS`: ordered GitHub issue pointers that the runtime resolves at page load. The issue body should declare `Workspace URL:` or `Workspace:` and may point to a GitHub blob/raw `.workspace.md`.
 - `TIINEX_DEFAULT_WORKSPACE`, `TIINEX_FALLBACK_WORKSPACE`, `TIINEX_WORKSPACE_FALLBACKS`, `TIINEX_LOCAL_WORKSPACE_PATH`: ordered direct workspace fallbacks. These become runtime workspace candidates, not a generated `.workspace.md` file.
-- `TIINEX_PAGES_DEPLOY`: defaults to direct GitHub Pages Actions deployment. Set to `branch-only`, `false`, `no`, `off`, or `0` to keep only the inspectable `public` branch update.
+- `TIINEX_PAGES_DEPLOY`: defaults to GitHub Pages Actions deployment via repository dispatch after the inspectable `public` branch is updated. Set to `branch-only`, `false`, `no`, `off`, or `0` to keep only the public branch update.
 
 ### Tiinex/site Suggested Variables
 
@@ -140,7 +148,7 @@ PAGES_CNAME=tiinusen.com
 TIINEX_WORKSPACE_POINTER_PRIMARY=https://github.com/Tiinusen/socials/issues/1
 ```
 
-Add `TIINEX_PUBLISH_SOURCE_REF=workbench` only when that instance should publish one branch and ignore pushes to other branches.
+Add `TIINEX_PUBLISH_SOURCE_REF=personal` or another chosen branch name only when that instance should publish one branch and ignore pushes to other branches.
 
 ### Issue Workspace Pointer Format
 
@@ -149,7 +157,7 @@ Issue body example:
 ```md
 ## Tiinex Workspace Pointer
 
-- Workspace URL: https://github.com/Tiinusen/socials/blob/workbench/.topics/.workspaces/viewer.workspace.md
+- Workspace URL: https://github.com/Tiinusen/socials/blob/personal/.topics/.workspaces/viewer.workspace.md
 ```
 
 The issue is a pointer/config source. The workspace file remains the Tiinex artifact. GitHub Actions should not generate a `.workspace.md` just because an environment variable exists.
@@ -170,20 +178,6 @@ The issue is a pointer/config source. The workspace file remains the Tiinex arti
 3. Require it to update validation when the behavior can regress.
 4. Run the validation commands below before committing.
 5. Keep public config in repository variables instead of committing instance-specific source files.
-
-
-## Saving Workspace Artifacts
-
-The header **Save workspace** action creates or replaces a `tiinex.workspace.v1` draft artifact inside a user-qualified target workspace, then opens the normal export adapter. It no longer performs a one-off `.workspace.md` download.
-
-Save target rules:
-
-- no open workspace: create a local workspace for the workspace artifact;
-- one workspace: preselect that workspace but still show placement and replacement choices;
-- multiple workspaces: ask which workspace receives the artifact;
-- replacement: explicit existing `.workspace.md` path selection, never guessed from a filename collision.
-
-This keeps workspace updates on the same path as other Tiinex artifacts: create or update a draft leaf, review it in a workspace, then export or publish it through the existing adapter flow.
 
 ## Development And Validation
 

@@ -89,14 +89,13 @@ Warm persistent Git reuse is recorded as `local-git`; it does not report a fresh
 - `samples/` is no longer part of the repository root or default public-copy contract.
 - README quick-start guidance should describe fork setup, working branch naming, repo variables, ChatGPT review pass, and Copilot review pass without making instance-specific config part of source.
 
-## V11 root policy document allowance
+## v13 Pages Deployment Dispatch
 
-- Conventional root policy documents such as `LINEAGE_POLICY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and `SECURITY.md` are allowed root metadata rather than unexpected package material.
-- Static hygiene should still reject ad hoc markdown reports or scratch documents in the package root; root policy allowances are explicit, not a broad markdown wildcard.
+The publish workflow now updates the inspectable `public` branch first and then requests the `Deploy Public Pages` workflow through `repository_dispatch`. The deployment workflow checks out `public` and uses the official GitHub Pages artifact/deploy actions from the default-branch workflow context so working-branch pushes do not directly hit `github-pages` environment branch restrictions.
 
-## V12 workspace artifact save target flow
+## V14 Workspace Save Artifact Flow
 
-- Header Save workspace creates or replaces a `tiinex.workspace.v1` artifact inside an explicit target workspace, then opens the normal export adapter with that artifact source selected.
-- No open workspace creates a local target workspace for the artifact; one workspace is preselected; multiple workspaces require explicit target selection.
-- Existing workspace artifact replacement is explicit by path and cannot be inferred silently from filename collisions.
-- `TiinexDiagnostics.workspaceSaveArtifactReport()` records created/replaced artifact counts, created target workspaces, and export handoff events.
+- Header `Save workspace` creates or replaces a `tiinex.workspace.v1` draft leaf inside an explicit target workspace; it must not download directly, publish to GitHub, or open the export modal automatically.
+- If no workspace is open, saving creates a local workspace for the workspace artifact. If one workspace is open, it is preselected. If multiple workspaces are open, the modal exposes the target selector and requires an explicit placement/replacement choice.
+- Replacement of an existing `.workspace.md` is explicit. Matching paths are not overwritten silently.
+- GitHub issue previews for workspace artifacts should show human-facing workspace sections and keep technical restore state/source caches inside the collapsed Tiinex source payload.
