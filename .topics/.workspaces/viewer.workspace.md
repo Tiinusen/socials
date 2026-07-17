@@ -51,6 +51,18 @@
 - Default View: feed
 - Default Filter: all
 
+## Repository Mirrors
+
+### Tiinex docs
+
+- Repository: Tiinex/docs
+- URL: https://github.com/Tiinex/docs.git
+
+### Tiinex ai-provenance
+
+- Repository: Tiinex/ai-provenance
+- URL: https://github.com/Tiinex/ai-provenance.git
+
 ## Repository Transports
 
 ### Shared browser Git proxy

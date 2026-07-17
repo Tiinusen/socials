@@ -31,11 +31,13 @@ Repository transport validation should cover:
 - canonical source identity remaining unchanged when a mirror or proxy supplies material;
 - published root and submodule snapshots excluding `.git` and `.mirrors`;
 - the publishing repository always producing its own root mirror even when `.mirrors`, `.gitmodules`, viewer source, or Node tooling is absent;
+- workspace-owned `## Repository Mirrors` declarations providing additional mirror sources without forcing source branches to carry Git submodule gitlinks or sidecar JSON;
 - copyable workflow mode detection: viewer repositories build the app before mirrors, while lineage-only repositories publish mirrors without viewer-specific commands;
 - ordinary submodules outside `.mirrors` being ignored rather than making mirror publication fail;
 - mirror metadata, checksum, zip integrity, and directory/archive file parity being validated before publication;
 - forks not inheriting the source repository's custom-domain `CNAME` unless `PAGES_CNAME` is explicitly configured;
-- mirror publication selecting the remote default-branch HEAD rather than the superproject gitlink commit.
+- mirror publication selecting the remote default-branch HEAD rather than the superproject gitlink commit;
+- fork source branches avoiding committed mirror gitlinks that GitHub Pages default checkout would recurse into before publish sanitization.
 - omitted workspace refs accepting snapshot metadata refs and native Git following the remote default branch instead of assuming `master`;
 - repo-material reads remaining local-object-store-only after snapshot completion: a missing branch ref may reuse the loaded resolved commit, but must never start another clone/fetch.
 

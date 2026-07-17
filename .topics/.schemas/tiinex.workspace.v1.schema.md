@@ -55,6 +55,7 @@ The body should prefer this order when sections are present:
 - `## Host Defaults`
 - `## Workspace Discovery`
 - `## Workspace Entrypoints`
+- `## Repository Mirrors`
 - `## Repository Transports`
 - `## Source Policy`
 - `## Local Workspace State`
@@ -162,6 +163,28 @@ Recognized fields:
 - `If Already Open`
 
 A viewer should open entrypoints where `Open On Apply` is omitted or affirmative.
+
+## Repository Mirrors
+
+Optional human-readable, machine-parseable declarations for repositories that should be published as co-hosted mirror snapshots beside the workspace viewer.
+
+Each mirror should be a third-level heading under `## Repository Mirrors`.
+
+Recognized fields:
+
+- `Repository`
+- `URL`
+- `Enabled`
+
+Rules:
+
+- Repository mirror declarations are publication inputs for building `mirrors/<source-host>/<owner>/<repository>.json` and `.zip` outputs.
+- `Repository` declares one exact repository identity. `owner/repo` means `github.com/owner/repo`; absolute Git repository URLs are also allowed.
+- `URL` declares the clone URL used by the publisher. It should resolve to the same canonical repository identity as `Repository`.
+- Missing `Enabled` means enabled.
+- A repository mirror declaration is not a workspace entrypoint, not a runtime transport, and not provenance. It must not replace Canonical Origin, Parent, Origin, or source identity.
+- The repository that contains the publisher is mirrored automatically and should not be repeated here.
+- Older viewers may ignore this optional section without reinterpreting workspace sources.
 
 ## Repository Transports
 
@@ -366,6 +389,7 @@ Optional Sections
 - Host Defaults
 - Workspace Discovery
 - Workspace Entrypoints
+- Repository Mirrors
 - Repository Transports
 - Source Policy
 - Local Workspace State
@@ -380,9 +404,9 @@ Rules
 - The first body H1 after the continuity envelope is the display name.
 - Empty optional fields should be omitted.
 - Missing optional sections or fields mean no opinion.
-- Machine State must not replace readable Workspace Entrypoints or Repository Transports when markdown can express them.
+- Machine State must not replace readable Workspace Entrypoints, Repository Mirrors, or Repository Transports when markdown can express them.
 - Snapshot transports precede Git-proxy transports; declaration order is preference order within each kind.
-- Repository transports must remain distinct from canonical source identity and continuity provenance.
+- Repository mirror declarations and repository transports must remain distinct from canonical source identity and continuity provenance.
 - Subtitle values should avoid terminal punctuation unless punctuation is intentional content.
 - Prose outside `Schema Validation Contract` may explain the schema, but it does not add required validation rules.
 

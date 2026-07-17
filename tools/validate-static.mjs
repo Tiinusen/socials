@@ -1833,6 +1833,18 @@ function validateRepositoryTransportContracts() {
   const schema = read('.topics/.schemas/tiinex.workspace.v1.schema.md');
   const workspace = read('.topics/.workspaces/viewer.workspace.md');
   const workflow = read('.github/workflows/publish-public.yml');
+  if (existsSync(join(root, '.topics/repository-mirrors.json'))) {
+    fail('repository mirror source declarations must live in the workspace artifact, not a sidecar repository-mirrors.json file');
+  }
+  for (const token of ['## Repository Mirrors', 'Each mirror should be a third-level heading under `## Repository Mirrors`', '`Repository`', '`URL`', 'A repository mirror declaration is not a workspace entrypoint, not a runtime transport, and not provenance']) {
+    if (!schema.includes(token)) fail(`workspace schema must document repository mirror declarations: ${token}`);
+  }
+  for (const token of ['## Repository Mirrors', '### Tiinex docs', '- Repository: Tiinex/docs', '- URL: https://github.com/Tiinex/docs.git', '### Tiinex ai-provenance', '- Repository: Tiinex/ai-provenance', '- URL: https://github.com/Tiinex/ai-provenance.git']) {
+    if (!workspace.includes(token)) fail(`packaged workspace must declare repository mirror source: ${token}`);
+  }
+  if (/Repository:\s*Tiinusen\/socials|URL:\s*https:\/\/github\.com\/Tiinusen\/socials\.git/u.test(workspace)) {
+    fail('packaged workspace must not declare the publishing fork as an extra repository mirror');
+  }
 
   for (const token of ['## Repository Transports', '`snapshot`', '`git-proxy`', 'Snapshot transports precede Git-proxy transports', 'Relative `Metadata` and `Proxy` values resolve against the workspace artifact location', '### Co-hosted mirror convention', './mirrors/<source-host>/<owner>/<repository>.json', './.mirrors/<source-host>/<owner>/<repository>.json', 'Viewers must not crawl directory indexes']) {
     if (!schema.includes(token)) fail(`workspace schema must document repository transport contract: ${token}`);
@@ -1984,6 +1996,10 @@ function validateRepositoryTransportContracts() {
     "if: steps.publish_mode.outputs.viewer_build == 'true'",
     "if: steps.publish_mode.outputs.viewer_build != 'true'",
     'Root publication is unconditional',
+    '## Repository Mirrors',
+    'emit_workspace_mirror_sources',
+    'publish_remote_mirror',
+    'Ignoring duplicate mirror declaration',
     'Ignoring non-mirror submodule',
     'Validate repository mirrors',
     'Publishing repository mirror is missing',
@@ -1997,10 +2013,14 @@ function validateRepositoryTransportContracts() {
   ]) {
     if (!workflow.includes(token)) fail(`portable mirror workflow contract missing: ${token}`);
   }
-  const rootPublishIndex = (/publish_snapshot\s*\\\s*\n\s*"\$GITHUB_WORKSPACE"/u.exec(workflow) || {}).index ?? -1;
+  const rootPublishIndex = workflow.indexOf('"$GITHUB_WORKSPACE"');
+  const workspaceMirrorsIndex = workflow.indexOf('done < <(emit_workspace_mirror_sources)');
   const optionalMirrorsIndex = workflow.indexOf('          if [ -f .gitmodules ]; then');
-  if (rootPublishIndex < 0 || optionalMirrorsIndex < 0 || rootPublishIndex > optionalMirrorsIndex) {
-    fail('publishing repository root mirror must be built before optional .gitmodules mirrors');
+  if (rootPublishIndex < 0 || workspaceMirrorsIndex < 0 || optionalMirrorsIndex < 0 || !(rootPublishIndex < workspaceMirrorsIndex && workspaceMirrorsIndex < optionalMirrorsIndex)) {
+    fail('publishing repository root mirror must be built before workspace mirror declarations, which must precede optional .gitmodules mirrors');
+  }
+  if (/repository-mirrors\.json/u.test(workflow)) {
+    fail('portable mirror workflow must read mirror sources from workspace artifacts, not repository-mirrors.json');
   }
   if (workflow.includes('Mirror submodule must live below .mirrors/')) {
     fail('copyable mirror workflow must ignore ordinary submodules outside .mirrors instead of rejecting the repository');
@@ -2015,7 +2035,7 @@ function validateRepositoryTransportContracts() {
   if (sanitizeDeployIndex < 0 || publishBranchIndex < 0 || sanitizeDeployIndex > publishBranchIndex) {
     fail('public deploy root must be sanitized before branch publication');
   }
-  note('workspace-owned repository snapshots, persistent transport decisions, co-hosted mirror discovery, fork-safe self-mirror handling, and portable root-mirror publication contracts are valid');
+  note('workspace-owned repository snapshots, persistent transport decisions, co-hosted mirror discovery, workspace-owned mirror sources, fork-safe self-mirror handling, and portable root-mirror publication contracts are valid');
 }
 
 function validatePublicBuildContracts() {

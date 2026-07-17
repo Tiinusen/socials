@@ -104,8 +104,12 @@ jobs:
 
       # Copyable mirror convention:
       #   - the publishing repository is always emitted as its own mirror;
-      #   - .mirrors/<host>/<owner>/<repo> entries in .gitmodules add mirrors;
-      #   - mirror submodules are cloned from their current remote default branch;
+      #   - workspace artifacts may declare additional repository mirrors in
+      #     ## Repository Mirrors without forcing source branches to carry
+      #     Git submodule gitlinks;
+      #   - legacy .mirrors/<host>/<owner>/<repo> entries in .gitmodules remain
+      #     readable as a compatibility input;
+      #   - mirror sources are cloned from their current remote default branch;
       #   - the superproject's recorded gitlink commit is intentionally not used;
       #   - ordinary submodules outside .mirrors are ignored by this publisher.
       - name: Build repository mirrors
@@ -246,6 +250,169 @@ jobs:
             printf 'Published mirror %s @ %s\n' "$public_identity" "$commit"
           }
 
+          publish_remote_mirror() {
+            local public_identity="$1"
+            local module_url="$2"
+            local declaration_source="$3"
+            local remote_identity clone_dir resolved_ref resolved_commit
+
+            if [ -z "$public_identity" ] || [ -z "$module_url" ]; then
+              echo "Mirror declaration from $declaration_source must include both identity/path and URL." >&2
+              exit 1
+            fi
+
+            case "/$public_identity/" in
+              */../*|*//*|*\\*)
+                echo "Unsafe mirror identity from $declaration_source: $public_identity" >&2
+                exit 1
+                ;;
+            esac
+
+            remote_identity="$(normalize_remote_identity "$module_url")" || {
+              echo "Mirror URL must be an absolute HTTP(S), SSH, or scp-style Git URL: $module_url" >&2
+              exit 1
+            }
+
+            if [ "$remote_identity" != "$public_identity" ]; then
+              echo "Mirror path does not match remote identity from $declaration_source:" >&2
+              echo "  path:   $public_identity" >&2
+              echo "  remote: $remote_identity" >&2
+              exit 1
+            fi
+
+            # Forks can inherit a mirror declaration that becomes a self-reference
+            # after the fork is renamed. The publishing repository is already emitted
+            # unconditionally as the root mirror, so cloning it again is redundant and
+            # can fail when the inherited gitlink belongs to the pre-fork repository.
+            if [ "$remote_identity" = "$root_identity" ]; then
+              printf 'Ignoring self mirror declaration: %s (root mirror already published)\n' "$public_identity"
+              return 0
+            fi
+
+            if [ -n "${published_identities[$public_identity]+x}" ]; then
+              printf 'Ignoring duplicate mirror declaration: %s (%s)\n' "$public_identity" "$declaration_source"
+              return 0
+            fi
+
+            clone_dir="$temp_root/$public_identity"
+            mkdir -p "$(dirname "$clone_dir")"
+            git clone --depth 1 --single-branch --no-tags "$module_url" "$clone_dir"
+
+            resolved_ref="$(git -C "$clone_dir" symbolic-ref --quiet --short HEAD)"
+            resolved_commit="$(git -C "$clone_dir" rev-parse HEAD)"
+
+            publish_snapshot \
+              "$clone_dir" \
+              "$public_identity" \
+              "$module_url" \
+              "$resolved_ref" \
+              "$resolved_commit" \
+              "remote-default-branch"
+          }
+
+          emit_workspace_mirror_sources() {
+            python3 - <<'PY'
+          import os
+          import re
+          import sys
+          from urllib.parse import urlparse
+          
+          ROOT = '.topics'
+          
+          def strip_inline(value):
+              value = str(value or '').strip()
+              link = re.fullmatch(r'\[([^\]]+)\]\(([^)]+)\)', value)
+              if link:
+                  return link.group(2).strip()
+              return value.strip('`').strip()
+          
+          def repo_identity(value):
+              raw = strip_inline(value).rstrip('/')
+              if not raw:
+                  return ''
+              if re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?', raw):
+                  return 'github.com/' + re.sub(r'\.git$', '', raw, flags=re.I)
+              scp = re.fullmatch(r'[^@\s]+@([^:\s]+):(.+)', raw)
+              if scp:
+                  host = scp.group(1).split(':', 1)[0].lower()
+                  path = re.sub(r'\.git$', '', scp.group(2).strip('/'), flags=re.I)
+                  return f'{host}/{path}' if host and path else ''
+              parsed = urlparse(raw)
+              if parsed.scheme in {'http', 'https', 'ssh'} and parsed.hostname:
+                  path = re.sub(r'\.git$', '', parsed.path.strip('/'), flags=re.I)
+                  return f'{parsed.hostname.lower()}/{path}' if path else ''
+              return ''
+          
+          def enabled(value):
+              return str(value or '').strip().lower() not in {'false', 'no', 'off', 'disabled', '0'}
+          
+          def workspace_files():
+              if not os.path.isdir(ROOT):
+                  return []
+              matches = []
+              for dirpath, dirnames, filenames in os.walk(ROOT):
+                  dirnames[:] = [d for d in dirnames if d not in {'.git', '.mirrors', 'node_modules'}]
+                  for filename in filenames:
+                      if filename.endswith('.workspace.md'):
+                          matches.append(os.path.join(dirpath, filename))
+              return sorted(matches)
+          
+          def emit(file_path, title, fields, start_line):
+              if not fields:
+                  return
+              if not enabled(fields.get('enabled', '')):
+                  return
+              repository = fields.get('repository', '')
+              url = fields.get('url', '')
+              if not repository and not url:
+                  return
+              if not repository or not url:
+                  print(f'{file_path}:{start_line}: Repository Mirrors entries require Repository and URL.', file=sys.stderr)
+                  sys.exit(1)
+              identity = repo_identity(repository)
+              if not identity:
+                  print(f'{file_path}:{start_line}: Could not resolve mirror repository identity: {repository}', file=sys.stderr)
+                  sys.exit(1)
+              source = f'{file_path}#{title}'.replace('\t', ' ')
+              print(f'{identity}\t{strip_inline(url)}\t{source}')
+          
+          for file_path in workspace_files():
+              try:
+                  lines = open(file_path, encoding='utf-8').read().splitlines()
+              except UnicodeDecodeError:
+                  continue
+              in_section = False
+              title = ''
+              fields = {}
+              start_line = 0
+              for line_number, line in enumerate(lines, 1):
+                  h2 = re.match(r'^##\s+(.+?)\s*$', line)
+                  if h2:
+                      if in_section:
+                          emit(file_path, title, fields, start_line)
+                      in_section = h2.group(1).strip().lower() == 'repository mirrors'
+                      title = ''
+                      fields = {}
+                      start_line = 0
+                      continue
+                  if not in_section:
+                      continue
+                  h3 = re.match(r'^###\s+(.+?)\s*$', line)
+                  if h3:
+                      emit(file_path, title, fields, start_line)
+                      title = h3.group(1).strip()
+                      fields = {}
+                      start_line = line_number
+                      continue
+                  field = re.match(r'^-\s*([^:]+):\s*(.*)$', line)
+                  if field and title:
+                      key = field.group(1).strip().lower()
+                      fields[key] = field.group(2).strip()
+              if in_section:
+                  emit(file_path, title, fields, start_line)
+          PY
+          }
+
           server_host="${GITHUB_SERVER_URL#*://}"
           server_host="${server_host%%/*}"
           server_host="${server_host%%:*}"
@@ -262,6 +429,11 @@ jobs:
             "$SOURCE_REF" \
             "$root_commit" \
             "source-ref"
+
+          while IFS=$'	' read -r public_identity module_url declaration_source; do
+            [ -n "$public_identity" ] || continue
+            publish_remote_mirror "$public_identity" "$module_url" "$declaration_source"
+          done < <(emit_workspace_mirror_sources)
 
           if [ -f .gitmodules ]; then
             while IFS= read -r path_key; do
@@ -281,48 +453,7 @@ jobs:
 
               module_url="$(git config -f .gitmodules --get "submodule.$module_name.url")"
               public_identity="${module_path#.mirrors/}"
-              case "/$public_identity/" in
-                */../*|*//*|*\\*)
-                  echo "Unsafe mirror path: $module_path" >&2
-                  exit 1
-                  ;;
-              esac
-
-              remote_identity="$(normalize_remote_identity "$module_url")" || {
-                echo "Mirror URL must be an absolute HTTP(S), SSH, or scp-style Git URL: $module_url" >&2
-                exit 1
-              }
-
-              if [ "$remote_identity" != "$public_identity" ]; then
-                echo "Mirror path does not match remote identity:" >&2
-                echo "  path:   $public_identity" >&2
-                echo "  remote: $remote_identity" >&2
-                exit 1
-              fi
-
-              # Forks can inherit a mirror declaration that becomes a self-reference
-              # after the fork is renamed. The publishing repository is already emitted
-              # unconditionally as the root mirror, so cloning it again is redundant and
-              # can fail when the inherited gitlink belongs to the pre-fork repository.
-              if [ "$remote_identity" = "$root_identity" ]; then
-                printf 'Ignoring self mirror declaration: %s (root mirror already published)\n' "$module_path"
-                continue
-              fi
-
-              clone_dir="$temp_root/$public_identity"
-              mkdir -p "$(dirname "$clone_dir")"
-              git clone --depth 1 --single-branch --no-tags "$module_url" "$clone_dir"
-
-              resolved_ref="$(git -C "$clone_dir" symbolic-ref --quiet --short HEAD)"
-              resolved_commit="$(git -C "$clone_dir" rev-parse HEAD)"
-
-              publish_snapshot \
-                "$clone_dir" \
-                "$public_identity" \
-                "$module_url" \
-                "$resolved_ref" \
-                "$resolved_commit" \
-                "remote-default-branch"
+              publish_remote_mirror "$public_identity" "$module_url" ".gitmodules:$module_path"
             done < <(git config -f .gitmodules --name-only --get-regexp '^submodule\..*\.path$' || true)
           fi
 

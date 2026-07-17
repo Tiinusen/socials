@@ -10,3 +10,6 @@ Thumbs.db
 node_modules/
 .site-publish/
 .tmp-public-check/
+
+# Local mirror worktrees are source/build inputs, not published source state
+.mirrors/

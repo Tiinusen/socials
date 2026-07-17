@@ -67,17 +67,19 @@ Adapter implementations should preserve external container, publication item, em
 
 A fork can stay close to the canonical viewer while carrying its own lineage and presentation.
 
-Keep viewer/runtime files close to upstream and place instance-owned material in bounded surfaces such as `.topics/`, `.mirrors/`, workspace artifacts, branding assets, and `CNAME`. Deleting or heavily rewriting shared runtime files makes future upstream syncs conflict-prone.
+Keep viewer/runtime files close to upstream and place instance-owned material in bounded surfaces such as `.topics/`, workspace artifacts, local untracked `.mirrors/` worktrees, branding assets, and `CNAME`. Deleting or heavily rewriting shared runtime files makes future upstream syncs conflict-prone.
 
-The publishing repository is always mirrored automatically. A `.mirrors` entry that resolves back to the publishing repository is redundant and is ignored by the workflow. Remove unwanted mirror submodules through Git rather than deleting only their working folders, because `.gitmodules` and gitlinks are the actual declarations.
+The publishing repository is always mirrored automatically. Additional public mirrors should be declared in the workspace artifact under `## Repository Mirrors` so forked source branches do not have to carry `.mirrors` Git submodule gitlinks or sidecar JSON. Older `.gitmodules` mirror entries remain readable by the publisher for compatibility, but committed mirror submodules are source/build inputs and can make GitHub Pages' default Jekyll checkout recurse into stale or self-referential gitlinks. Remove unwanted mirror submodules through Git rather than deleting only their working folders, because `.gitmodules` and gitlinks are the actual declarations.
 
 For a new fork:
 
 1. Enable GitHub Actions in the fork.
-2. Run `Publish Public Branch` once.
-3. Configure GitHub Pages to publish from `public` at `/ (root)`.
-4. Remove inherited mirror entries that the instance does not own or need.
-5. Preserve the repository `LICENSE` and applicable `NOTICE` attribution for inherited viewer code.
+2. Keep local `.mirrors/` worktrees untracked unless the fork intentionally owns Git submodules.
+3. Use the workspace artifact `## Repository Mirrors` section for additional mirror repositories.
+4. Run `Publish Public Branch` once.
+5. Configure GitHub Pages to publish from `public` at `/ (root)`.
+6. Remove inherited mirror gitlinks that the instance does not own or need.
+7. Preserve the repository `LICENSE` and applicable `NOTICE` attribution for inherited viewer code.
 
 ## Development And Validation
 
