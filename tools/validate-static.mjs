@@ -1785,6 +1785,9 @@ function validateArchitectureBoundaries() {
   if (!appJs.includes("'tiinex.workspace.v1': schemaPolicyEntry('tiinex.workspace.v1', 'Workspace', 'core-artifact', 'tiinex.root.v1', 'Portable workspace entrypoint.', 'yes'")) fail('workspace artifacts must be creatable through the ordinary artifact wizard.');
   if (!appJs.includes('Workspace entries use the same draft/export/publish path as other artifacts')) fail('artifact wizard copy must explain workspace artifacts use the normal draft/export path.');
   if (!appJs.includes('githubWorkspacePresentationDelta')) fail('GitHub issue previews must have a workspace-specific human summary path.');
+  if (!appJs.includes('workspace-config-scope-strip')) fail('workspace Update with current scope toggle must have a single compact owner.');
+  if (appJs.includes('workspace-config-checkbox option-toggle')) fail('workspace Update with current scope toggle must not be duplicated inside the summary and footer.');
+  if (!appJs.includes('workspace-config-identity-section')) fail('workspace config editor must put identity fields first so mobile can edit without scrolling past diagnostics.');
   const indexHtml = read('index.html');
   if (indexHtml.includes('id="viewer-entrypoint-notice"')) {
     fail('index.html must not restore the removed visible viewer entrypoint notice.');
