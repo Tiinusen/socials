@@ -116,3 +116,9 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 
 - Workspace artifact editor now exposes a Summary field so the card subtitle and GitHub presentation are user-authored instead of falling back to the generated "Portable workspace export..." line.
 - Saving a workspace artifact updates the Continuity Context Summary while preserving normal local draft behavior; export/publish remains a separate action.
+
+## V27 GitHub payload and workspace help cleanup
+
+- GitHub Source Markdown recovery now treats the Source Markdown section as the authority and unwraps its outer fence greedily. This preserves `.workspace.md` payloads that contain nested `json`/`css` fences, including older issue bodies published with a triple-fence wrapper.
+- GitHub outbound single-artifact payloads now prefer the current file text/local draft markdown before stale `content` fields, so newly saved artifacts publish the same bytes that the user sees locally.
+- Workspace Help/FAQ is sanitized as human-facing help. Leaked workspace entrypoint/source field blocks are kept under Workspace Entrypoints, not rendered as FAQ items.
