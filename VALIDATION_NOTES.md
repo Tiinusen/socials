@@ -238,3 +238,16 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - Historical `proxy` can read commit-pinned files through the static jsDelivr file surface after the static flat manifest resolves paths. Historical `direct` remains the explicit raw fallback and uses `readExactHistoricalFile` against immutable raw URLs.
 - Explicit Time Portal direct loads raise the exact-historical per-origin read budget and clear stale local cooldown from prior suppressed attempts. This restores full-tree direct loads without returning to automatic startup raw bursts.
 - Workspace artifact cards now expose the Open workspace action as an early blue icon-only action. The later duplicate labeled Open action was removed so mobile prioritizes opening the workspace over editing it.
+
+## v59 workspace card desktop/mobile action parity
+
+- Desktop workspace artifact cards restore the labeled blue Open action next to the layer icon. The action uses the same `open-workspace-artifact` behavior as before v58 and keeps Edit as the separate green authoring action.
+- Mobile workspace artifact rails swap the visible green Edit slot for the blue Open workspace icon. Edit remains available in the More sheet, so mobile prioritizes opening workspace entrypoints without removing the authoring path.
+- The change is presentation/order only. It does not modify Time Portal, transport selection, source settings, or workspace open/merge semantics.
+
+## v60 Time Portal historical resolver recovery
+
+- The Time Portal concrete-ref resolver is proxy-first again. Pasting a tree URL, commit URL, or SHA first attempts the configured Git/proxy transport, then automatically retries the same historical commit through direct/raw fallback if the proxy returns no repo material.
+- Direct Time Portal loads may use the GitHub tree listing to recover the full historical path set before immutable raw file reads. Cache/mirror remain excluded from historical Git-state ownership.
+- The resolver dialog copy now matches the runtime: proxy first, direct/raw fallback if needed. It no longer claims a strict No API boundary while the direct fallback may need the tree listing.
+- Desktop workspace cards keep the labeled blue Open action; mobile workspace rails prioritize only the blue Open icon and leave Edit in the More sheet.

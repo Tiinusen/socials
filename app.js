@@ -22349,9 +22349,8 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
 
     if (isWorkspaceNode(node)) {
       editActions.push(withIntent('write', {
-        label: 'Open workspace',
+        label: 'Open',
         icon: 'fa-solid fa-layer-group',
-        iconOnly: true,
         className: 'workspace-open-action workspace-primary-open-action mutating-action conditional-mutating-action',
         dataset: Object.assign({ action: 'open-workspace-artifact' }, base),
         title: 'Open this .workspace.md entrypoint as the current workspace set; non-draft workspaces may close'
@@ -26240,6 +26239,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         transportRefreshTier: temporalTransportPolicy.requestedTier,
         forceDirectFallback: temporalTransportPolicy.allowDirect
       });
+      const temporalUseGitHubTreeApi = Boolean(temporalTransportPolicy.allowDirect);
       await discoverGitHubRepoIntoWorkspace(ws, {
         repo: source.repo,
         ref: commit.ref,
@@ -26247,11 +26247,12 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         source,
         refreshExisting: true,
         hardRefresh: true,
-        preferStatic: true,
+        // Proxy owns the configured Git/proxy path. Direct is the explicit raw
+        // fallback and may use the GitHub tree listing to recover the full
+        // historical path set before immutable raw file reads.
+        preferStatic: !temporalUseGitHubTreeApi,
         preferSeedPaths: false,
-        // Time Portal has a concrete commit. Use static tree manifests plus raw
-        // immutable file reads; do not hit the GitHub tree API from the browser.
-        noApi: true,
+        noApi: !temporalUseGitHubTreeApi,
         seedPaths,
         seedPathsNote: 'Time Portal snapshot may use already-known artifact paths only as a recovery fallback; proxy/direct own historical Git state.',
         includeKnownFreshnessPaths: false,
@@ -26268,16 +26269,27 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       const temporalLoadedRepoFiles = Array.from(ws.files?.values?.() || [])
         .filter((file) => file?.sourceId === source.id && sourceSurfaceForEntry(file) === 'repoFiles').length;
       if (!temporalLoadedRepoFiles) {
+        const failedTier = temporalTransportPolicy.requestedTier || temporalRequestedTier;
+        githubRepoFetchTrace('time-portal.transport.no-material', { repo: source.repo, commit: commit.ref, transportTier: failedTier, rootPaths });
+        if (failedTier === 'proxy' && options.allowDirectFallbackOnProxyMiss === true) {
+          githubRepoFetchTrace('time-portal.transport.proxy-miss-direct-fallback', { repo: source.repo, commit: commit.ref, rootPaths, reason: 'manual-ref-resolver' });
+          return await loadTemporalSourceSnapshot(ws, Object.assign({}, options, {
+            refInput: refInput || commit.ref,
+            cachedCommit: commit,
+            transportRefreshTier: 'direct',
+            allowDirectFallbackOnProxyMiss: false,
+            toast: options.toast
+          }));
+        }
         ws.temporalSourceSnapshot = Object.assign({}, ws.temporalSourceSnapshot || {}, {
           asOf: temporalLensSnapshotTargetAsOf(opts),
           repo: source.repo,
           ref: commit.ref,
           sourceRef: baseRef || '',
           state: 'failed',
-          error: `${temporalTransportPolicy.requestedTier || temporalRequestedTier} transport did not return historical repo material.`
+          error: `${failedTier} transport did not return historical repo material.`
         });
-        githubRepoFetchTrace('time-portal.transport.no-material', { repo: source.repo, commit: commit.ref, transportTier: temporalTransportPolicy.requestedTier || temporalRequestedTier, rootPaths });
-        if (options.toast !== false) toast(`Could not load historical source material through ${temporalTransportPolicy.requestedTier || temporalRequestedTier}. Try the next transport tier.`, 'warn');
+        if (options.toast !== false) toast(`Could not load historical source material through ${failedTier}. Try the next transport tier.`, 'warn');
         return false;
       }
       const temporalCacheCompleteness = githubSourceMaterialCacheLooksCompleteForSource(ws, temporalCacheSource, { temporalSourceSnapshot: true });
@@ -26431,17 +26443,17 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
             <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
           </div>
           <div class="portal-resolver-body">
-            <p>No GitHub API will be used. Open GitHub's commits page, choose “Browse repository at this point”, then paste the tree URL, commit URL, or SHA here.</p>
+            <p>Open GitHub's commits page, choose “Browse repository at this point”, then paste the tree URL, commit URL, or SHA here. Tiinex tries the configured Git proxy first and uses direct raw fallback only when the proxy cannot return the historical snapshot.</p>
             <div class="portal-resolver-actions">
               <button type="button" class="tv-btn small" data-action="open-temporal-commits-page" data-ws="${escapeAttr(ws.id)}" ${commitsUrl ? '' : 'disabled'}><i class="fa-solid fa-arrow-up-right-from-square"></i>Open commits page</button>
-              <span class="badge-soft muted-chip"><i class="fa-solid fa-ban"></i>No API</span>
+              <span class="badge-soft muted-chip"><i class="fa-solid fa-code-branch"></i>proxy first</span>
             </div>
             <label class="portal-ref-input-wrap">
               <span>Tree URL / commit URL / SHA</span>
               <input type="text" data-temporal-ref-resolver data-ws="${escapeAttr(ws.id)}" value="${escapeAttr(modal?.value || '')}" placeholder="https://github.com/${escapeAttr(source?.repo || 'owner/repo')}/tree/<sha> or 541269c" autofocus>
             </label>
             ${error}
-            <small>When the value validates, the dialog closes and the source snapshot loads directly.</small>
+            <small>When the value validates, the dialog closes and the historical snapshot loads through proxy, then direct/raw if needed.</small>
           </div>
         </div>
       </div>`;
@@ -26467,7 +26479,8 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       refInput: value,
       autoApply: true,
       userInitiated: true,
-      transportRefreshTier: 'direct'
+      transportRefreshTier: 'proxy',
+      allowDirectFallbackOnProxyMiss: true
     });
     if (ok) {
       app.modal = null;
@@ -41815,6 +41828,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
     if (key === 'open-markdown-modal') return 'markdown';
     if (key === 'open-share-modal') return 'share';
     if (key === 'open-node-edit') return 'edit';
+    if (key === 'open-workspace-artifact') return 'workspace-open';
     if (key === 'open-create:continue') return 'continue';
     if (key === 'open-create:reference') return 'reference';
     if (key === 'open-use-as-picker') return 'use-as';
@@ -41832,7 +41846,9 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
       .filter((action) => action?.dataset?.action !== 'toggle-node-expand')
       .filter((action) => !/anchor/i.test(String(action?.label || '')));
     const used = new Set();
-    const primaryOrder = ['read', 'markdown', 'share', 'edit'];
+    const primaryOrder = isWorkspaceNode(node)
+      ? ['read', 'markdown', 'share', 'workspace-open']
+      : ['read', 'markdown', 'share', 'edit'];
     const primary = [];
     for (const type of primaryOrder) {
       const match = raw.find((action, index) => !used.has(index) && mobileActionSemanticType(action) === type);

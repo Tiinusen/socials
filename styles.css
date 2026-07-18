@@ -21772,6 +21772,13 @@ body[data-tiinex-translate-active="true"] .workspace-grid {
     background: linear-gradient(135deg, rgba(16,185,129,0.13), rgba(20,184,166,0.06)) !important;
   }
 
+
+  .lineage-post > .mobile-card-action-rail .mobile-rail-workspace-open {
+    border-color: rgba(59,130,246,0.56) !important;
+    color: rgba(147,197,253,0.98) !important;
+    background: linear-gradient(135deg, rgba(37,99,235,0.16), rgba(30,64,175,0.08)) !important;
+  }
+
   .lineage-post > .mobile-card-action-rail .mobile-rail-more {
     border-color: rgba(168,85,247,0.32) !important;
     color: rgba(230,205,255,0.95) !important;
@@ -22058,6 +22065,10 @@ body.mobile-chrome .source-chip {
     white-space: nowrap !important;
   }
   .lineage-post > .mobile-card-action-rail .mobile-rail-edit {
+    grid-column: auto !important;
+    width: 100% !important;
+  }
+  .lineage-post > .mobile-card-action-rail .mobile-rail-workspace-open {
     grid-column: auto !important;
     width: 100% !important;
   }
