@@ -1245,14 +1245,14 @@ function validateJavascriptSurface() {
   const releaseInvalidationEnd = js.indexOf('  function buildFooterTooltip()', releaseInvalidationStart);
   if (releaseInvalidationStart < 0 || releaseInvalidationEnd <= releaseInvalidationStart) fail('Could not isolate release cache invalidation policy.');
   const releaseInvalidation = js.slice(releaseInvalidationStart, releaseInvalidationEnd);
-  if (releaseInvalidation.includes('STORAGE_KEYS.githubIssueThreadCache')) {
-    fail('App release cache-busting must not erase durable GitHub issue thread cache; source freshness is owned by transport tiers.');
+  for (const token of ['STORAGE_KEYS.githubIssueThreadCache', 'STORAGE_KEYS.githubSourceMaterialCachePrefix']) {
+    if (!releaseInvalidation.includes(token)) fail(`App release cache-busting must invalidate stale durable source cache on public rebuilds: ${token}`);
   }
   if (!js.includes('githubHostedIssueSnapshotMetadataUrlCandidates') || !js.includes('disableRuntimeCache: true') || !js.includes("cacheMode: 'no-cache'")) {
     fail('Hosted issue snapshots must use same-origin candidate paths with browser/runtime cache revalidation instead of stale runtime cache.');
   }
-  if (!js.includes('githubSourceMaterialCacheWrite') || !js.includes('restoreGitHubSourceMaterialCacheIntoWorkspace') || !js.includes('githubSourceMaterialCachePrefix') || !js.includes('restoreConfiguredGitHubIssueThreadCachesIntoWorkspace') || !js.includes('githubSourceMaterialCacheLooksCompleteForSource')) {
-    fail('Cache tier must restore/write a complete source-material cache and rehydrate configured issue targets through the shared issue materialization path, not only route state, issue-thread cache, or local Git preflight.');
+  if (!js.includes('githubSourceMaterialCacheWrite') || !js.includes('restoreGitHubSourceMaterialCacheIntoWorkspace') || !js.includes('githubSourceMaterialCachePrefix') || !js.includes('restoreConfiguredGitHubIssueThreadCachesIntoWorkspace') || !js.includes('githubSourceMaterialCacheLooksCompleteForSource') || !js.includes('githubSourceMaterialCacheFreshness') || !js.includes('source-material-cache.invalidated')) {
+    fail('Cache tier must restore/write a complete release/TTL-bounded source-material cache and rehydrate configured issue targets through the shared issue materialization path, not only route state, issue-thread cache, or local Git preflight.');
   }
   if (!js.includes('hostedIssueSnapshotBaseUrlCandidates') || !js.includes('githubHostedIssueSnapshotResolveDirectory') || js.includes('${repoName}/${relative}')) {
     fail('Hosted issue snapshot paths must follow mirror convention roots such as /issues/github.com/owner/repo.json and preserve the repository directory for issue item paths.');
@@ -1303,7 +1303,7 @@ function validateJavascriptSurface() {
     if (!issueDiscovery.includes(token)) fail(`Issue imports must receive the caller transport tier rather than resolving their own transport path: ${token}`);
   }
 
-  for (const token of ['maybeScheduleTemporalLensAfterViewState', 'openModalOnMissingRef: false', 'routeOwnedStartup: true', 'timePortalTransportTierFromOptions', 'cache-and-mirror-do-not-own-historical-git-state', "transportRefreshTier: 'proxy'", 'readExactHistoricalFile', 'exact-historical.cache-hit', 'preferSeedPaths: false', 'includeKnownFreshnessPaths: false', 'bypassRepositorySnapshot: true', 'noApi: temporalTransportPolicy.allowProxy && !temporalTransportPolicy.allowDirect', 'forceDirectFallback: Boolean(temporalTransportPolicy.allowDirect)']) {
+  for (const token of ['maybeScheduleTemporalLensAfterViewState', 'openModalOnMissingRef: false', 'routeOwnedStartup: true', 'timePortalTransportTierFromOptions', 'cache-and-mirror-do-not-own-historical-git-state', "transportRefreshTier: 'proxy'", "transportRefreshTier: 'direct'", 'readExactHistoricalFile', 'exact-historical.cache-hit', 'preferSeedPaths: false', 'includeKnownFreshnessPaths: false', 'bypassRepositorySnapshot: true', 'noApi: temporalTransportPolicy.allowProxy && !temporalTransportPolicy.allowDirect', 'forceDirectFallback: Boolean(temporalTransportPolicy.allowDirect)']) {
     if (!js.includes(token)) fail(`Time Portal source snapshots must bypass cache/mirror, prefer proxy for historical Git state, and reserve direct/raw for the explicit last-resort tier: ${token}`);
   }
   if (!js.includes("throw new Error(`Exact historical raw read deferred: ${exactHistorical.reason || 'network-not-requested'}`)")) {
