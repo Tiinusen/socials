@@ -230,3 +230,11 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - Public rebuild/release identity now invalidates durable GitHub source-material caches and issue-thread caches. Local/draft workspaces and publication receipts remain outside this invalidation boundary.
 - Source-material cache entries carry the release key and are also treated as stale after the configured source-material cache TTL, defaulting to two hours. Stale or release-mismatched cache falls forward to mirror through the existing transport policy instead of showing stale workspace-only material.
 - Time Portal explicit ref/URL resolver now uses the direct historical transport. The modal already asks for a concrete tree/commit/SHA and says the snapshot loads directly; this keeps the UI contract aligned with the transport that currently owns full historical raw reads.
+
+## v58 Time Portal direct/proxy recovery and mobile workspace action
+
+- Time Portal badge refresh is intercepted before the generic source loader when an end-bound historical snapshot is active. The existing commit/tree ref is reused for the next transport tier, so clicking transport badges no longer creates parallel GitHub sources or reloads the same workspace through the latest-state path.
+- Time Portal path discovery uses static flat manifests with `noApi` for commit-pinned snapshots. It no longer calls the GitHub tree API from the browser while the resolver dialog promises No API.
+- Historical `proxy` can read commit-pinned files through the static jsDelivr file surface after the static flat manifest resolves paths. Historical `direct` remains the explicit raw fallback and uses `readExactHistoricalFile` against immutable raw URLs.
+- Explicit Time Portal direct loads raise the exact-historical per-origin read budget and clear stale local cooldown from prior suppressed attempts. This restores full-tree direct loads without returning to automatic startup raw bursts.
+- Workspace artifact cards now expose the Open workspace action as an early blue icon-only action. The later duplicate labeled Open action was removed so mobile prioritizes opening the workspace over editing it.

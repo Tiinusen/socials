@@ -1303,7 +1303,7 @@ function validateJavascriptSurface() {
     if (!issueDiscovery.includes(token)) fail(`Issue imports must receive the caller transport tier rather than resolving their own transport path: ${token}`);
   }
 
-  for (const token of ['maybeScheduleTemporalLensAfterViewState', 'openModalOnMissingRef: false', 'routeOwnedStartup: true', 'timePortalTransportTierFromOptions', 'cache-and-mirror-do-not-own-historical-git-state', "transportRefreshTier: 'proxy'", "transportRefreshTier: 'direct'", 'readExactHistoricalFile', 'exact-historical.cache-hit', 'preferSeedPaths: false', 'includeKnownFreshnessPaths: false', 'bypassRepositorySnapshot: true', 'noApi: temporalTransportPolicy.allowProxy && !temporalTransportPolicy.allowDirect', 'forceDirectFallback: Boolean(temporalTransportPolicy.allowDirect)']) {
+  for (const token of ['maybeScheduleTemporalLensAfterViewState', 'openModalOnMissingRef: false', 'routeOwnedStartup: true', 'timePortalTransportTierFromOptions', 'cache-and-mirror-do-not-own-historical-git-state', "transportRefreshTier: 'proxy'", "transportRefreshTier: 'direct'", 'readExactHistoricalFile', 'exact-historical.cache-hit', 'preferSeedPaths: false', 'includeKnownFreshnessPaths: false', 'bypassRepositorySnapshot: true', 'noApi: true', 'repoJsdelivrFileUrl', 'timePortalDirectMaxHistoricalReadsPerWindow', 'exactHistoricalResetCooldown', 'forceDirectFallback: Boolean(temporalTransportPolicy.allowDirect)']) {
     if (!js.includes(token)) fail(`Time Portal source snapshots must bypass cache/mirror, prefer proxy for historical Git state, and reserve direct/raw for the explicit last-resort tier: ${token}`);
   }
   if (!js.includes("throw new Error(`Exact historical raw read deferred: ${exactHistorical.reason || 'network-not-requested'}`)")) {

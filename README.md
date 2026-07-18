@@ -245,3 +245,7 @@ Transport badges show the effective tier for the current source load. Cache rest
 ### Source cache freshness
 
 The browser source-material cache is release-aware. When the public viewer build identity changes, Tiinex invalidates cached GitHub source material and issue-thread observations while preserving local/draft workspaces. Source-material cache entries also age out after the configured TTL (`TIINEX_VIEWER_OPTIONS.sourceMaterialCacheMaxAgeMs`, default two hours), at which point the normal `cache → mirror → proxy → direct` transport chain falls forward to mirror without requiring the user to click the cache badge.
+
+### Time Portal historical transport
+
+End-bound Time Portal snapshots are commit-pinned historical Git state. They do not use the normal latest-state cache or hosted mirror. Cache/mirror badge requests are promoted to the historical proxy tier, and direct remains the explicit raw fallback. Historical proxy uses static flat/file surfaces, while historical direct uses immutable raw file reads through `readExactHistoricalFile`. The resolver and badge refresh path must not call the GitHub tree API from the browser while presenting the No-API Time Portal contract.
