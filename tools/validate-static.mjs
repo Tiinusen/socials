@@ -2359,6 +2359,8 @@ function validateWorkspaceShareAndIssueOpenContracts(source) {
   if (!source.includes('githubIssueNetworkSafetyReport')) fail('GitHub issue request-budget diagnostics must remain available.');
   if (source.includes('hardRefresh: Boolean(options.hardRefresh || existingIssueSurface || knownTargets.length)')) fail('startup issue discovery must not hard-refresh merely because issue targets exist.');
   if (!source.includes('fetchGitHubIssueThreadViaHostedSnapshot') || !source.includes("'site-issue-snapshot'")) fail('hosted viewers must prefer same-origin issue snapshots before live GitHub reads.');
+  if (!source.includes('fetchGitHubRepoIssueSpecsViaHostedSnapshot') || !source.includes('issue-list.live-skipped-no-hosted-snapshot')) fail('bounded issue discovery must list from same-origin hosted snapshots before any live GitHub issue-list request.');
+  if (!source.includes('sourceModalGithubConfigSnapshot') || !source.includes('preserveGithubSourceConfigAfterDiscovery')) fail('source refresh/reset and discovery must preserve the edited source configuration and explicit issue/discussion targets.');
   if (!source.includes("githubPublicationReceipts: 'tiinex.github.publicationReceipts.v1'")) fail('verified GitHub publication receipts must have a durable storage owner.');
   if (!source.includes('recordVerifiedGithubPublicationReceipts(snapshots)')) fail('verified GitHub export completion must record durable publication receipts.');
   if (!source.includes("reconcileVerifiedGithubPublicationReceipts(ws, 'verified GitHub publication')")) fail('verified GitHub publication must reconcile its local shadow immediately.');

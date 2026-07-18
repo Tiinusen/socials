@@ -8228,6 +8228,63 @@
     return Boolean(key && app.sourceRefreshInFlight?.has?.(key));
   }
 
+  function sourceModalGithubConfigSnapshot(modal = {}, existingSource = null) {
+    const repoInput = document.getElementById('source-repo')?.value?.trim() || modal.repo || existingSource?.repo || '';
+    const parsedRepo = repoInput && typeof parseGitHubRepoSpec === 'function' ? parseGitHubRepoSpec(repoInput) : null;
+    if (!parsedRepo) return { ok: false, reason: 'repo', message: 'Enter a GitHub repo URL or owner/name before refreshing this source.' };
+    const refInput = document.getElementById('source-ref')?.value?.trim() || '';
+    const rootInput = document.getElementById('source-root')?.value || modal.root || (Array.isArray(existingSource?.rootPaths) ? existingSource.rootPaths.join('\n') : existingSource?.rootPath) || '.topics';
+    const rootPaths = typeof parseRootPaths === 'function' ? parseRootPaths(rootInput) : ['.topics'];
+    const repoDiscovery = document.getElementById('source-repo-discovery')?.checked ?? modal.repoDiscovery ?? normalizeGithubSurfaceConfig(existingSource?.enabledSurfaces || {}).repoFiles;
+    const issueDiscovery = document.getElementById('source-issue-discovery')?.checked ?? modal.issueDiscovery ?? normalizeGithubSurfaceConfig(existingSource?.enabledSurfaces || {}).issues;
+    const issueUrlsInput = document.getElementById('source-issue-urls')?.value || modal.issueUrls || '';
+    const requestedRef = refInput || parsedRepo.ref || existingSource?.requestedRef || existingSource?.mutableRef || existingSource?.sourceRef || existingSource?.ref || '';
+    const enabledSurfaces = normalizeGithubSurfaceConfig({ repoFiles: repoDiscovery, issues: issueDiscovery });
+    const issueUrls = parseSourceIssueUrls(issueUrlsInput, parsedRepo.repo);
+    return {
+      ok: true,
+      repo: parsedRepo.repo,
+      ref: requestedRef,
+      requestedRef,
+      rootPaths: rootPaths.length ? rootPaths : ['.topics'],
+      enabledSurfaces,
+      issueUrls,
+      origin: `https://github.com/${parsedRepo.repo}`
+    };
+  }
+
+  function applyGithubSourceConfigSnapshot(ws, source, snapshot = {}, options = {}) {
+    if (!ws || !source || !snapshot?.ok) return source;
+    const updated = registerGitHubSource(ws, {
+      id: source.id || githubSourceId(snapshot.repo),
+      repo: snapshot.repo,
+      ref: snapshot.ref || '',
+      requestedRef: snapshot.requestedRef || snapshot.ref || '',
+      resolvedCommit: source.resolvedCommit || '',
+      rootPaths: snapshot.rootPaths || ['.topics'],
+      enabledSurfaces: snapshot.enabledSurfaces || normalizeGithubSurfaceConfig(source.enabledSurfaces || {}),
+      configuredIssueUrls: snapshot.issueUrls || [],
+      issueUrls: snapshot.issueUrls || [],
+      discoveredIssueUrls: Array.isArray(source.discoveredIssueUrls) && options.keepDiscovered !== false ? source.discoveredIssueUrls.slice() : [],
+      origin: snapshot.origin || source.origin || (snapshot.repo ? `https://github.com/${snapshot.repo}` : '')
+    });
+    updated.enabledSurfaces = normalizeGithubSurfaceConfig(snapshot.enabledSurfaces || updated.enabledSurfaces || {});
+    setConfiguredGitHubIssueUrls(updated, snapshot.issueUrls || []);
+    if (options.allowSurfaceDisable) applyGitHubSourceSurfacePruning(ws, updated, updated.enabledSurfaces, Boolean(options.resetSourceContent));
+    return updated;
+  }
+
+  function preserveGithubSourceConfigAfterDiscovery(ws, source, snapshot = {}) {
+    const updated = applyGithubSourceConfigSnapshot(ws, source, snapshot, { keepDiscovered: true, allowSurfaceDisable: false });
+    if (ws?.discoverySource && updated?.id && ws.discoverySource.sourceId === updated.id) {
+      ws.discoverySource.enabledSurfaces = normalizeGithubSurfaceConfig(updated.enabledSurfaces || {});
+      ws.discoverySource.issueUrls = configuredGitHubIssueUrls(updated, updated.repo || '');
+      ws.discoverySource.rootPaths = Array.isArray(updated.rootPaths) ? updated.rootPaths.slice() : ws.discoverySource.rootPaths;
+      ws.discoverySource.ref = updated.requestedRef || updated.ref || ws.discoverySource.ref || '';
+    }
+    return updated;
+  }
+
   async function refreshEditedGitHubSource(hardRefresh = false) {
     const modal = app.modal?.type === 'source' ? app.modal : null;
     const ws = modal?.appendWsId ? getWorkspace(modal.appendWsId) : null;
@@ -8259,19 +8316,28 @@
     render();
     await progressYield(ws);
     try {
+      const snapshot = sourceModalGithubConfigSnapshot(modal, source);
+      if (!snapshot.ok) {
+        toast(snapshot.message || 'Source configuration is incomplete.', 'warn');
+        document.getElementById('source-repo')?.focus?.();
+        return;
+      }
+      const refreshedSource = applyGithubSourceConfigSnapshot(ws, source, snapshot, { keepDiscovered: true, allowSurfaceDisable: true });
       if (hardRefresh) {
-        clearAdapterRuntimeCache(source.repo || '');
-        clearRepositoryTransportHealth(source.repo || '');
-        await clearExactHistoricalFileCache(source.repo || '');
+        clearAdapterRuntimeCache(refreshedSource.repo || '');
+        clearRepositoryTransportHealth(refreshedSource.repo || '');
+        await clearExactHistoricalFileCache(refreshedSource.repo || '');
       }
       const label = hardRefresh ? 'Cache reset' : 'Refresh';
-      toast(`${label} started for ${source.repo || 'GitHub source'}.`, 'info');
-      await loadGitHubStateSourceIntoWorkspace(ws, source, {
+      toast(`${label} started for ${refreshedSource.repo || 'GitHub source'}.`, 'info');
+      await loadGitHubStateSourceIntoWorkspace(ws, refreshedSource, {
         refreshExisting: true,
         hardRefresh: Boolean(hardRefresh),
         userInitiated: true,
-        openWorkspaceIssueTarget: false
+        openWorkspaceIssueTarget: false,
+        allowSurfaceDisable: false
       });
+      preserveGithubSourceConfigAfterDiscovery(ws, refreshedSource, snapshot);
       if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
     } finally {
       app.sourceRefreshInFlight.delete(key);
@@ -10756,9 +10822,70 @@
     finally { if (inFlight.get(requestKey) === task) inFlight.delete(requestKey); }
   }
 
+  function githubHostedIssueSnapshotManifestIssues(meta = {}, manifest = {}, repo = '') {
+    const list = Array.isArray(manifest?.issues) ? manifest.issues : (Array.isArray(meta?.issues) ? meta.issues : []);
+    return list.map((entry) => ({
+      number: Number(entry?.number || 0),
+      title: entry?.title || '',
+      state: entry?.state || '',
+      updated_at: entry?.updated_at || entry?.updatedAt || '',
+      issueUrl: entry?.html_url || entry?.issueUrl || (Number(entry?.number || 0) > 0 && repo ? `https://github.com/${repo}/issues/${Number(entry.number)}` : '')
+    })).filter((entry) => Number.isInteger(entry.number) && entry.number > 0 && entry.issueUrl);
+  }
+
+  async function fetchGitHubRepoIssueSpecsViaHostedSnapshot(repo, options = {}) {
+    const sampleSpec = parseGitHubIssueSpec(`https://github.com/${String(repo || '').replace(/^\/+|\/+$/gu, '')}/issues/1`);
+    if (!sampleSpec) return null;
+    const metadataUrl = githubHostedIssueSnapshotMetadataUrl(sampleSpec);
+    if (!metadataUrl) return null;
+    try {
+      const meta = (await adapterFetchJson(metadataUrl, {
+        adapter: 'site-issue-snapshot',
+        label: 'Hosted GitHub issue snapshot metadata',
+        rateLimitKey: `site-issue-snapshot:${repo}`,
+        hardRefresh: Boolean(options.hardRefresh),
+        skipGitNativeRawBridge: true,
+        headers: { Accept: 'application/json,*/*' }
+      })).data || null;
+      if (!meta || meta.type !== 'tiinex.github.issues.snapshot' || !githubHostedIssueSnapshotRepoMatches(meta, sampleSpec)) return null;
+      let manifest = meta;
+      try {
+        const manifestUrl = githubHostedIssueSnapshotResolve(metadataUrl, meta.manifest || `${String(meta.directory || '').trim() || `${sampleSpec.repoName}/`}manifest.json`);
+        manifest = (await adapterFetchJson(manifestUrl, {
+          adapter: 'site-issue-snapshot',
+          label: 'Hosted GitHub issue snapshot manifest',
+          rateLimitKey: `site-issue-snapshot:${repo}`,
+          hardRefresh: Boolean(options.hardRefresh),
+          skipGitNativeRawBridge: true,
+          headers: { Accept: 'application/json,*/*' }
+        })).data || meta;
+      } catch (error) {
+        githubIssueImportTrace('site-issue-snapshot.list-manifest-unavailable', { repo, error });
+      }
+      const limit = Math.max(0, Number(options.limit || app.settings.githubIssueDiscoveryLimit || 10));
+      const specs = githubHostedIssueSnapshotManifestIssues(meta, manifest, sampleSpec.repo)
+        .filter((entry) => !entry.state || String(entry.state).toLowerCase() === 'open')
+        .sort((a, b) => Date.parse(b.updated_at || '') - Date.parse(a.updated_at || ''))
+        .slice(0, limit)
+        .map((entry) => parseGitHubIssueSpec(entry.issueUrl))
+        .filter(Boolean);
+      githubIssueImportTrace('site-issue-snapshot.list-built', { repo, count: specs.length, metadataUrl, generatedAt: meta.generatedAt || '', sourceUpdatedAt: meta.sourceUpdatedAt || '' });
+      return specs;
+    } catch (error) {
+      githubIssueImportTrace('site-issue-snapshot.list-unavailable', { repo, error });
+      return null;
+    }
+  }
+
   async function fetchGitHubRepoIssueSpecs(repo, options = {}) {
     const limit = Math.max(0, Number(options.limit || app.settings.githubIssueDiscoveryLimit || 10));
     if (!repo || !limit) return [];
+    const hostedSpecs = await fetchGitHubRepoIssueSpecsViaHostedSnapshot(repo, options);
+    if (Array.isArray(hostedSpecs)) return hostedSpecs;
+    if (options.liveGitHub !== true && options.userInitiated !== true) {
+      githubIssueImportTrace('issue-list.live-skipped-no-hosted-snapshot', { repo, limit });
+      return [];
+    }
     const perPage = Math.min(100, Math.max(limit + 5, 10));
     const url = `https://api.github.com/repos/${repo}/issues?state=open&sort=updated&direction=desc&per_page=${perPage}`;
     const result = await fetchGitHubJson(url, options);
@@ -13830,6 +13957,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const enabledSurfaces = normalizeGithubSurfaceConfig({ repoFiles: repoDiscovery, issues: issueDiscovery });
     const issueUrls = parsedRepo ? parseSourceIssueUrls(issueUrlsInput, parsedRepo.repo) : [];
     let githubSource = null;
+    let githubSourceConfigSnapshot = null;
     let resetSourceContent = false;
 
     if (parsedRepo) {
@@ -13839,17 +13967,27 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         ref: old.requestedRef || old.mutableRef || old.sourceRef || old.ref || '',
         rootPaths: Array.isArray(old.rootPaths) ? old.rootPaths.slice() : []
       } : null;
-      githubSource = registerGitHubSource(ws, {
-        id: old?.id || githubSourceId(parsedRepo.repo),
+      githubSourceConfigSnapshot = {
+        ok: true,
         repo: parsedRepo.repo,
         ref: requestedRef || old?.requestedRef || old?.mutableRef || old?.sourceRef || old?.ref || '',
         requestedRef: requestedRef || old?.requestedRef || old?.mutableRef || old?.sourceRef || old?.ref || '',
-        resolvedCommit: old?.resolvedCommit || '',
         rootPaths: requestedRoots,
         enabledSurfaces,
-        configuredIssueUrls: issueUrls,
         issueUrls,
         origin: `https://github.com/${parsedRepo.repo}`
+      };
+      githubSource = registerGitHubSource(ws, {
+        id: old?.id || githubSourceId(parsedRepo.repo),
+        repo: githubSourceConfigSnapshot.repo,
+        ref: githubSourceConfigSnapshot.ref,
+        requestedRef: githubSourceConfigSnapshot.requestedRef,
+        resolvedCommit: old?.resolvedCommit || '',
+        rootPaths: githubSourceConfigSnapshot.rootPaths,
+        enabledSurfaces: githubSourceConfigSnapshot.enabledSurfaces,
+        configuredIssueUrls: githubSourceConfigSnapshot.issueUrls,
+        issueUrls: githubSourceConfigSnapshot.issueUrls,
+        origin: githubSourceConfigSnapshot.origin
       });
       resetSourceContent = Boolean(oldSourceSnapshot && (
         String(oldSourceSnapshot.repo || '').toLowerCase() !== parsedRepo.repo.toLowerCase()
@@ -13893,6 +14031,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       if (enabledSurfaces.issues) {
         await discoverGitHubIssuesIntoWorkspace(ws, githubSource, [], { userInitiated: true, hardRefresh: true });
       }
+      githubSource = preserveGithubSourceConfigAfterDiscovery(ws, githubSource, githubSourceConfigSnapshot);
     }
     if (urls.length) await loadUrlsIntoWorkspace(ws, urls);
     if (nonConfigFiles.length) await readUploadedFilesIntoWorkspace(ws, nonConfigFiles);
