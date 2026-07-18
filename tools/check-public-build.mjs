@@ -52,14 +52,23 @@ try {
   const indexPath = join(out, 'index.html');
   const bundlePath = join(out, 'tiinex.bundle.js');
   const stylesPath = join(out, 'styles.css');
+  const buildIdentityPath = join(out, 'tiinex.build.json');
 
-  for (const required of [indexPath, bundlePath, stylesPath, join(out, '.nojekyll'), join(out, 'llms.txt'), join(out, 'tiinex.app.llm.v1.md')]) {
+  for (const required of [indexPath, bundlePath, stylesPath, join(out, '.nojekyll'), join(out, 'llms.txt'), join(out, 'tiinex.app.llm.v1.md'), buildIdentityPath]) {
     if (!existsSync(required)) fail(`Missing public build output: ${required}`);
   }
 
   for (const optionalSource of ['assets', '.topics', 'favicon.ico', 'tiinex.context.v1.md', 'tiinex.orientation.v1.md']) {
     if (existsSync(join(root, optionalSource)) && !existsSync(join(out, optionalSource))) {
       fail(`Missing optional public build output copied from source: ${join(out, optionalSource)}`);
+    }
+  }
+
+
+  if (existsSync(buildIdentityPath)) {
+    const publicIdentity = JSON.parse(read(buildIdentityPath));
+    if (publicIdentity.type !== 'tiinex.public.build.identity.v1' || !publicIdentity.releaseCacheKey) {
+      fail('public build identity must expose tiinex.public.build.identity.v1 with releaseCacheKey.');
     }
   }
 

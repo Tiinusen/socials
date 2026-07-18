@@ -28,12 +28,11 @@ permissions:
   pages: write
   id-token: write
 
-concurrency:
-  group: publish-public-${{ github.repository }}-${{ (github.event_name == 'issues' || github.event_name == 'issue_comment') && 'issues' || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'issues' || github.event_name == 'issue_comment' }}
-
 jobs:
   publish:
+    concurrency:
+      group: publish-public-${{ github.repository }}-public-branch
+      cancel-in-progress: false
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'branch' && github.ref_name != 'public')
     runs-on: ubuntu-latest
     outputs:
@@ -70,6 +69,7 @@ jobs:
       TIINEX_ISSUE_SNAPSHOT_REPOSITORIES: ${{ vars.TIINEX_ISSUE_SNAPSHOT_REPOSITORIES || '' }}
       TIINEX_ISSUE_SNAPSHOT_MAX_ISSUES: ${{ vars.TIINEX_ISSUE_SNAPSHOT_MAX_ISSUES || '' }}
       TIINEX_ISSUE_SNAPSHOT_MAX_COMMENTS_PER_ISSUE: ${{ vars.TIINEX_ISSUE_SNAPSHOT_MAX_COMMENTS_PER_ISSUE || '' }}
+      TIINEX_ISSUE_PUBLISH_GRACE_SECONDS: ${{ vars.TIINEX_ISSUE_PUBLISH_GRACE_SECONDS || '120' }}
 
     steps:
       - name: Resolve source ref
@@ -833,6 +833,10 @@ jobs:
           SOURCE_REF: ${{ steps.settings.outputs.source_ref }}
         run: npm run issues:snapshot -- --out .site-publish
 
+      - name: Write issue publication state
+        if: steps.settings.outputs.publish_enabled == 'true'
+        run: npm run issues:state -- --out .site-publish --mode full-publish --cooldown ${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}
+
       - name: Sanitize public deploy root
         if: steps.settings.outputs.publish_enabled == 'true'
         shell: bash
@@ -972,6 +976,9 @@ jobs:
 
   sync-issues:
     if: github.event_name == 'issues' || github.event_name == 'issue_comment'
+    concurrency:
+      group: publish-public-${{ github.repository }}-public-branch
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     outputs:
       pages_deploy_enabled: ${{ steps.issue_settings.outputs.pages_deploy_enabled }}
@@ -996,19 +1003,7 @@ jobs:
             *) pages_deploy_enabled=true ;;
           esac
           echo "pages_deploy_enabled=$pages_deploy_enabled" >> "$GITHUB_OUTPUT"
-          echo "Issue snapshot publish will wait up to ${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}s, then reconcile all configured issues from GitHub once."
-
-      - name: Debounce issue burst
-        shell: bash
-        run: |
-          set -euo pipefail
-          grace="${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}"
-          case "$grace" in ''|*[!0-9]*) grace=120 ;; esac
-          if [ "$grace" -gt 120 ]; then grace=120; fi
-          if [ "$grace" -gt 0 ]; then
-            echo "Waiting ${grace}s so issue/comment bursts collapse into one public snapshot reconcile."
-            sleep "$grace"
-          fi
+          echo "Issue snapshot publish is rate-limited/coalesced over ${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}s; it publishes immediately when cooldown has elapsed."
 
       - name: Check out source tooling
         uses: actions/checkout@v6
@@ -1034,8 +1029,56 @@ jobs:
             touch .site-publish/.nojekyll
           fi
 
+      - name: Coalesce issue snapshot publish
+        id: issue_coalesce
+        shell: bash
+        run: |
+          set -euo pipefail
+          cooldown="${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}"
+          case "$cooldown" in ''|*[!0-9]*) cooldown=120 ;; esac
+          if [ "$cooldown" -gt 600 ]; then cooldown=600; fi
+          state_file=".site-publish/.tiinex/issue-publish-state.json"
+          now_epoch="$(date -u +%s)"
+          last_published=""
+          last_epoch=0
+          if [ -f "$state_file" ]; then
+            last_published="$(node -e "const fs=require('fs'); const p=process.argv[1]; try { const s=JSON.parse(fs.readFileSync(p,'utf8')); process.stdout.write(String(s.last_published_at||'')); } catch (_) {}" "$state_file")"
+            if [ -n "$last_published" ]; then
+              last_epoch="$(node -e "const t=Date.parse(process.argv[1]||''); process.stdout.write(Number.isFinite(t) ? String(Math.floor(t/1000)) : '0');" "$last_published")"
+            fi
+          fi
+          elapsed=$(( now_epoch - last_epoch ))
+          if [ "$last_epoch" -eq 0 ]; then elapsed=$cooldown; fi
+          remaining=$(( cooldown - elapsed ))
+          if [ "$remaining" -lt 0 ]; then remaining=0; fi
+          generation="${GITHUB_RUN_ID:-manual}.${GITHUB_RUN_ATTEMPT:-1}"
+          echo "last_published=${last_published:-never}"
+          echo "cooldown_seconds=$cooldown"
+          echo "cooldown_remaining=$remaining"
+          echo "pending_generation=$generation"
+          echo "snapshot_generation=$generation"
+          echo "follow-up required: no; GitHub concurrency keeps the newest pending issue run queued if more events arrive while this one publishes."
+          echo "cooldown_remaining=$remaining" >> "$GITHUB_OUTPUT"
+          echo "pending_generation=$generation" >> "$GITHUB_OUTPUT"
+          if [ "$remaining" -gt 0 ]; then
+            echo "Waiting only the remaining cooldown (${remaining}s); newer events do not reset this timer."
+            sleep "$remaining"
+          else
+            echo "Cooldown elapsed; publishing issue snapshot immediately."
+          fi
+
       - name: Build hosted issue snapshots
         run: npm run issues:snapshot -- --out .site-publish
+
+      - name: Write public issue publish identity
+        run: npm run public:identity -- --out .site-publish --reason issue-sync
+
+      - name: Write issue publication state
+        env:
+          GITHUB_EVENT_ACTION: ${{ github.event.action || '' }}
+          TIINEX_ISSUE_EVENT_NUMBER: ${{ github.event.issue.number || '' }}
+          TIINEX_ISSUE_COMMENT_ID: ${{ github.event.comment.id || '' }}
+        run: npm run issues:state -- --out .site-publish --mode issue-sync --cooldown ${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}
 
       - name: Validate hosted issue snapshots
         shell: bash

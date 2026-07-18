@@ -138,9 +138,24 @@
     });
   }
 
-  function releaseCacheIdentityKey() {
+  function embeddedReleaseCacheIdentityKey() {
     const identity = tiinexConfiguredBuildIdentity();
     return String(identity.releaseCacheKey || identity.buildId || identity.commitSha || identity.builtAt || '').trim();
+  }
+
+  function storedPublicContentIdentityKey() {
+    try {
+      const payload = JSON.parse(localStorage.getItem(STORAGE_KEYS.publicContentIdentity) || 'null');
+      return String(payload?.releaseCacheKey || payload?.buildId || '').trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function releaseCacheIdentityKey() {
+    const embedded = embeddedReleaseCacheIdentityKey();
+    const publicContent = String(app.publicContentIdentity?.releaseCacheKey || storedPublicContentIdentityKey() || '').trim();
+    return [embedded, publicContent].filter(Boolean).join('|');
   }
 
   function storageRemoveExact(storage, key) {
@@ -196,6 +211,123 @@
     try { localStorage.setItem(markerKey, releaseKey); } catch (_) {}
     app.releaseCacheInvalidation = { releaseKey, previous, changed: true, removed, at: new Date().toISOString() };
     return app.releaseCacheInvalidation;
+  }
+
+  function invalidateRuntimeCachesForExplicitRelease(releaseKey, reason = 'public-build-changed') {
+    const key = String(releaseKey || '').trim();
+    if (!key) return { releaseKey: '', changed: false, removed: 0, reason };
+    const markerKey = 'tiinex.release.cacheIdentity.v1';
+    let previous = '';
+    try { previous = localStorage.getItem(markerKey) || ''; } catch (_) {}
+    let removed = 0;
+    [
+      STORAGE_KEYS.githubCommitCache,
+      STORAGE_KEYS.githubIssueThreadCache,
+      STORAGE_KEYS.githubIssueImportTrace,
+      STORAGE_KEYS.githubRepoFetchTrace,
+      STORAGE_KEYS.repositoryTransportHealth,
+      STORAGE_KEYS.exactHistoricalReadBudget
+    ].forEach((storageKey) => { storageRemoveExact(localStorage, storageKey); removed += 1; });
+    removed += storageRemovePrefixes(localStorage, [
+      STORAGE_KEYS.githubSourceMaterialCachePrefix,
+      STORAGE_KEYS.adapterRateLimitPrefix,
+      STORAGE_KEYS.browserScrollStatePrefix
+    ]);
+    removed += storageRemovePrefixes(sessionStorage, [
+      STORAGE_KEYS.lensSessionPrefix,
+      STORAGE_KEYS.browserScrollStatePrefix
+    ]);
+    try { localStorage.setItem(markerKey, key); } catch (_) {}
+    app.releaseCacheInvalidation = { releaseKey: key, previous, changed: previous !== key, removed, reason, at: new Date().toISOString() };
+    return app.releaseCacheInvalidation;
+  }
+
+  function publicBuildIdentityUrl() {
+    const script = Array.from(document.scripts || []).find((item) => /(?:tiinex\.bundle|app)\.js(?:\?|$)/u.test(item.getAttribute('src') || item.src || ''));
+    const base = script?.src || `${location.origin}${location.pathname || '/'}`;
+    try { return new URL('tiinex.build.json', base).href; } catch (_) { return ''; }
+  }
+
+  function rememberPublicContentIdentity(identity = {}, reason = 'check') {
+    const releaseKey = String(identity.releaseCacheKey || identity.buildId || identity.generatedAt || '').trim();
+    if (!releaseKey) return null;
+    const payload = {
+      type: 'tiinex.public.contentIdentity.v1',
+      releaseCacheKey: releaseKey,
+      buildId: identity.buildId || '',
+      reason: identity.reason || reason,
+      generatedAt: identity.generatedAt || '',
+      repository: identity.repository || '',
+      checkedAt: new Date().toISOString()
+    };
+    app.publicContentIdentity = payload;
+    try { localStorage.setItem(STORAGE_KEYS.publicContentIdentity, JSON.stringify(payload)); } catch (_) {}
+    return payload;
+  }
+
+  function publicBuildUpdateTrace(event = {}) {
+    const row = Object.assign({ at: new Date().toISOString() }, event);
+    app.publicBuildUpdateTrace = app.publicBuildUpdateTrace || [];
+    app.publicBuildUpdateTrace.push(row);
+    if (app.publicBuildUpdateTrace.length > 50) app.publicBuildUpdateTrace.shift();
+    try { storageWriteJson(localStorage, STORAGE_KEYS.publicBuildUpdateTrace, app.publicBuildUpdateTrace); } catch (_) {}
+    return row;
+  }
+
+  async function checkPublicBuildIdentity(reason = 'scheduled') {
+    if (app.publicBuildIdentityCheckInFlight) return app.publicBuildIdentityCheckInFlight;
+    const url = publicBuildIdentityUrl();
+    if (!url || !/^https?:/iu.test(url)) return null;
+    const currentEmbedded = embeddedReleaseCacheIdentityKey();
+    const currentPublic = storedPublicContentIdentityKey();
+    const previousCacheIdentity = releaseCacheIdentityKey();
+    app.publicBuildIdentityCheckInFlight = (async () => {
+      try {
+        const requestUrl = `${url}${url.includes('?') ? '&' : '?'}check=${Date.now()}`;
+        const response = await fetch(requestUrl, { cache: 'no-store', headers: { Accept: 'application/json' } });
+        if (!response.ok) {
+          publicBuildUpdateTrace({ reason, status: 'unavailable', httpStatus: response.status, url });
+          return null;
+        }
+        const identity = await response.json();
+        const remoteKey = String(identity?.releaseCacheKey || identity?.buildId || '').trim();
+        if (!remoteKey) {
+          publicBuildUpdateTrace({ reason, status: 'missing-key', url });
+          return null;
+        }
+        rememberPublicContentIdentity(identity, reason);
+        const currentCacheIdentity = releaseCacheIdentityKey();
+        const changed = Boolean(remoteKey && remoteKey !== currentPublic && currentCacheIdentity !== previousCacheIdentity);
+        publicBuildUpdateTrace({ reason, status: changed ? 'changed' : 'unchanged', remoteKey, currentEmbedded, previousPublic: currentPublic, previousCacheIdentity, currentCacheIdentity });
+        if (!changed) return identity;
+        invalidateRuntimeCachesForExplicitRelease(currentCacheIdentity, 'public-build-identity-changed');
+        const reloadKey = `tiinex.publicBuildReloaded.${remoteKey}`;
+        const autoReload = window.TIINEX_VIEWER_OPTIONS?.autoReloadOnPublicBuildChange !== false;
+        if (autoReload && !sessionStorage.getItem(reloadKey)) {
+          try { sessionStorage.setItem(reloadKey, new Date().toISOString()); } catch (_) {}
+          setTimeout(() => { try { location.reload(); } catch (_) {} }, 150);
+        } else {
+          try { render(); } catch (_) {}
+        }
+        return identity;
+      } catch (error) {
+        publicBuildUpdateTrace({ reason, status: 'error', message: error?.message || String(error), url });
+        return null;
+      } finally {
+        app.publicBuildIdentityCheckInFlight = null;
+      }
+    })();
+    return app.publicBuildIdentityCheckInFlight;
+  }
+
+  function schedulePublicBuildIdentityChecks() {
+    if (app.publicBuildIdentityChecksStarted) return;
+    app.publicBuildIdentityChecksStarted = true;
+    const intervalMs = Number(window.TIINEX_VIEWER_OPTIONS?.publicBuildCheckIntervalMs || 60000) || 60000;
+    setTimeout(() => { checkPublicBuildIdentity('startup-delay'); }, Math.min(8000, Math.max(1000, intervalMs / 4)));
+    setInterval(() => { if (!document.hidden) checkPublicBuildIdentity('interval'); }, Math.max(15000, intervalMs));
+    window.addEventListener('focus', () => { checkPublicBuildIdentity('focus'); });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) checkPublicBuildIdentity('visibility-visible'); });
   }
 
   function buildFooterTooltip() {
@@ -319,11 +451,14 @@
     gitNativeDiscoveryConfig: 'tiinex.gitNative.discoveryConfig.v1',
     exactHistoricalReadBudget: 'tiinex.exactHistoricalReadBudget',
     repositoryTransportHealth: 'tiinex.repositoryTransportHealth.v1',
-    githubSourceMaterialCachePrefix: 'tiinex.github.sourceMaterialCache.v1.'
+    githubSourceMaterialCachePrefix: 'tiinex.github.sourceMaterialCache.v1.',
+    publicContentIdentity: 'tiinex.public.contentIdentity.v1',
+    publicBuildUpdateTrace: 'tiinex.public.buildUpdateTrace.v1'
   });
 
 
   invalidateRuntimeCachesForReleaseIfNeeded();
+  schedulePublicBuildIdentityChecks();
 
   const GIT_NATIVE_DISCOVERY_CONFIG_KEYS = Object.freeze([
     'enabled',
@@ -46670,6 +46805,7 @@ ${raw.slice(0, 800)}`) || 'en')}">
     routeAndLocalStateContinuityReport,
     routeLoadPresentationReport,
     buildIdentityReport,
+    publicBuildIdentityReport: () => ({ schema: 'tiinex.public-build-identity.report.v1', current: tiinexConfiguredBuildIdentity(), embeddedReleaseKey: embeddedReleaseCacheIdentityKey(), publicContentIdentity: app.publicContentIdentity || storageReadJson(localStorage, STORAGE_KEYS.publicContentIdentity, null), releaseCacheIdentityKey: releaseCacheIdentityKey(), trace: app.publicBuildUpdateTrace || storageReadJson(localStorage, STORAGE_KEYS.publicBuildUpdateTrace, []) || [] }),
     parentOriginContinuityReport,
     artifactPlacementReadinessReport,
     workspaceOpenMergeReport

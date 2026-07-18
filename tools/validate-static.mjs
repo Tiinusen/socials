@@ -2269,6 +2269,7 @@ function validatePublicBuildContracts() {
   }
 
   const buildScript = read('tools/build-public.mjs');
+  const appJs = read('app.js');
   if (!buildScript.includes("argValue('--out', '.site-publish')")) fail('build-public must default to .site-publish and accept --out for checks');
   if (!buildScript.includes('tiinex.bundle.js')) fail('build-public must create tiinex.bundle.js');
   if (!buildScript.includes('window.TIINEX_VIEWER_OPTIONS')) fail('build-public must include viewer options before app.js in the bundle');
@@ -2285,22 +2286,33 @@ function validatePublicBuildContracts() {
   const checkScript = read('tools/check-public-build.mjs');
   if (!checkScript.includes('public index must load exactly one local JS bundle')) fail('public build checker must enforce one local app bundle');
   if (!checkScript.includes('node --check public bundle failed')) fail('public build checker must syntax-check the bundle');
+  for (const token of ['tiinex.build.json', 'publicBuildIdentity', 'releaseCacheKey']) {
+    if (!buildScript.includes(token)) fail(`public build must emit a fetchable publication identity for open-tab cache invalidation: ${token}`);
+  }
+  for (const token of ['checkPublicBuildIdentity', 'publicBuildIdentityUrl', 'invalidateRuntimeCachesForExplicitRelease', 'publicContentIdentity', 'autoReloadOnPublicBuildChange']) {
+    if (!appJs.includes(token)) fail(`runtime must monitor public build identity and invalidate stale source cache without manual F5: ${token}`);
+  }
 
   const workflow = read('.github/workflows/publish-public.yml');
   for (const required of ['npm test', 'npm run build:public', 'publish_dir: .site-publish', 'publish_branch: public']) {
     if (!workflow.includes(required)) fail(`publish workflow must include ${required}`);
   }
-  const branchScopedConcurrency = workflow.includes('group: publish-public-${{ github.repository }}-${{ github.ref }}');
-  const issueAwareConcurrency = workflow.includes("group: publish-public-${{ github.repository }}-${{ (github.event_name == 'issues' || github.event_name == 'issue_comment') && 'issues' || github.ref }}")
-    && workflow.includes("cancel-in-progress: ${{ github.event_name == 'issues' || github.event_name == 'issue_comment' }}");
-  if (!branchScopedConcurrency && !issueAwareConcurrency) {
-    fail('publish workflow concurrency must keep branch publishing isolated while allowing issue-event debounce to cancel only issue snapshot runs.');
+  const publicBranchConcurrency = workflow.includes('group: publish-public-${{ github.repository }}-public-branch')
+    && workflow.includes('cancel-in-progress: false');
+  if (!publicBranchConcurrency) {
+    fail('publish workflow must serialize public branch updates without cancel-in-progress so issue publication cannot starve.');
+  }
+  if (workflow.includes("cancel-in-progress: ${{ github.event_name == 'issues' || github.event_name == 'issue_comment' }}") || workflow.includes('Debounce issue burst')) {
+    fail('issue publication must be cooldown/coalescing, not trailing-edge debounce or cancel-in-progress starvation.');
   }
   if (!workflow.includes('- name: Publish not required') || !workflow.includes("if: steps.settings.outputs.publish_enabled != 'true'")) {
     fail('publish workflow must finish intentionally disabled branch runs through an explicit successful Publish not required step.');
   }
   if (!workflow.includes('issues:') || !workflow.includes('issue_comment:') || !workflow.includes('sync-issues:') || !workflow.includes('TIINEX_ISSUE_PUBLISH_GRACE_SECONDS')) {
-    fail('publish workflow must support debounced hosted issue snapshot publication from issue and comment events.');
+    fail('publish workflow must support hosted issue snapshot publication from issue and comment events.');
+  }
+  for (const token of ['Coalesce issue snapshot publish', '.tiinex/issue-publish-state.json', 'cooldown_remaining', 'pending_generation', 'snapshot_generation', 'follow-up required', 'npm run issues:state', 'npm run public:identity']) {
+    if (!workflow.includes(token)) fail(`issue publication must be rate-limited/coalesced with durable diagnostics: ${token}`);
   }
   if (!workflow.includes('npm run issues:snapshot -- --out .site-publish')) {
     fail('publish workflow must generate hosted issue snapshots into the public artifact.');
@@ -2308,6 +2320,9 @@ function validatePublicBuildContracts() {
   const packageJsonForIssues = JSON.parse(read('package.json'));
   if (packageJsonForIssues.scripts?.['issues:snapshot'] !== 'node tools/build-issue-snapshots.mjs') {
     fail('package.json must expose issues:snapshot for hosted issue snapshot publication.');
+  }
+  if (packageJsonForIssues.scripts?.['issues:state'] !== 'node tools/write-issue-publish-state.mjs' || packageJsonForIssues.scripts?.['public:identity'] !== 'node tools/write-public-build-identity.mjs') {
+    fail('package.json must expose issues:state and public:identity for coalesced issue publication and open-tab cache busting.');
   }
   const issueSnapshotScript = read('tools/build-issue-snapshots.mjs');
   for (const token of ['tiinex.github.issues.snapshot', "'issues', 'github.com'", 'TIINEX_ISSUE_SNAPSHOT_REPOSITORIES', 'TIINEX_ISSUE_SNAPSHOT_MAX_COMMENTS_PER_ISSUE']) {
