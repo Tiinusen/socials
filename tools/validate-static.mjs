@@ -1241,6 +1241,13 @@ function validateJavascriptSurface() {
     if (code.includes(token)) fail(`Forbidden historical runtime token found in code: ${token}`);
   }
 
+  const releaseInvalidationStart = js.indexOf('  function invalidateRuntimeCachesForReleaseIfNeeded()');
+  const releaseInvalidationEnd = js.indexOf('  function buildFooterTooltip()', releaseInvalidationStart);
+  if (releaseInvalidationStart < 0 || releaseInvalidationEnd <= releaseInvalidationStart) fail('Could not isolate release cache invalidation policy.');
+  const releaseInvalidation = js.slice(releaseInvalidationStart, releaseInvalidationEnd);
+  if (releaseInvalidation.includes('STORAGE_KEYS.githubIssueThreadCache')) {
+    fail('App release cache-busting must not erase durable GitHub issue thread cache; source freshness is owned by transport tiers.');
+  }
   if (!js.includes('githubHostedIssueSnapshotMetadataUrlCandidates') || !js.includes('disableRuntimeCache: true') || !js.includes("cacheMode: 'no-cache'")) {
     fail('Hosted issue snapshots must use same-origin candidate paths with browser/runtime cache revalidation instead of stale runtime cache.');
   }
@@ -1253,8 +1260,30 @@ function validateJavascriptSurface() {
   if (!js.includes('refresh-source-via-live-transport') || !js.includes('bypassRepositorySnapshot: true') || !js.includes('bypassHostedIssueSnapshot: true') || !js.includes('githubIssueTransportPresentation') || !js.includes('renderWorkspaceTransportPills')) {
     fail('Mirror/cache transport badges must provide an explicit next-level live-source refresh path for repository files and issue snapshots.');
   }
-  for (const token of ['TRANSPORT_TIER_ORDER', "['cache', 'mirror', 'proxy', 'direct']", 'data-transport-tier', 'restoreGitHubSourceUserConfig', 'preserveSourceConfig', 'forceDirectFallback']) {
+  for (const token of ['TRANSPORT_TIER_ORDER', "['cache', 'mirror', 'proxy', 'direct']", 'data-transport-tier', 'restoreGitHubSourceUserConfig', 'preserveSourceConfig', 'forceDirectFallback', 'transportRefreshTier']) {
     if (!js.includes(token)) fail(`Transport badge tier progression/source-config guard missing: ${token}`);
+  }
+  const sourceLoadStart = js.indexOf('  async function loadGitHubStateSourceIntoWorkspace(');
+  const sourceLoadEnd = js.indexOf('  async function createWorkspaceFromInputs(', sourceLoadStart);
+  if (sourceLoadStart < 0 || sourceLoadEnd <= sourceLoadStart) fail('Could not isolate GitHub source load transport owner.');
+  const sourceLoad = js.slice(sourceLoadStart, sourceLoadEnd);
+  for (const token of [
+    'bypassRepositorySnapshot: Boolean(options.bypassRepositorySnapshot)',
+    'liveGitHub: Boolean(options.liveGitHub)',
+    'allowDirectGithubClone: Boolean(options.allowDirectGithubClone)',
+    'forceDirectFallback: Boolean(options.forceDirectFallback)',
+    'bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot)',
+    'allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback)',
+    "transportRefreshTier: options.transportRefreshTier || ''"
+  ]) {
+    if (!sourceLoad.includes(token)) fail(`Transport tier options must be forwarded through the single GitHub source loader: ${token}`);
+  }
+  const issueDiscoveryStart = js.indexOf('  async function discoverGitHubIssuesIntoWorkspace(');
+  const issueDiscoveryEnd = js.indexOf('    ws.githubIssueDiscoveryRuns =', issueDiscoveryStart);
+  if (issueDiscoveryStart < 0 || issueDiscoveryEnd <= issueDiscoveryStart) fail('Could not isolate GitHub issue discovery transport owner.');
+  const issueDiscovery = js.slice(issueDiscoveryStart, issueDiscoveryEnd);
+  for (const token of ['liveGitHub: Boolean(options.liveGitHub)', 'bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot)', 'forceDirectFallback: Boolean(options.forceDirectFallback)', "transportRefreshTier: options.transportRefreshTier || ''"]) {
+    if (!issueDiscovery.includes(token)) fail(`Issue imports must receive the caller transport tier rather than resolving their own transport path: ${token}`);
   }
 
   if (js.includes('data-mode="issue"') || js.includes('Add issue thread')) {

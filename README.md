@@ -222,4 +222,4 @@ Workspace entrypoints are normal Tiinex artifacts. Use Create → Workspace to c
 
 After a GitHub issue or issue comment is verified, Tiinex keeps a small local publication receipt. On refresh, the receipt lets the viewer distinguish the verified source artifact from its older browser-local editing shadow. The local shadow is removed only when the imported source carries the same v2 self seal; a newer unpublished edit remains local.
 
-Public builds attach the commit-derived build id to local CSS, bundle, icon, and logo URLs. When a new build identity loads, remote/runtime caches are invalidated while local drafts and named local workspace state are preserved.
+Public builds attach the commit-derived build id to local CSS, bundle, icon, and logo URLs. When a new build identity loads, volatile runtime traces/transport health are invalidated while local drafts, named local workspace state, and durable source-material caches such as GitHub issue threads are preserved; source freshness is owned by the visible cache → mirror → proxy → direct transport path.
