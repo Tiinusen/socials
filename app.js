@@ -3246,12 +3246,12 @@
   }
 
   function workspaceDisplayLabel(ws) {
-    const files = Array.from(ws.files?.values?.() || []);
+    const label = String(ws?.label || '').trim();
+    if (label && !/^local lineage workspace$/i.test(label)) return label;
+    const files = Array.from(ws?.files?.values?.() || []);
     const repos = [...new Set(files.map((f) => f.repo).filter(Boolean))];
     if (repos.length === 1) return repos[0];
     if (repos.length > 1) return `mixed/workspace-${workspaceIndex(ws.id) + 1}`;
-    const label = String(ws.label || '').trim();
-    if (label && !/^local lineage workspace$/i.test(label)) return label;
     return `local/workspace-${workspaceIndex(ws.id) + 1}`;
   }
 
@@ -10864,7 +10864,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (!/#\s+Continuity Context/i.test(text) || !/Current Schema:/i.test(text)) return '';
     const sourceSection = text.search(/^##\s+Source Markdown(?:\s+Excerpt|\s+Payload)?\s*$/im);
     const searchText = sourceSection >= 0 ? text.slice(sourceSection) : text;
-    for (const block of extractMarkdownFenceBlocks(searchText, { languages: ['md', 'markdown', ''] })) {
+    const payloadBlocks = extractSourceMarkdownPayloadBlocks(searchText);
+    for (const block of payloadBlocks.length ? payloadBlocks : extractMarkdownFenceBlocks(searchText, { languages: ['md', 'markdown', ''] })) {
       const candidate = normalizeNewlines(block || '').trim();
       if (looksLikeStandaloneTiinexArtifact(candidate)) return candidate;
     }
@@ -14666,12 +14667,45 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return out.join('\n').trim();
   }
 
+  function firstBalancedJsonText(text = '') {
+    const source = normalizeMarkdown(text || '');
+    const start = source.search(/[\[{]/);
+    if (start < 0) return '';
+    const opener = source[start];
+    const closer = opener === '{' ? '}' : ']';
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < source.length; i += 1) {
+      const ch = source[i];
+      if (inString) {
+        if (escaped) { escaped = false; continue; }
+        if (ch === '\\') { escaped = true; continue; }
+        if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === opener) depth += 1;
+      else if (ch === closer) {
+        depth -= 1;
+        if (depth === 0) return source.slice(start, i + 1);
+      }
+    }
+    return '';
+  }
+
   function parseFenceJson(sectionText) {
-    const match = normalizeMarkdown(sectionText || '').match(/```(?:json)?\s*\n([\s\S]*?)\n```/i);
-    if (!match) return null;
+    const source = normalizeMarkdown(sectionText || '');
+    const match = source.match(/```(?:json)?\s*\n([\s\S]*?)\n```/i);
+    const candidate = match ? match[1] : firstBalancedJsonText(source.replace(/^```(?:json)?\s*\n/i, ''));
+    if (!candidate) return null;
     try {
-      return JSON.parse(match[1]);
+      return JSON.parse(candidate);
     } catch (error) {
+      const fallback = firstBalancedJsonText(candidate);
+      if (fallback && fallback !== candidate) {
+        try { return JSON.parse(fallback); } catch (_) {}
+      }
       return { __parseError: error.message || String(error) };
     }
   }
@@ -18289,8 +18323,11 @@ Answer the reader should see in workspace help or GitHub presentation.">${escape
 
     const viewerState = extractViewerStateJson(text);
     const machineState = extractMachineStateJson(text);
-    if (viewerState?.__parseError) out.viewerStateError = viewerState.__parseError;
-    else if (viewerState) out.viewerState = viewerState;
+    if (viewerState?.__parseError) {
+      out.viewerStateError = viewerState.__parseError;
+      const generated = parseWorkspaceEntrypoints(text, configUrl, machineState && !machineState.__parseError ? machineState : null);
+      if (generated) out.viewerState = generated;
+    } else if (viewerState) out.viewerState = viewerState;
     else {
       const generated = parseWorkspaceEntrypoints(text, configUrl, machineState && !machineState.__parseError ? machineState : null);
       if (generated) out.viewerState = generated;
