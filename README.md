@@ -134,7 +134,7 @@ Use repository variables for public instance config. Use secrets only when value
 - `TIINEX_ISSUE_SNAPSHOT_REPOSITORIES`: optional newline/comma-separated `owner/repo` list for additional public issue snapshots. Omitted means the publishing repository only.
 - `TIINEX_ISSUE_PUBLISH_GRACE_SECONDS`: issue/comment publication cooldown, default 120 seconds. Issue events are rate-limited/coalesced, not trailing-edge debounced: the first event after cooldown publishes immediately, events during cooldown are folded into the next serialized full snapshot reconcile, and continuous activity cannot postpone publication forever.
 
-Snapshot reads are same-origin and revalidated on load. The viewer follows the mirror convention and resolves hosted issues from the publication root first, for example `/issues/github.com/<owner>/<repo>.json`; it preserves the repository directory for per-issue files before considering live GitHub, so visitors do not become GitHub crawlers.
+Snapshot reads are same-origin and revalidated on load. The viewer follows the mirror convention and resolves hosted issues from the publication root first, for example `/issues/github.com/<owner>/<repo>.json`; it preserves the repository directory for per-issue files before considering live GitHub, so visitors do not become GitHub crawlers. For GitHub-backed sources, a missing viewer-owned mirror may also fall through to the source repository's default GitHub Pages mirror, for example `https://<owner>.github.io/<repo>/issues/github.com/<owner>/<repo>.json`, before proxy/direct transport is used.
 - `TIINEX_ISSUE_SNAPSHOT_MAX_ISSUES`, `TIINEX_ISSUE_SNAPSHOT_MAX_COMMENTS_PER_ISSUE`: optional safety bounds for unusually large repositories.
 
 ### Tiinex/site Suggested Variables
@@ -232,7 +232,7 @@ GitHub source material uses one transport policy across repository files and iss
 cache -> mirror -> proxy -> direct
 ```
 
-Startup/public route reconciliation is cache-first: warm durable source cache may render immediately, and the same transport policy falls through to the co-hosted mirror when source cache is absent. Live GitHub/proxy and direct/raw fallbacks are only used after an explicit user action, and changing transport level must not rewrite source settings or enable broad issue discovery.
+Startup/public route reconciliation is cache-first: warm durable source cache may render immediately, and the same transport policy falls through to the viewer-owned mirror when source cache is absent. When that mirror is absent for a GitHub-backed source, the viewer probes the source repository's default GitHub Pages mirror once as a bounded mirror candidate before live proxy/direct transport. Live GitHub/proxy and direct/raw fallbacks are only used after an explicit user action or the configured issue-only mirror-miss fallback, and changing transport level must not rewrite source settings or enable broad issue discovery.
 
 ### Source material cache
 
@@ -244,7 +244,7 @@ Transport badges show the effective tier for the current source load. Cache rest
 
 ### Source cache freshness
 
-Public builds also publish `tiinex.build.json`. Open tabs check that identity on startup/focus/interval; when it changes, the viewer invalidates durable GitHub source-material and issue-thread caches and performs a one-time reload so mirror or issue-snapshot-only public updates are observed without a manual F5. The bundled build identity and the public content identity are both part of the cache boundary.
+Public builds also publish `tiinex.build.json`. Open tabs check that identity on startup and on focus/visibility after a conservative TTL; background interval polling is disabled unless explicitly opted in through `TIINEX_VIEWER_OPTIONS.publicBuildPollingEnabled`. When the identity changes, the viewer invalidates durable GitHub source-material and issue-thread caches and performs a one-time reload so mirror or issue-snapshot-only public updates are observed without a manual F5. The bundled build identity and the public content identity are both part of the cache boundary.
 
 The browser source-material cache is release-aware. When the public viewer release key changes, Tiinex invalidates cached GitHub source material and issue-thread observations while preserving local/draft workspaces. The public build uses the Actions run identity when available, not only the source commit, so an issue-snapshot/mirror-only publish can still refresh the viewer cache boundary. Source-material cache entries also age out after the configured TTL (`TIINEX_VIEWER_OPTIONS.sourceMaterialCacheMaxAgeMs`, default two hours), at which point the normal `cache → mirror → proxy → direct` transport chain falls forward to mirror without requiring the user to click the cache badge.
 

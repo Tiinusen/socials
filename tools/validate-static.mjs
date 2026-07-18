@@ -1258,8 +1258,8 @@ function validateJavascriptSurface() {
   if (!js.includes('githubSourceMaterialCacheWrite') || !js.includes('restoreGitHubSourceMaterialCacheIntoWorkspace') || !js.includes('githubSourceMaterialCachePrefix') || !js.includes('restoreConfiguredGitHubIssueThreadCachesIntoWorkspace') || !js.includes('githubSourceMaterialCacheLooksCompleteForSource') || !js.includes('githubSourceMaterialCacheFreshness') || !js.includes('source-material-cache.invalidated')) {
     fail('Cache tier must restore/write a complete release/TTL-bounded source-material cache and rehydrate configured issue targets through the shared issue materialization path, not only route state, issue-thread cache, or local Git preflight.');
   }
-  if (!js.includes('hostedIssueSnapshotBaseUrlCandidates') || !js.includes('githubHostedIssueSnapshotResolveDirectory') || js.includes('${repoName}/${relative}')) {
-    fail('Hosted issue snapshot paths must follow mirror convention roots such as /issues/github.com/owner/repo.json and preserve the repository directory for issue item paths.');
+  if (!js.includes('hostedIssueSnapshotBaseUrlCandidates') || !js.includes('githubHostedIssueSnapshotResolveDirectory') || !js.includes('githubPagesDefaultBaseUrlForRepository') || js.includes('${repoName}/${relative}')) {
+    fail('Hosted issue snapshot paths must follow mirror convention roots such as /issues/github.com/owner/repo.json, then a source repo GitHub Pages mirror candidate for GitHub-backed repos, and preserve the repository directory for issue item paths.');
   }
   if (!js.includes('site-issue-snapshot.metadata-candidate') || !js.includes('site-issue-snapshot.list-candidate')) {
     fail('Hosted issue snapshot adapter must trace candidate path selection for issue threads and discovery lists.');
@@ -2004,7 +2004,7 @@ function validateRepositoryTransportContracts() {
       fail('packaged workspace should exercise the schema-defined co-hosted mirror convention instead of duplicating its own repo mirror URL');
     }
   }
-  for (const token of ['parseRepositoryTransports', 'repositoryTransportsFor', 'coHostedRepositorySnapshotTransports', "convention: 'co-hosted-source'", "convention: 'co-hosted-public'", 'tryDiscoverGitHubRepoViaRepositorySnapshot', 'zipBufferToImportEntries', 'repositoryTransportPlan', 'gitNativeTransportCandidates', 'clearRepositoryTransportHealth', 'workspace-transport-lazy', 'repositoryTransportDeadlineAt', 'repositoryTransportBudgetMs', 'local-file-http-snapshot-unavailable', "phase: 'snapshot-connect'", "phase: 'snapshot-transfer'", "phase: 'snapshot-processing'", 'repository-snapshot.convention-miss', 'repositorySnapshotMetadataTimeoutMs: 5000', 'repositorySnapshotTimeoutMs: 35000']) {
+  for (const token of ['parseRepositoryTransports', 'repositoryTransportsFor', 'coHostedRepositorySnapshotTransports', 'githubPagesRepositorySnapshotTransports', 'githubPagesDefaultBaseUrlForRepository', "convention: 'co-hosted-source'", "convention: 'co-hosted-public'", "convention: 'github-pages-source-public'", 'tryDiscoverGitHubRepoViaRepositorySnapshot', 'zipBufferToImportEntries', 'repositoryTransportPlan', 'gitNativeTransportCandidates', 'clearRepositoryTransportHealth', 'workspace-transport-lazy', 'repositoryTransportDeadlineAt', 'repositoryTransportBudgetMs', 'local-file-http-snapshot-unavailable', "phase: 'snapshot-connect'", "phase: 'snapshot-transfer'", "phase: 'snapshot-processing'", 'repository-snapshot.convention-miss', 'repositorySnapshotMetadataTimeoutMs: 5000', 'repositorySnapshotTimeoutMs: 35000']) {
     if (!app.includes(token)) fail(`repository transport runtime contract missing: ${token}`);
   }
   const identityStart = app.indexOf("  function normalizeRepositoryTransportIdentity(value, defaultHost = 'github.com') {");
@@ -2012,13 +2012,20 @@ function validateRepositoryTransportContracts() {
   if (identityStart < 0 || transportParseStart <= identityStart) fail('Could not isolate repository mirror convention helpers.');
   const mirrorContext = { URL, Number, Boolean, encodeURIComponent, stripMarkdownInline: (value) => String(value || '') };
   vm.runInNewContext(`${app.slice(identityStart, transportParseStart)}
-  globalThis.__mirrorConvention = { coHostedRepositorySnapshotTransports };`, mirrorContext, { filename: 'app.js#co-hosted-mirror-convention' });
+  globalThis.__mirrorConvention = { coHostedRepositorySnapshotTransports, githubPagesRepositorySnapshotTransports, githubPagesDefaultBaseUrlForRepository };`, mirrorContext, { filename: 'app.js#co-hosted-mirror-convention' });
   const publicMirrors = mirrorContext.__mirrorConvention.coHostedRepositorySnapshotTransports('Tiinex/docs', {
     baseUrl: 'https://tiinex.github.io/site/',
     includeSourceRoot: false
   });
   if (publicMirrors.length !== 1 || publicMirrors[0]?.metadataUrl !== 'https://tiinex.github.io/site/mirrors/github.com/Tiinex/docs.json' || publicMirrors[0]?.convention !== 'co-hosted-public') {
     fail('Published viewers must derive the co-hosted mirror from the effective application base URL.');
+  }
+  const sourcePagesMirrors = mirrorContext.__mirrorConvention.githubPagesRepositorySnapshotTransports('Tiinex/docs');
+  if (sourcePagesMirrors.length !== 1 || sourcePagesMirrors[0]?.metadataUrl !== 'https://tiinex.github.io/docs/mirrors/github.com/Tiinex/docs.json' || sourcePagesMirrors[0]?.convention !== 'github-pages-source-public') {
+    fail('GitHub-backed sources may probe the source repository default Pages mirror after the viewer-owned mirror candidate.');
+  }
+  if (mirrorContext.__mirrorConvention.githubPagesRepositorySnapshotTransports('https://gitlab.com/example/repo.git').length) {
+    fail('Source-owned GitHub Pages mirror inference must be limited to GitHub-backed repositories.');
   }
   const localMirrors = mirrorContext.__mirrorConvention.coHostedRepositorySnapshotTransports('Tiinex/docs', {
     baseUrl: 'http://localhost:8080/',
@@ -2042,8 +2049,8 @@ function validateRepositoryTransportContracts() {
   if (fileMirrors.length) {
     fail('file:// runtimes must not pretend sibling mirror metadata is fetchable without user-granted folder or zip intake.');
   }
-  if (app.includes('.github.io/${encodeURIComponent') || app.includes("convention: 'github-pages-default'")) {
-    fail('Repository mirror discovery must not infer a repo-owned GitHub Pages site.');
+  if (app.includes("convention: 'github-pages-default'")) {
+    fail('Repository mirror discovery must use the bounded source-pages convention helper, not legacy ad-hoc GitHub Pages defaults.');
   }
 
   if (/repo:\s*['"]Tiinex\/docs['"]/u.test(index) || /corsProxy:\s*['"]https:\/\/cors\.isomorphic-git\.org/u.test(index)) {
@@ -2289,8 +2296,11 @@ function validatePublicBuildContracts() {
   for (const token of ['tiinex.build.json', 'publicBuildIdentity', 'releaseCacheKey']) {
     if (!buildScript.includes(token)) fail(`public build must emit a fetchable publication identity for open-tab cache invalidation: ${token}`);
   }
-  for (const token of ['checkPublicBuildIdentity', 'publicBuildIdentityUrl', 'invalidateRuntimeCachesForExplicitRelease', 'publicContentIdentity', 'autoReloadOnPublicBuildChange']) {
+  for (const token of ['checkPublicBuildIdentity', 'publicBuildIdentityUrl', 'invalidateRuntimeCachesForExplicitRelease', 'publicContentIdentity', 'autoReloadOnPublicBuildChange', 'shouldCheckPublicBuildIdentity', 'publicBuildIdentityCheckMinIntervalMs', 'publicBuildPollingEnabled']) {
     if (!appJs.includes(token)) fail(`runtime must monitor public build identity and invalidate stale source cache without manual F5: ${token}`);
+  }
+  if (appJs.includes('check=${Date.now()}') || appJs.includes("cache: 'no-store'")) {
+    fail('public build identity checks must be event/TTL-gated and cache-friendly; do not poll unique no-store tiinex.build.json URLs.');
   }
 
   const workflow = read('.github/workflows/publish-public.yml');
