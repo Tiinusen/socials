@@ -1268,13 +1268,16 @@ function validateJavascriptSurface() {
   if (sourceLoadStart < 0 || sourceLoadEnd <= sourceLoadStart) fail('Could not isolate GitHub source load transport owner.');
   const sourceLoad = js.slice(sourceLoadStart, sourceLoadEnd);
   for (const token of [
-    'bypassRepositorySnapshot: Boolean(options.bypassRepositorySnapshot)',
-    'liveGitHub: Boolean(options.liveGitHub)',
-    'allowDirectGithubClone: Boolean(options.allowDirectGithubClone)',
-    'forceDirectFallback: Boolean(options.forceDirectFallback)',
-    'bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot)',
-    'allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback)',
-    "transportRefreshTier: options.transportRefreshTier || ''"
+    'const transportPolicy = githubSourceTransportPolicyFromOptions(options)',
+    'sourceLoadHardRefresh',
+    'bypassRepositorySnapshot: Boolean(options.bypassRepositorySnapshot || !transportPolicy.allowMirror)',
+    'liveGitHub: Boolean(options.liveGitHub || transportPolicy.allowProxy)',
+    'allowDirectGithubClone: Boolean(options.allowDirectGithubClone || transportPolicy.allowDirect)',
+    'forceDirectFallback: Boolean(options.forceDirectFallback || transportPolicy.allowDirect)',
+    'bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot || !transportPolicy.allowMirror)',
+    'allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback || transportPolicy.allowDirect)',
+    'transportRefreshTier: transportPolicy.requestedTier',
+    'transportPolicy'
   ]) {
     if (!sourceLoad.includes(token)) fail(`Transport tier options must be forwarded through the single GitHub source loader: ${token}`);
   }
@@ -1282,7 +1285,7 @@ function validateJavascriptSurface() {
   const issueDiscoveryEnd = js.indexOf('    ws.githubIssueDiscoveryRuns =', issueDiscoveryStart);
   if (issueDiscoveryStart < 0 || issueDiscoveryEnd <= issueDiscoveryStart) fail('Could not isolate GitHub issue discovery transport owner.');
   const issueDiscovery = js.slice(issueDiscoveryStart, issueDiscoveryEnd);
-  for (const token of ['liveGitHub: Boolean(options.liveGitHub)', 'bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot)', 'forceDirectFallback: Boolean(options.forceDirectFallback)', "transportRefreshTier: options.transportRefreshTier || ''"]) {
+  for (const token of ['transportPolicy', 'liveGitHub: Boolean(options.liveGitHub || transportPolicy.allowProxy)', 'bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot || !transportPolicy.allowMirror)', 'forceDirectFallback: Boolean(options.forceDirectFallback || transportPolicy.allowDirect)', 'transportRefreshTier: transportPolicy.requestedTier']) {
     if (!issueDiscovery.includes(token)) fail(`Issue imports must receive the caller transport tier rather than resolving their own transport path: ${token}`);
   }
 
@@ -2069,8 +2072,8 @@ function validateRepositoryTransportContracts() {
   if (localPreflightIndex < 0 || snapshotAttemptIndex < 0 || networkGitIndex < 0 || !(localPreflightIndex < snapshotAttemptIndex && snapshotAttemptIndex < networkGitIndex)) {
     fail('Repository discovery order must be warm local Git, then snapshot mirrors, then network Git.');
   }
-  if (!discoveryCoordinatorSource.includes('if (!options.hardRefresh)')) {
-    fail('Explicit hard refresh must bypass the warm local Git preflight.');
+  if (!discoveryCoordinatorSource.includes('if (!options.hardRefresh && transportPolicy.allowCache)')) {
+    fail('Explicit hard refresh and non-cache transport tiers must bypass the warm local Git preflight.');
   }
   const sourceStripStart = app.indexOf('  function renderWorkspaceSourceStrip(ws) {');
   const sourceStripEnd = app.indexOf('  function localDeletionComparableValues(', sourceStripStart);
