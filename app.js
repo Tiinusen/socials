@@ -10701,6 +10701,12 @@
     return new URL(path, baseUrl).toString();
   }
 
+  function githubHostedIssueSnapshotResolveDirectory(baseUrl = '', rel = '') {
+    const path = String(rel || '').trim().replace(/^\/+|\/+$/gu, '');
+    if (!path || path.split('/').includes('..') || path.includes('\\')) throw new Error(`Unsafe hosted issue snapshot directory: ${rel}`);
+    return new URL(`${path}/`, baseUrl).toString();
+  }
+
   function githubHostedIssueSnapshotRepoMatches(meta = {}, spec = {}) {
     const repo = String(spec?.repo || '').trim().toLowerCase();
     const metaRepo = String(meta?.repo || '').trim().toLowerCase();
@@ -10733,7 +10739,7 @@
     }
     const directory = String(meta.directory || '').trim();
     if (!directory) throw new Error(`Hosted issue snapshot metadata for ${spec.repo} is missing directory.`);
-    const baseUrl = githubHostedIssueSnapshotResolve(metadataUrl, directory);
+    const baseUrl = githubHostedIssueSnapshotResolveDirectory(metadataUrl, directory);
     let manifest = null;
     try {
       const manifestUrl = githubHostedIssueSnapshotResolve(metadataUrl, meta.manifest || `${directory}manifest.json`);
@@ -13289,6 +13295,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       const configured = configuredGitHubIssueUrls(source, spec.repo);
       if (!configured.includes(spec.issueUrl)) setConfiguredGitHubIssueUrls(source, [...configured, spec.issueUrl]);
     }
+    ws.githubIssueTransport = workspaceIssueTransportFromThread(spec, thread);
     noteDiscoveredGitHubIssueUrl(source, spec.issueUrl);
     // A successful issue/thread import supersedes any previous target-only or
     // unavailable placeholder for the same issue. Keep the real issue/comment
@@ -15878,33 +15885,38 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const commit = String(transport.commit || '').trim();
     const reason = String(transport.reason || '').trim();
     const detail = [];
-    let label = 'repository transport';
+    let label = 'transport';
     let description = 'Repository material transport';
     let icon = 'fa-solid fa-route';
     let className = 'transport-generic';
+    let tier = 'source';
 
     if (kind === 'local-git') {
-      label = 'local Git';
+      label = 'cache';
       description = 'Persistent browser-local Git object store';
       icon = 'fa-solid fa-hard-drive';
-      className = 'transport-local-git';
+      className = 'transport-cache';
+      tier = 'cache';
     } else if (kind === 'snapshot') {
       const localMirror = transport.convention === 'co-hosted-source' || transport.localSource === true;
       const siteMirror = transport.convention === 'co-hosted-public' || transport.coHosted === true;
-      label = localMirror ? 'local mirror' : siteMirror ? 'site mirror' : 'snapshot';
+      label = 'mirror';
       description = localMirror ? 'Local co-hosted repository snapshot' : siteMirror ? 'Repository snapshot hosted beside the viewer' : 'Published repository snapshot';
       icon = 'fa-solid fa-box-archive';
-      className = localMirror ? 'transport-local-mirror' : siteMirror ? 'transport-site-mirror' : 'transport-snapshot';
+      className = localMirror ? 'transport-local-mirror transport-mirror' : siteMirror ? 'transport-site-mirror transport-mirror' : 'transport-snapshot transport-mirror';
+      tier = 'mirror';
     } else if (kind === 'git-proxy') {
-      label = 'Git proxy';
+      label = 'proxy';
       description = String(transport.label || '').trim() || 'Browser Git proxy';
       icon = 'fa-solid fa-code-branch';
-      className = 'transport-git-proxy';
+      className = 'transport-git-proxy transport-proxy';
+      tier = 'proxy';
     } else if (kind === 'github-raw') {
-      label = 'GitHub raw';
+      label = 'proxy';
       description = 'Bounded GitHub raw-file fallback';
       icon = 'fa-solid fa-file-arrow-down';
-      className = 'transport-github-raw';
+      className = 'transport-github-raw transport-proxy';
+      tier = 'proxy';
     }
 
     detail.push(`Material: ${description}`);
@@ -15913,7 +15925,53 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (transport.metadataUrl) detail.push(`Metadata: ${transport.metadataUrl}`);
     if (transport.proxyUrl && kind === 'git-proxy') detail.push(`Proxy: ${transport.proxyUrl}`);
     detail.push('Canonical source remains unchanged');
-    return { kind, label, description, icon, className, title: detail.join(' · '), commit };
+    return { kind, tier, label, description, icon, className, title: detail.join(' · '), commit };
+  }
+
+  function githubIssueTransportPresentation(transport = {}) {
+    const mode = String(transport?.adapterMode || transport?.kind || '').trim().toLowerCase();
+    if (!mode) return null;
+    const detail = [];
+    let label = 'proxy';
+    let description = 'Live GitHub issue transport';
+    let icon = 'fa-solid fa-code-branch';
+    let className = 'transport-proxy transport-issue-proxy';
+    let tier = 'proxy';
+    if (mode === 'site-issue-snapshot') {
+      label = 'mirror';
+      description = 'Hosted issue snapshot beside the viewer';
+      icon = 'fa-solid fa-box-archive';
+      className = 'transport-site-mirror transport-mirror transport-issue-mirror';
+      tier = 'mirror';
+    } else if (/^github-cache/u.test(mode)) {
+      label = 'cache';
+      description = transport.freshness || 'Browser GitHub issue thread cache';
+      icon = 'fa-solid fa-clock-rotate-left';
+      className = 'transport-cache transport-issue-cache';
+      tier = 'cache';
+    }
+    detail.push(`Issues: ${description}`);
+    if (transport.repo) detail.push(`Repository: ${transport.repo}`);
+    if (transport.issueNumber) detail.push(`Issue: #${transport.issueNumber}`);
+    if (transport.snapshotMetadataUrl) detail.push(`Snapshot: ${transport.snapshotMetadataUrl}`);
+    if (transport.cachedAt) detail.push(`Cached: ${transport.cachedAt}`);
+    detail.push('Click to try the next live transport level for files and issues');
+    return { kind: mode, tier, label, description, icon, className, title: detail.join(' · ') };
+  }
+
+  function workspaceIssueTransportFromThread(spec = {}, thread = {}) {
+    if (!thread?.adapterMode) return null;
+    return {
+      kind: 'github-issue',
+      adapterMode: thread.adapterMode || '',
+      repo: spec.repo || '',
+      issueNumber: spec.issueNumber || '',
+      snapshotMetadataUrl: thread.snapshotMetadataUrl || '',
+      snapshotGeneratedAt: thread.snapshotGeneratedAt || '',
+      snapshotSourceUpdatedAt: thread.snapshotSourceUpdatedAt || '',
+      cachedAt: thread.cachedAt || '',
+      freshness: thread.freshness || thread.cacheSource || ''
+    };
   }
 
   function repositoryTransportDecisionReport(workspaceId = '') {
@@ -26601,18 +26659,35 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
 
 
 
-  function renderRepositoryTransportPill(ws) {
-    const transport = ws?.repositoryTransport || {};
-    const presentation = repositoryTransportPresentation(transport);
+  function renderTransportPresentationPill(ws, presentation, options = {}) {
     if (!presentation) return '';
-    const refreshable = transport.convention === 'co-hosted-public' || presentation.className === 'transport-site-mirror';
+    const refreshable = options.refreshable !== false && ['mirror', 'cache'].includes(String(presentation.tier || presentation.label || '').toLowerCase());
     const attrs = refreshable
       ? ` data-action="refresh-source-via-live-transport" data-ws="${escapeAttr(ws?.id || '')}" role="button" tabindex="0"`
       : '';
     const title = refreshable
-      ? `${presentation.title} · Click to bypass the hosted site mirror once and refresh from the live source transport for files and issue snapshots.`
+      ? `${presentation.title} · Click to bypass ${presentation.label} once and refresh from the next live source transport level.`
       : presentation.title;
     return `<span class="workspace-transport-pill ${escapeAttr(presentation.className)}${refreshable ? ' transport-refreshable' : ''}"${attrs} title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}"><i class="${escapeAttr(presentation.icon)}"></i><span>${escapeHtml(presentation.label)}</span></span>`;
+  }
+
+  function renderWorkspaceTransportPills(ws) {
+    const presentations = [];
+    const repositoryPresentation = repositoryTransportPresentation(ws?.repositoryTransport || {});
+    if (repositoryPresentation) presentations.push(repositoryPresentation);
+    const issuePresentation = githubIssueTransportPresentation(ws?.githubIssueTransport || {});
+    if (issuePresentation) presentations.push(issuePresentation);
+    const seen = new Set();
+    return presentations.filter((presentation) => {
+      const key = String(presentation.tier || presentation.label || presentation.kind || '').toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).map((presentation) => renderTransportPresentationPill(ws, presentation)).join('');
+  }
+
+  function renderRepositoryTransportPill(ws) {
+    return renderWorkspaceTransportPills(ws);
   }
 
   function renderWorkspaceSourceStrip(ws) {

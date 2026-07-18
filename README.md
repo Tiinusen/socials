@@ -134,7 +134,7 @@ Use repository variables for public instance config. Use secrets only when value
 - `TIINEX_ISSUE_SNAPSHOT_REPOSITORIES`: optional newline/comma-separated `owner/repo` list for additional public issue snapshots. Omitted means the publishing repository only.
 - `TIINEX_ISSUE_PUBLISH_GRACE_SECONDS`: issue/comment event debounce, capped at 120 seconds. After the wait, the workflow reconciles all configured issue snapshots, so burst events do not lose intermediate changes.
 
-Snapshot reads are same-origin and revalidated on load. The viewer tries both root-hosted and repository-prefixed Pages layouts before considering live GitHub, so issue snapshots can be deployed beside custom-domain and project-page viewers without turning visitors into GitHub crawlers.
+Snapshot reads are same-origin and revalidated on load. The viewer follows the mirror convention and resolves hosted issues from the publication root first, for example `/issues/github.com/<owner>/<repo>.json`; it preserves the repository directory for per-issue files before considering live GitHub, so visitors do not become GitHub crawlers.
 - `TIINEX_ISSUE_SNAPSHOT_MAX_ISSUES`, `TIINEX_ISSUE_SNAPSHOT_MAX_COMMENTS_PER_ISSUE`: optional safety bounds for unusually large repositories.
 
 ### Tiinex/site Suggested Variables

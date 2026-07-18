@@ -1244,14 +1244,14 @@ function validateJavascriptSurface() {
   if (!js.includes('githubHostedIssueSnapshotMetadataUrlCandidates') || !js.includes('disableRuntimeCache: true') || !js.includes("cacheMode: 'no-cache'")) {
     fail('Hosted issue snapshots must use same-origin candidate paths with browser/runtime cache revalidation instead of stale runtime cache.');
   }
-  if (!js.includes('hostedIssueSnapshotBaseUrlCandidates') || js.includes('${repoName}/${relative}')) {
-    fail('Hosted issue snapshot paths must follow mirror convention roots such as /issues/github.com/owner/repo.json, not repo-prefixed /repo/issues paths.');
+  if (!js.includes('hostedIssueSnapshotBaseUrlCandidates') || !js.includes('githubHostedIssueSnapshotResolveDirectory') || js.includes('${repoName}/${relative}')) {
+    fail('Hosted issue snapshot paths must follow mirror convention roots such as /issues/github.com/owner/repo.json and preserve the repository directory for issue item paths.');
   }
   if (!js.includes('site-issue-snapshot.metadata-candidate') || !js.includes('site-issue-snapshot.list-candidate')) {
     fail('Hosted issue snapshot adapter must trace candidate path selection for issue threads and discovery lists.');
   }
-  if (!js.includes('refresh-source-via-live-transport') || !js.includes('bypassRepositorySnapshot: true') || !js.includes('bypassHostedIssueSnapshot: true')) {
-    fail('Site mirror transport badge must provide an explicit live-source refresh path for repository files and issue snapshots.');
+  if (!js.includes('refresh-source-via-live-transport') || !js.includes('bypassRepositorySnapshot: true') || !js.includes('bypassHostedIssueSnapshot: true') || !js.includes('githubIssueTransportPresentation') || !js.includes('renderWorkspaceTransportPills')) {
+    fail('Mirror/cache transport badges must provide an explicit next-level live-source refresh path for repository files and issue snapshots.');
   }
 
   if (js.includes('data-mode="issue"') || js.includes('Add issue thread')) {
@@ -2055,11 +2055,11 @@ function validateRepositoryTransportContracts() {
   vm.runInNewContext(`${app.slice(presentationStart, presentationEnd)}
   globalThis.__transportPresentation = { repositoryTransportPresentation };`, presentationContext, { filename: 'app.js#repository-transport-presentation' });
   const presentation = presentationContext.__transportPresentation.repositoryTransportPresentation;
-  if (presentation({ kind: 'local-git' })?.label !== 'local Git') fail('Warm object-store material must present as local Git.');
-  if (presentation({ kind: 'snapshot', inferred: true, convention: 'co-hosted-source' })?.label !== 'local mirror') fail('Local co-hosted snapshots must present as local mirror.');
-  if (presentation({ kind: 'snapshot', inferred: true, convention: 'co-hosted-public' })?.label !== 'site mirror') fail('Published co-hosted snapshots must present as site mirror.');
-  if (presentation({ kind: 'git-proxy' })?.label !== 'Git proxy') fail('Network Git material must present as Git proxy.');
-  if (presentation({ kind: 'github-raw' })?.label !== 'GitHub raw') fail('Raw fallback material must present as GitHub raw.');
+  if (presentation({ kind: 'local-git' })?.label !== 'cache') fail('Warm object-store material must present as cache.');
+  if (presentation({ kind: 'snapshot', inferred: true, convention: 'co-hosted-source' })?.label !== 'mirror') fail('Local co-hosted snapshots must present as mirror.');
+  if (presentation({ kind: 'snapshot', inferred: true, convention: 'co-hosted-public' })?.label !== 'mirror') fail('Published co-hosted snapshots must present as mirror.');
+  if (presentation({ kind: 'git-proxy' })?.label !== 'proxy') fail('Network Git material must present as proxy.');
+  if (presentation({ kind: 'github-raw' })?.label !== 'proxy') fail('Raw fallback material must present as proxy.');
   const failureKindStart = app.indexOf('  function repositoryTransportFailureKind(error) {');
   const failureKindEnd = app.indexOf('  function rememberRepositoryTransportFailure(', failureKindStart);
   if (failureKindStart < 0 || failureKindEnd <= failureKindStart) fail('Could not isolate repository transport failure classification.');
