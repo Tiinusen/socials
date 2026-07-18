@@ -7,7 +7,7 @@ Run the checks relevant to the changed surface. `npm test` is not the sole pass 
 
 ## v44 Hosted issue snapshot freshness and path resolution
 
-Hosted issue snapshots are now resolved through candidate same-origin locations, matching both root-hosted and repository-prefixed Pages layouts. Snapshot metadata, manifests, issue bodies, and comments use `cache: no-cache` and bypass Tiinex runtime memory caching so a new public-branch issue snapshot can be observed on a normal reload without requiring users to press Reset cache. This keeps public viewers snapshot-first while avoiding stale local transport state and avoiding automatic live GitHub fallback during startup.
+Hosted issue snapshots are now resolved through mirror-convention same-origin locations rooted at `/issues/github.com/<owner>/<repo>.json`, with a slash-preserving repository directory for `issues/<number>/...` files. Snapshot metadata, manifests, issue bodies, and comments use `cache: no-cache` and bypass Tiinex runtime memory caching so a new public-branch issue snapshot can be observed on a normal reload without requiring users to press Reset cache. This keeps public viewers snapshot-first while avoiding stale local transport state and avoiding automatic live GitHub fallback during startup.
 
 ## v42 Hosted issue snapshots and abuse-safe issue transport
 
@@ -80,7 +80,7 @@ Useful browser diagnostics:
 
 ## Repository transport decision visibility
 
-The selected repository material path remains visible after discovery in the existing source strip. The compact indicator distinguishes `local Git`, `local mirror`, `site mirror`, `Git proxy`, and `GitHub raw` without adding a new desktop or mobile panel.
+The selected material path remains visible after discovery in the existing source strip. The compact indicator now uses transport tiers: `mirror` for co-hosted snapshots, `proxy` for live source transport, and `cache` for browser-local cached material. Clicking `mirror` or `cache` asks for the next live source level instead of silently staying stale.
 
 Warm persistent Git reuse is recorded as `local-git`; it does not report a fresh proxy success when no repository network operation occurred. `TiinexDiagnostics.repositoryTransportDecisionReport()` exposes the selected material path, resolved commit, canonical origin, candidate plan, and source boundary for regression review.
 
