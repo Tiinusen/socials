@@ -2281,6 +2281,22 @@ function validateRootPackageShape() {
   }
 }
 
+function validateWorkspaceShareAndIssueOpenContracts(source) {
+  if (!source.includes('function shareWorkspaceEntrypointTarget')) fail('workspace share should have explicit entrypoint target helper');
+  if (!source.includes("workspace-entrypoint-artifact-source")) fail('workspace share should prefer workspace artifact entrypoint before selected normal artifact');
+  const shareStart = source.indexOf('function shareWorkspacePublicTarget');
+  const shareEnd = source.indexOf('function shareWorkspaceLocalOnlyCounts');
+  const shareBlock = source.slice(shareStart, shareEnd);
+  const entrypointIndex = shareBlock.indexOf('const entrypointTarget = shareWorkspaceEntrypointTarget(ws)');
+  const selectedIndex = shareBlock.indexOf('const selected = selectedNode(ws)');
+  if (entrypointIndex === -1 || selectedIndex === -1 || entrypointIndex > selectedIndex) {
+    fail('workspace share target must prefer workspace entrypoint before selected artifact fallback');
+  }
+  if (!source.includes('const workspaceTargetNode = selected && isWorkspaceNode(selected)')) fail('workspace hash issue open should fall back to recovered workspace node when the issue shell was selected');
+  if (!source.includes('userInitiated: Boolean(options.userInitiated)')) fail('configured GitHub issue workspace open must propagate userInitiated from discovery/source refresh');
+  if (!source.includes('openWorkspaceIssueTarget: options.openWorkspaceIssueTarget !== false')) fail('configured GitHub issue workspace open must propagate openWorkspaceIssueTarget');
+  if (!source.includes('file?.text || file?.rawMarkdown || file?.markdown || file?.body || file?.content')) fail('GitHub publish/local draft binding should hash current local text before stale file.content');
+}
 
 async function main() {
   validateRequiredFiles();
@@ -2300,7 +2316,9 @@ async function main() {
   await validateGitSourceAdapterResearchContract();
   validateRepositoryTransportContracts();
   validatePublicBuildContracts();
-  checkRuntimeIssueMarkdownFenceContracts(read('app.js'));
+  const appSource = read('app.js');
+  checkRuntimeIssueMarkdownFenceContracts(appSource);
+  validateWorkspaceShareAndIssueOpenContracts(appSource);
   validateJavascriptSyntax();
   validateJavascriptSurface();
   validateMobileActionOwnership();
