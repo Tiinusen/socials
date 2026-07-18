@@ -2391,7 +2391,10 @@
               persistConfiguredTarget: true,
               hardRefresh: true,
               refreshExisting: true,
-              toast: false
+              toast: false,
+              configuredTarget: options.configuredTarget !== false,
+              userInitiated: Boolean(options.userInitiated),
+              openWorkspaceIssueTarget: options.openWorkspaceIssueTarget !== false
             });
             count += 1;
             loaded += 1;
@@ -4321,10 +4324,13 @@
       const ws = createWorkspace(label, `Loaded workspace entrypoint from public hash target: ${target.url}`);
       ws.publicShareTarget = { adapter, url: target.url };
       app.activeWorkspaceId = ws.id;
-      await loadUrlsIntoWorkspace(ws, [target.url]);
+      await loadUrlsIntoWorkspace(ws, [target.url], { userInitiated: true, configuredTarget: true, openWorkspaceIssueTarget: false });
       computeWorkspaceIndex(ws);
       const selected = selectPublicHashTargetNode(ws, target, spec, options.reason || 'workspace-hash-issue-target') || selectedNode(ws);
-      const markdown = selected && isWorkspaceNode(selected) ? workspaceNodeMarkdown(ws, selected) : '';
+      const workspaceTargetNode = selected && isWorkspaceNode(selected)
+        ? selected
+        : Array.from(ws.nodeById?.values?.() || ws.nodes || []).find((node) => isWorkspaceNode(node));
+      const markdown = workspaceTargetNode ? workspaceNodeMarkdown(ws, workspaceTargetNode) : '';
       if (markdown && looksLikeWorkspaceMarkdown(markdown)) {
         await openViewerConfigMarkdown(markdown, target.url, {
           applyWorkspaceState: true,
@@ -8935,12 +8941,20 @@
     for (const source of sources) {
       if (!source || ((source.kind !== 'github-tree' && source.kind !== 'github') && !(source.urls || []).length)) continue;
 
-      let ws = importMode === 'duplicate' ? null : findWorkspaceForConfigSource(source);
+      let ws = null;
       let matchedByLabel = false;
-      if (!ws && importMode === 'merge') {
+      if (importMode === 'merge') {
         ws = findWorkspaceForIncomingMergeSource(source);
         matchedByLabel = Boolean(ws);
         if (ws && !workspaceHasUnpublishedDrafts(ws)) resetNonDraftWorkspaceForIncomingConfig(ws, 'workspace merge by label');
+        // In merge mode, an explicit workspace label is user intent. Repositories
+        // often share the same repo/ref/root configuration across multiple
+        // workspace views; matching by source signature first can rename or
+        // refresh the wrong column. Only fall back to source-signature matching
+        // when the incoming workspace has no label to match.
+        if (!ws && !String(source.label || '').trim()) ws = findWorkspaceForConfigSource(source);
+      } else if (importMode !== 'duplicate') {
+        ws = findWorkspaceForConfigSource(source);
       }
       if (!ws) {
         ws = createWorkspace(source.label || 'Config workspace', importMode === 'duplicate' ? 'Duplicated from .workspace.md workspace state.' : 'Loaded from .workspace.md workspace state.');
@@ -13076,7 +13090,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
             preferCache: options.preferCache !== false,
             cacheMaxAgeMs: options.cacheMaxAgeMs || 5 * 60 * 1000,
             includeBody: true,
-            configuredTarget: Boolean(issueUrls && issueUrls.length)
+            configuredTarget: Boolean(issueUrls && issueUrls.length),
+            userInitiated: Boolean(options.userInitiated),
+            openWorkspaceIssueTarget: options.openWorkspaceIssueTarget !== false
           });
           importedIssues += 1;
           loaded += 1;
@@ -16633,16 +16649,39 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const state = viewerStateForExport();
     const baseDisplayName = cfg.displayName || cfg.heading || 'Current Tiinex View';
     const displayName = duplicateWorkspace ? workspaceDuplicateLabel(baseDisplayName) : baseDisplayName;
+    const requestedExcludeWorkspaceId = String(options.excludeWorkspaceId || '').trim();
+    const canExcludeContainingWorkspace = requestedExcludeWorkspaceId && app.workspaces.length > 1;
+    const exportWorkspaces = canExcludeContainingWorkspace
+      ? app.workspaces.filter((ws) => ws.id !== requestedExcludeWorkspaceId)
+      : app.workspaces.slice();
+    if (!exportWorkspaces.length) throw new Error('Update with current would create an empty workspace file. Keep at least one workspace in scope.');
+    if (canExcludeContainingWorkspace) {
+      const allowedIds = new Set(exportWorkspaces.map((ws) => ws.id));
+      const keptSources = [];
+      for (let index = 0; index < app.workspaces.length; index += 1) {
+        const ws = app.workspaces[index];
+        if (!allowedIds.has(ws.id)) continue;
+        const source = Array.isArray(state.sources) ? state.sources[index] : null;
+        if (source) keptSources.push(source);
+      }
+      state.sources = keptSources;
+      const activeStillPresent = exportWorkspaces.some((ws) => ws.label === state.activeWorkspaceLabel);
+      if (!activeStillPresent) state.activeWorkspaceLabel = exportWorkspaces[0]?.label || '';
+      state.activeIndex = Math.max(0, exportWorkspaces.findIndex((ws) => ws.label === state.activeWorkspaceLabel));
+      state.workspaceOffset = Math.min(Number(state.workspaceOffset || 0) || 0, Math.max(0, exportWorkspaces.length - 1));
+      state.excludedWorkspaceLabel = app.workspaces.find((ws) => ws.id === requestedExcludeWorkspaceId)?.label || '';
+      state.excludedWorkspaceReason = 'containing workspace excluded by user during Update with current';
+    }
     if (duplicateWorkspace) {
       state.workspaceImportMode = 'duplicate';
       state.duplicateOf = baseDisplayName;
       state.activeWorkspaceLabel = workspaceDuplicateLabel(state.activeWorkspaceLabel || baseDisplayName);
       state.sources = (state.sources || []).map((source, index) => Object.assign({}, source, {
-        label: workspaceDuplicateLabel(source.label || app.workspaces[index]?.label || `Workspace ${index + 1}`),
-        duplicateOfLabel: source.label || app.workspaces[index]?.label || ''
+        label: workspaceDuplicateLabel(source.label || exportWorkspaces[index]?.label || `Workspace ${index + 1}`),
+        duplicateOfLabel: source.label || exportWorkspaces[index]?.label || ''
       }));
     }
-    const baseDescriptors = app.workspaces.map((ws, index) => workspaceExportDescriptor(ws, index, state.sources));
+    const baseDescriptors = exportWorkspaces.map((ws, index) => workspaceExportDescriptor(ws, index, state.sources));
     const descriptors = duplicateWorkspace ? baseDescriptors.map((item, index) => Object.assign({}, item, {
       label: workspaceDuplicateLabel(item.label),
       source: item.source ? Object.assign({}, item.source, { label: workspaceDuplicateLabel(item.source.label || item.label) }) : item.source
@@ -16923,7 +16962,8 @@ ${bodySections}
       parentPath: editNode.parentResolvedPath || editNode.parentHref || '',
       parentTitle: parentNode?.title || parentNode?.path || '',
       parentEdited: false,
-      draft: workspaceConfigDraftFromMarkdown(markdown, configUrl)
+      draft: workspaceConfigDraftFromMarkdown(markdown, configUrl),
+      excludeContainingWorkspaceFromCurrent: false
     };
     updateUrlState({ replace: true });
     render();
@@ -16937,6 +16977,9 @@ ${bodySections}
     const workspaceArtifactCount = workspaces.reduce((total, ws) => total + Array.from(ws?.nodeById?.values?.() || []).filter((node) => isWorkspaceNode(node)).length, 0);
     const fileState = modal?.sourceBacked ? (modal?.existingDraft ? 'source + local draft' : 'source-backed') : 'local draft';
     const updated = modal?.updatedFromCurrent ? '<span class="summary-chip ok"><i class="fa-solid fa-circle-check"></i>current view staged</span>' : '<span class="summary-chip"><i class="fa-solid fa-layer-group"></i>file content unchanged</span>';
+    const canExcludeContaining = workspaces.length > 1 && Boolean(modal?.wsId && getWorkspace(modal.wsId));
+    const excludeContaining = canExcludeContaining && Boolean(modal?.excludeContainingWorkspaceFromCurrent);
+    const excludeControl = canExcludeContaining ? `<label class="workspace-config-checkbox option-toggle"><input type="checkbox" data-field="workspaceConfig.excludeContainingWorkspaceFromCurrent" ${excludeContaining ? 'checked' : ''}><span>Exclude the workspace that stores this .workspace.md from Update with current</span></label><p class="form-text">Use this when the workspace artifact should live in one workspace but describe another workspace set. Hidden when only one workspace is open so Update with current cannot create an empty .workspace.md.</p>` : '';
     return `<section class="export-section workspace-config-summary-section">
       <h3>Workspace material</h3>
       <div class="export-summary compact-export-summary workspace-config-summary">
@@ -16946,6 +16989,7 @@ ${bodySections}
         <div><strong>${workspaceArtifactCount}</strong><span>workspace artifacts</span></div>
       </div>
       <p class="form-text">This artifact is ${escapeHtml(fileState)}. <strong>Update with current</strong> stages the current workspace set into this .workspace.md; <strong>Save local draft</strong> persists it through the normal local artifact path.</p>
+      ${excludeControl}
       <div class="workspace-config-stage-status">${updated}</div>
     </section>`;
   }
@@ -17014,7 +17058,8 @@ Answer the reader should see in workspace help or GitHub presentation.">${escape
       event.preventDefault(); event.stopPropagation();
       if (!app.modal || app.modal.type !== 'workspace-config-editor') return;
       try {
-        const current = await buildCurrentLensConfigMarkdown();
+        const excludeContainingWorkspace = Boolean(app.modal.excludeContainingWorkspaceFromCurrent) && (app.workspaces || []).length > 1;
+        const current = await buildCurrentLensConfigMarkdown({ excludeWorkspaceId: excludeContainingWorkspace ? app.modal.wsId : '' });
         const staged = updateWorkspaceConfigMarkdown(current, app.modal.draft || {});
         app.modal.originalMarkdown = staged;
         app.modal.draft = workspaceConfigDraftFromMarkdown(staged, app.modal.configUrl || location.href);
@@ -26549,6 +26594,11 @@ ${integrityFooter()}`;
     }
     if (app.modal.type === 'workspace-config-editor' && String(field || '').startsWith('workspaceConfig.')) {
       const key = String(field).slice('workspaceConfig.'.length);
+      if (key === 'excludeContainingWorkspaceFromCurrent') {
+        app.modal.excludeContainingWorkspaceFromCurrent = Boolean(value) && (app.workspaces || []).length > 1;
+        render();
+        return true;
+      }
       app.modal.draft = app.modal.draft || {};
       app.modal.draft[key] = value || '';
       return true;
@@ -33776,7 +33826,7 @@ ${integrityFooterForPath(parent, path)}`,
   }
 
   function githubExportFileContentSignature(file) {
-    const content = githubExportNormalizeMarkdownForComparison(file?.content || file?.rawMarkdown || file?.body || '');
+    const content = githubExportNormalizeMarkdownForComparison(file?.text || file?.rawMarkdown || file?.markdown || file?.body || file?.content || '');
     return content ? hashFast(content) : '';
   }
 
@@ -42860,12 +42910,36 @@ window.addEventListener('popstate', (event) => {
     ]);
   }
 
+  function shareWorkspaceEntrypointTarget(ws = null) {
+    if (!ws || typeof isWorkspaceNode !== 'function') return null;
+    const selected = selectedNode(ws);
+    const candidates = [];
+    if (selected && isWorkspaceNode(selected)) candidates.push(selected);
+    for (const node of ws.nodes || []) {
+      if (node && node !== selected && isWorkspaceNode(node)) candidates.push(node);
+    }
+    for (const node of candidates) {
+      const url = shareNodeSourceUrl(node);
+      if (!url || shareUrlIsLocalOrVolatile(url)) continue;
+      return {
+        adapter: 'workspace',
+        url,
+        source: node === selected ? 'selected-workspace-artifact-source' : 'workspace-entrypoint-artifact-source',
+        path: node.path || node.file?.path || '',
+        title: artifactDisplayTitle(node) || node.title || ''
+      };
+    }
+    return null;
+  }
+
   function shareWorkspacePublicTarget(ws = null) {
     if (!ws) return null;
     const publicTarget = ws.publicShareTarget || ws.shareTarget || null;
     if (publicTarget?.url && !shareUrlIsLocalOrVolatile(publicTarget.url)) {
       return { adapter: normalizeShareAdapter(publicTarget.adapter || '') || defaultAdapterForShareTarget(publicTarget.url), url: publicTarget.url, source: 'workspace-public-share-target' };
     }
+    const entrypointTarget = shareWorkspaceEntrypointTarget(ws);
+    if (entrypointTarget?.url) return entrypointTarget;
     const identityTarget = app.viewerIdentity?.publicShareTarget || app.activePublicShareTarget || null;
     if (identityTarget?.url && !shareUrlIsLocalOrVolatile(identityTarget.url)) {
       return { adapter: normalizeShareAdapter(identityTarget.adapter || '') || defaultAdapterForShareTarget(identityTarget.url), url: identityTarget.url, source: 'active-public-share-target' };
