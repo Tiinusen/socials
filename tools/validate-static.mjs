@@ -1251,6 +1251,9 @@ function validateJavascriptSurface() {
   if (!js.includes('githubHostedIssueSnapshotMetadataUrlCandidates') || !js.includes('disableRuntimeCache: true') || !js.includes("cacheMode: 'no-cache'")) {
     fail('Hosted issue snapshots must use same-origin candidate paths with browser/runtime cache revalidation instead of stale runtime cache.');
   }
+  if (!js.includes('githubSourceMaterialCacheWrite') || !js.includes('restoreGitHubSourceMaterialCacheIntoWorkspace') || !js.includes('githubSourceMaterialCachePrefix')) {
+    fail('Cache tier must restore/write a complete source-material cache, not only route state, issue-thread cache, or local Git preflight.');
+  }
   if (!js.includes('hostedIssueSnapshotBaseUrlCandidates') || !js.includes('githubHostedIssueSnapshotResolveDirectory') || js.includes('${repoName}/${relative}')) {
     fail('Hosted issue snapshot paths must follow mirror convention roots such as /issues/github.com/owner/repo.json and preserve the repository directory for issue item paths.');
   }
@@ -1272,7 +1275,9 @@ function validateJavascriptSurface() {
   if (sourceLoadStart < 0 || sourceLoadEnd <= sourceLoadStart) fail('Could not isolate GitHub source load transport owner.');
   const sourceLoad = js.slice(sourceLoadStart, sourceLoadEnd);
   for (const token of [
-    'const transportPolicy = githubSourceTransportPolicyFromOptions(options)',
+    'const requestedTransportPolicy = githubSourceTransportPolicyFromOptions(options)',
+    'restoreGitHubSourceMaterialCacheIntoWorkspace',
+    'source-material-cache.miss-fallback-to-mirror',
     'sourceLoadHardRefresh',
     'bypassRepositorySnapshot: Boolean(options.bypassRepositorySnapshot || !transportPolicy.allowMirror)',
     'liveGitHub: Boolean(options.liveGitHub || transportPolicy.allowProxy)',
@@ -2076,8 +2081,8 @@ function validateRepositoryTransportContracts() {
   if (localPreflightIndex < 0 || snapshotAttemptIndex < 0 || networkGitIndex < 0 || !(localPreflightIndex < snapshotAttemptIndex && snapshotAttemptIndex < networkGitIndex)) {
     fail('Repository discovery order must be warm local Git, then snapshot mirrors, then network Git.');
   }
-  if (!discoveryCoordinatorSource.includes('if (!options.hardRefresh && transportPolicy.allowCache)')) {
-    fail('Explicit hard refresh and non-cache transport tiers must bypass the warm local Git preflight.');
+  if (!discoveryCoordinatorSource.includes('if (!options.hardRefresh && transportPolicy.allowCache && options.allowGitNativeLocalCache === true)')) {
+    fail('Warm local Git preflight must be opt-in; cache tier is owned by the source material cache so it cannot return a partial repo-only artifact set.');
   }
   const sourceStripStart = app.indexOf('  function renderWorkspaceSourceStrip(ws) {');
   const sourceStripEnd = app.indexOf('  function localDeletionComparableValues(', sourceStripStart);

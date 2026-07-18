@@ -189,3 +189,10 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - `proxy` bypasses hosted mirrors and may use the configured live/proxy source transport. It does not silently invoke the direct/raw fallback.
 - `direct` is the explicit last-resort raw/reader fallback. It is user-initiated only.
 - Source/discovery configuration remains user-owned during all transport refreshes. The loader snapshots and restores repo/ref/root paths, enabled surfaces, and configured Issue/Discussion URLs.
+
+## v52 cache-source-material correction
+
+- Cache tier now restores a complete GitHub source-material snapshot keyed by the source config signature, not just route/share state, issue-thread cache, or warm local Git preflight.
+- Successful mirror/proxy/direct loads write the same text artifact set back to durable browser cache so a following reload can render the same bounded cards before network refresh.
+- Warm local Git preflight is opt-in only; it must not satisfy the user-facing cache tier because it can be repo-file-only and miss configured issue material.
+- Cache miss falls forward to mirror under the same source config and without broad discovery when the Issue Discovery surface is disabled.

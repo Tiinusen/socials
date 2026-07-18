@@ -233,3 +233,7 @@ cache -> mirror -> proxy -> direct
 ```
 
 Startup/public route reconciliation is cache-first: warm durable source cache may render immediately, and the same transport policy falls through to the co-hosted mirror when source cache is absent. Live GitHub/proxy and direct/raw fallbacks are only used after an explicit user action, and changing transport level must not rewrite source settings or enable broad issue discovery.
+
+### Source material cache
+
+The public viewer's transport chain is `cache → mirror → proxy → direct`. The `cache` tier is a durable source-material cache keyed by the GitHub source configuration. It stores the bounded text artifact set produced by a successful mirror/proxy/direct load, then restores that same artifact shape on reload. Route/share state is not treated as source cache, and warm local Git preflight is not allowed to satisfy cache by default because it can omit issue-snapshot material.
