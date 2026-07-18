@@ -1225,6 +1225,12 @@ function validateJavascriptSurface() {
   if (!js.includes('Dot-prefixed packaged workspace paths are not reliable on hosted Pages')) {
     fail('workspace bootstrap must document why embedded default owns hosted fallback when .topics paths are unavailable.');
   }
+  if (!js.includes('fetchWorkspacePointerIssueThread') || !js.includes('fetchGitHubIssueThreadWithFallback(spec')) {
+    fail('workspace issue pointers must use the GitHub issue thread fallback stack, not GitHub REST only.');
+  }
+  if (/async function resolveWorkspaceIssuePointer[\s\S]*?fetchGitHubJson\(spec\.apiIssueUrl/.test(js)) {
+    fail('resolveWorkspaceIssuePointer must not depend directly on GitHub REST; use fetchWorkspacePointerIssueThread fallback owner.');
+  }
   const ordinaryVersionedIdentifiers = [...code.matchAll(/\b[A-Za-z_$][\w$]*(?:V\d{2,}|v\d{2,})\b/g)].map((m) => m[0]);
   if (ordinaryVersionedIdentifiers.length) {
     fail(`Ordinary version-stamped JavaScript identifiers found: ${[...new Set(ordinaryVersionedIdentifiers)].slice(0, 20).join(', ')}`);
