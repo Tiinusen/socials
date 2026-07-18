@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { fileURLToPath } from 'node:url';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 
 const root = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '');
@@ -61,6 +62,52 @@ function envList(name, fallback = []) {
 
 function truthyEnv(name) {
   return /^(1|true|yes|on)$/iu.test(envValue(name));
+}
+
+function gitOutput(command, fallback = '') {
+  try {
+    return String(execSync(command, { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] }) || '').trim() || fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function safeBuildToken(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[^a-z0-9._-]+/giu, '-')
+    .replace(/^-+|-+$/gu, '')
+    .slice(0, 80);
+}
+
+function buildMetadata(buildSource) {
+  const commitSha = envValue('TIINEX_BUILD_COMMIT_SHA')
+    || envValue('GITHUB_SHA')
+    || gitOutput('git rev-parse HEAD');
+  const commitCreatedAt = envValue('TIINEX_BUILD_COMMIT_CREATED_AT')
+    || envValue('TIINEX_BUILD_COMMIT_DATE')
+    || (commitSha ? gitOutput(`git show -s --format=%cI ${commitSha}`) : gitOutput('git show -s --format=%cI HEAD'));
+  const builtAt = envValue('TIINEX_BUILD_TIME') || new Date().toISOString();
+  const shortSha = commitSha ? commitSha.slice(0, 12) : '';
+  const runId = envValue('GITHUB_RUN_ID');
+  const buildId = safeBuildToken(envValue('TIINEX_BUILD_ID') || shortSha || builtAt);
+  return {
+    repository: buildSource,
+    commitSha,
+    commitCreatedAt,
+    builtAt,
+    runId,
+    buildId,
+    releaseCacheKey: safeBuildToken(`${buildSource || 'local'}-${commitSha || builtAt}`)
+  };
+}
+
+function cacheBustLocalAssets(html, token) {
+  const value = safeBuildToken(token);
+  if (!value) return html;
+  return String(html || '')
+    .replace(/(href=["']\.\/(?:styles\.css|favicon\.ico|assets\/tiinex-logo-white-transparent\.png))(["'])/gu, `$1?v=${value}$2`)
+    .replace(/(src=["']\.\/(?:tiinex\.bundle\.js|app\.js))(["'])/gu, `$1?v=${value}$2`);
 }
 
 function defaultRepositoryName() {
@@ -177,7 +224,7 @@ function stripLocalScripts(html) {
   return output;
 }
 
-function bundleSource() {
+function bundleSource(buildMeta = {}) {
   const parts = [];
   for (const script of scriptOrder) {
     parts.push(`\n;/* ---- ${script} ---- */\n`);
@@ -197,17 +244,17 @@ function bundleSource() {
   if (repository) gitNative.repo = repository;
   if (ref) gitNative.ref = ref;
   if (rootPaths.length) gitNative.rootPaths = rootPaths;
-  const buildSource = envValue('TIINEX_BUILD_REPOSITORY') || envValue('GITHUB_REPOSITORY') || 'local';
+  const buildSource = envValue('TIINEX_BUILD_REPOSITORY') || envValue('GITHUB_REPOSITORY') || buildMeta.repository || 'local';
   const workspaceCandidates = workspaceBootstrapCandidatesFromEnv();
   const options = {
     createWorkspace: true,
     browserTitle,
-    buildIdentity: {
+    buildIdentity: Object.assign({
       repository: buildSource,
       channel: envValue('TIINEX_BUILD_CHANNEL', 'source'),
       builtFor: envValue('TIINEX_BUILD_LABEL', `${buildSource} public build`),
       publicBuildOutputExcluded: true
-    }
+    }, buildMeta || {})
   };
   parts.push(`
 ;/* ---- viewer options ---- */
@@ -239,10 +286,13 @@ function main() {
   mkdirSync(out, { recursive: true });
 
   const buildSource = envValue('TIINEX_BUILD_REPOSITORY') || envValue('GITHUB_REPOSITORY') || 'local';
+  const buildMeta = buildMetadata(buildSource);
   let publicIndex = stripLocalScripts(read('index.html'));
   publicIndex = publicIndex.replace(/(<meta name=["']tiinex:build-source["'] content=["'])[^"']*(["']>)/u, `$1${buildSource}$2`);
+  publicIndex = publicIndex.replace('</head>', `  <meta name="tiinex:build-id" content="${escapeHtml(buildMeta.buildId || '')}">\n  <meta name="tiinex:build-commit" content="${escapeHtml(buildMeta.commitSha || '')}">\n  <meta name="tiinex:build-created-at" content="${escapeHtml(buildMeta.commitCreatedAt || buildMeta.builtAt || '')}">\n</head>`);
+  publicIndex = cacheBustLocalAssets(publicIndex, buildMeta.buildId || buildMeta.commitSha || buildMeta.builtAt);
   writeFileSync(join(out, 'index.html'), publicIndex, 'utf8');
-  writeFileSync(join(out, 'tiinex.bundle.js'), bundleSource(), 'utf8');
+  writeFileSync(join(out, 'tiinex.bundle.js'), bundleSource(buildMeta), 'utf8');
 
   for (const file of ['styles.css', 'llms.txt', 'tiinex.app.llm.v1.md', 'tiinex.context.v1.md', 'tiinex.orientation.v1.md', 'tiinex.orientation.manifest.v1.json', 'robots.txt', 'favicon.ico']) {
     copyPathIfExists(file, out);
