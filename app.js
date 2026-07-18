@@ -17046,7 +17046,7 @@ ${bodySections}
   function workspaceConfigFooterExcludeHtml(modal) {
     if (!workspaceConfigCanExcludeContaining(modal)) return '';
     const checked = modal?.excludeContainingWorkspaceFromCurrent ? 'checked' : '';
-    return `<label class="workspace-config-footer-checkbox option-toggle" title="Keep the workspace that stores this .workspace.md outside the saved workspace set."><input type="checkbox" data-field="workspaceConfig.excludeContainingWorkspaceFromCurrent" ${checked}><span>Exclude containing workspace</span></label>`;
+    return `<div class="workspace-config-scope-strip" role="group" aria-label="Update with current scope"><span class="scope-strip-label">Update scope</span><label class="workspace-config-scope-toggle" title="Keep the workspace that stores this .workspace.md outside the saved workspace set."><input type="checkbox" data-field="workspaceConfig.excludeContainingWorkspaceFromCurrent" ${checked}><span>Exclude containing workspace</span></label></div>`;
   }
 
   function workspaceConfigCurrentSummaryHtml(modal) {
@@ -17056,9 +17056,6 @@ ${bodySections}
     const workspaceArtifactCount = workspaces.reduce((total, ws) => total + Array.from(ws?.nodeById?.values?.() || []).filter((node) => isWorkspaceNode(node)).length, 0);
     const fileState = modal?.sourceBacked ? (modal?.existingDraft ? 'source + local draft' : 'source-backed') : 'local draft';
     const updated = modal?.updatedFromCurrent ? '<span class="summary-chip ok"><i class="fa-solid fa-circle-check"></i>current view staged</span>' : '<span class="summary-chip"><i class="fa-solid fa-layer-group"></i>file content unchanged</span>';
-    const canExcludeContaining = workspaceConfigCanExcludeContaining(modal);
-    const excludeContaining = canExcludeContaining && Boolean(modal?.excludeContainingWorkspaceFromCurrent);
-    const excludeControl = canExcludeContaining ? `<label class="workspace-config-checkbox option-toggle"><input type="checkbox" data-field="workspaceConfig.excludeContainingWorkspaceFromCurrent" ${excludeContaining ? 'checked' : ''}><span>Exclude the workspace that stores this .workspace.md from Update with current</span></label><p class="form-text">Use this when the workspace artifact should live in one workspace but describe another workspace set. Hidden when only one workspace is open so Update with current cannot create an empty .workspace.md.</p>` : '';
     return `<section class="export-section workspace-config-summary-section">
       <h3>Workspace material</h3>
       <div class="export-summary compact-export-summary workspace-config-summary">
@@ -17067,8 +17064,7 @@ ${bodySections}
         <div><strong>${artifactCount}</strong><span>visible artifacts</span></div>
         <div><strong>${workspaceArtifactCount}</strong><span>workspace artifacts</span></div>
       </div>
-      <p class="form-text">This artifact is ${escapeHtml(fileState)}. <strong>Update with current</strong> stages the current workspace set into this .workspace.md; <strong>Save local draft</strong> persists it through the normal local artifact path.</p>
-      ${excludeControl}
+      <p class="form-text workspace-config-summary-note">This artifact is ${escapeHtml(fileState)}. <strong>Update with current</strong> stages the current workspace set into this .workspace.md; <strong>Save local draft</strong> persists it through the normal local artifact path.</p>
       <div class="workspace-config-stage-status">${updated}</div>
     </section>`;
   }
@@ -17087,9 +17083,7 @@ ${bodySections}
           <button class="tv-btn small subtle" data-action="close-modal" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
         </div>
         <div class="export-body workspace-config-editor-body">
-          ${workspaceConfigCurrentSummaryHtml(modal)}
-          ${workspaceConfigContinuityParentPreview(getWorkspace(modal.wsId || ''), modal)}
-          <section class="export-section">
+          <section class="export-section workspace-config-identity-section">
             <h3>Identity</h3>
             <div class="schema-grid two-col">
               <label>Workspace title<input class="form-control tv-input" data-field="workspaceConfig.title" value="${escapeAttr(draft.title || '')}" placeholder="Tiinex Viewer"></label>
@@ -17101,6 +17095,8 @@ ${bodySections}
               <label>Accent<input class="form-control tv-input" data-field="workspaceConfig.accent" value="${escapeAttr(draft.accent || '')}" placeholder="purple"></label>
             </div>
           </section>
+          ${workspaceConfigCurrentSummaryHtml(modal)}
+          ${workspaceConfigContinuityParentPreview(getWorkspace(modal.wsId || ''), modal)}
           <section class="export-section">
             <h3>Empty stage subtitles</h3>
             <textarea class="form-control tv-input" rows="5" data-field="workspaceConfig.subtitles" placeholder="One subtitle per line">${escapeHtml(draft.subtitles || '')}</textarea>
@@ -17117,12 +17113,14 @@ Answer the reader should see in workspace help or GitHub presentation.">${escape
             <textarea class="form-control tv-input" rows="6" data-field="workspaceConfig.customCss" placeholder="Optional workspace CSS">${escapeHtml(draft.customCss || '')}</textarea>
           </section>
         </div>
-        <div class="modal-footer-actions export-actions">
-          <button class="tv-btn primary" data-action="workspace-config-save"><i class="fa-solid fa-floppy-disk"></i>Save local draft</button>
-          <button class="tv-btn constructive" data-action="workspace-config-update-current"><i class="fa-solid fa-rotate"></i>Update with current</button>
+        <div class="modal-footer-actions export-actions workspace-config-actions">
           ${footerExclude}
-          <button class="tv-btn subtle" data-action="workspace-config-apply"><i class="fa-solid fa-eye"></i>Apply preview</button>
-          <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+          <div class="workspace-config-action-buttons">
+            <button class="tv-btn primary" data-action="workspace-config-save"><i class="fa-solid fa-floppy-disk"></i>Save local draft</button>
+            <button class="tv-btn constructive" data-action="workspace-config-update-current"><i class="fa-solid fa-rotate"></i>Update with current</button>
+            <button class="tv-btn subtle" data-action="workspace-config-apply"><i class="fa-solid fa-eye"></i>Apply preview</button>
+            <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
+          </div>
         </div>
       </div>
     </div>`;
