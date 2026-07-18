@@ -23465,6 +23465,17 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
   background: rgba(180, 83, 9, 0.08);
 }
 
+.workspace-transport-pill.transport-refreshable {
+  cursor: pointer;
+}
+
+.workspace-transport-pill.transport-refreshable:hover,
+.workspace-transport-pill.transport-refreshable:focus-visible {
+  border-color: rgba(125, 211, 252, 0.48);
+  background: rgba(14, 116, 144, 0.16);
+  color: rgba(255, 255, 255, 0.92);
+}
+
 @media (max-width: 640px) {
   .workspace-source-strip .workspace-transport-pill,
   .mobile-source-mode-row .workspace-transport-pill {
