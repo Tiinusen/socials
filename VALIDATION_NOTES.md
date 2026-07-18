@@ -257,3 +257,9 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - Desktop workspace artifact cards restore the pre-mobile-polish order: Edit remains the green authoring action, Continue and Reference are compact icon-only lineage actions, and the labeled blue Open action sits before labeled Merge at the tail of the row.
 - Mobile workspace artifact cards keep the v60 behavior: the visible primary rail surfaces Open workspace as a blue icon-only action and leaves Edit in the More sheet.
 - Static validation now guards both contracts so desktop and mobile workspace action ordering can evolve independently without regressing the other artifact card layouts.
+
+## v62 workspace Open browser history boundary
+
+- User-facing workspace Open/Merge actions now own browser history as navigation. They suppress internal workspace-state `replaceState` and prewarm writes during the import, then push one final route entry for the opened workspace set.
+- This preserves mobile swipe/back behavior after opening a workspace card from the first browser entry. Back should return to the previous workspace/card list instead of leaving or closing the browser tab.
+- Existing route restore/popstate behavior is unchanged: browser Back still restores the previous route state rather than re-running source discovery when matching workspaces already exist.
