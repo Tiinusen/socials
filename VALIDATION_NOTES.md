@@ -175,3 +175,12 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - Transport badge clicks now pass the selected tier through the single GitHub source loader into both repository-file discovery and issue-thread imports. `mirror → proxy` bypasses hosted repository/issue snapshots, and `proxy → direct` uses the explicit direct/raw fallback path.
 - Source/discovery configuration remains user-owned. Tier changes refresh material using the saved source config, but they do not enable broad issue discovery or rewrite configured Issue/Discussion URLs.
 - App release cache-busting no longer erases durable GitHub issue-thread cache entries. App assets are busted by build ids; source-material freshness is surfaced through transport badges and explicit refresh tiers.
+
+## v50 source transport unification
+
+- Route-owned/startup GitHub source loading now requests the `mirror` transport tier explicitly. Embedded route/share state can render quickly, but the source reconciliation pass bypasses stale browser source cache and revalidates the same-origin repository and issue mirrors before any live transport is considered.
+- Transport tiers are owned by a single policy object passed through the GitHub source loader, repository discovery, issue-list discovery, and issue-thread imports: `cache -> mirror -> proxy -> direct`.
+- `mirror` is mirror-only. If the hosted repository/issue snapshot is unavailable, startup does not silently fall through to live GitHub/API/proxy. Stale cache may be used with a warning, or the source reports mirror unavailable until the user clicks the next tier.
+- `proxy` bypasses hosted mirrors and may use the configured live/proxy source transport. It does not silently invoke the direct/raw fallback.
+- `direct` is the explicit last-resort raw/reader fallback. It is user-initiated only.
+- Source/discovery configuration remains user-owned during all transport refreshes. The loader snapshots and restores repo/ref/root paths, enabled surfaces, and configured Issue/Discussion URLs.

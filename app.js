@@ -5038,7 +5038,7 @@
           const configChanged = workspaceConfigSignature(ws) !== configSourceSignature(source);
           if (configChanged && (source.kind === 'github-tree' || source.kind === 'github')) {
             routeOwnerRecord('route:reuse-refresh-source', { index, source: configSourceSignature(source), workspace: workspaceConfigSignature(ws) });
-            await loadGitHubStateSourceIntoWorkspace(ws, source, { refreshExisting: true });
+            await loadGitHubStateSourceIntoWorkspace(ws, source, { refreshExisting: true, respectSourceConfig: true, transportRefreshTier: 'mirror', transportPolicy: githubSourceTransportPolicyForTier('mirror', { routeOwnedStartup: true }) });
           } else if (configChanged) {
             await loadUrlsIntoWorkspace(ws, source.urls || []);
           }
@@ -5055,7 +5055,7 @@
           const ws = createWorkspace(source.label || 'Shared lineage workspace', 'Loaded from URL route state.');
           routeLoadPresentationStage('route-source-load-start', { kind: source.kind || '', label: source.label || '', repo: source.repo || '' });
           if (source.kind === 'github-tree' || source.kind === 'github') {
-            await loadGitHubStateSourceIntoWorkspace(ws, source, { routeOwnedStartup: true });
+            await loadGitHubStateSourceIntoWorkspace(ws, source, { routeOwnedStartup: true, respectSourceConfig: true, transportRefreshTier: 'mirror', transportPolicy: githubSourceTransportPolicyForTier('mirror', { routeOwnedStartup: true }) });
           } else {
             await loadUrlsIntoWorkspace(ws, source.urls || []);
           }
@@ -6058,12 +6058,42 @@
     return TRANSPORT_TIER_ORDER[Math.min(TRANSPORT_TIER_ORDER.length - 1, Math.max(0, index + 1))] || 'mirror';
   }
 
+  function githubSourceTransportPolicyForTier(tier = '', options = {}) {
+    const requested = normalizeTransportTier(tier)
+      || normalizeTransportTier(options.transportRefreshTier || '')
+      || (options.forceDirectFallback ? 'direct' : (options.liveGitHub ? 'proxy' : (options.routeOwnedStartup || options.startupProgress ? 'mirror' : '')));
+    const effective = requested || (options.userInitiated ? 'proxy' : 'mirror');
+    const allowCache = effective === 'cache';
+    const allowMirror = effective === 'cache' || effective === 'mirror';
+    const allowProxy = effective === 'proxy';
+    const allowDirect = effective === 'direct';
+    return Object.freeze({
+      requestedTier: effective,
+      allowCache,
+      allowMirror,
+      allowProxy,
+      allowDirect,
+      skipBrowserCache: effective !== 'cache',
+      mutateSourceConfig: false,
+      allowBroadDiscovery: options.allowBroadDiscovery !== false,
+      userInitiated: Boolean(options.userInitiated),
+      reason: options.routeOwnedStartup ? 'route-owned-startup' : (options.startupProgress ? 'startup-progress' : (options.reason || 'source-refresh'))
+    });
+  }
+
+  function githubSourceTransportPolicyFromOptions(options = {}) {
+    if (options.transportPolicy && typeof options.transportPolicy === 'object') return options.transportPolicy;
+    return githubSourceTransportPolicyForTier(options.transportRefreshTier || '', options);
+  }
+
   function transportRefreshOptionsForNextTier(nextTier = '') {
     const tier = normalizeTransportTier(nextTier) || 'mirror';
+    const policy = githubSourceTransportPolicyForTier(tier, { userInitiated: true, reason: 'transport-badge' });
     if (tier === 'mirror') {
       return {
         label: 'mirror',
         message: 'Refreshing from co-hosted mirror; browser/runtime cache is bypassed for this request.',
+        transportPolicy: policy,
         bypassRepositorySnapshot: false,
         bypassHostedIssueSnapshot: false,
         liveGitHub: false,
@@ -6074,6 +6104,7 @@
       return {
         label: 'direct',
         message: 'Trying direct raw fallback as an explicit last-resort refresh.',
+        transportPolicy: policy,
         bypassRepositorySnapshot: true,
         bypassHostedIssueSnapshot: true,
         liveGitHub: true,
@@ -6085,6 +6116,7 @@
     return {
       label: 'proxy',
       message: 'Refreshing from live proxy/source transport; hosted issue/file mirrors are bypassed for this request.',
+      transportPolicy: policy,
       bypassRepositorySnapshot: true,
       bypassHostedIssueSnapshot: true,
       liveGitHub: true,
@@ -6123,6 +6155,7 @@
       allowDirectGithubClone: Boolean(tierOptions.allowDirectGithubClone),
       forceDirectFallback: Boolean(tierOptions.forceDirectFallback),
       transportRefreshTier: nextTier,
+      transportPolicy: tierOptions.transportPolicy,
       preserveSourceConfig: true,
       respectSourceConfig: true,
       sourceProgress: 'github-source-refresh'
@@ -9541,7 +9574,7 @@ ${message}${detail ? ` · ${detail}` : ''}`;
         opened += 1;
         if (source.kind === 'github-tree' || source.kind === 'github') {
           if (!firstWs) maybePrewarmInitialRouteHash(source, ws, sources, 'source-created-before-github-load');
-          await loadGitHubStateSourceIntoWorkspace(ws, source, { startupProgress: true });
+          await loadGitHubStateSourceIntoWorkspace(ws, source, { startupProgress: true, respectSourceConfig: true, transportRefreshTier: 'mirror', transportPolicy: githubSourceTransportPolicyForTier('mirror', { startupProgress: true }) });
         } else {
           await loadUrlsIntoWorkspace(ws, source.urls || []);
         }
@@ -11026,10 +11059,11 @@ ${message}${detail ? ` · ${detail}` : ''}`;
   }
 
   async function fetchGitHubIssueThreadWithFallback(spec, options = {}) {
+    const transportPolicy = githubSourceTransportPolicyFromOptions(options);
     const cacheMaxAgeMs = Number(options.cacheMaxAgeMs || 10 * 60 * 1000);
-    const preferCache = options.preferCache !== false;
+    const preferCache = Boolean(options.preferCache !== false && transportPolicy.allowCache && !transportPolicy.skipBrowserCache);
     const commentsMode = String(options.commentsMode || 'always');
-    const transportKey = options.forceDirectFallback ? 'direct' : options.liveGitHub ? 'proxy' : options.bypassHostedIssueSnapshot ? 'mirror-bypass' : 'snapshot';
+    const transportKey = transportPolicy.requestedTier || (options.forceDirectFallback ? 'direct' : options.liveGitHub ? 'proxy' : options.bypassHostedIssueSnapshot ? 'mirror-bypass' : 'snapshot');
     const requestKey = `${githubIssueCacheKey(spec)}::${commentsMode}::${Number(options.commentLimit || 20)}::${options.hardRefresh ? 'refresh' : 'normal'}::${transportKey}`;
     const inFlight = githubIssueThreadInFlightRuntime();
     if (inFlight.has(requestKey)) {
@@ -11073,20 +11107,33 @@ ${message}${detail ? ` · ${detail}` : ''}`;
       // Hosted Pages builds publish exact raw issue markdown beside the viewer.
       // Prefer the same-origin snapshot over live GitHub so public browsing does
       // not turn each visitor into an anonymous GitHub/reader crawler.
-      if (options.bypassHostedIssueSnapshot !== true && options.liveGitHub !== true) {
+      if (transportPolicy.allowMirror && options.bypassHostedIssueSnapshot !== true && options.liveGitHub !== true) {
         const hostedSnapshotThread = await tryThread('Hosted issue snapshot', () => fetchGitHubIssueThreadViaHostedSnapshot(spec, Object.assign({}, options, {
           commentsMode,
           commentLimit: Math.min(100, Math.max(1, Number(options.commentLimit || 20)))
         })), 'site-issue-snapshot', true);
         if (hostedSnapshotThread) return hostedSnapshotThread;
       } else {
-        githubIssueImportTrace('site-issue-snapshot.bypassed-for-live-refresh', { repo: spec?.repo || '', issueNumber: spec?.issueNumber || '' });
+        githubIssueImportTrace('site-issue-snapshot.bypassed-for-live-refresh', { repo: spec?.repo || '', issueNumber: spec?.issueNumber || '', transportTier: transportPolicy.requestedTier });
+      }
+
+      if (!transportPolicy.allowProxy && !transportPolicy.allowDirect) {
+        const cached = cachedGitHubIssueThread(spec, { maxAgeMs: 0, allowStale: true });
+        if (cached) {
+          cached.warning = 'Hosted issue snapshot unavailable; stale browser cache used because live source transport was not requested.';
+          githubIssueImportTrace('issue-thread.mirror-only-stale-cache-hit', { warning: cached.warning, thread: githubIssueThreadTraceSummary(cached) });
+          return cached;
+        }
+        const primary = errors[0]?.error || new Error('Hosted issue snapshot unavailable and live source transport was not requested.');
+        primary.fallbackErrors = errors;
+        githubIssueImportTrace('issue-thread.mirror-only-failed', { error: primary, errors });
+        throw primary;
       }
 
       // Direct is an explicit last-resort user path. It is never part of hosted
       // startup/discovery and performs one bounded reader/raw attempt instead of
       // silently returning through the GitHub API proxy tier again.
-      if (options.forceDirectFallback === true && options.allowSharedReaderFallback === true) {
+      if (transportPolicy.allowDirect && options.forceDirectFallback === true && options.allowSharedReaderFallback === true) {
         const directThread = await tryThread('GitHub direct reader fallback', () => fetchGitHubIssueThreadViaJinaApiDirect(spec, Object.assign({}, options, {
           hardRefresh: false,
           ignoreRateLimitGuard: false,
@@ -11099,7 +11146,7 @@ ${message}${detail ? ` · ${detail}` : ''}`;
       // One issue request plus at most one bounded comments request is cheaper and
       // safer than probing multiple anonymous proxy providers, and only runs when
       // no same-origin snapshot is available.
-      const apiThread = options.forceDirectFallback === true ? null : await tryThread('GitHub API', () => fetchGitHubIssueThread(spec, Object.assign({}, options, {
+      const apiThread = (options.forceDirectFallback === true || !transportPolicy.allowProxy) ? null : await tryThread('GitHub API', () => fetchGitHubIssueThread(spec, Object.assign({}, options, {
         ignoreRateLimitGuard: false,
         commentsMode,
         commentLimit: Math.min(100, Math.max(1, Number(options.commentLimit || 20)))
@@ -11118,7 +11165,7 @@ ${message}${detail ? ` · ${detail}` : ''}`;
       // Shared anonymous readers are disabled by default. They are not mirrors,
       // have shared abuse domains, and must never be multiplied or retried. A
       // caller may explicitly opt in for one attempt after a network/CORS error.
-      if (options.forceDirectFallback !== true && options.allowSharedReaderFallback === true && githubIssueErrorAllowsSharedReader(apiError)) {
+      if (transportPolicy.allowDirect && options.forceDirectFallback !== true && options.allowSharedReaderFallback === true && githubIssueErrorAllowsSharedReader(apiError)) {
         const readerThread = await tryThread('GitHub shared reader fallback', () => fetchGitHubIssueThreadViaJinaApiDirect(spec, Object.assign({}, options, {
           hardRefresh: false,
           ignoreRateLimitGuard: false,
@@ -11206,13 +11253,18 @@ ${message}${detail ? ` · ${detail}` : ''}`;
   }
 
   async function fetchGitHubRepoIssueSpecs(repo, options = {}) {
+    const transportPolicy = githubSourceTransportPolicyFromOptions(options);
     const limit = Math.max(0, Number(options.limit || app.settings.githubIssueDiscoveryLimit || 10));
     if (!repo || !limit) return [];
-    if (options.bypassHostedIssueSnapshot !== true && options.liveGitHub !== true) {
+    if (transportPolicy.allowMirror && options.bypassHostedIssueSnapshot !== true && options.liveGitHub !== true) {
       const hostedSpecs = await fetchGitHubRepoIssueSpecsViaHostedSnapshot(repo, options);
       if (Array.isArray(hostedSpecs)) return hostedSpecs;
     } else {
-      githubIssueImportTrace('site-issue-snapshot.list-bypassed-for-live-refresh', { repo, limit });
+      githubIssueImportTrace('site-issue-snapshot.list-bypassed-for-live-refresh', { repo, limit, transportTier: transportPolicy.requestedTier });
+    }
+    if (!transportPolicy.allowProxy) {
+      githubIssueImportTrace('issue-list.live-skipped-by-transport-policy', { repo, limit, transportTier: transportPolicy.requestedTier });
+      return [];
     }
     if (options.liveGitHub !== true && options.userInitiated !== true) {
       githubIssueImportTrace('issue-list.live-skipped-no-hosted-snapshot', { repo, limit });
@@ -13922,8 +13974,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
   async function discoverGitHubIssuesIntoWorkspace(ws, source, issueUrls = [], options = {}) {
     if (!ws || !source?.repo) return 0;
+    const transportPolicy = githubSourceTransportPolicyFromOptions(options);
     clearGithubIssueImportTrace();
-    githubIssueImportTrace('discovery.start', { workspace: { id: ws?.id || '', label: ws?.label || '', fileCount: ws?.files?.size || 0, nodeCount: Array.isArray(ws?.nodes) ? ws.nodes.length : 0 }, source: { id: source?.id || '', repo: source?.repo || '', ref: source?.ref || '', kind: source?.kind || '' }, issueUrls, options: { hardRefresh: Boolean(options.hardRefresh), userInitiated: Boolean(options.userInitiated), preferCache: Boolean(options.preferCache), limit: options.limit || '', liveGitHub: Boolean(options.liveGitHub), bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot), forceDirectFallback: Boolean(options.forceDirectFallback), transportRefreshTier: options.transportRefreshTier || '' } });
+    githubIssueImportTrace('discovery.start', { workspace: { id: ws?.id || '', label: ws?.label || '', fileCount: ws?.files?.size || 0, nodeCount: Array.isArray(ws?.nodes) ? ws.nodes.length : 0 }, source: { id: source?.id || '', repo: source?.repo || '', ref: source?.ref || '', kind: source?.kind || '' }, issueUrls, options: { hardRefresh: Boolean(options.hardRefresh), userInitiated: Boolean(options.userInitiated), preferCache: Boolean(options.preferCache), limit: options.limit || '', liveGitHub: Boolean(options.liveGitHub), bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot), forceDirectFallback: Boolean(options.forceDirectFallback), transportRefreshTier: options.transportRefreshTier || '', transportPolicy } });
     const canonicalSource = registerGitHubSource(ws, source);
     let specs = (Array.isArray(issueUrls) ? issueUrls.slice() : [])
       .map((url) => parseGitHubSocialTargetSpec(url))
@@ -13950,7 +14003,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       }
       if (typeof render === 'function' && options.renderStatus !== false) render();
       try {
-        specs = await fetchGitHubRepoIssueSpecs(source.repo, { limit, hardRefresh: Boolean(options.hardRefresh), authMode: 'none', userInitiated: Boolean(options.userInitiated), liveGitHub: Boolean(options.liveGitHub), bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot) });
+        specs = await fetchGitHubRepoIssueSpecs(source.repo, { limit, hardRefresh: Boolean(options.hardRefresh), authMode: 'none', userInitiated: Boolean(options.userInitiated), liveGitHub: Boolean(options.liveGitHub || transportPolicy.allowProxy), bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot || !transportPolicy.allowMirror), forceDirectFallback: Boolean(options.forceDirectFallback || transportPolicy.allowDirect), transportRefreshTier: transportPolicy.requestedTier, transportPolicy });
       } catch (error) {
         const message = `Could not list public GitHub issues for ${source.repo}: ${error.message}`;
         setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: 'failed', message, loaded: 0, failed: 1, error: message, mode });
@@ -13994,19 +14047,20 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
             ref: canonicalSource.ref || ws.ref || '',
             commentLimit: options.commentLimit || 20,
             toast: false,
-            hardRefresh: Boolean(options.hardRefresh),
-            preferCache: options.preferCache !== false,
+            hardRefresh: Boolean(options.hardRefresh || transportPolicy.skipBrowserCache),
+            preferCache: Boolean(transportPolicy.allowCache && options.preferCache !== false),
             cacheMaxAgeMs: options.cacheMaxAgeMs || 5 * 60 * 1000,
             includeBody: true,
             configuredTarget: Boolean(issueUrls && issueUrls.length),
             userInitiated: Boolean(options.userInitiated),
             openWorkspaceIssueTarget: options.openWorkspaceIssueTarget !== false,
-            liveGitHub: Boolean(options.liveGitHub),
-            bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot),
-            allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback),
-            allowDirectGithubClone: Boolean(options.allowDirectGithubClone),
-            forceDirectFallback: Boolean(options.forceDirectFallback),
-            transportRefreshTier: options.transportRefreshTier || ''
+            liveGitHub: Boolean(options.liveGitHub || transportPolicy.allowProxy),
+            bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot || !transportPolicy.allowMirror),
+            allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback || transportPolicy.allowDirect),
+            allowDirectGithubClone: Boolean(options.allowDirectGithubClone || transportPolicy.allowDirect),
+            forceDirectFallback: Boolean(options.forceDirectFallback || transportPolicy.allowDirect),
+            transportRefreshTier: transportPolicy.requestedTier,
+            transportPolicy
           });
           importedIssues += 1;
           loaded += 1;
@@ -14168,6 +14222,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   async function loadGitHubStateSourceIntoWorkspace(ws, source, options = {}) {
     const normalizedSource = normalizeGitHubSourceState(source || {}, ws);
     if (!ws || !normalizedSource.repo) return null;
+    const transportPolicy = githubSourceTransportPolicyFromOptions(options);
+    const sourceLoadHardRefresh = Boolean(options.hardRefresh || transportPolicy.skipBrowserCache);
     const rootPaths = normalizedSource.rootPaths && normalizedSource.rootPaths.length ? normalizedSource.rootPaths : ['.topics'];
     const githubSource = registerGitHubSource(ws, normalizedSource);
     const enabledSurfaces = options.respectSourceConfig === true
@@ -14189,19 +14245,20 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         repo: normalizedSource.repo,
         ref: normalizedSource.ref || '',
         rootPaths,
-        refreshExisting: Boolean(options.refreshExisting),
-        hardRefresh: Boolean(options.hardRefresh),
+        refreshExisting: Boolean(options.refreshExisting || transportPolicy.skipBrowserCache),
+        hardRefresh: sourceLoadHardRefresh,
         preferStatic: true,
         noApi: true,
         source: githubSource,
         sourceProgress: progressScope,
         keepDiscoveryProgress: keepProgressForIssueStage,
-        bypassRepositorySnapshot: Boolean(options.bypassRepositorySnapshot),
-        liveGitHub: Boolean(options.liveGitHub),
-        allowDirectGithubClone: Boolean(options.allowDirectGithubClone),
-        allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback),
-        forceDirectFallback: Boolean(options.forceDirectFallback),
-        transportRefreshTier: options.transportRefreshTier || ''
+        bypassRepositorySnapshot: Boolean(options.bypassRepositorySnapshot || !transportPolicy.allowMirror),
+        liveGitHub: Boolean(options.liveGitHub || transportPolicy.allowProxy),
+        allowDirectGithubClone: Boolean(options.allowDirectGithubClone || transportPolicy.allowDirect),
+        allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback || transportPolicy.allowDirect),
+        forceDirectFallback: Boolean(options.forceDirectFallback || transportPolicy.allowDirect),
+        transportRefreshTier: transportPolicy.requestedTier,
+        transportPolicy
       });
       if (routeOwnedProgress) routeLoadPresentationStage('github-repo-files-loaded', { files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
     } else {
@@ -14217,38 +14274,40 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       if (explicitIssueTargets.length) {
         await discoverGitHubIssuesIntoWorkspace(ws, githubSource, explicitIssueTargets, {
           refreshExisting: true,
-          hardRefresh: Boolean(options.hardRefresh),
-          preferCache: !Boolean(options.hardRefresh),
+          hardRefresh: sourceLoadHardRefresh,
+          preferCache: Boolean(transportPolicy.allowCache && !sourceLoadHardRefresh),
           userInitiated: Boolean(options.userInitiated),
           discoveryProgress: Boolean(progressScope),
           sourceProgress: progressScope,
           renderStatus: issueRenderStatus,
           openWorkspaceIssueTarget: options.openWorkspaceIssueTarget === true,
-          liveGitHub: Boolean(options.liveGitHub),
-          bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot),
-          allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback),
-          allowDirectGithubClone: Boolean(options.allowDirectGithubClone),
-          forceDirectFallback: Boolean(options.forceDirectFallback),
-          transportRefreshTier: options.transportRefreshTier || ''
+          liveGitHub: Boolean(options.liveGitHub || transportPolicy.allowProxy),
+          bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot || !transportPolicy.allowMirror),
+          allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback || transportPolicy.allowDirect),
+          allowDirectGithubClone: Boolean(options.allowDirectGithubClone || transportPolicy.allowDirect),
+          forceDirectFallback: Boolean(options.forceDirectFallback || transportPolicy.allowDirect),
+          transportRefreshTier: transportPolicy.requestedTier,
+          transportPolicy
         });
         if (!enabledSurfaces.issues) pruneGitHubIssueSurfaceToConfiguredTargets(ws, githubSource, explicitIssueTargets);
         if (routeOwnedProgress) routeLoadPresentationStage('github-explicit-issues-loaded', { issueTargets: explicitIssueTargets.length, files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
       }
       if (enabledSurfaces.issues) {
         await discoverGitHubIssuesIntoWorkspace(ws, githubSource, [], {
-          refreshExisting: Boolean(options.refreshExisting),
-          hardRefresh: Boolean(options.hardRefresh),
-          preferCache: !Boolean(options.hardRefresh),
+          refreshExisting: Boolean(options.refreshExisting || transportPolicy.skipBrowserCache),
+          hardRefresh: sourceLoadHardRefresh,
+          preferCache: Boolean(transportPolicy.allowCache && !sourceLoadHardRefresh),
           userInitiated: Boolean(options.userInitiated),
           discoveryProgress: Boolean(progressScope),
           sourceProgress: progressScope,
           renderStatus: issueRenderStatus,
-          liveGitHub: Boolean(options.liveGitHub),
-          bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot),
-          allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback),
-          allowDirectGithubClone: Boolean(options.allowDirectGithubClone),
-          forceDirectFallback: Boolean(options.forceDirectFallback),
-          transportRefreshTier: options.transportRefreshTier || ''
+          liveGitHub: Boolean(options.liveGitHub || transportPolicy.allowProxy),
+          bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot || !transportPolicy.allowMirror),
+          allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback || transportPolicy.allowDirect),
+          allowDirectGithubClone: Boolean(options.allowDirectGithubClone || transportPolicy.allowDirect),
+          forceDirectFallback: Boolean(options.forceDirectFallback || transportPolicy.allowDirect),
+          transportRefreshTier: transportPolicy.requestedTier,
+          transportPolicy
         });
         if (routeOwnedProgress) routeLoadPresentationStage('github-broad-issues-loaded', { files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
       }
@@ -38468,6 +38527,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
   }
 
   async function discoverGitHubRepoIntoWorkspace(ws, options) {
+    const transportPolicy = githubSourceTransportPolicyFromOptions(options || {});
     const repo = options.repo;
     const ref = options.ref || '';
     const rootPaths = Array.isArray(options.rootPaths) ? options.rootPaths : parseRootPaths(options.rootPath || '.topics');
@@ -38519,7 +38579,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
     const repoFetchSessionId = githubRepoDiscoverySessionId(repo, ref, rootPaths);
     const repositoryTransportBudgetMs = Math.max(3000, Number(app.settings.repositoryTransportBudgetMs || 35000));
     const repositoryTransportDeadlineAt = Date.now() + repositoryTransportBudgetMs;
-    githubRepoFetchTrace('session.start', { sessionId: repoFetchSessionId, repo, ref, rootPaths, sourceId: githubSource.id, accessMode: discoveryAccessMode, hardRefresh: Boolean(options.hardRefresh), refreshExisting: Boolean(options.refreshExisting), repositoryTransportBudgetMs });
+    githubRepoFetchTrace('session.start', { sessionId: repoFetchSessionId, repo, ref, rootPaths, sourceId: githubSource.id, accessMode: discoveryAccessMode, hardRefresh: Boolean(options.hardRefresh), refreshExisting: Boolean(options.refreshExisting), repositoryTransportBudgetMs, transportPolicy });
 
     async function finalizeGitNativeMaterial(result) {
       if (!result?.ok) return false;
@@ -38545,7 +38605,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
     }
 
     try {
-      if (!options.hardRefresh) {
+      if (!options.hardRefresh && transportPolicy.allowCache) {
         const localGit = await tryDiscoverGitHubRepoViaGitNative(ws, {
           repo,
           ref,
@@ -38559,8 +38619,8 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
         if (await finalizeGitNativeMaterial(localGit)) return;
       }
 
-      const repositorySnapshot = options.bypassRepositorySnapshot === true
-        ? { ok: false, skipped: true, reason: 'site-mirror-bypassed-for-live-refresh' }
+      const repositorySnapshot = (options.bypassRepositorySnapshot === true || !transportPolicy.allowMirror)
+        ? { ok: false, skipped: true, reason: options.bypassRepositorySnapshot === true ? 'site-mirror-bypassed-for-live-refresh' : 'site-mirror-skipped-by-transport-policy' }
         : await tryDiscoverGitHubRepoViaRepositorySnapshot(ws, {
           repo,
           ref,
@@ -38590,8 +38650,15 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
         return;
       }
 
-      const gitNative = options.forceDirectFallback === true
-        ? { ok: false, skipped: true, reason: 'proxy-skipped-for-explicit-direct-refresh' }
+      if (!transportPolicy.allowProxy && !transportPolicy.allowDirect) {
+        ws.repositoryTransport = { kind: 'snapshot', label: 'Hosted mirror unavailable', reason: repositorySnapshot.reason || 'site-mirror-unavailable', tier: 'mirror' };
+        githubRepoFetchTrace('repository-transport.live-skipped-by-policy', { sessionId: repoFetchSessionId, repo, ref, rootPaths, transportTier: transportPolicy.requestedTier, reason: ws.repositoryTransport.reason });
+        if (!count) toast(`Hosted repository mirror unavailable for ${repo}; live source transport was not requested.`, 'warn');
+        return;
+      }
+
+      const gitNative = (options.forceDirectFallback === true || !transportPolicy.allowProxy)
+        ? { ok: false, skipped: true, reason: options.forceDirectFallback === true ? 'proxy-skipped-for-explicit-direct-refresh' : 'proxy-skipped-by-transport-policy' }
         : await tryDiscoverGitHubRepoViaGitNative(ws, {
           repo,
           ref,
@@ -38602,6 +38669,12 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
           options
         });
       if (await finalizeGitNativeMaterial(gitNative)) return;
+      if (!transportPolicy.allowDirect) {
+        ws.repositoryTransport = { kind: 'git-proxy', label: 'Proxy transport unavailable', reason: gitNative.reason || repositorySnapshot.reason || 'repository-transports-unavailable', tier: 'proxy' };
+        githubRepoFetchTrace('repository-transport.direct-skipped-by-policy', { sessionId: repoFetchSessionId, repo, ref, rootPaths, transportTier: transportPolicy.requestedTier, reason: ws.repositoryTransport.reason });
+        toast(`Proxy source transport unavailable for ${repo}; direct raw fallback was not requested.`, 'warn');
+        return;
+      }
 
       ws.repositoryTransport = { kind: 'github-raw', label: 'GitHub raw fallback', reason: gitNative.reason || repositorySnapshot.reason || 'repository-transports-unavailable' };
       ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
