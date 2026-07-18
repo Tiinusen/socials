@@ -1251,8 +1251,8 @@ function validateJavascriptSurface() {
   if (!js.includes('githubHostedIssueSnapshotMetadataUrlCandidates') || !js.includes('disableRuntimeCache: true') || !js.includes("cacheMode: 'no-cache'")) {
     fail('Hosted issue snapshots must use same-origin candidate paths with browser/runtime cache revalidation instead of stale runtime cache.');
   }
-  if (!js.includes('githubSourceMaterialCacheWrite') || !js.includes('restoreGitHubSourceMaterialCacheIntoWorkspace') || !js.includes('githubSourceMaterialCachePrefix')) {
-    fail('Cache tier must restore/write a complete source-material cache, not only route state, issue-thread cache, or local Git preflight.');
+  if (!js.includes('githubSourceMaterialCacheWrite') || !js.includes('restoreGitHubSourceMaterialCacheIntoWorkspace') || !js.includes('githubSourceMaterialCachePrefix') || !js.includes('restoreConfiguredGitHubIssueThreadCachesIntoWorkspace') || !js.includes('githubSourceMaterialCacheLooksCompleteForSource')) {
+    fail('Cache tier must restore/write a complete source-material cache and rehydrate configured issue targets through the shared issue materialization path, not only route state, issue-thread cache, or local Git preflight.');
   }
   if (!js.includes('hostedIssueSnapshotBaseUrlCandidates') || !js.includes('githubHostedIssueSnapshotResolveDirectory') || js.includes('${repoName}/${relative}')) {
     fail('Hosted issue snapshot paths must follow mirror convention roots such as /issues/github.com/owner/repo.json and preserve the repository directory for issue item paths.');
@@ -1278,6 +1278,9 @@ function validateJavascriptSurface() {
     'const requestedTransportPolicy = githubSourceTransportPolicyFromOptions(options)',
     'restoreGitHubSourceMaterialCacheIntoWorkspace',
     'source-material-cache.miss-fallback-to-mirror',
+    'source-material-cache.incomplete-fallback-to-mirror',
+    'restoreConfiguredGitHubIssueThreadCachesIntoWorkspace',
+    'githubSourceMaterialCacheLooksCompleteForSource',
     'sourceLoadHardRefresh',
     'bypassRepositorySnapshot: Boolean(options.bypassRepositorySnapshot || !transportPolicy.allowMirror)',
     'liveGitHub: Boolean(options.liveGitHub || transportPolicy.allowProxy)',
@@ -2100,6 +2103,7 @@ function validateRepositoryTransportContracts() {
   globalThis.__transportPresentation = { repositoryTransportPresentation };`, presentationContext, { filename: 'app.js#repository-transport-presentation' });
   const presentation = presentationContext.__transportPresentation.repositoryTransportPresentation;
   if (presentation({ kind: 'local-git' })?.label !== 'cache') fail('Warm object-store material must present as cache.');
+  if (presentation({ kind: 'browser-cache' })?.label !== 'cache') fail('Durable source-material cache must present as cache, not a generic transport badge.');
   if (presentation({ kind: 'snapshot', inferred: true, convention: 'co-hosted-source' })?.label !== 'mirror') fail('Local co-hosted snapshots must present as mirror.');
   if (presentation({ kind: 'snapshot', inferred: true, convention: 'co-hosted-public' })?.label !== 'mirror') fail('Published co-hosted snapshots must present as mirror.');
   if (presentation({ kind: 'git-proxy' })?.label !== 'proxy') fail('Network Git material must present as proxy.');

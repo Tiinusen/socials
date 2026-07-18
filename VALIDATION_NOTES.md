@@ -196,3 +196,10 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - Successful mirror/proxy/direct loads write the same text artifact set back to durable browser cache so a following reload can render the same bounded cards before network refresh.
 - Warm local Git preflight is opt-in only; it must not satisfy the user-facing cache tier because it can be repo-file-only and miss configured issue material.
 - Cache miss falls forward to mirror under the same source config and without broad discovery when the Issue Discovery surface is disabled.
+
+## v53 cache transport material parity
+
+- Browser source-material cache is accepted only when it can satisfy the configured source surfaces. For configured GitHub issue URLs, a one-card/placeholder cache is treated as incomplete and falls forward to the hosted mirror instead of presenting a partial cache view.
+- Cache restore rehydrates configured issue targets from the durable GitHub issue-thread cache before indexing. This makes cache use the same issue-thread materialization path as mirror/proxy/direct, including recovered embedded artifacts and comments.
+- `browser-cache` is now a first-class transport kind in repository and issue badge presentation. It renders as `cache`, not a generic transport/proxy badge, so the user-facing order remains `cache -> mirror -> proxy -> direct`.
+- Incomplete material is not written back as source-material cache. Failed/unavailable issue placeholders can remain visible for the current attempt, but they no longer poison the next release/reload as a durable cache hit.

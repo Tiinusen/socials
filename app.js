@@ -9689,6 +9689,86 @@ ${message}${detail ? ` · ${detail}` : ''}`;
     return true;
   }
 
+
+  function githubIssueSpecMatchesEntry(entry = {}, spec = {}, sourceId = '') {
+    if (!entry || !spec?.repo || !spec?.issueNumber) return false;
+    const entrySourceId = String(entry.sourceId || '').trim();
+    if (sourceId && entrySourceId && entrySourceId !== sourceId) return false;
+    if (sourceSurfaceForEntry(entry) !== 'issues') return false;
+    const entryRepo = String(entry.repo || '').trim().toLowerCase();
+    if (entryRepo && entryRepo !== String(spec.repo || '').trim().toLowerCase()) return false;
+    const issueNumber = String(spec.issueNumber || '').trim();
+    const haystack = [
+      entry.sourceOrigin, entry.rawUrl, entry.browseUrl, entry.recoveredFromUrl,
+      entry.path, entry.storageKey, entry.name
+    ].filter(Boolean).join(' ');
+    if (haystack && new RegExp(`(?:/issues/|issue-|github-issues/[^\s]*/)(?:#?${issueNumber})(?:[^0-9]|$)`, 'i').test(haystack)) return true;
+    if (spec.issueUrl && haystack && haystack.includes(String(spec.issueUrl || '').replace(/#.*$/, ''))) return true;
+    return false;
+  }
+
+  function githubIssueFileCountForSpec(ws, source = {}, spec = {}) {
+    if (!ws?.files || !spec?.issueNumber) return 0;
+    const sourceId = String(source?.id || '').trim();
+    let count = 0;
+    for (const [key, file] of ws.files.entries()) {
+      if (githubIssueSpecMatchesEntry(Object.assign({}, file, { storageKey: key }), spec, sourceId)) count += 1;
+    }
+    return count;
+  }
+
+  async function restoreConfiguredGitHubIssueThreadCachesIntoWorkspace(ws, source = {}, options = {}) {
+    const issueUrls = configuredGitHubIssueUrls(source, source.repo || '');
+    const specs = issueUrls.map((url) => parseGitHubSocialTargetSpec(url)).filter((spec) => spec?.kind === 'issue' && spec.repo.toLowerCase() === String(source.repo || '').toLowerCase());
+    const report = { configured: specs.length, restored: 0, alreadyMaterialized: 0, missing: 0, incomplete: [] };
+    if (!specs.length) return report;
+    for (const spec of specs) {
+      const cached = cachedGitHubIssueThread(spec, { maxAgeMs: 0, allowStale: true });
+      if (cached) {
+        await loadGitHubIssueThreadSnapshotIntoWorkspace(ws, spec, Object.assign({}, cached, { adapterMode: /^github-cache/u.test(String(cached.adapterMode || '')) ? cached.adapterMode : 'github-cache' }), {
+          source,
+          ref: source.ref || source.requestedRef || ws.ref || '',
+          includeBody: true,
+          toast: false,
+          hardRefresh: false,
+          configuredTarget: true,
+          userInitiated: false,
+          openWorkspaceIssueTarget: false
+        });
+        report.restored += 1;
+        continue;
+      }
+      const fileCount = githubIssueFileCountForSpec(ws, source, spec);
+      if (fileCount > 1) {
+        report.alreadyMaterialized += 1;
+        continue;
+      }
+      report.missing += 1;
+      report.incomplete.push({ issueUrl: spec.issueUrl || '', issueNumber: spec.issueNumber || '', fileCount });
+    }
+    if (report.restored || report.missing || report.alreadyMaterialized) githubIssueImportTrace('source-material-cache.issue-cache-rehydrate', report);
+    return report;
+  }
+
+  function githubSourceMaterialCacheLooksCompleteForSource(ws, source = {}, options = {}) {
+    const configuredIssues = configuredGitHubIssueUrls(source, source.repo || '').map((url) => parseGitHubSocialTargetSpec(url)).filter((spec) => spec?.kind === 'issue');
+    if (configuredIssues.length) {
+      const incomplete = configuredIssues.filter((spec) => githubIssueFileCountForSpec(ws, source, spec) <= 1);
+      if (incomplete.length) {
+        return { ok: false, reason: 'configured-issue-cache-incomplete', incomplete: incomplete.map((spec) => `${spec.repo}#${spec.issueNumber}`) };
+      }
+    }
+    const surfaces = normalizeGithubSurfaceConfig(source.enabledSurfaces || ws?.discoverySource?.enabledSurfaces || {});
+    if (surfaces.repoFiles) {
+      const repoFiles = Array.from(ws?.files?.values?.() || []).filter((file) => {
+        const repo = String(file?.repo || '').trim().toLowerCase();
+        return sourceSurfaceForEntry(file) !== 'issues' && repo && repo === String(source.repo || '').trim().toLowerCase();
+      });
+      if (!repoFiles.length) return { ok: false, reason: 'repo-file-cache-empty' };
+    }
+    return { ok: true, reason: 'complete-enough' };
+  }
+
   function workspaceConfigSignature(ws) {
     if (!ws) return '';
     const githubSource = Array.from(ws.sources?.values?.() || []).find((source) => source.kind === 'github' && source.repo);
@@ -14476,12 +14556,22 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     let transportPolicy = requestedTransportPolicy;
     let sourceLoadHardRefresh = Boolean(options.hardRefresh || transportPolicy.skipBrowserCache);
     let restoredSourceMaterialCache = false;
+    let cacheFallbackReason = 'source-material-cache-miss';
     if (transportPolicy.allowCache && !sourceLoadHardRefresh) {
       restoredSourceMaterialCache = await restoreGitHubSourceMaterialCacheIntoWorkspace(ws, githubSource, options);
+      if (restoredSourceMaterialCache) {
+        await restoreConfiguredGitHubIssueThreadCachesIntoWorkspace(ws, githubSource, options);
+        const cacheCompleteness = githubSourceMaterialCacheLooksCompleteForSource(ws, githubSource, options);
+        if (!cacheCompleteness.ok) {
+          githubIssueImportTrace('source-material-cache.incomplete-fallback-to-mirror', { repo: githubSource.repo || '', ref: githubSource.ref || githubSource.requestedRef || '', rootPaths, cacheCompleteness });
+          restoredSourceMaterialCache = false;
+          cacheFallbackReason = cacheCompleteness.reason || 'source-material-cache-incomplete';
+        }
+      }
       if (!restoredSourceMaterialCache) {
-        transportPolicy = githubSourceTransportPolicyForTier('mirror', Object.assign({}, options, { reason: 'source-material-cache-miss' }));
+        transportPolicy = githubSourceTransportPolicyForTier('mirror', Object.assign({}, options, { reason: cacheFallbackReason }));
         sourceLoadHardRefresh = Boolean(options.hardRefresh || transportPolicy.skipBrowserCache);
-        githubIssueImportTrace('source-material-cache.miss-fallback-to-mirror', { repo: githubSource.repo || '', ref: githubSource.ref || githubSource.requestedRef || '', rootPaths });
+        githubIssueImportTrace('source-material-cache.miss-fallback-to-mirror', { repo: githubSource.repo || '', ref: githubSource.ref || githubSource.requestedRef || '', rootPaths, reason: cacheFallbackReason });
       }
     }
     // Source refresh/reconcile must not be a destructive config owner. Explicit
@@ -14566,7 +14656,14 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         if (routeOwnedProgress) routeLoadPresentationStage('github-broad-issues-loaded', { files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
       }
     }
-    if (!restoredSourceMaterialCache) githubSourceMaterialCacheWrite(ws, githubSource, Object.assign({}, options, { transportPolicy, transportRefreshTier: transportPolicy.requestedTier }));
+    if (!restoredSourceMaterialCache) {
+      const cacheCompleteness = githubSourceMaterialCacheLooksCompleteForSource(ws, githubSource, options);
+      if (cacheCompleteness.ok) {
+        githubSourceMaterialCacheWrite(ws, githubSource, Object.assign({}, options, { transportPolicy, transportRefreshTier: transportPolicy.requestedTier }));
+      } else {
+        githubIssueImportTrace('source-material-cache.write-skipped-incomplete', { repo: githubSource.repo || '', cacheCompleteness });
+      }
+    }
     if (preservedSourceConfig) restoreGitHubSourceUserConfig(ws, preservedSourceConfig);
     if (progressScope) {
       ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, { phase: 'source-finalizing', sourceProgress: progressScope, loaded: 1, total: 1, failed: 0 });
@@ -16444,10 +16541,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     let className = 'transport-generic';
     let tier = 'source';
 
-    if (kind === 'local-git') {
+    if (kind === 'local-git' || kind === 'browser-cache') {
       label = 'cache';
-      description = 'Persistent browser-local Git object store';
-      icon = 'fa-solid fa-hard-drive';
+      description = kind === 'browser-cache' ? (String(transport.label || '').trim() || 'Browser source material cache') : 'Persistent browser-local Git object store';
+      icon = kind === 'browser-cache' ? 'fa-solid fa-clock-rotate-left' : 'fa-solid fa-hard-drive';
       className = 'transport-cache';
       tier = 'cache';
     } else if (kind === 'snapshot') {
@@ -16496,9 +16593,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       icon = 'fa-solid fa-box-archive';
       className = 'transport-site-mirror transport-mirror transport-issue-mirror';
       tier = 'mirror';
-    } else if (/^github-cache/u.test(mode)) {
+    } else if (mode === 'browser-cache' || /^github-cache/u.test(mode)) {
       label = 'cache';
-      description = transport.freshness || 'Browser GitHub issue thread cache';
+      description = transport.freshness || transport.label || 'Browser GitHub issue/source cache';
       icon = 'fa-solid fa-clock-rotate-left';
       className = 'transport-cache transport-issue-cache';
       tier = 'cache';
