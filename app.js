@@ -5038,7 +5038,7 @@
           const configChanged = workspaceConfigSignature(ws) !== configSourceSignature(source);
           if (configChanged && (source.kind === 'github-tree' || source.kind === 'github')) {
             routeOwnerRecord('route:reuse-refresh-source', { index, source: configSourceSignature(source), workspace: workspaceConfigSignature(ws) });
-            await loadGitHubStateSourceIntoWorkspace(ws, source, { refreshExisting: true, respectSourceConfig: true, transportRefreshTier: 'mirror', transportPolicy: githubSourceTransportPolicyForTier('mirror', { routeOwnedStartup: true }) });
+            await loadGitHubStateSourceIntoWorkspace(ws, source, { refreshExisting: true, respectSourceConfig: true, transportRefreshTier: 'cache', transportPolicy: githubSourceTransportPolicyForTier('cache', { routeOwnedStartup: true }) });
           } else if (configChanged) {
             await loadUrlsIntoWorkspace(ws, source.urls || []);
           }
@@ -5055,7 +5055,7 @@
           const ws = createWorkspace(source.label || 'Shared lineage workspace', 'Loaded from URL route state.');
           routeLoadPresentationStage('route-source-load-start', { kind: source.kind || '', label: source.label || '', repo: source.repo || '' });
           if (source.kind === 'github-tree' || source.kind === 'github') {
-            await loadGitHubStateSourceIntoWorkspace(ws, source, { routeOwnedStartup: true, respectSourceConfig: true, transportRefreshTier: 'mirror', transportPolicy: githubSourceTransportPolicyForTier('mirror', { routeOwnedStartup: true }) });
+            await loadGitHubStateSourceIntoWorkspace(ws, source, { routeOwnedStartup: true, respectSourceConfig: true, transportRefreshTier: 'cache', transportPolicy: githubSourceTransportPolicyForTier('cache', { routeOwnedStartup: true }) });
           } else {
             await loadUrlsIntoWorkspace(ws, source.urls || []);
           }
@@ -9574,7 +9574,7 @@ ${message}${detail ? ` · ${detail}` : ''}`;
         opened += 1;
         if (source.kind === 'github-tree' || source.kind === 'github') {
           if (!firstWs) maybePrewarmInitialRouteHash(source, ws, sources, 'source-created-before-github-load');
-          await loadGitHubStateSourceIntoWorkspace(ws, source, { startupProgress: true, respectSourceConfig: true, transportRefreshTier: 'mirror', transportPolicy: githubSourceTransportPolicyForTier('mirror', { startupProgress: true }) });
+          await loadGitHubStateSourceIntoWorkspace(ws, source, { startupProgress: true, respectSourceConfig: true, transportRefreshTier: 'cache', transportPolicy: githubSourceTransportPolicyForTier('cache', { startupProgress: true }) });
         } else {
           await loadUrlsIntoWorkspace(ws, source.urls || []);
         }
@@ -11062,6 +11062,8 @@ ${message}${detail ? ` · ${detail}` : ''}`;
     const transportPolicy = githubSourceTransportPolicyFromOptions(options);
     const cacheMaxAgeMs = Number(options.cacheMaxAgeMs || 10 * 60 * 1000);
     const preferCache = Boolean(options.preferCache !== false && transportPolicy.allowCache && !transportPolicy.skipBrowserCache);
+    const requestedTier = normalizeTransportTier(transportPolicy.requestedTier || options.transportRefreshTier || '');
+    const allowLowerTierCacheFallback = !(options.userInitiated === true && requestedTier && requestedTier !== 'cache');
     const commentsMode = String(options.commentsMode || 'always');
     const transportKey = transportPolicy.requestedTier || (options.forceDirectFallback ? 'direct' : options.liveGitHub ? 'proxy' : options.bypassHostedIssueSnapshot ? 'mirror-bypass' : 'snapshot');
     const requestKey = `${githubIssueCacheKey(spec)}::${commentsMode}::${Number(options.commentLimit || 20)}::${options.hardRefresh ? 'refresh' : 'normal'}::${transportKey}`;
@@ -11119,7 +11121,7 @@ ${message}${detail ? ` · ${detail}` : ''}`;
 
       if (!transportPolicy.allowProxy && !transportPolicy.allowDirect) {
         const cached = cachedGitHubIssueThread(spec, { maxAgeMs: 0, allowStale: true });
-        if (cached) {
+        if (cached && allowLowerTierCacheFallback) {
           cached.warning = 'Hosted issue snapshot unavailable; stale browser cache used because live source transport was not requested.';
           githubIssueImportTrace('issue-thread.mirror-only-stale-cache-hit', { warning: cached.warning, thread: githubIssueThreadTraceSummary(cached) });
           return cached;
@@ -11155,7 +11157,7 @@ ${message}${detail ? ` · ${detail}` : ''}`;
 
       const apiError = errors[0]?.error || null;
       const cached = cachedGitHubIssueThread(spec, { maxAgeMs: 0, allowStale: true });
-      if (cached && githubIssueErrorIsRateOrAbuseBlocked(apiError)) {
+      if (cached && allowLowerTierCacheFallback && githubIssueErrorIsRateOrAbuseBlocked(apiError)) {
         cached.fallbackErrors = errors.slice();
         cached.warning = apiError?.message || 'GitHub API is temporarily unavailable; cached snapshot used.';
         githubIssueImportTrace('issue-thread.stale-cache-rate-limit', { warning: cached.warning, thread: githubIssueThreadTraceSummary(cached) });
@@ -11174,11 +11176,14 @@ ${message}${detail ? ` · ${detail}` : ''}`;
         if (readerThread) return readerThread;
       }
 
-      if (cached) {
+      if (cached && allowLowerTierCacheFallback) {
         cached.fallbackErrors = errors.slice();
         cached.warning = apiError?.message || 'Live GitHub issue material unavailable; cached snapshot used.';
         githubIssueImportTrace('issue-thread.stale-cache-hit', { warning: cached.warning, thread: githubIssueThreadTraceSummary(cached) });
         return cached;
+      }
+      if (cached && !allowLowerTierCacheFallback) {
+        githubIssueImportTrace('issue-thread.stale-cache-suppressed-by-requested-tier', { requestedTier, thread: githubIssueThreadTraceSummary(cached) });
       }
       const primary = apiError || new Error('GitHub issue material unavailable.');
       primary.fallbackErrors = errors;
@@ -13860,6 +13865,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   async function loadGitHubIssueIntoWorkspace(ws, issueUrl, options = {}) {
     const spec = parseGitHubIssueSpec(issueUrl);
     if (!spec) throw new Error('Paste a GitHub issue URL like https://github.com/owner/repo/issues/123.');
+    const transportPolicy = githubSourceTransportPolicyFromOptions(options);
     githubIssueImportTrace('issue-import.start', { issueUrl, spec: { repo: spec.repo, issueNumber: spec.issueNumber, issueUrl: spec.issueUrl }, workspace: { id: ws?.id || '', label: ws?.label || '' }, options: { hardRefresh: Boolean(options.hardRefresh), preferCache: Boolean(options.preferCache), configuredTarget: Boolean(options.configuredTarget), userInitiated: Boolean(options.userInitiated), includeBody: options.includeBody !== false, liveGitHub: Boolean(options.liveGitHub), bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot), forceDirectFallback: Boolean(options.forceDirectFallback), transportRefreshTier: options.transportRefreshTier || '' } });
     try {
       const thread = await fetchGitHubIssueThreadWithFallback(spec, options);
@@ -13876,7 +13882,18 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       githubIssueImportTrace('issue-import.complete', { result: Boolean(result), files: ws?.files?.size || 0, nodes: Array.isArray(ws?.nodes) ? ws.nodes.length : 0 });
       return result;
     } catch (error) {
-      githubIssueImportTrace('issue-import.error', { issueUrl, error });
+      const requestedTier = normalizeTransportTier(transportPolicy.requestedTier || options.transportRefreshTier || '');
+      if (ws && options.userInitiated === true && requestedTier && requestedTier !== 'cache') {
+        ws.githubIssueTransport = {
+          kind: 'github-issue',
+          adapterMode: `github-${requestedTier}-unavailable`,
+          repo: spec.repo || '',
+          issueNumber: spec.issueNumber || '',
+          freshness: `${requestedTier} unavailable: ${error?.message || String(error)}`,
+          cachedAt: ''
+        };
+      }
+      githubIssueImportTrace('issue-import.error', { issueUrl, requestedTier, error });
       throw error;
     }
   }
@@ -16235,9 +16252,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     let icon = 'fa-solid fa-code-branch';
     let className = 'transport-proxy transport-issue-proxy';
     let tier = 'proxy';
-    if (mode === 'site-issue-snapshot') {
+    if (mode === 'site-issue-snapshot' || /mirror/u.test(mode)) {
       label = 'mirror';
-      description = 'Hosted issue snapshot beside the viewer';
+      description = mode === 'site-issue-snapshot' ? 'Hosted issue snapshot beside the viewer' : (transport.freshness || 'Hosted issue snapshot unavailable');
       icon = 'fa-solid fa-box-archive';
       className = 'transport-site-mirror transport-mirror transport-issue-mirror';
       tier = 'mirror';
@@ -16247,6 +16264,12 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       icon = 'fa-solid fa-clock-rotate-left';
       className = 'transport-cache transport-issue-cache';
       tier = 'cache';
+    } else if (/proxy/u.test(mode)) {
+      label = 'proxy';
+      description = transport.freshness || 'Live GitHub issue transport';
+      icon = 'fa-solid fa-code-branch';
+      className = 'transport-proxy transport-issue-proxy';
+      tier = 'proxy';
     } else if (/jina|reader|direct/u.test(mode)) {
       label = 'direct';
       description = 'Explicit direct/read fallback for GitHub issue material';

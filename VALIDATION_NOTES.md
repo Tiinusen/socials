@@ -178,9 +178,14 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 
 ## v50 source transport unification
 
-- Route-owned/startup GitHub source loading now requests the `mirror` transport tier explicitly. Embedded route/share state can render quickly, but the source reconciliation pass bypasses stale browser source cache and revalidates the same-origin repository and issue mirrors before any live transport is considered.
-- Transport tiers are owned by a single policy object passed through the GitHub source loader, repository discovery, issue-list discovery, and issue-thread imports: `cache -> mirror -> proxy -> direct`.
-- `mirror` is mirror-only. If the hosted repository/issue snapshot is unavailable, startup does not silently fall through to live GitHub/API/proxy. Stale cache may be used with a warning, or the source reports mirror unavailable until the user clicks the next tier.
+- Transport tiers are owned by a single policy object passed through the GitHub source loader, repository discovery, issue-list discovery, and issue-thread imports.
+
+## v51 cache-first startup and strict tier clicks
+
+- Route-owned/startup GitHub source loading is cache-first again: warm durable source cache can render immediately, and the same policy falls through to the co-hosted mirror only when cache cannot satisfy the source material. Embedded route/share state is not treated as source cache.
+- Transport order remains `cache -> mirror -> proxy -> direct`.
+- User-initiated `mirror`, `proxy`, and `direct` clicks no longer silently demote failed issue imports back to stale cache; the requested tier either supplies material or reports unavailable, so the next badge click continues forward instead of jumping back to `cache`.
+- `mirror` is mirror-only. If the hosted repository/issue snapshot is unavailable, startup does not silently fall through to live GitHub/API/proxy.
 - `proxy` bypasses hosted mirrors and may use the configured live/proxy source transport. It does not silently invoke the direct/raw fallback.
 - `direct` is the explicit last-resort raw/reader fallback. It is user-initiated only.
 - Source/discovery configuration remains user-owned during all transport refreshes. The loader snapshots and restores repo/ref/root paths, enabled surfaces, and configured Issue/Discussion URLs.

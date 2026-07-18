@@ -1260,8 +1260,12 @@ function validateJavascriptSurface() {
   if (!js.includes('refresh-source-via-live-transport') || !js.includes('bypassRepositorySnapshot: true') || !js.includes('bypassHostedIssueSnapshot: true') || !js.includes('githubIssueTransportPresentation') || !js.includes('renderWorkspaceTransportPills')) {
     fail('Mirror/cache transport badges must provide an explicit next-level live-source refresh path for repository files and issue snapshots.');
   }
-  for (const token of ['TRANSPORT_TIER_ORDER', "['cache', 'mirror', 'proxy', 'direct']", 'data-transport-tier', 'restoreGitHubSourceUserConfig', 'preserveSourceConfig', 'forceDirectFallback', 'transportRefreshTier']) {
+  for (const token of ['TRANSPORT_TIER_ORDER', "['cache', 'mirror', 'proxy', 'direct']", 'data-transport-tier', 'restoreGitHubSourceUserConfig', 'preserveSourceConfig', 'forceDirectFallback', 'transportRefreshTier', 'allowLowerTierCacheFallback', 'stale-cache-suppressed-by-requested-tier']) {
     if (!js.includes(token)) fail(`Transport badge tier progression/source-config guard missing: ${token}`);
+  }
+  if (!js.includes("transportRefreshTier: 'cache', transportPolicy: githubSourceTransportPolicyForTier('cache', { routeOwnedStartup: true })")
+    || !js.includes("transportRefreshTier: 'cache', transportPolicy: githubSourceTransportPolicyForTier('cache', { startupProgress: true })")) {
+    fail('Route/startup GitHub source loads must begin cache-first, then fall through the same transport policy to mirror when source cache is absent.');
   }
   const sourceLoadStart = js.indexOf('  async function loadGitHubStateSourceIntoWorkspace(');
   const sourceLoadEnd = js.indexOf('  async function createWorkspaceFromInputs(', sourceLoadStart);
