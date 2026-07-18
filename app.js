@@ -3513,6 +3513,37 @@
     render();
   }
 
+
+  function maybeAutoOpenSingleVisibleLeafAfterLoad(ws, options = {}) {
+    if (!ws || ws.selectedNodeId || ws.pendingSelectedRoute) return false;
+    if (ws.loading || ws.discoveryProgress || (typeof workspaceHasActiveDiscoveryProgress === 'function' && workspaceHasActiveDiscoveryProgress(ws))) return false;
+    let nodes = [];
+    try { nodes = filteredDiscoveryNodes(ws) || []; } catch (_) { nodes = ws.nodes || []; }
+    nodes = (nodes || []).filter((node) => {
+      if (!node?.id) return false;
+      if (typeof localShadowDraftForOriginal === 'function' && localShadowDraftForOriginal(ws, node)) return false;
+      if (typeof isResolvedFindingWrapperNode === 'function' && isResolvedFindingWrapperNode(ws, node)) return false;
+      if (typeof isGitHubTargetOnlyFindingNode === 'function' && isGitHubTargetOnlyFindingNode(node)) return false;
+      return true;
+    });
+    if (nodes.length !== 1) return false;
+    const node = nodes[0];
+    const signature = `${node.id || ''}:${node.path || ''}:${ws.files?.size || 0}:${ws.nodes?.length || 0}`;
+    if (ws.autoOpenedSingleLeafSignature === signature) return false;
+    ws.autoOpenedSingleLeafSignature = signature;
+    app.activeWorkspaceId = ws.id;
+    focusWorkspaceWindow(ws.id);
+    ws.selectedNodeId = node.id;
+    ws.pendingSelectedRoute = null;
+    suppressCachedLens(options.reason || 'auto-open-single-visible-leaf', 1200);
+    lockLineageView(ws, node, options.reason || 'auto-open-single-visible-leaf');
+    if (typeof expandMobileChromeForLineage === 'function') expandMobileChromeForLineage(ws, 'auto-open-single-visible-leaf');
+    if (typeof setRouteState === 'function') setRouteState(options.routeKind || 'replace');
+    else if (typeof updateUrlState === 'function') updateUrlState({ replace: true });
+    githubIssueImportTrace?.('workspace.auto-open-single-visible-leaf', { workspace: ws.id || '', node: node.id || '', path: node.path || '', reason: options.reason || '' });
+    return true;
+  }
+
   function cleanupWorkspaceRuntimeState(ws) {
     if (!ws) return;
     if (ws.assetUrls && typeof ws.assetUrls.forEach === 'function') {
@@ -11537,6 +11568,27 @@ ${message}${detail ? ` · ${detail}` : ''}`;
         githubIssueImportTrace('site-issue-snapshot.bypassed-for-live-refresh', { repo: spec?.repo || '', issueNumber: spec?.issueNumber || '', transportTier: transportPolicy.requestedTier });
       }
 
+      if (options.allowIssueProxyFallbackOnMirrorMiss === true && requestedTier === 'mirror' && !transportPolicy.allowProxy && !transportPolicy.allowDirect) {
+        const issueProxyPolicy = githubSourceTransportPolicyForTier('proxy', { userInitiated: Boolean(options.userInitiated), reason: 'issue-mirror-miss-proxy-fallback' });
+        const proxyThread = await tryThread('GitHub API (issue mirror miss proxy fallback)', () => fetchGitHubIssueThread(spec, Object.assign({}, options, {
+          ignoreRateLimitGuard: false,
+          commentsMode,
+          commentLimit: Math.min(100, Math.max(1, Number(options.commentLimit || 20))),
+          liveGitHub: true,
+          bypassHostedIssueSnapshot: true,
+          forceDirectFallback: false,
+          allowSharedReaderFallback: false,
+          transportRefreshTier: 'proxy',
+          transportPolicy: issueProxyPolicy
+        })), 'github-api', true);
+        if (proxyThread) {
+          proxyThread.issueMirrorMissFallback = true;
+          githubIssueImportTrace('issue-thread.mirror-miss-proxy-fallback-ok', githubIssueThreadTraceSummary(proxyThread));
+          return proxyThread;
+        }
+        githubIssueImportTrace('issue-thread.mirror-miss-proxy-fallback-failed', { repo: spec?.repo || '', issueNumber: spec?.issueNumber || '', errors });
+      }
+
       if (!transportPolicy.allowProxy && !transportPolicy.allowDirect) {
         const cached = cachedGitHubIssueThread(spec, { maxAgeMs: 0, allowStale: true });
         if (cached && allowLowerTierCacheFallback) {
@@ -14494,6 +14546,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
             allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback || transportPolicy.allowDirect),
             allowDirectGithubClone: Boolean(options.allowDirectGithubClone || transportPolicy.allowDirect),
             forceDirectFallback: Boolean(options.forceDirectFallback || transportPolicy.allowDirect),
+            allowIssueProxyFallbackOnMirrorMiss: Boolean(options.allowIssueProxyFallbackOnMirrorMiss || ((issueUrls || []).length && transportPolicy.requestedTier === 'mirror' && !transportPolicy.allowProxy && !transportPolicy.allowDirect)),
             transportRefreshTier: transportPolicy.requestedTier,
             transportPolicy
           });
@@ -14743,6 +14796,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback || transportPolicy.allowDirect),
           allowDirectGithubClone: Boolean(options.allowDirectGithubClone || transportPolicy.allowDirect),
           forceDirectFallback: Boolean(options.forceDirectFallback || transportPolicy.allowDirect),
+          allowIssueProxyFallbackOnMirrorMiss: Boolean(options.allowIssueProxyFallbackOnMirrorMiss || (transportPolicy.requestedTier === 'mirror' && !transportPolicy.allowProxy && !transportPolicy.allowDirect)),
           transportRefreshTier: transportPolicy.requestedTier,
           transportPolicy
         });
@@ -14790,8 +14844,11 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       await waitForRenderedSourceRefreshCommit(ws);
       ws.loading = false;
       ws.discoveryProgress = null;
+      const autoOpenedSingleLeaf = maybeAutoOpenSingleVisibleLeafAfterLoad(ws, { reason: 'github-source-load-complete', routeKind: 'replace' });
       if (typeof render === 'function') render();
-      if (routeOwnedProgress) routeLoadPresentationStage('github-source-load-complete', { files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
+      if (routeOwnedProgress) routeLoadPresentationStage('github-source-load-complete', { files: ws.files?.size || 0, nodes: ws.nodes?.length || 0, autoOpenedSingleLeaf });
+    } else {
+      maybeAutoOpenSingleVisibleLeafAfterLoad(ws, { reason: 'github-source-load-complete', routeKind: 'replace' });
     }
     return githubSource;
   }
