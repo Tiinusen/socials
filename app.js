@@ -6015,6 +6015,7 @@
       enabledSurfaces: normalizeGithubSurfaceConfig(source?.enabledSurfaces || {}),
       configuredIssueUrls: configuredGitHubIssueUrls(source, source?.repo || ''),
       issueUrls: configuredGitHubIssueUrls(source, source?.repo || ''),
+      discoveredIssueUrls: normalizeGithubSurfaceConfig(source?.enabledSurfaces || {}).issues ? normalizedGitHubIssueUrls(source?.discoveredIssueUrls || [], source?.repo || '') : [],
       rootPaths: Array.isArray(source?.rootPaths) ? source.rootPaths.slice() : parseRootPaths(source?.rootPath || '.topics'),
       ref: source?.requestedRef || source?.mutableRef || source?.sourceRef || source?.ref || ''
     };
@@ -6032,6 +6033,7 @@
     source.ref = snapshot.ref || source.ref || '';
     source.requestedRef = snapshot.ref || source.requestedRef || source.ref || '';
     setConfiguredGitHubIssueUrls(source, snapshot.configuredIssueUrls || snapshot.issueUrls || []);
+    source.discoveredIssueUrls = normalizedGitHubIssueUrls(snapshot.discoveredIssueUrls || [], source.repo || '');
     if (ws.discoverySource && ws.discoverySource.sourceId === source.id) {
       ws.discoverySource.enabledSurfaces = normalizeGithubSurfaceConfig(source.enabledSurfaces || {});
       ws.discoverySource.issueUrls = configuredGitHubIssueUrls(source, source.repo || '');
@@ -6119,6 +6121,7 @@
       allowDirectGithubClone: Boolean(tierOptions.allowDirectGithubClone),
       forceDirectFallback: Boolean(tierOptions.forceDirectFallback),
       preserveSourceConfig: true,
+      respectSourceConfig: true,
       sourceProgress: 'github-source-refresh'
     });
     restoreGitHubSourceUserConfig(ws, sourceConfig);
@@ -7562,8 +7565,11 @@
 
   function activeGitHubIssueUrls(source = {}, repo = '', ws = null) {
     const cleanRepo = repo || source.repo || '';
+    const surfaces = normalizeGithubSurfaceConfig(source.enabledSurfaces || {});
+    const configured = configuredGitHubIssueUrls(source, cleanRepo);
+    if (!surfaces.issues) return normalizedGitHubIssueUrls(configured, cleanRepo);
     const urls = [
-      ...configuredGitHubIssueUrls(source, cleanRepo),
+      ...configured,
       ...(Array.isArray(source.discoveredIssueUrls) ? source.discoveredIssueUrls : []),
       ...(ws ? workspaceGitHubIssueUrls(ws, cleanRepo) : [])
     ];
@@ -7578,6 +7584,75 @@
     // Adapter-discovered or imported issue snapshots must not be written here.
     source.issueUrls = urls.slice();
     return source;
+  }
+
+  function gitHubIssueTargetKey(value = '', repo = '') {
+    const spec = typeof parseGitHubSocialTargetSpec === 'function' ? parseGitHubSocialTargetSpec(value) : null;
+    if (!spec || spec.kind !== 'issue' || !spec.issueNumber) return '';
+    if (repo && String(spec.repo || '').toLowerCase() !== String(repo || '').toLowerCase()) return '';
+    return `${String(spec.repo || '').toLowerCase()}#${String(spec.issueNumber)}`;
+  }
+
+  function gitHubIssueSurfaceEntryKey(entry = {}, repo = '') {
+    const candidates = [
+      entry.sourceOrigin, entry.publishedOriginUrl, entry.recoveredFromUrl,
+      entry.rawUrl, entry.browseUrl, entry.origin, entry.href, entry.url,
+      entry.path, entry.storageKey, entry.name
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+      const key = gitHubIssueTargetKey(candidate, repo || entry.repo || '');
+      if (key) return key;
+    }
+    const issueNumber = String(entry.issueNumber || entry.githubIssueNumber || '').trim();
+    const cleanRepo = String(entry.repo || repo || '').trim().toLowerCase();
+    return issueNumber && cleanRepo ? `${cleanRepo}#${issueNumber}` : '';
+  }
+
+  function pruneGitHubIssueSurfaceToConfiguredTargets(ws, source, issueUrls = []) {
+    if (!ws || !source?.repo) return 0;
+    const repo = String(source.repo || '').trim();
+    const sourceId = String(source.id || '').trim();
+    const allowed = new Set(normalizedGitHubIssueUrls(issueUrls, repo).map((url) => gitHubIssueTargetKey(url, repo)).filter(Boolean));
+    if (!allowed.size) return 0;
+    let removed = 0;
+    const shouldRemove = (entry = {}, key = '') => {
+      const enriched = Object.assign({}, entry, { storageKey: key });
+      if (sourceSurfaceForEntry(enriched) !== 'issues') return false;
+      const entrySourceId = String(entry.sourceId || entry.file?.sourceId || '').trim();
+      const issueKey = gitHubIssueSurfaceEntryKey(enriched, repo);
+      const repoMatches = Boolean(issueKey && issueKey.startsWith(`${repo.toLowerCase()}#`));
+      const sourceMatches = !sourceId || entrySourceId === sourceId || repoMatches;
+      return Boolean(sourceMatches && issueKey && !allowed.has(issueKey));
+    };
+    const removedStorageKeys = new Set();
+    for (const [key, file] of Array.from(ws.files?.entries?.() || [])) {
+      if (!shouldRemove(file, key)) continue;
+      ws.files.delete(key);
+      removedStorageKeys.add(key);
+      removed += 1;
+    }
+    for (const [key, asset] of Array.from(ws.assets?.entries?.() || [])) {
+      if (!shouldRemove(asset, key)) continue;
+      if (ws.assetUrls?.has(key)) {
+        try { URL.revokeObjectURL(ws.assetUrls.get(key)); } catch (_) {}
+        ws.assetUrls.delete(key);
+      }
+      ws.assets.delete(key);
+      removedStorageKeys.add(key);
+      removed += 1;
+    }
+    if (Array.isArray(ws.nodes) && removedStorageKeys.size) {
+      const before = ws.nodes.length;
+      ws.nodes = ws.nodes.filter((node) => !removedStorageKeys.has(node.storageKey || node.path || node.file?.storageKey || ''));
+      removed += Math.max(0, before - ws.nodes.length);
+      if (ws.nodeById instanceof Map) {
+        for (const [id, node] of Array.from(ws.nodeById.entries())) {
+          if (removedStorageKeys.has(node.storageKey || node.path || node.file?.storageKey || '')) ws.nodeById.delete(id);
+        }
+      }
+    }
+    if (removed) ws.logs?.push?.(`Pruned ${removed} broad GitHub issue entr${removed === 1 ? 'y' : 'ies'} outside configured issue targets for ${source.repo}.`);
+    return removed;
   }
 
   function noteDiscoveredGitHubIssueUrl(source, issueUrl = '') {
@@ -7954,12 +8029,33 @@
     return source.label || source.kind;
   }
 
-  function sourceBadgeClass(source) {
+  function sourceStatusForBadge(ws, source = {}) {
+    if (!source) return null;
+    return source.issueDiscoveryStatus || ws?.githubIssueDiscoveryStatus?.[source.id] || null;
+  }
+
+  function sourceNeedsAttention(ws, source = {}) {
+    const status = sourceStatusForBadge(ws, source);
+    return ['failed', 'partial', 'rate-limited'].includes(String(status?.state || '').toLowerCase());
+  }
+
+  function sourceBadgeClass(source, ws = null) {
     if (!source) return 'source-unknown';
-    if (source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue' || source.kind === 'github-discussion' || source.kind === 'github-discussion') return 'source-github';
-    if (source.kind === 'local') return 'source-local';
-    if (source.kind === 'draft') return 'source-draft';
-    return 'source-url';
+    const attention = sourceNeedsAttention(ws, source) ? ' source-needs-attention' : '';
+    if (source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue' || source.kind === 'github-discussion' || source.kind === 'github-discussion') return `source-github${attention}`;
+    if (source.kind === 'local') return `source-local${attention}`;
+    if (source.kind === 'draft') return `source-draft${attention}`;
+    return `source-url${attention}`;
+  }
+
+  function sourceBadgeTitle(ws, source = {}) {
+    const label = source.origin || source.label || source.id || 'Source';
+    const status = sourceStatusForBadge(ws, source);
+    if (!sourceNeedsAttention(ws, source)) return label;
+    const message = shortGitHubDiscoveryStatus(status?.message || status?.error || '') || 'Needs attention';
+    const detail = compactGitHubDiscoveryNote(status?.message || status?.error || '');
+    return `${label}
+${message}${detail ? ` · ${detail}` : ''}`;
   }
 
   function renderSourceBadge(ws, nodeOrFile) {
@@ -7971,7 +8067,7 @@
       : 'fa-solid fa-link';
     const editable = source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue' || source.kind === 'github-discussion' || source.kind === 'github-discussion';
     const action = editable ? ` data-action="edit-source" data-ws="${escapeAttr(ws.id)}" data-source="${escapeAttr(source.id)}" role="button" tabindex="0"` : '';
-    return `<span class="badge-soft source-chip ${sourceBadgeClass(source)}"${action} title="${escapeAttr(source.origin || source.label || source.id)}"><i class="${icon}"></i>${escapeHtml(shortText(sourceShortLabel(ws, source.id), 34))}</span>`;
+    return `<span class="badge-soft source-chip ${sourceBadgeClass(source, ws)}"${action} title="${escapeAttr(sourceBadgeTitle(ws, source))}"><i class="${icon}"></i>${escapeHtml(shortText(sourceShortLabel(ws, source.id), 34))}</span>`;
   }
 
   function sourceCount(ws) {
@@ -13998,12 +14094,14 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       const surfaces = normalizeGithubSurfaceConfig(canonical.enabledSurfaces || {});
       const existingIssueSurface = workspaceHasGitHubIssueSurface(ws, canonical.id);
       const explicitIssueTargets = configuredGitHubIssueUrls(canonical, canonical.repo || '');
-      const discoveredIssueTargets = (Array.isArray(canonical.discoveredIssueUrls) ? canonical.discoveredIssueUrls : [])
-        .concat(workspaceGitHubIssueUrls(ws, canonical.repo || '').filter((url) => !explicitIssueTargets.includes(url)));
-      // GitHub issue/comment material is live social material, not a static repo
-      // snapshot. Explicit issue URLs are durable source anchors and refresh even
-      // when the broad Issue Discovery surface is off. The checkbox only owns
-      // bounded repo-level discovery.
+      const discoveredIssueTargets = surfaces.issues
+        ? (Array.isArray(canonical.discoveredIssueUrls) ? canonical.discoveredIssueUrls : [])
+          .concat(workspaceGitHubIssueUrls(ws, canonical.repo || '').filter((url) => !explicitIssueTargets.includes(url)))
+        : [];
+      // Explicit issue URLs are durable source anchors and refresh even when the
+      // broad Issue Discovery surface is off. Discovered/workspace-derived issue
+      // targets belong to the broad discovery surface and must not leak back in
+      // when the user disabled Issue Discovery.
       const knownTargets = normalizedGitHubIssueUrls([...explicitIssueTargets, ...discoveredIssueTargets], canonical.repo || '');
       if (knownTargets.length) {
         loaded += await discoverGitHubIssuesIntoWorkspace(ws, canonical, knownTargets, {
@@ -14063,7 +14161,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (!ws || !normalizedSource.repo) return null;
     const rootPaths = normalizedSource.rootPaths && normalizedSource.rootPaths.length ? normalizedSource.rootPaths : ['.topics'];
     const githubSource = registerGitHubSource(ws, normalizedSource);
-    const enabledSurfaces = protectExistingGitHubSourceSurfaces(ws, githubSource, normalizedSource.enabledSurfaces || {}, { allowSurfaceDisable: Boolean(options.allowSurfaceDisable) });
+    const enabledSurfaces = options.respectSourceConfig === true
+      ? normalizeGithubSurfaceConfig(normalizedSource.enabledSurfaces || {})
+      : protectExistingGitHubSourceSurfaces(ws, githubSource, normalizedSource.enabledSurfaces || {}, { allowSurfaceDisable: Boolean(options.allowSurfaceDisable) });
     githubSource.enabledSurfaces = enabledSurfaces;
     // Source refresh/reconcile must not be a destructive config owner. Explicit
     // Save/source-edit owns disabling surfaces and has its own pruning path.
@@ -14098,6 +14198,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const preservedSourceConfig = options.preserveSourceConfig ? githubSourceUserConfigSnapshot(githubSource) : null;
     if (typeof discoverGitHubIssuesIntoWorkspace === 'function') {
       const explicitIssueTargets = configuredGitHubIssueUrls(githubSource, githubSource.repo || '');
+      if (explicitIssueTargets.length && !enabledSurfaces.issues) pruneGitHubIssueSurfaceToConfiguredTargets(ws, githubSource, explicitIssueTargets);
       if (explicitIssueTargets.length) {
         await discoverGitHubIssuesIntoWorkspace(ws, githubSource, explicitIssueTargets, {
           refreshExisting: true,
@@ -14111,6 +14212,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           liveGitHub: Boolean(options.liveGitHub),
           bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot)
         });
+        if (!enabledSurfaces.issues) pruneGitHubIssueSurfaceToConfiguredTargets(ws, githubSource, explicitIssueTargets);
         if (routeOwnedProgress) routeLoadPresentationStage('github-explicit-issues-loaded', { issueTargets: explicitIssueTargets.length, files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
       }
       if (enabledSurfaces.issues) {
@@ -16039,7 +16141,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (transport.metadataUrl) detail.push(`Metadata: ${transport.metadataUrl}`);
     if (transport.proxyUrl && kind === 'git-proxy') detail.push(`Proxy: ${transport.proxyUrl}`);
     detail.push('Canonical source remains unchanged');
-    return { kind, tier, label, description, icon, className, title: detail.join(' · '), commit };
+    return { kind, tier, label, description, icon, className, title: detail.join(' · '), commit, repo: transport.repo || '', scope: transport.repo || commit || '' };
   }
 
   function githubIssueTransportPresentation(transport = {}) {
@@ -16076,7 +16178,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (transport.snapshotMetadataUrl) detail.push(`Snapshot: ${transport.snapshotMetadataUrl}`);
     if (transport.cachedAt) detail.push(`Cached: ${transport.cachedAt}`);
     detail.push('Click to try the next live transport level for files and issues');
-    return { kind: mode, tier, label, description, icon, className, title: detail.join(' · ') };
+    const scope = transport.repo && transport.issueNumber ? `${transport.repo}#${transport.issueNumber}` : (transport.repo || 'GitHub issues');
+    return { kind: mode, tier, label, description, icon, className, title: detail.join(' · '), repo: transport.repo || '', issueNumber: transport.issueNumber || '', cachedAt: transport.cachedAt || '', scope };
   }
 
   function workspaceIssueTransportFromThread(spec = {}, thread = {}) {
@@ -25784,16 +25887,10 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
   function renderLineageModuleCards(ws) {
     const counts = lineageModuleSummary(ws);
     const cards = [];
-    if (counts.github || counts.githubEnabled) {
-      const value = counts.github
-        ? `${counts.github} issue target${counts.github === 1 ? '' : 's'}`
-        : (counts.githubRunning ? 'Running' : 'Enabled');
-      const compactStatus = counts.githubFailed ? shortGitHubDiscoveryStatus(counts.githubStatusMessage) : '';
-      const note = counts.githubFailed
-        ? compactGitHubDiscoveryNote(counts.githubStatusMessage)
-        : (counts.github ? 'Read-only source surface' : 'Waiting for source data');
-      cards.push(['fa-brands fa-github', 'GitHub discovery', compactStatus || value, note, counts.githubFailed ? 'needs-attention' : '', counts.githubSourceId || '', 'github']);
-    }
+    // GitHub issue/discussion health belongs to the source badge. A separate
+    // “GitHub discovery” module card adds visual boilerplate and can imply that
+    // discovery is an independent source owner. Keep the module strip for
+    // Tiinex artifact families only.
     if (counts.discovery) cards.push(['fa-solid fa-compass', 'Discovery', `${counts.discovery} discovery node${counts.discovery === 1 ? '' : 's'}`, 'Findings stay candidates until promoted', '', '', 'discovery']);
     if (counts.resource) cards.push(['fa-solid fa-boxes-stacked', 'Resources', `${counts.resource} resource node${counts.resource === 1 ? '' : 's'}`, counts.budget || counts.usage ? `${counts.budget} budget · ${counts.usage} usage` : 'Needs, contributions, allocations', '', '', 'resource']);
     if (counts.instrument) cards.push(['fa-solid fa-scroll', 'Instruments', `${counts.instrument} instrument node${counts.instrument === 1 ? '' : 's'}`, `${counts.financial} financial · ${counts.consent} consent`, '', '', 'instrument']);
@@ -26779,6 +26876,28 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
 
 
 
+  function transportClock(value = '') {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    const date = new Date(text);
+    if (Number.isNaN(date.getTime())) return text.slice(0, 16);
+    return date.toISOString().slice(11, 16);
+  }
+
+  function compactTransportTitle(presentation = {}) {
+    const tier = normalizeTransportTier(presentation.tier || presentation.label || '') || String(presentation.label || 'transport').toLowerCase();
+    const scope = presentation.scope || presentation.repo || presentation.commit || '';
+    const freshness = presentation.cachedAt ? ` · ${transportClock(presentation.cachedAt)}` : '';
+    return `${tier}${scope ? ` · ${scope}` : ''}${freshness}`;
+  }
+
+  function transportPillTitle(presentation = {}, nextTier = '') {
+    const base = compactTransportTitle(presentation);
+    const next = normalizeTransportTier(nextTier || '') || 'next';
+    return `${base}
+Click: try ${next}`;
+  }
+
   function renderTransportPresentationPill(ws, presentation, options = {}) {
     if (!presentation) return '';
     const currentTier = normalizeTransportTier(presentation.tier || presentation.label || '');
@@ -26788,8 +26907,8 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       ? ` data-action="refresh-source-via-live-transport" data-ws="${escapeAttr(ws?.id || '')}" data-transport-tier="${escapeAttr(currentTier)}" role="button" tabindex="0"`
       : '';
     const title = refreshable
-      ? `${presentation.title} · Click to try ${nextTier} transport without changing source settings.`
-      : presentation.title;
+      ? transportPillTitle(presentation, nextTier)
+      : compactTransportTitle(presentation);
     return `<span class="workspace-transport-pill ${escapeAttr(presentation.className)}${refreshable ? ' transport-refreshable' : ''}"${attrs} title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}"><i class="${escapeAttr(presentation.icon)}"></i><span>${escapeHtml(presentation.label)}</span></span>`;
   }
 
@@ -26829,7 +26948,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         const count = sourceDisplayCount(ws, source);
         const editable = source.kind === 'github' || source.kind === 'github-tree' || source.kind === 'github-issue' || source.kind === 'github-discussion' || source.kind === 'github-discussion';
         const action = editable ? ` data-action="edit-source" data-ws="${escapeAttr(ws.id)}" data-source="${escapeAttr(source.id)}" role="button" tabindex="0"` : '';
-        return `<span class="workspace-source-pill ${sourceBadgeClass(source)}"${action} title="${escapeAttr(source.origin || source.label || source.id)}">
+        return `<span class="workspace-source-pill ${sourceBadgeClass(source, ws)}"${action} title="${escapeAttr(sourceBadgeTitle(ws, source))}">
           <i class="${icon}"></i>
           <span>${escapeHtml(shortText(sourceShortLabel(ws, source.id), 34))}</span>
           <small>${count}</small>
