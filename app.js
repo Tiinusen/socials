@@ -171,17 +171,21 @@
     if (previous === releaseKey) return { releaseKey, previous, changed: false, removed: 0 };
 
     let removed = 0;
-    // Keep durable source-material caches across app releases. App asset
-    // cache-busting is owned by ?v= build ids; GitHub issue cache freshness is
-    // owned by the transport tier and explicit cache→mirror/proxy refresh path.
+    // A public rebuild is the strongest freshness signal we own. App assets are
+    // cache-busted with ?v= build ids; source-material caches are intentionally
+    // invalidated here so a user does not have to click the cache badge after a
+    // new public branch/site issue snapshot has been published. Local/draft
+    // workspaces and publication receipts are not touched.
     [
       STORAGE_KEYS.githubCommitCache,
+      STORAGE_KEYS.githubIssueThreadCache,
       STORAGE_KEYS.githubIssueImportTrace,
       STORAGE_KEYS.githubRepoFetchTrace,
       STORAGE_KEYS.repositoryTransportHealth,
       STORAGE_KEYS.exactHistoricalReadBudget
     ].forEach((key) => { storageRemoveExact(localStorage, key); removed += 1; });
     removed += storageRemovePrefixes(localStorage, [
+      STORAGE_KEYS.githubSourceMaterialCachePrefix,
       STORAGE_KEYS.adapterRateLimitPrefix,
       STORAGE_KEYS.browserScrollStatePrefix
     ]);
@@ -9521,6 +9525,28 @@ ${message}${detail ? ` · ${detail}` : ''}`;
     return `${STORAGE_KEYS.githubSourceMaterialCachePrefix}${hashFast(signature)}`;
   }
 
+  function githubSourceMaterialCacheMaxAgeMs() {
+    const optionValue = Number(window.TIINEX_VIEWER_OPTIONS?.sourceMaterialCacheMaxAgeMs || app.settings?.sourceMaterialCacheMaxAgeMs || 2 * 60 * 60 * 1000);
+    if (!Number.isFinite(optionValue) || optionValue <= 0) return 2 * 60 * 60 * 1000;
+    return Math.max(5 * 60 * 1000, optionValue);
+  }
+
+  function githubSourceMaterialCacheFreshness(payload = {}, source = {}) {
+    const releaseKey = releaseCacheIdentityKey();
+    const payloadReleaseKey = String(payload.releaseKey || '').trim();
+    if (releaseKey && payloadReleaseKey && payloadReleaseKey !== releaseKey) {
+      return { ok: false, reason: 'release-changed', releaseKey, payloadReleaseKey, ageMs: Infinity };
+    }
+    const writtenAt = Date.parse(payload.writtenAt || payload.cachedAt || '');
+    const ageMs = Number.isFinite(writtenAt) ? Math.max(0, Date.now() - writtenAt) : Infinity;
+    const maxAgeMs = Number(source?.sourceMaterialCacheMaxAgeMs || githubSourceMaterialCacheMaxAgeMs());
+    const temporalSnapshot = Boolean(payload.temporalSourceSnapshot || isCommitRef(payload.ref || source?.ref || source?.requestedRef || ''));
+    if (!temporalSnapshot && ageMs > maxAgeMs) {
+      return { ok: false, reason: 'source-material-cache-stale', ageMs, maxAgeMs, releaseKey, payloadReleaseKey };
+    }
+    return { ok: true, reason: 'fresh-enough', ageMs, maxAgeMs, releaseKey, payloadReleaseKey };
+  }
+
   function githubSourceMaterialCacheSerializableFile(file = {}, source = {}) {
     const content = normalizeNewlines(file.content || file.text || file.rawMarkdown || '');
     if (!content) return null;
@@ -9638,6 +9664,8 @@ ${message}${detail ? ` · ${detail}` : ''}`;
       fileCount: files.length,
       surfacesCached: Array.from(new Set(files.map((file) => file.sourceSurface || 'repoFiles').filter(Boolean))).sort(),
       transportTier: normalizeTransportTier(options.transportRefreshTier || options.transportPolicy?.requestedTier || ws.repositoryTransport?.tier || ws.githubIssueTransport?.tier || '') || '',
+      releaseKey: releaseCacheIdentityKey(),
+      temporalSourceSnapshot: Boolean(options.temporalSourceSnapshot || isCommitRef(source.requestedRef || source.ref || ws.ref || '')),
       writtenAt: new Date().toISOString()
     };
     try {
@@ -9658,7 +9686,13 @@ ${message}${detail ? ` · ${detail}` : ''}`;
     const expected = configSourceSignature(Object.assign({}, source, { kind: source.kind || 'github' }));
     if (payload.signature !== expected) return null;
     if (!Array.isArray(payload.files) || !payload.files.length) return null;
-    return Object.assign({}, payload, { key });
+    const freshness = githubSourceMaterialCacheFreshness(payload, source);
+    if (!freshness.ok) {
+      githubIssueImportTrace('source-material-cache.invalidated', { key, repo: source.repo || payload.repo || '', ref: source.requestedRef || source.ref || payload.ref || '', reason: freshness.reason, ageMs: freshness.ageMs, maxAgeMs: freshness.maxAgeMs, releaseKey: freshness.releaseKey, payloadReleaseKey: freshness.payloadReleaseKey });
+      try { localStorage.removeItem(key); } catch (_) {}
+      return null;
+    }
+    return Object.assign({}, payload, { key, cacheFreshness: freshness });
   }
 
   function pruneGitHubSourceMaterialForRestore(ws, source = {}) {
@@ -26363,7 +26397,12 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       return true;
     }
     app.modal.loading = true;
-    const ok = await loadTemporalSourceSnapshot(ws, { refInput: value, autoApply: true });
+    const ok = await loadTemporalSourceSnapshot(ws, {
+      refInput: value,
+      autoApply: true,
+      userInitiated: true,
+      transportRefreshTier: 'direct'
+    });
     if (ok) {
       app.modal = null;
       if (typeof setRouteState === 'function') setRouteState('replace');
