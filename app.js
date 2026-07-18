@@ -314,7 +314,8 @@
     githubRepoFetchTrace: 'tiinex.github.repoFetchTrace.v1',
     gitNativeDiscoveryConfig: 'tiinex.gitNative.discoveryConfig.v1',
     exactHistoricalReadBudget: 'tiinex.exactHistoricalReadBudget',
-    repositoryTransportHealth: 'tiinex.repositoryTransportHealth.v1'
+    repositoryTransportHealth: 'tiinex.repositoryTransportHealth.v1',
+    githubSourceMaterialCachePrefix: 'tiinex.github.sourceMaterialCache.v1.'
   });
 
 
@@ -9462,6 +9463,232 @@ ${message}${detail ? ` · ${detail}` : ''}`;
     return `urls:${(source.urls || []).join('\n')}`;
   }
 
+
+  function githubSourceMaterialCacheKey(source = {}) {
+    const signature = configSourceSignature(Object.assign({}, source || {}, { kind: source?.kind || 'github' }));
+    if (!signature) return '';
+    return `${STORAGE_KEYS.githubSourceMaterialCachePrefix}${hashFast(signature)}`;
+  }
+
+  function githubSourceMaterialCacheSerializableFile(file = {}, source = {}) {
+    const content = normalizeNewlines(file.content || file.text || file.rawMarkdown || '');
+    if (!content) return null;
+    const sourceKind = String(file.sourceKind || '').toLowerCase();
+    const sourceId = String(file.sourceId || '').trim();
+    if (sourceKind === 'local' || sourceKind === 'draft' || sourceId === 'local' || sourceId === 'draft' || file.localEditDraft) return null;
+    const repo = String(file.repo || source?.repo || '').trim();
+    const path = normalizeAssetPath(file.path || file.name || 'artifact.trace.md');
+    if (!path) return null;
+    return {
+      path,
+      content,
+      sourceOrigin: file.sourceOrigin || '',
+      recoveredFromPath: file.recoveredFromPath || '',
+      recoveredFromUrl: file.recoveredFromUrl || '',
+      recoveryKind: file.recoveryKind || '',
+      rawUrl: file.rawUrl || '',
+      browseUrl: file.browseUrl || '',
+      repo,
+      ref: file.ref || source?.ref || source?.requestedRef || '',
+      isGenerated: Boolean(file.isGenerated),
+      preserveAsAsset: Boolean(file.preserveAsAsset),
+      observedAt: file.observedAt || file.importedAt || '',
+      importedAt: file.importedAt || file.observedAt || '',
+      lastModified: file.lastModified || '',
+      generatedAt: file.generatedAt || '',
+      gitCommittedAt: file.gitCommittedAt || '',
+      gitCommitSha: file.gitCommitSha || '',
+      gitCommitSortCheckedAt: file.gitCommitSortCheckedAt || '',
+      gitCommitSortStatus: file.gitCommitSortStatus || '',
+      sourceAccessMode: file.sourceAccessMode || source?.sourceAccessMode || '',
+      sourceResolutionKind: file.sourceResolutionKind || '',
+      sourceResultBoundary: file.sourceResultBoundary || '',
+      sourceCacheBoundary: file.sourceCacheBoundary || '',
+      sourceSurface: file.sourceSurface || file.originSurface || '',
+      sourceKind: file.sourceKind || source?.kind || 'github',
+      resolvedEnvelope: Boolean(file.resolvedEnvelope || file.resolvedFindingEnvelope || file.sourceEnvelopeResolved),
+      resolvedByPath: file.resolvedByPath || '',
+      resolvedBySchema: file.resolvedBySchema || '',
+      resolvedByTitle: file.resolvedByTitle || '',
+      embeddedTiinexSchema: file.embeddedTiinexSchema || '',
+      embeddedTiinexTitle: file.embeddedTiinexTitle || '',
+      embeddedSourcePath: file.embeddedSourcePath || '',
+      embeddedSelfIntegrity: file.embeddedSelfIntegrity || '',
+      githubParentResolutionMode: file.githubParentResolutionMode || '',
+      githubParentResolutionHint: file.githubParentResolutionHint || '',
+      githubParentResolutionScore: Number(file.githubParentResolutionScore || 0),
+      githubParentResolutionSpecificity: Number(file.githubParentResolutionSpecificity || 0),
+      githubParentResolutionMatchKind: file.githubParentResolutionMatchKind || '',
+      githubParentAmbiguousCount: Number(file.githubParentAmbiguousCount || 0),
+      githubParentAmbiguityPaths: Array.isArray(file.githubParentAmbiguityPaths) ? file.githubParentAmbiguityPaths.slice(0, 20) : [],
+      githubParentExplicit: Boolean(file.githubParentExplicit),
+      githubParentBindingMode: file.githubParentBindingMode || '',
+      githubParentUnresolvedHint: file.githubParentUnresolvedHint || '',
+      githubParentFallbackReason: file.githubParentFallbackReason || '',
+      githubParentHintKinds: file.githubParentHintKinds || '',
+      githubParentSourceSelfHintCount: Number(file.githubParentSourceSelfHintCount || 0),
+      githubParentFilteredSelfHintCount: Number(file.githubParentFilteredSelfHintCount || 0),
+      githubParentHintCount: Number(file.githubParentHintCount || 0),
+      shadowSourceNodeId: file.shadowSourceNodeId || '',
+      shadowSourceStorageKey: file.shadowSourceStorageKey || '',
+      shadowSourceTitle: file.shadowSourceTitle || '',
+      shadowSourceSchema: file.shadowSourceSchema || '',
+      shadowSourceKey: file.shadowSourceKey || '',
+      shadowSourceId: file.shadowSourceId || '',
+      shadowSourcePath: file.shadowSourcePath || '',
+      shadowSourceOrigin: file.shadowSourceOrigin || '',
+      localDraftOf: file.localDraftOf || ''
+    };
+  }
+
+  function githubSourceMaterialEntriesForCache(ws, source = {}) {
+    if (!ws?.files || !source?.repo) return [];
+    const sourceId = String(source.id || '').trim();
+    const repoLower = String(source.repo || '').trim().toLowerCase();
+    const entries = [];
+    for (const file of ws.files.values()) {
+      const fileSourceId = String(file?.sourceId || '').trim();
+      const fileRepo = String(file?.repo || '').trim().toLowerCase();
+      const sourceMatches = Boolean((sourceId && fileSourceId === sourceId) || (repoLower && fileRepo === repoLower));
+      if (!sourceMatches) continue;
+      const item = githubSourceMaterialCacheSerializableFile(file, source);
+      if (item) entries.push(item);
+    }
+    const seen = new Set();
+    return entries.filter((entry) => {
+      const key = `${entry.sourceSurface || ''}:${entry.path || ''}:${entry.sourceOrigin || entry.rawUrl || ''}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).sort((a, b) => String(a.path || '').localeCompare(String(b.path || '')));
+  }
+
+  function githubSourceMaterialCacheWrite(ws, source = {}, options = {}) {
+    if (!ws || !source?.repo) return false;
+    const key = githubSourceMaterialCacheKey(source);
+    if (!key) return false;
+    const files = githubSourceMaterialEntriesForCache(ws, source);
+    if (!files.length) return false;
+    const surfaces = normalizeGithubSurfaceConfig(source.enabledSurfaces || ws.discoverySource?.enabledSurfaces || {});
+    const payload = {
+      type: 'tiinex.github.source-material-cache',
+      version: 1,
+      signature: configSourceSignature(Object.assign({}, source, { kind: source.kind || 'github' })),
+      repo: source.repo || '',
+      ref: source.requestedRef || source.ref || ws.ref || '',
+      rootPaths: Array.isArray(source.rootPaths) ? source.rootPaths.slice() : (ws.discoverySource?.rootPaths || []),
+      enabledSurfaces: surfaces,
+      configuredIssueUrls: configuredGitHubIssueUrls(source, source.repo || ''),
+      files,
+      fileCount: files.length,
+      surfacesCached: Array.from(new Set(files.map((file) => file.sourceSurface || 'repoFiles').filter(Boolean))).sort(),
+      transportTier: normalizeTransportTier(options.transportRefreshTier || options.transportPolicy?.requestedTier || ws.repositoryTransport?.tier || ws.githubIssueTransport?.tier || '') || '',
+      writtenAt: new Date().toISOString()
+    };
+    try {
+      storageWriteJson(localStorage, key, payload);
+      ws.sourceMaterialCache = Object.assign({}, ws.sourceMaterialCache || {}, { key, fileCount: files.length, writtenAt: payload.writtenAt, repo: payload.repo });
+      return true;
+    } catch (error) {
+      ws.logs?.push?.(`Could not write GitHub source material cache for ${source.repo}: ${error.message || String(error)}`);
+      return false;
+    }
+  }
+
+  function githubSourceMaterialCacheRead(source = {}) {
+    const key = githubSourceMaterialCacheKey(source);
+    if (!key) return null;
+    const payload = storageReadJson(localStorage, key, null);
+    if (!payload || payload.type !== 'tiinex.github.source-material-cache' || Number(payload.version || 0) !== 1) return null;
+    const expected = configSourceSignature(Object.assign({}, source, { kind: source.kind || 'github' }));
+    if (payload.signature !== expected) return null;
+    if (!Array.isArray(payload.files) || !payload.files.length) return null;
+    return Object.assign({}, payload, { key });
+  }
+
+  function pruneGitHubSourceMaterialForRestore(ws, source = {}) {
+    if (!ws) return 0;
+    const sourceId = String(source.id || '').trim();
+    const repoLower = String(source.repo || '').trim().toLowerCase();
+    const removedKeys = new Set();
+    const shouldRemove = (entry = {}) => {
+      const entrySourceId = String(entry.sourceId || entry.file?.sourceId || '').trim();
+      const entryRepo = String(entry.repo || entry.file?.repo || '').trim().toLowerCase();
+      const entryKind = String(entry.sourceKind || entry.file?.sourceKind || '').toLowerCase();
+      if (entry.localEditDraft || entryKind === 'local' || entryKind === 'draft' || entrySourceId === 'local' || entrySourceId === 'draft') return false;
+      return Boolean((sourceId && entrySourceId === sourceId) || (repoLower && entryRepo === repoLower));
+    };
+    for (const [key, file] of Array.from(ws.files?.entries?.() || [])) {
+      if (!shouldRemove(file)) continue;
+      ws.files.delete(key);
+      removedKeys.add(key);
+    }
+    for (const [key, asset] of Array.from(ws.assets?.entries?.() || [])) {
+      if (!shouldRemove(asset)) continue;
+      if (ws.assetUrls?.has(key)) {
+        try { URL.revokeObjectURL(ws.assetUrls.get(key)); } catch (_) {}
+        ws.assetUrls.delete(key);
+      }
+      ws.assets.delete(key);
+      removedKeys.add(key);
+    }
+    if (Array.isArray(ws.nodes) && removedKeys.size) {
+      ws.nodes = ws.nodes.filter((node) => !removedKeys.has(node.storageKey || node.file?.storageKey || sourceFileKey(node.sourceId || node.file?.sourceId || '', node.path || node.file?.path || '', node.isGenerated || node.file?.isGenerated)));
+      if (ws.nodeById instanceof Map) {
+        for (const [id, node] of Array.from(ws.nodeById.entries())) {
+          if (removedKeys.has(node.storageKey || node.file?.storageKey || sourceFileKey(node.sourceId || node.file?.sourceId || '', node.path || node.file?.path || '', node.isGenerated || node.file?.isGenerated))) ws.nodeById.delete(id);
+        }
+      }
+    }
+    return removedKeys.size;
+  }
+
+  async function restoreGitHubSourceMaterialCacheIntoWorkspace(ws, source = {}, options = {}) {
+    const payload = githubSourceMaterialCacheRead(source);
+    if (!payload) return false;
+    const githubSource = registerGitHubSource(ws, source);
+    pruneGitHubSourceMaterialForRestore(ws, githubSource);
+    const sourceAccessMode = githubSource.sourceAccessMode || source.sourceAccessMode || 'web-surface';
+    for (const cachedFile of payload.files) {
+      addFileToWorkspace(ws, Object.assign({}, cachedFile, {
+        sourceId: githubSource.id,
+        sourceKind: githubSource.kind || 'github',
+        sourceLabel: githubSource.label || gitHubSourceLabel(githubSource.repo, githubSource.ref || ''),
+        sourceAccessMode: cachedFile.sourceAccessMode || sourceAccessMode,
+        repo: cachedFile.repo || githubSource.repo || '',
+        ref: cachedFile.ref || githubSource.ref || githubSource.requestedRef || '',
+        importedAt: cachedFile.importedAt || payload.writtenAt,
+        observedAt: cachedFile.observedAt || payload.writtenAt
+      }));
+    }
+    ws.repo = githubSource.repo || ws.repo || '';
+    ws.ref = githubSource.ref || githubSource.requestedRef || ws.ref || '';
+    ws.discoverySource = Object.assign({}, ws.discoverySource || {}, {
+      kind: 'github-tree',
+      repo: githubSource.repo || '',
+      ref: githubSource.ref || githubSource.requestedRef || '',
+      requestedRef: githubSource.requestedRef || githubSource.ref || '',
+      rootPath: (payload.rootPaths || githubSource.rootPaths || ['.topics'])[0] || '.topics',
+      rootPaths: Array.isArray(payload.rootPaths) && payload.rootPaths.length ? payload.rootPaths.slice() : (githubSource.rootPaths || ['.topics']),
+      sourceId: githubSource.id,
+      enabledSurfaces: normalizeGithubSurfaceConfig(githubSource.enabledSurfaces || payload.enabledSurfaces || {}),
+      issueUrls: configuredGitHubIssueUrls(githubSource, githubSource.repo || ''),
+      sourceAccessMode,
+      sourceResolutionKind: githubSource.sourceResolutionKind || 'github-source-material-cache',
+      sourceBoundary: githubSource.sourceBoundary || null
+    });
+    ws.repositoryTransport = { kind: 'browser-cache', label: 'Browser source cache', tier: 'cache', cachedAt: payload.writtenAt || '', fileCount: payload.fileCount || payload.files.length };
+    githubSource.repositoryTransport = Object.assign({}, ws.repositoryTransport);
+    if ((payload.surfacesCached || []).includes('issues') || payload.files.some((file) => file.sourceSurface === 'issues')) {
+      ws.githubIssueTransport = { kind: 'browser-cache', label: 'Browser source cache', tier: 'cache', cachedAt: payload.writtenAt || '' };
+    }
+    ws.sourceMaterialCache = { key: payload.key || '', fileCount: payload.fileCount || payload.files.length, restoredAt: new Date().toISOString(), writtenAt: payload.writtenAt || '' };
+    if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
+    if (typeof discoverWorkspacePolicy === 'function') await discoverWorkspacePolicy(ws);
+    githubIssueImportTrace('source-material-cache.restored', { repo: githubSource.repo || '', files: payload.files.length, writtenAt: payload.writtenAt || '', surfaces: payload.surfacesCached || [] });
+    return true;
+  }
+
   function workspaceConfigSignature(ws) {
     if (!ws) return '';
     const githubSource = Array.from(ws.sources?.values?.() || []).find((source) => source.kind === 'github' && source.repo);
@@ -14239,14 +14466,24 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   async function loadGitHubStateSourceIntoWorkspace(ws, source, options = {}) {
     const normalizedSource = normalizeGitHubSourceState(source || {}, ws);
     if (!ws || !normalizedSource.repo) return null;
-    const transportPolicy = githubSourceTransportPolicyFromOptions(options);
-    const sourceLoadHardRefresh = Boolean(options.hardRefresh || transportPolicy.skipBrowserCache);
+    const requestedTransportPolicy = githubSourceTransportPolicyFromOptions(options);
     const rootPaths = normalizedSource.rootPaths && normalizedSource.rootPaths.length ? normalizedSource.rootPaths : ['.topics'];
     const githubSource = registerGitHubSource(ws, normalizedSource);
     const enabledSurfaces = options.respectSourceConfig === true
       ? normalizeGithubSurfaceConfig(normalizedSource.enabledSurfaces || {})
       : protectExistingGitHubSourceSurfaces(ws, githubSource, normalizedSource.enabledSurfaces || {}, { allowSurfaceDisable: Boolean(options.allowSurfaceDisable) });
     githubSource.enabledSurfaces = enabledSurfaces;
+    let transportPolicy = requestedTransportPolicy;
+    let sourceLoadHardRefresh = Boolean(options.hardRefresh || transportPolicy.skipBrowserCache);
+    let restoredSourceMaterialCache = false;
+    if (transportPolicy.allowCache && !sourceLoadHardRefresh) {
+      restoredSourceMaterialCache = await restoreGitHubSourceMaterialCacheIntoWorkspace(ws, githubSource, options);
+      if (!restoredSourceMaterialCache) {
+        transportPolicy = githubSourceTransportPolicyForTier('mirror', Object.assign({}, options, { reason: 'source-material-cache-miss' }));
+        sourceLoadHardRefresh = Boolean(options.hardRefresh || transportPolicy.skipBrowserCache);
+        githubIssueImportTrace('source-material-cache.miss-fallback-to-mirror', { repo: githubSource.repo || '', ref: githubSource.ref || githubSource.requestedRef || '', rootPaths });
+      }
+    }
     // Source refresh/reconcile must not be a destructive config owner. Explicit
     // Save/source-edit owns disabling surfaces and has its own pruning path.
     if (options.allowSurfaceDisable) applyGitHubSourceSurfacePruning(ws, githubSource, enabledSurfaces, false);
@@ -14257,7 +14494,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const issueRenderStatus = !routeOwnedProgress;
     const keepProgressForIssueStage = Boolean(progressScope && enabledSurfaces.repoFiles && enabledSurfaces.issues && typeof discoverGitHubIssuesIntoWorkspace === 'function');
     if (routeOwnedProgress) routeLoadPresentationStage('github-source-load-start', { repo: normalizedSource.repo, ref: normalizedSource.ref || '', rootPaths });
-    if (enabledSurfaces.repoFiles && typeof discoverGitHubRepoIntoWorkspace === 'function') {
+    if (!restoredSourceMaterialCache && enabledSurfaces.repoFiles && typeof discoverGitHubRepoIntoWorkspace === 'function') {
       await discoverGitHubRepoIntoWorkspace(ws, {
         repo: normalizedSource.repo,
         ref: normalizedSource.ref || '',
@@ -14285,7 +14522,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
     }
     const preservedSourceConfig = options.preserveSourceConfig ? githubSourceUserConfigSnapshot(githubSource) : null;
-    if (typeof discoverGitHubIssuesIntoWorkspace === 'function') {
+    if (!restoredSourceMaterialCache && typeof discoverGitHubIssuesIntoWorkspace === 'function') {
       const explicitIssueTargets = configuredGitHubIssueUrls(githubSource, githubSource.repo || '');
       if (explicitIssueTargets.length && !enabledSurfaces.issues) pruneGitHubIssueSurfaceToConfiguredTargets(ws, githubSource, explicitIssueTargets);
       if (explicitIssueTargets.length) {
@@ -14329,6 +14566,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         if (routeOwnedProgress) routeLoadPresentationStage('github-broad-issues-loaded', { files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
       }
     }
+    if (!restoredSourceMaterialCache) githubSourceMaterialCacheWrite(ws, githubSource, Object.assign({}, options, { transportPolicy, transportRefreshTier: transportPolicy.requestedTier }));
     if (preservedSourceConfig) restoreGitHubSourceUserConfig(ws, preservedSourceConfig);
     if (progressScope) {
       ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, { phase: 'source-finalizing', sourceProgress: progressScope, loaded: 1, total: 1, failed: 0 });
@@ -38628,7 +38866,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
     }
 
     try {
-      if (!options.hardRefresh && transportPolicy.allowCache) {
+      if (!options.hardRefresh && transportPolicy.allowCache && options.allowGitNativeLocalCache === true) {
         const localGit = await tryDiscoverGitHubRepoViaGitNative(ws, {
           repo,
           ref,
@@ -38640,6 +38878,8 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
           options
         });
         if (await finalizeGitNativeMaterial(localGit)) return;
+      } else if (!options.hardRefresh && transportPolicy.allowCache) {
+        githubRepoFetchTrace('git-native.local-preflight.skipped-by-source-material-cache-policy', { sessionId: repoFetchSessionId, repo, ref, rootPaths, transportTier: transportPolicy.requestedTier });
       }
 
       const repositorySnapshot = (options.bypassRepositorySnapshot === true || !transportPolicy.allowMirror)
