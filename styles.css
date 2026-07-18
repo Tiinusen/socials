@@ -23776,3 +23776,16 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
     white-space: normal;
   }
 }
+
+/* Source health owns GitHub issue/discussion warnings. Avoid a separate discovery badge. */
+.source-needs-attention,
+.workspace-source-pill.source-needs-attention,
+.source-chip.source-needs-attention {
+  border-color: rgba(255, 117, 117, 0.58) !important;
+  background: rgba(255, 87, 87, 0.14) !important;
+  color: #ffd6d6 !important;
+}
+.source-needs-attention small {
+  background: rgba(255, 117, 117, 0.18) !important;
+  color: #ffe4e4 !important;
+}
