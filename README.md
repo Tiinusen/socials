@@ -232,4 +232,4 @@ GitHub source material uses one transport policy across repository files and iss
 cache -> mirror -> proxy -> direct
 ```
 
-Startup/public route reconciliation requests `mirror`, not `cache`, so a reload revalidates same-origin hosted mirrors without requiring Reset cache. Live GitHub/proxy and direct/raw fallbacks are only used after an explicit user action, and changing transport level must not rewrite source settings or enable broad issue discovery.
+Startup/public route reconciliation is cache-first: warm durable source cache may render immediately, and the same transport policy falls through to the co-hosted mirror when source cache is absent. Live GitHub/proxy and direct/raw fallbacks are only used after an explicit user action, and changing transport level must not rewrite source settings or enable broad issue discovery.
