@@ -1303,8 +1303,8 @@ function validateJavascriptSurface() {
     if (!issueDiscovery.includes(token)) fail(`Issue imports must receive the caller transport tier rather than resolving their own transport path: ${token}`);
   }
 
-  for (const token of ['maybeScheduleTemporalLensAfterViewState', 'openModalOnMissingRef: false', 'time-portal-source-snapshot', "transportRefreshTier: 'direct'", 'bypassRepositorySnapshot: true']) {
-    if (!js.includes(token)) fail(`Time Portal source snapshots must survive route restore and use the explicit direct/raw-capable transport: ${token}`);
+  for (const token of ['maybeScheduleTemporalLensAfterViewState', 'openModalOnMissingRef: false', 'routeOwnedStartup: true', 'time-portal-source-snapshot-cache', 'time-portal.cache-miss-direct-deferred', 'preferSeedPaths: true', 'readExactHistoricalFile', 'exact-historical.cache-hit', "transportRefreshTier: 'direct'", 'bypassRepositorySnapshot: true']) {
+    if (!js.includes(token)) fail(`Time Portal source snapshots must restore cache-first on route load and use direct/raw only as an explicit cached immutable-file transport: ${token}`);
   }
 
   if (js.includes('data-mode="issue"') || js.includes('Add issue thread')) {
