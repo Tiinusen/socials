@@ -211,3 +211,9 @@ Use the current source, validation output, and Git history for implementation st
 ### Workspace artifact editing note
 
 Workspace entrypoints are normal Tiinex artifacts. Use Create → Workspace to create one, or open an existing workspace artifact and choose Edit. The editor can stage the current workspace set with **Update with current**, but it only persists when **Save local draft** is clicked. Export and GitHub publishing remain the normal Export flow. The workspace Summary is user-authored and is what readers see first in cards and GitHub issue previews.
+
+### Verified publication and refresh behavior
+
+After a GitHub issue or issue comment is verified, Tiinex keeps a small local publication receipt. On refresh, the receipt lets the viewer distinguish the verified source artifact from its older browser-local editing shadow. The local shadow is removed only when the imported source carries the same v2 self seal; a newer unpublished edit remains local.
+
+Public builds attach the commit-derived build id to local CSS, bundle, icon, and logo URLs. When a new build identity loads, remote/runtime caches are invalidated while local drafts and named local workspace state are preserved.

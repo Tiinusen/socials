@@ -145,3 +145,16 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - Hosted GitHub Pages deployments must not rely on dot-prefixed workspace paths such as `.topics/.workspaces/viewer.workspace.md` being fetchable at runtime. Even when `.nojekyll` and the public branch contain the files, public serving can still return 404 for dot-paths.
 - Runtime/query workspace candidates still own startup when provided, but if no external candidate exists, the embedded default workspace is the portable hosted default.
 - If runtime candidates fail and the user did not provide an explicit workspace query, startup falls back to the embedded workspace instead of leaving the viewer on an empty stage.
+
+## Verified GitHub publication reconciliation
+
+- A successful GitHub verification records a bounded browser-local publication receipt containing the published target, v2 self seal, artifact identity, local draft identity, and verification time. It does not store a second artifact payload.
+- Source import and local-state restore remove a pre-publication local shadow only when the exact imported GitHub artifact carries the same v2 self seal as the receipt.
+- Local edits created after the verification time remain unpublished local material and are not removed by receipt reconciliation.
+- GitHub reader fallbacks that alter embedded Source Markdown bytes are rejected when their declared v2 self seal no longer validates. The adapter continues toward an exact source path instead of caching normalized bytes as authoritative material.
+- Source-backed integrity checks prefer exact recovered source markdown. Local/draft checks continue to validate current editable text.
+
+## Intentional non-publish workflow runs
+
+- Workflow concurrency is scoped by repository and ref so a push to an upstream-sync branch cannot cancel a valid working-branch deployment.
+- A branch that is intentionally not a publish source completes through a successful `Publish not required` step. No public branch or Pages mutation is attempted.

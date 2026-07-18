@@ -126,7 +126,7 @@
   app.routeLoadPresentation = app.routeLoadPresentation || { sessions: [], active: null, renderEvents: [], contentClears: 0 };
   app.lifecycleResponsiveness = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
   app.viewportResponsiveness = app.viewportResponsiveness || { events: [] };
-  app.githubExportBinding = app.githubExportBinding || { snapshots: [], issueBodyBindings: 0, commentBindings: 0, removedLocalDrafts: 0 };
+  app.githubExportBinding = app.githubExportBinding || { snapshots: [], issueBodyBindings: 0, commentBindings: 0, removedLocalDrafts: 0, receiptsRecorded: 0, receiptReconciliations: 0 };
   app.workspaceOpenMerge = app.workspaceOpenMerge || { events: [], last: null, duplicateExports: 0, mergeImports: 0, openImports: 0 };
 
   function tiinexBuildIdentity() {
@@ -219,7 +219,7 @@
     app.routeLoadPresentation = app.routeLoadPresentation || { sessions: [], active: null, renderEvents: [], contentClears: 0 };
   app.lifecycleResponsiveness = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
   app.viewportResponsiveness = app.viewportResponsiveness || { events: [] };
-  app.githubExportBinding = app.githubExportBinding || { snapshots: [], issueBodyBindings: 0, commentBindings: 0, removedLocalDrafts: 0 };
+  app.githubExportBinding = app.githubExportBinding || { snapshots: [], issueBodyBindings: 0, commentBindings: 0, removedLocalDrafts: 0, receiptsRecorded: 0, receiptReconciliations: 0 };
   app.workspaceOpenMerge = app.workspaceOpenMerge || { events: [], last: null, duplicateExports: 0, mergeImports: 0, openImports: 0 };
     app.routeLoadPresentation.sessions = Array.isArray(app.routeLoadPresentation.sessions) ? app.routeLoadPresentation.sessions : [];
     app.routeLoadPresentation.renderEvents = Array.isArray(app.routeLoadPresentation.renderEvents) ? app.routeLoadPresentation.renderEvents : [];
@@ -307,6 +307,7 @@
     adapterRateLimitPrefix: 'tiinex.adapter.rateLimit.',
     githubCommitCache: 'tiinex.github.commitCache.v1',
     githubIssueThreadCache: 'tiinex.github.issueThreadCache.v1',
+    githubPublicationReceipts: 'tiinex.github.publicationReceipts.v1',
     githubIssueImportTrace: 'tiinex.github.issueImportTrace.v1',
     githubRepoFetchTrace: 'tiinex.github.repoFetchTrace.v1',
     gitNativeDiscoveryConfig: 'tiinex.gitNative.discoveryConfig.v1',
@@ -1017,6 +1018,9 @@
       issueBodyBindings: Number(state.issueBodyBindings || 0),
       commentBindings: Number(state.commentBindings || 0),
       removedLocalDrafts: Number(state.removedLocalDrafts || 0),
+      receiptsRecorded: Number(state.receiptsRecorded || 0),
+      receiptReconciliations: Number(state.receiptReconciliations || 0),
+      durableReceipts: typeof readGithubPublicationReceipts === 'function' ? readGithubPublicationReceipts().slice(-20) : [],
       snapshots: Array.isArray(state.snapshots) ? state.snapshots.slice(-20) : []
     };
   }
@@ -7677,6 +7681,9 @@
   function pruneLocalDraftShadowsAfterSourceMaterial(ws, context = '') {
     if (!ws?.files) return 0;
     const before = ws.files.size;
+    const removedReceipt = typeof reconcileVerifiedGithubPublicationReceipts === 'function'
+      ? reconcileVerifiedGithubPublicationReceipts(ws, context || 'source material reconciliation')
+      : 0;
     const removedSemantic = pruneLocalFilesShadowedByIdenticalSource(ws, context || 'source material reconciliation');
     // Publication import may preserve the same user-authored artifact with a
     // different continuity envelope. The semantic prune above is the canonical
@@ -7685,7 +7692,7 @@
     const removedExact = typeof pruneLocalDuplicatesNowOwnedBySource === 'function'
       ? pruneLocalDuplicatesNowOwnedBySource(ws)
       : 0;
-    const removed = removedSemantic + removedExact;
+    const removed = removedReceipt + removedSemantic + removedExact;
     if (removed || ws.files.size !== before) {
       computeWorkspaceIndex(ws);
       ws.logs?.push?.(`Reconciled ${removed} local draft shadow${removed === 1 ? '' : 's'} after source material became canonical${context ? ` (${context})` : ''}.`);
@@ -10402,6 +10409,26 @@
     return thread;
   }
 
+  async function githubIssueThreadEmbeddedPayloadFidelity(thread = {}) {
+    const bodies = [thread?.issue?.body || ''].concat((thread?.comments || []).map((comment) => comment?.body || ''));
+    const failures = [];
+    let checked = 0;
+    for (let bodyIndex = 0; bodyIndex < bodies.length; bodyIndex += 1) {
+      for (const markdown of extractSourceMarkdownPayloadBlocks(bodies[bodyIndex] || '')) {
+        const entries = parseIntegrityEntries(markdown || '');
+        for (const entry of entries) {
+          if (entry?.method !== TIINEX_SHA256_C14N_V2_METHOD_ID || !integrityTowardsIsSelf(entry?.towards) || !entry?.value) continue;
+          checked += 1;
+          const computed = await sha256Base64Url(canonicalizeTiinexMarkdownForV2(markdown, entry.index));
+          if (computed !== String(entry.value || '').trim()) {
+            failures.push({ bodyIndex, entryIndex: entry.index, expected: String(entry.value || '').trim(), computed });
+          }
+        }
+      }
+    }
+    return { ok: failures.length === 0, checked, failures };
+  }
+
   async function fetchGitHubIssueThreadWithFallback(spec, options = {}) {
     const cacheMaxAgeMs = Number(options.cacheMaxAgeMs || 5 * 60 * 1000);
     githubIssueImportTrace('issue-thread-fallback.start', { spec: { repo: spec?.repo || '', issueNumber: spec?.issueNumber || '', issueUrl: spec?.issueUrl || '' }, options: { hardRefresh: Boolean(options.hardRefresh), preferCache: Boolean(options.preferCache), configuredTarget: Boolean(options.configuredTarget), userInitiated: Boolean(options.userInitiated), allowWebFallback: options.allowWebFallback !== false, preferApiFirst: Boolean(options.preferApiFirst), cacheMaxAgeMs } });
@@ -10424,7 +10451,16 @@
       githubIssueImportTrace('issue-thread-fallback.attempt-start', { label, cacheSource });
       try {
         const thread = await loader();
-        githubIssueImportTrace('issue-thread-fallback.attempt-ok', { label, thread: githubIssueThreadTraceSummary(thread) });
+        const fidelity = await githubIssueThreadEmbeddedPayloadFidelity(thread);
+        const exactSource = cacheSource === 'github-api' || cacheSource === 'github-export-publication-anchor';
+        if (!fidelity.ok && !exactSource) {
+          const error = new Error(`${label} changed embedded Tiinex Source Markdown bytes; ${fidelity.failures.length} v2 self seal${fidelity.failures.length === 1 ? '' : 's'} no longer match.`);
+          error.code = 'TIINEX_GITHUB_READER_LOSSY_PAYLOAD';
+          error.fidelity = fidelity;
+          throw error;
+        }
+        thread.embeddedPayloadFidelity = Object.assign({}, fidelity, { exactSource });
+        githubIssueImportTrace('issue-thread-fallback.attempt-ok', { label, fidelity, thread: githubIssueThreadTraceSummary(thread) });
         cacheGitHubIssueThread(spec, thread, { source: cacheSource || thread.adapterMode || label, freshness: 'observed-live' });
         if (errors.length) thread.fallbackErrors = errors.slice();
         return thread;
@@ -13022,7 +13058,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       commentCount += 1;
     }
 
-    const prunedLocalCopies = pruneLocalFilesShadowedByIdenticalSource(ws, `GitHub issue ${spec.repo}#${spec.issueNumber}`);
+    const prunedLocalCopies = pruneLocalDraftShadowsAfterSourceMaterial(ws, `GitHub issue ${spec.repo}#${spec.issueNumber}`);
     githubIssueImportTrace('issue-thread-loader.local-shadow-pruned', { prunedLocalCopies });
     computeWorkspaceIndex(ws);
     const parentTraversal = await resolveAdapterParentTraversalForWorkspace(ws, {
@@ -27004,6 +27040,7 @@ ${integrityFooter()}`;
       shadowSourceOrigin: meta.shadowSourceOrigin || '',
       localDraftOf: meta.localDraftOf || '',
       localEditDraft: Boolean(meta.localEditDraft),
+      updatedAt: meta.updatedAt || new Date().toISOString(),
       storageKey,
       isGenerated: false
     };
@@ -27090,6 +27127,7 @@ ${integrityFooter()}`;
       shadowSourceOrigin: file.shadowSourceOrigin || '',
       localDraftOf: file.localDraftOf || '',
       localEditDraft: Boolean(file.localEditDraft),
+      updatedAt: file.updatedAt || new Date().toISOString(),
       text: finalizedText,
       mime: 'text/markdown',
       kind: 'text'
@@ -27952,13 +27990,23 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
   }
 
   function nodeMarkdownForIntegrity(node) {
-    return node?.file?.text
-      || node?.file?.rawMarkdown
-      || node?.text
-      || node?.rawMarkdown
-      || node?.file?.content
-      || node?.content
-      || '';
+    const file = node?.file || {};
+    const sourceId = String(node?.sourceId || file.sourceId || '').toLowerCase();
+    const sourceKind = String(node?.sourceKind || file.sourceKind || '').toLowerCase();
+    const localAuthoring = Boolean(
+      ['local', 'draft', 'upload', 'generated'].includes(sourceId)
+      || ['local', 'draft', 'upload', 'generated'].includes(sourceKind)
+      || node?.localEditDraft
+      || file.localEditDraft
+      || node?.isGenerated
+      || file.isGenerated
+    );
+    // Local authoring validates current editable bytes. Imported material
+    // validates exact recovered source markdown before any restored text copy.
+    return normalizeNewlines(localAuthoring
+      ? (file.text || file.rawMarkdown || node?.text || node?.rawMarkdown || file.content || node?.content || '')
+      : (node?.rawMarkdown || file.rawMarkdown || file.content || node?.content || file.text || node?.text || '')
+    );
   }
 
   function integrityTowardsIsSelf(towards) {
@@ -34513,6 +34561,8 @@ ${integrityFooterForPath(parent, path)}`,
         item.file.publishedOriginKind = githubPublishedOriginKindForDescriptor(descriptor);
         item.file.publishedOriginObservedAt = new Date().toISOString();
       }
+      const publishedSourceMarkdown = extractSourceMarkdownPayloadBlocks(draft.body || '')[0] || '';
+      const publishedSelfIntegrity = tiinexEmbeddedMarkdownSelfIntegrityValue(publishedSourceMarkdown);
       snapshots.push({
         spec,
         descriptor,
@@ -34536,6 +34586,10 @@ ${integrityFooterForPath(parent, path)}`,
         targetUrl: publishedUrl || spec.issueUrl,
         repo: draft.repo || spec.repo,
         createdAt: new Date().toISOString(),
+        verifiedAt: state.verifiedAt || new Date().toISOString(),
+        publishedSelfIntegrity,
+        publishedSourceSignature: publishedSourceMarkdown ? hashFast(normalizeNewlines(publishedSourceMarkdown).trim()) : '',
+        publishedSchema: publishedSourceMarkdown ? schemaIdFromText(publishedSourceMarkdown, '') : '',
         selectedLocal: Boolean(item.file && githubExportFileIsLocal(item.file)),
         localFileKey: item.key,
         localStorageKey: item.file?.storageKey || '',
@@ -34547,6 +34601,154 @@ ${integrityFooterForPath(parent, path)}`,
       });
     }
     return snapshots;
+  }
+
+  function readGithubPublicationReceipts() {
+    const receipts = storageReadJson(localStorage, STORAGE_KEYS.githubPublicationReceipts, []);
+    if (!Array.isArray(receipts)) return [];
+    const cutoff = Date.now() - (90 * 24 * 60 * 60 * 1000);
+    return receipts.filter((receipt) => {
+      if (!receipt || !receipt.targetUrl || !receipt.selfIntegrity) return false;
+      const timestamp = Date.parse(receipt.verifiedAt || receipt.createdAt || '');
+      return !timestamp || timestamp >= cutoff;
+    }).slice(-100);
+  }
+
+  function writeGithubPublicationReceipts(receipts = []) {
+    const list = Array.isArray(receipts) ? receipts.slice(-100) : [];
+    try { storageWriteJson(localStorage, STORAGE_KEYS.githubPublicationReceipts, list); } catch (_) {}
+    return list;
+  }
+
+  function githubPublicationReceiptKey(receipt = {}) {
+    return [
+      normalizeGitHubUrlForComparison(receipt.targetUrl || ''),
+      String(receipt.selfIntegrity || '').trim(),
+      canonicalWorkspacePath(receipt.localPath || ''),
+      String(receipt.title || '').trim().toLowerCase()
+    ].join('|');
+  }
+
+  function recordVerifiedGithubPublicationReceipts(snapshots = []) {
+    const additions = snapshots.filter((snapshot) => snapshot?.selectedLocal && snapshot?.targetUrl && snapshot?.publishedSelfIntegrity).map((snapshot) => ({
+      schema: 'tiinex.github.publicationReceipt.v1',
+      targetUrl: githubPublishedResultUrlFromSpec(snapshot.spec, snapshot.targetUrl || ''),
+      repo: snapshot.repo || snapshot.spec?.repo || '',
+      title: snapshot.title || '',
+      artifactSchema: snapshot.publishedSchema || '',
+      selfIntegrity: snapshot.publishedSelfIntegrity || '',
+      sourceSignature: snapshot.publishedSourceSignature || '',
+      localStorageKey: snapshot.localStorageKey || '',
+      localFileKey: snapshot.localFileKey || '',
+      localPath: snapshot.localPath || snapshot.path || '',
+      localSourceId: snapshot.localSourceId || 'local',
+      localContentSignature: snapshot.localContentSignature || '',
+      verifiedAt: snapshot.verifiedAt || snapshot.createdAt || new Date().toISOString(),
+      createdAt: snapshot.createdAt || new Date().toISOString()
+    }));
+    if (!additions.length) return [];
+    const byKey = new Map(readGithubPublicationReceipts().map((receipt) => [githubPublicationReceiptKey(receipt), receipt]));
+    additions.forEach((receipt) => byKey.set(githubPublicationReceiptKey(receipt), receipt));
+    writeGithubPublicationReceipts(Array.from(byKey.values()).sort((a, b) => Date.parse(a.verifiedAt || 0) - Date.parse(b.verifiedAt || 0)));
+    try { app.githubExportBinding.receiptsRecorded += additions.length; } catch (_) {}
+    return additions;
+  }
+
+  function githubPublicationOriginValues(value = {}) {
+    return [
+      value.targetUrl, value.sourceOrigin, value.publishedOriginUrl, value.recoveredFromUrl,
+      value.browseUrl, value.rawUrl, value.originUrl, value.localDraftOf,
+      value.shadowSourceOrigin, value.file?.sourceOrigin, value.file?.publishedOriginUrl,
+      value.file?.recoveredFromUrl, value.file?.browseUrl, value.file?.rawUrl,
+      value.file?.localDraftOf, value.file?.shadowSourceOrigin
+    ].map((item) => normalizeGitHubUrlForComparison(item || '')).filter(Boolean);
+  }
+
+  function githubPublicationReceiptSourceAvailable(ws, receipt = {}) {
+    const target = normalizeGitHubUrlForComparison(receipt.targetUrl || '');
+    const expectedTitle = String(receipt.title || '').trim().toLowerCase();
+    const expectedSchema = String(receipt.artifactSchema || '').trim().toLowerCase();
+    for (const file of ws?.files?.values?.() || []) {
+      if (!isExternalImportedFile(ws, file)) continue;
+      const markdown = normalizeNewlines(file.rawMarkdown || file.content || file.text || '');
+      if (!markdown || tiinexEmbeddedMarkdownSelfIntegrityValue(markdown) !== receipt.selfIntegrity) continue;
+      const origins = githubPublicationOriginValues(file);
+      const originMatch = Boolean(target && origins.includes(target));
+      const title = String(file.title || markdownTitleFromFile(file) || '').trim().toLowerCase();
+      const schema = String(file.currentSchema || file.currentSchemaText || schemaIdFromText(markdown, '') || '').trim().toLowerCase();
+      const identityMatch = Boolean(expectedTitle && title === expectedTitle && (!expectedSchema || schema === expectedSchema));
+      const repo = String(receipt.repo || '').toLowerCase();
+      const repoMatch = !repo || String(file.repo || ws?.repo || '').toLowerCase() === repo || origins.some((origin) => origin.includes(`github.com/${repo}/`));
+      if (repoMatch && (originMatch || identityMatch)) return true;
+    }
+    return false;
+  }
+
+  function githubPublicationReceiptLocalFileMatches(file, key, receipt = {}) {
+    if (!file) return false;
+    const sourceId = String(file.sourceId || '').toLowerCase();
+    const sourceKind = String(file.sourceKind || '').toLowerCase();
+    const localShadow = Boolean(
+      sourceId === 'local'
+      || sourceKind === 'local'
+      || file.localEditDraft
+      || file.localDraftOf
+      || file.shadowSourceKey
+      || file.shadowSourceOrigin
+    );
+    if (!localShadow) return false;
+    const verifiedAt = Date.parse(receipt.verifiedAt || receipt.createdAt || '');
+    const updatedAt = Date.parse(file.updatedAt || file.generatedAt || '');
+    // A local edit created after verification is new unpublished work. Older
+    // snapshots did not carry updatedAt; they are pre-publication shadows when
+    // the durable source identity below matches.
+    if (verifiedAt && updatedAt && updatedAt > verifiedAt + 1000) return false;
+
+    const receiptKeys = new Set([
+      receipt.localStorageKey, receipt.localFileKey, receipt.localPath,
+      receipt.localSourceId && receipt.localPath ? sourceFileKey(receipt.localSourceId, receipt.localPath, false) : '',
+      receipt.localSourceId && receipt.localPath ? sourceFileKey(receipt.localSourceId, receipt.localPath, true) : ''
+    ].map((value) => String(value || '').trim()).filter(Boolean));
+    const fileKeys = new Set([
+      key, file.storageKey, file.path, file.shadowSourceStorageKey, file.shadowSourceKey,
+      file.sourceId && file.path ? sourceFileKey(file.sourceId, file.path, false) : '',
+      file.sourceId && file.path ? sourceFileKey(file.sourceId, file.path, true) : ''
+    ].map((value) => String(value || '').trim()).filter(Boolean));
+    const keyMatch = Array.from(fileKeys).some((value) => receiptKeys.has(value));
+    const target = normalizeGitHubUrlForComparison(receipt.targetUrl || '');
+    const originMatch = Boolean(target && githubPublicationOriginValues(file).includes(target));
+    const pathMatch = Boolean(receipt.localPath && sameImportedPath(file.path || '', receipt.localPath || ''));
+    const markdown = file.text || file.content || file.rawMarkdown || '';
+    const title = String(file.title || markdownTitleFromFile(file) || '').trim().toLowerCase();
+    const schema = String(file.currentSchema || file.currentSchemaText || schemaIdFromText(markdown, '') || '').trim().toLowerCase();
+    const identityMatch = Boolean(receipt.title && title === String(receipt.title).trim().toLowerCase() && (!receipt.artifactSchema || schema === String(receipt.artifactSchema).trim().toLowerCase()));
+    return Boolean(originMatch || keyMatch || (pathMatch && identityMatch));
+  }
+
+  function reconcileVerifiedGithubPublicationReceipts(ws, context = '') {
+    if (!ws?.files) return 0;
+    const receipts = readGithubPublicationReceipts().filter((receipt) => githubPublicationReceiptSourceAvailable(ws, receipt));
+    if (!receipts.length) return 0;
+    let removed = 0;
+    const removedPaths = new Set();
+    for (const [key, file] of Array.from(ws.files.entries())) {
+      const receipt = receipts.find((candidate) => githubPublicationReceiptLocalFileMatches(file, key, candidate));
+      if (!receipt) continue;
+      ws.files.delete(key);
+      removed += 1;
+      if (file.path) removedPaths.add(canonicalWorkspacePath(file.path));
+      try { removed += removeWorkspaceAssetMatches(ws, Object.assign({}, file, { sourceId: file.sourceId || 'local' })); } catch (_) {}
+    }
+    if (removedPaths.size && Array.isArray(ws.generated)) {
+      ws.generated = ws.generated.filter((item) => !removedPaths.has(canonicalWorkspacePath(item.path || item.storageKey || '')));
+    }
+    if (removed) {
+      try { app.githubExportBinding.receiptReconciliations += removed; } catch (_) {}
+      ws.logs?.push?.(`Removed ${removed} verified published local shadow${removed === 1 ? '' : 's'}${context ? ` (${context})` : ''}.`);
+      try { githubIssueImportTrace('verified-publication-receipt-reconciled', { workspace: ws.label || ws.id, removed, context, receipts: receipts.length }); } catch (_) {}
+      scheduleLocalStateSaveAfterWorkspaceMutation();
+    }
+    return removed;
   }
 
   function mergeGithubExportSnapshotIntoCachedThread(snapshot) {
@@ -34718,6 +34920,7 @@ ${integrityFooterForPath(parent, path)}`,
   async function bindGithubExportPublicationAnchorsNow(modal, ws) {
     const snapshots = githubExportPublicationSnapshots(modal, ws);
     if (!ws?.id || !snapshots.length) return { attempted: false, loaded: 0, removed: 0, persistedRemoved: 0 };
+    const receipts = recordVerifiedGithubPublicationReceipts(snapshots);
     let loaded = 0;
     for (const snapshot of snapshots) {
       const thread = mergeGithubExportSnapshotIntoCachedThread(snapshot);
@@ -34731,13 +34934,14 @@ ${integrityFooterForPath(parent, path)}`,
       });
       loaded += 1;
     }
+    const removedReceipt = reconcileVerifiedGithubPublicationReceipts(ws, 'verified GitHub publication');
     const removedExact = removePublishedLocalDraftsFromRuntime(ws, snapshots);
     const removedDuplicate = pruneLocalDuplicatesNowOwnedBySource(ws);
     const persisted = removePublishedLocalDraftsFromPersistedSnapshot(ws, snapshots);
-    try { app.githubExportBinding.removedLocalDrafts += Number(removedExact || 0) + Number(removedDuplicate || 0) + Number(persisted.removed || 0); } catch (_) {}
+    try { app.githubExportBinding.removedLocalDrafts += Number(removedReceipt || 0) + Number(removedExact || 0) + Number(removedDuplicate || 0) + Number(persisted.removed || 0); } catch (_) {}
     computeWorkspaceIndex(ws);
     if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
-    return { attempted: true, loaded, removed: removedExact + removedDuplicate, persistedRemoved: persisted.removed || 0 };
+    return { attempted: true, loaded, receipts: receipts.length, removed: removedReceipt + removedExact + removedDuplicate, persistedRemoved: persisted.removed || 0 };
   }
 
   async function finalizeGithubExportRoutine(modal, reason = 'complete') {

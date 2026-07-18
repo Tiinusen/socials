@@ -2212,6 +2212,12 @@ function validatePublicBuildContracts() {
   for (const required of ['npm test', 'npm run build:public', 'publish_dir: .site-publish', 'publish_branch: public']) {
     if (!workflow.includes(required)) fail(`publish workflow must include ${required}`);
   }
+  if (!workflow.includes('group: publish-public-${{ github.repository }}-${{ github.ref }}')) {
+    fail('publish workflow concurrency must be scoped per repository/ref so a non-publish branch run cannot cancel a valid working-branch deploy.');
+  }
+  if (!workflow.includes('- name: Publish not required') || !workflow.includes("if: steps.settings.outputs.publish_enabled != 'true'")) {
+    fail('publish workflow must finish intentionally disabled branch runs through an explicit successful Publish not required step.');
+  }
   if (/rsync\b/u.test(workflow)) fail('publish workflow must publish build output, not rsync the raw repository');
 
   note('repo-agnostic public build and publish workflow contracts are valid');
@@ -2325,6 +2331,18 @@ function validateWorkspaceShareAndIssueOpenContracts(source) {
   if (!source.includes('userInitiated: Boolean(options.userInitiated)')) fail('configured GitHub issue workspace open must propagate userInitiated from discovery/source refresh');
   if (!source.includes('openWorkspaceIssueTarget: options.openWorkspaceIssueTarget !== false')) fail('configured GitHub issue workspace open must propagate openWorkspaceIssueTarget');
   if (!source.includes('file?.text || file?.rawMarkdown || file?.markdown || file?.body || file?.content')) fail('GitHub publish/local draft binding should hash current local text before stale file.content');
+  if (!source.includes('githubIssueThreadEmbeddedPayloadFidelity')) fail('GitHub issue fallback readers must verify embedded v2 Source Markdown bytes before accepting a thread.');
+  if (!source.includes('TIINEX_GITHUB_READER_LOSSY_PAYLOAD')) fail('lossy GitHub reader payloads must be rejected instead of cached as exact source material.');
+  if (!source.includes("githubPublicationReceipts: 'tiinex.github.publicationReceipts.v1'")) fail('verified GitHub publication receipts must have a durable storage owner.');
+  if (!source.includes('recordVerifiedGithubPublicationReceipts(snapshots)')) fail('verified GitHub export completion must record durable publication receipts.');
+  if (!source.includes("reconcileVerifiedGithubPublicationReceipts(ws, 'verified GitHub publication')")) fail('verified GitHub publication must reconcile its local shadow immediately.');
+  if (!source.includes("reconcileVerifiedGithubPublicationReceipts(ws, context || 'source material reconciliation')")) fail('F5/local-state restore must reconcile verified publication receipts after exact source material is present.');
+  if (!source.includes('pruneLocalDraftShadowsAfterSourceMaterial(ws, `GitHub issue ${spec.repo}#${spec.issueNumber}`)')) fail('GitHub issue import must run verified publication receipt reconciliation after source material arrives.');
+  if (!source.includes('updatedAt > verifiedAt + 1000')) fail('publication receipt reconciliation must preserve local edits created after verification.');
+  if (!source.includes('Imported material') || !source.includes('node?.rawMarkdown || file.rawMarkdown || file.content')) fail('source-backed integrity validation must prefer exact recovered source markdown over restored mutable text.');
+  const localStateModule = read('src/state/local-workspace.mjs');
+  if (!localStateModule.includes("content: normalizeLineEndings(file.text || file.rawMarkdown || file.content || '')")) fail('local state serialization must persist current authoring text before stale file.content.');
+  if (!localStateModule.includes("updatedAt: file.updatedAt || ''")) fail('local draft persistence must retain updatedAt so verified publication reconciliation can preserve newer unpublished edits.');
 }
 
 async function main() {
