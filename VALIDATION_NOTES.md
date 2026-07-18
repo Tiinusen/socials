@@ -306,3 +306,9 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - GitHub-backed repository mirrors now resolve in a bounded order: explicit/configured transports, viewer-owned co-hosted mirrors, then a single source-repository default GitHub Pages mirror such as `https://tiinex.github.io/docs/mirrors/github.com/Tiinex/docs.json`. Non-GitHub sources do not get a guessed Pages mirror.
 - Hosted issue snapshots use the same source-owned Pages fallback after the viewer-owned issue snapshot path, so a content repo can publish its own issues without forcing the viewer repo to carry every issue mirror.
 - Public build identity checks no longer use unique `?check=Date.now()` no-store requests or a default minute interval. They use the stable `/tiinex.build.json` URL with browser revalidation, check once on startup and on focus/visibility only after a conservative TTL, and allow interval polling only as explicit opt-in.
+
+## v69 freshest hosted issue mirror selection
+
+- Hosted issue snapshot resolution no longer stops at the first successful mirror metadata response. It probes the bounded candidate set (viewer-owned mirror, then source-owned GitHub Pages mirror for GitHub-backed sources), compares `sourceUpdatedAt`/`generatedAt`, and selects the freshest valid metadata.
+- The selected mirror is cached only after freshness selection. This prevents a stale viewer-owned issue mirror from masking a newer source-repository Pages issue snapshot.
+- Thread imports and issue-list discovery share the same metadata selector, so mirror transport produces the same latest issue state for configured issue targets and bounded discovery without enabling proxy/direct or broad discovery.

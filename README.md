@@ -261,3 +261,7 @@ End-bound Time Portal snapshots are commit-pinned historical Git state. They do 
 The public-branch workflow can be copied with `tools/` into content repositories that do not contain the Tiinex viewer app. In that mode it publishes static material, repository mirrors, hosted issue snapshots, `tiinex.build.json`, and issue-publication state, while skipping viewer bundle checks. A copied `tools/` directory alone is not treated as a broken partial viewer.
 
 Post-publication verification is live-source only: guided GitHub export verification and post-export rediscovery bypass browser cache and hosted mirrors, then use proxy/API first with direct fallback when necessary.
+
+#### Hosted issue mirror freshness
+
+When multiple hosted issue mirrors exist for the same GitHub-backed source, Tiinex does not stop at the first `200 OK`. It checks the bounded candidate set and chooses the freshest valid snapshot by `sourceUpdatedAt`/`generatedAt`. This lets a viewer-owned mirror continue to work when it is current, while allowing a source repository's own GitHub Pages issue snapshot to take over when it has newer issue/comment state.
