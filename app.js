@@ -22348,17 +22348,11 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     const referenceAction = write({ label: 'Reference', icon: 'fa-solid fa-link', className: 'mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'reference' }, base, transitionDataset('reference')), title: transitionActionTitle('reference', 'Create a reference leaf pointing at this artifact') });
 
     if (isWorkspaceNode(node)) {
-      editActions.push(withIntent('write', {
-        label: 'Open',
-        icon: 'fa-solid fa-layer-group',
-        className: 'workspace-open-action workspace-primary-open-action mutating-action conditional-mutating-action',
-        dataset: Object.assign({ action: 'open-workspace-artifact' }, base),
-        title: 'Open this .workspace.md entrypoint as the current workspace set; non-draft workspaces may close'
-      }));
       editActions.push(edit({ label: 'Edit', icon: 'fa-solid fa-pen-to-square', className: 'workspace-config-action edit-action', dataset: Object.assign({ action: 'configure-workspace-artifact' }, base), title: 'Edit this workspace artifact' }));
-      // Workspace artifacts are lineage-capable root artifacts. Keep Continue and
-      // Reference before workspace-specific Open/Merge so they remain visible on
-      // narrow cards instead of being pushed to the tail of the action row.
+      // Workspace artifacts are lineage-capable root artifacts. On desktop, keep
+      // Continue/Reference as compact lineage icons and leave the explicit
+      // Open/Merge workspace operations as labeled actions at the end. Mobile
+      // chooses its own primary action rail below and surfaces Open icon-only.
       const workspaceContinueAction = Object.assign({}, continueAction, {
         iconOnly: true,
         className: `${continueAction.className || ''} workspace-transition-icon-only`.trim(),
@@ -22372,6 +22366,13 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       writeActions.push(
         workspaceContinueAction,
         workspaceReferenceAction,
+        write({
+          label: 'Open',
+          icon: 'fa-solid fa-layer-group',
+          className: 'workspace-open-action workspace-primary-open-action mutating-action conditional-mutating-action',
+          dataset: Object.assign({ action: 'open-workspace-artifact' }, base),
+          title: 'Open this .workspace.md entrypoint as the current workspace set; non-draft workspaces may close'
+        }),
         write({ label: 'Merge', icon: 'fa-solid fa-code-merge', className: 'workspace-merge-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'merge-workspace-artifact' }, base), title: 'Merge this .workspace.md into the current workspace set without closing existing workspaces' })
       );
     }
