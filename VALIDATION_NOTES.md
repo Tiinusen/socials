@@ -282,3 +282,11 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - Public builds now emit `tiinex.build.json` with a publication identity separate from the bundled app identity. Open tabs poll this small identity file on startup/focus/interval, invalidate durable source-material caches when the public content identity changes, and reload once so updated mirrors/issue snapshots are observed without the user pressing F5. Local/draft workspaces and publication receipts stay out of that invalidation boundary.
 - Issue/comment workflow publication is rate-limited and coalescing rather than trailing-edge debounce. Public branch updates are serialized with `cancel-in-progress: false`; the issue job reads `.tiinex/issue-publish-state.json`, publishes immediately when the cooldown has elapsed, otherwise waits only the remaining cooldown, then reconciles the latest full issue snapshot state.
 - Issue publication diagnostics now log `last_published`, `cooldown_remaining`, `pending_generation`, `snapshot_generation`, and `follow-up required`. The durable state is written back to the public artifact after each full/issue snapshot publication.
+
+## v66 - GitHub export close verification
+
+- Guided GitHub export close now attempts a bounded verify/bind when the user has already copied and opened a known target.
+- A verified close finalizes the routine, binds the publication URL locally, and prunes matching local draft shadows.
+- A failed close-verify keeps the modal open once; a second close within 30 seconds intentionally abandons the routine and leaves the draft local/recoverable.
+- Post-export refresh now avoids broad discovery when the verified publication snapshot was already bound locally, reducing stale source churn.
+
