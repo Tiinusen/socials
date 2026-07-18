@@ -224,3 +224,9 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - Proxy Time Portal loads bypass hosted repository mirrors and attempt the configured Git/proxy transport for the historical commit. If no historical repo material is returned, the snapshot is marked failed/unavailable instead of showing a loaded state for a partial tree.
 - Direct Time Portal loads may use GitHub tree/raw fallback, but commit-pinned file reads must pass through `readExactHistoricalFile`; deferred or budget-suppressed exact reads no longer fall through to generic raw `fetchText`.
 - Tiinex/docs schema/root freshness supplements are disabled for historical snapshot path discovery. Time Portal must not expand a route restore into unrelated root/schema raw probes.
+
+## v57 cache freshness and Time Portal resolver adjustment
+
+- Public rebuild/release identity now invalidates durable GitHub source-material caches and issue-thread caches. Local/draft workspaces and publication receipts remain outside this invalidation boundary.
+- Source-material cache entries carry the release key and are also treated as stale after the configured source-material cache TTL, defaulting to two hours. Stale or release-mismatched cache falls forward to mirror through the existing transport policy instead of showing stale workspace-only material.
+- Time Portal explicit ref/URL resolver now uses the direct historical transport. The modal already asks for a concrete tree/commit/SHA and says the snapshot loads directly; this keeps the UI contract aligned with the transport that currently owns full historical raw reads.
