@@ -263,3 +263,10 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - User-facing workspace Open/Merge actions now own browser history as navigation. They suppress internal workspace-state `replaceState` and prewarm writes during the import, then push one final route entry for the opened workspace set.
 - This preserves mobile swipe/back behavior after opening a workspace card from the first browser entry. Back should return to the previous workspace/card list instead of leaving or closing the browser tab.
 - Existing route restore/popstate behavior is unchanged: browser Back still restores the previous route state rather than re-running source discovery when matching workspaces already exist.
+
+## v63 Time Portal resolver join and publish-run cache boundary
+
+- Historical Time Portal source loads now join an existing in-flight repo discovery for the same repo/ref/root instead of starting a duplicate loader or reporting failure while the original load continues in the background.
+- The Time Portal concrete-ref modal closes when historical repo material has actually landed, even if an earlier proxy/direct attempt had already written a transient unavailable status.
+- Public build cache-busting uses the publish run identity (`GITHUB_RUN_ID`/`GITHUB_RUN_ATTEMPT`, or build time locally) in the build id and release cache key. A public rebuild that republishes mirrors or issue snapshots from the same source commit is therefore still a cache boundary for source-material caches.
+

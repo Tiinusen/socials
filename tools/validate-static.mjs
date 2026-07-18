@@ -1248,6 +1248,10 @@ function validateJavascriptSurface() {
   for (const token of ['STORAGE_KEYS.githubIssueThreadCache', 'STORAGE_KEYS.githubSourceMaterialCachePrefix']) {
     if (!releaseInvalidation.includes(token)) fail(`App release cache-busting must invalidate stale durable source cache on public rebuilds: ${token}`);
   }
+  const buildPublic = read('tools/build-public.mjs');
+  for (const token of ['GITHUB_RUN_ATTEMPT', 'runKey', 'defaultBuildId', 'TIINEX_RELEASE_CACHE_KEY', 'releaseCacheKey']) {
+    if (!buildPublic.includes(token)) fail(`Public build cache identity must change on each publish run, not only source commit: ${token}`);
+  }
   if (!js.includes('githubHostedIssueSnapshotMetadataUrlCandidates') || !js.includes('disableRuntimeCache: true') || !js.includes("cacheMode: 'no-cache'")) {
     fail('Hosted issue snapshots must use same-origin candidate paths with browser/runtime cache revalidation instead of stale runtime cache.');
   }
@@ -1303,8 +1307,8 @@ function validateJavascriptSurface() {
     if (!issueDiscovery.includes(token)) fail(`Issue imports must receive the caller transport tier rather than resolving their own transport path: ${token}`);
   }
 
-  for (const token of ['maybeScheduleTemporalLensAfterViewState', 'openModalOnMissingRef: false', 'routeOwnedStartup: true', 'timePortalTransportTierFromOptions', 'cache-and-mirror-do-not-own-historical-git-state', "transportRefreshTier: 'proxy'", "transportRefreshTier: 'direct'", 'allowDirectFallbackOnProxyMiss', 'time-portal.transport.proxy-miss-direct-fallback', 'readExactHistoricalFile', 'exact-historical.cache-hit', 'preferSeedPaths: false', 'includeKnownFreshnessPaths: false', 'bypassRepositorySnapshot: true', 'temporalUseGitHubTreeApi', 'noApi: !temporalUseGitHubTreeApi', 'repoJsdelivrFileUrl', 'timePortalDirectMaxHistoricalReadsPerWindow', 'exactHistoricalResetCooldown', 'forceDirectFallback: Boolean(temporalTransportPolicy.allowDirect)']) {
-    if (!js.includes(token)) fail(`Time Portal source snapshots must bypass cache/mirror, prefer proxy for historical Git state, and reserve direct/raw for the explicit last-resort tier: ${token}`);
+  for (const token of ['maybeScheduleTemporalLensAfterViewState', 'openModalOnMissingRef: false', 'routeOwnedStartup: true', 'timePortalTransportTierFromOptions', 'cache-and-mirror-do-not-own-historical-git-state', "transportRefreshTier: 'proxy'", "transportRefreshTier: 'direct'", 'allowDirectFallbackOnProxyMiss', 'time-portal.transport.proxy-miss-direct-fallback', 'readExactHistoricalFile', 'exact-historical.cache-hit', 'preferSeedPaths: false', 'includeKnownFreshnessPaths: false', 'bypassRepositorySnapshot: true', 'temporalUseGitHubTreeApi', 'noApi: !temporalUseGitHubTreeApi', 'repoJsdelivrFileUrl', 'timePortalDirectMaxHistoricalReadsPerWindow', 'exactHistoricalResetCooldown', 'forceDirectFallback: Boolean(temporalTransportPolicy.allowDirect)', 'repoDiscoveryPromises', 'joining existing load', 'temporalRefResolverHasLoadedRepoMaterial']) {
+    if (!js.includes(token)) fail(`Time Portal source snapshots must bypass cache/mirror, prefer proxy for historical Git state, reserve direct/raw for the explicit last-resort tier, and avoid duplicate in-flight historical loads: ${token}`);
   }
   if (!js.includes("throw new Error(`Exact historical raw read deferred: ${exactHistorical.reason || 'network-not-requested'}`)")) {
     fail('Commit-pinned direct/raw reads must respect the exact historical cache/budget boundary instead of silently falling through to generic raw fetchText.');
