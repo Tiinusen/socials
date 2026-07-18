@@ -1201,6 +1201,8 @@ function validateJavascriptSurface() {
   // declaration while leaving its calls behind, so keep their ownership explicit.
   const requiredBootstrapHelpers = [
     'shouldUseEmbeddedDefaultWorkspace',
+    'isDefaultLocalWorkspaceBootstrapCandidate',
+    'hasExternalWorkspaceBootstrapCandidate',
     'workspaceAssetUrl',
     'staticDiskMode',
     'cleanHashOnly',
@@ -1212,6 +1214,16 @@ function validateJavascriptSurface() {
   }
   if (!/(?:const|let|var)\s+DEFAULT_TIINEX_BRAND_ASSET\s*=/.test(code)) {
     fail('app.js bootstrap brand asset constant is missing: DEFAULT_TIINEX_BRAND_ASSET');
+  }
+
+  if (!js.includes("shouldUseEmbeddedDefaultWorkspace(candidates)")) {
+    fail('workspace bootstrap must decide embedded default usage from the resolved candidate list, not only file:// mode.');
+  }
+  if (!js.includes("'fallback-after-packaged-paths'") || !js.includes("role: configuredByHost ? 'fallback-after-runtime-candidates' : 'fallback-after-packaged-paths'")) {
+    fail('hosted startup must fall back to the embedded workspace after missing/unfetchable packaged paths instead of leaving an empty stage.');
+  }
+  if (!js.includes('Dot-prefixed packaged workspace paths are not reliable on hosted Pages')) {
+    fail('workspace bootstrap must document why embedded default owns hosted fallback when .topics paths are unavailable.');
   }
   const ordinaryVersionedIdentifiers = [...code.matchAll(/\b[A-Za-z_$][\w$]*(?:V\d{2,}|v\d{2,})\b/g)].map((m) => m[0]);
   if (ordinaryVersionedIdentifiers.length) {

@@ -128,6 +128,7 @@ Use repository variables for public instance config. Use secrets only when value
 - `TIINEX_VIEWER_TITLE`, `TIINEX_VIEWER_GIT_REPO`, `TIINEX_VIEWER_GIT_REF`, `TIINEX_VIEWER_GIT_ROOTS`: optional viewer build defaults. Omitted means the built viewer derives repository/ref defaults from the publishing repository and source ref.
 - `TIINEX_WORKSPACE_POINTER_PRIMARY`, `TIINEX_WORKSPACE_POINTER_SECONDARY`, `TIINEX_WORKSPACE_POINTERS`: ordered GitHub issue pointers that the runtime resolves at page load. The issue body should declare `Workspace URL:` or `Workspace:` and may point to a GitHub blob/raw `.workspace.md`.
 - `TIINEX_DEFAULT_WORKSPACE`, `TIINEX_FALLBACK_WORKSPACE`, `TIINEX_WORKSPACE_FALLBACKS`, `TIINEX_LOCAL_WORKSPACE_PATH`: ordered direct workspace fallbacks. These become runtime workspace candidates, not a generated `.workspace.md` file.
+- Hosted startup treats the embedded workspace as the portable default when no runtime/query candidate owns startup. Do not depend on `.topics/.workspaces/viewer.workspace.md` being publicly fetchable on GitHub Pages; dot-prefixed paths may 404 even when they exist in the publish artifact.
 - `TIINEX_PAGES_DEPLOY`: defaults to GitHub Pages Actions deployment via repository dispatch after the inspectable `public` branch is updated. Set to `branch-only`, `false`, `no`, `off`, or `0` to keep only the public branch update.
 
 ### Tiinex/site Suggested Variables

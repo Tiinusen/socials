@@ -18391,10 +18391,25 @@ Answer the reader should see in workspace help or GitHub presentation.">${escape
 
   const EMBEDDED_DEFAULT_WORKSPACE_MD = "# Continuity Context\n\n- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/7aecdb99551c4b6850665cdee418f0b9907d9616/.topics/.schemas/tiinex.root.v1.schema.md)\n- Current\n  - Current Schema: [tiinex.workspace.v1](../.schemas/tiinex.workspace.v1.schema.md)\n  - Created At: 2026-06-16 00:00:00\n  - Why: Defines a portable multi-lineage workspace entrypoint.\n  - Summary: Opens the Tiinex docs workspace and declares the default viewer discovery lens.\n\n---\n\n# Tiinex Viewer\n\n## Viewer Identity\n\n- Icon: ../../assets/tiinex-logo-white-transparent.png\n- Browser Title: Tiinex\n- Home: https://github.com/Tiinex\n- Public Viewer URL: https://tiinex.dev/\n- Workspace Home: https://tiinex.dev/\n\n## Empty Stage\n\n- Subtitle: Every handoff starts somewhere\n- Subtitle: Start where the last thread ends\n- Subtitle: Leave enough for the next mind\n- Subtitle: A thread is waiting\n- Subtitle: Nothing starts from nothing\n\n## Workspace Discovery\n\n- [Tiinex docs workspaces](https://github.com/Tiinex/docs)\n  - Kind: github-tree\n  - Ref: master\n  - Root Path: .topics\n  - Match: *.workspace.md\n  - Label: Tiinex docs workspaces\n  - Open Behavior: chooser\n\n## Workspace Entrypoints\n\n### Tiinex docs\n\n- Source Kind: github-tree\n- Repository: Tiinex/docs\n- Ref: master\n- Root Path: .topics\n- Repo Files Discovery: on\n- Issue Discovery: on\n- Issue URL: https://github.com/Tiinex/docs/issues/9\n- Default View: feed\n- Default Filter: all\n\n## Repository Mirrors\n\n### Tiinex docs\n\n- Repository: Tiinex/docs\n- URL: https://github.com/Tiinex/docs.git\n\n### Tiinex ai-provenance\n\n- Repository: Tiinex/ai-provenance\n- URL: https://github.com/Tiinex/ai-provenance.git\n\n## Repository Transports\n\n### Shared browser Git proxy\n\n- Kind: git-proxy\n- Match: github.com/*\n- Proxy: https://cors.isomorphic-git.org\n\n## Help\n\n### What is this view?\n\nThis workspace opens Tiinex markdown artifacts so an external reviewer and their LLM helpers can inspect continuity, source material, integrity signals, and continuation paths.\n\n### What should I check first?\n\nStart with what is loaded.\n\nCheck the workspace source, then inspect the visible badges. Treat integrity mismatch, missing integrity, unknown schema, and local-only material as review signals, not automatic failure.\n\n### What should I trust?\n\nTrust only what the artifact and its sources actually show.\n\nUse `Source` to inspect where material came from, `Markdown` to read the artifact, `Open` to inspect the selected node, and `Continue` only when the next step is clear enough to preserve.\n\n### What should an LLM preserve?\n\nDo not collapse Parent and Origin.\n\nParent is the declared continuity edge. Origin is provenance for where the material came from. If either is missing or weak, say so rather than filling the gap.\n\n### What should I send back?\n\nA useful validation note names the selected artifact, the source inspected, the observed signal, and the smallest next correction or continuation.\n\n---\n\n# Continuity Integrity\n\n- [sha256-base64url-c14n-v1](https://github.com/Tiinex/docs/blob/3466e50d739a9ba65319297cef79c6b09844b1d7/.topics/.validators/sha256-base64url-c14n-v1.validator.md)\n  - Towards: [viewer.workspace.md](viewer.workspace.md)\n  - Value: 6H8m4TbXAerVosJMfQWwGw9diSTKhp2rbaTqiClVP7k\n";
 
-  function shouldUseEmbeddedDefaultWorkspace() {
-    // Hash state describes current opened sources; it should not block loading
-    // the default workspace shell/identity in static disk mode.
-    return location.protocol === 'file:' && !pageHasExplicitWorkspaceQuery();
+  function isDefaultLocalWorkspaceBootstrapCandidate(candidate = {}) {
+    return candidate
+      && candidate.kind === 'local-path'
+      && String(candidate.source || '') === 'default'
+      && /(?:^|\/)viewer\.workspace\.md$/i.test(String(candidate.path || ''));
+  }
+
+  function hasExternalWorkspaceBootstrapCandidate(candidates = []) {
+    return Array.isArray(candidates)
+      && candidates.some((candidate) => candidate && !isDefaultLocalWorkspaceBootstrapCandidate(candidate));
+  }
+
+  function shouldUseEmbeddedDefaultWorkspace(candidates = null) {
+    // Dot-prefixed packaged workspace paths are not reliable on hosted Pages
+    // deployments. Treat the embedded workspace as the portable default when
+    // no explicit runtime/query candidate owns startup.
+    if (pageHasExplicitWorkspaceQuery()) return false;
+    if (location.protocol === 'file:') return true;
+    return !hasExternalWorkspaceBootstrapCandidate(candidates || workspaceBootstrapConfiguredCandidates());
   }
 
   function workspaceAssetUrl(value, configUrl) {
@@ -18535,10 +18550,11 @@ Answer the reader should see in workspace help or GitHub presentation.">${escape
     const diagnostics = { startedAt: new Date().toISOString(), candidates: candidates.map((candidate) => ({ kind: candidate.kind, role: candidate.role, label: candidate.label, url: candidate.url || '', path: candidate.path || '', source: candidate.source || '' })), attempts: [], selected: null };
     app.viewerIdentity.workspaceBootstrap = diagnostics;
 
-    if (shouldUseEmbeddedDefaultWorkspace()) {
+    if (shouldUseEmbeddedDefaultWorkspace(candidates)) {
       try {
         await applyEmbeddedDefaultWorkspace({ applyWorkspaceState: startupShouldApplyViewerWorkspaceState() });
-        diagnostics.selected = { kind: 'embedded-default', role: 'file-mode', source: 'embedded' };
+        diagnostics.selected = { kind: 'embedded-default', role: 'portable-default', source: 'embedded' };
+        app.viewerIdentity.workspaceBootstrap = diagnostics;
       } catch (error) {
         diagnostics.attempts.push({ kind: 'embedded-default', ok: false, error: error?.message || String(error || '') });
         app.viewerIdentity.error = error?.message || String(error || '');
@@ -18584,6 +18600,22 @@ Answer the reader should see in workspace help or GitHub presentation.">${escape
         // Explicit query candidates still participate in the same ordered fallback
         // chain. A bad primary must not block secondary or packaged candidates.
         if (location.protocol === 'file:') break;
+      }
+    }
+
+    if (!configuredByUrl) {
+      try {
+        await applyEmbeddedDefaultWorkspace({ applyWorkspaceState: startupShouldApplyViewerWorkspaceState() });
+        diagnostics.selected = {
+          kind: 'embedded-default',
+          role: configuredByHost ? 'fallback-after-runtime-candidates' : 'fallback-after-packaged-paths',
+          source: 'embedded'
+        };
+        app.viewerIdentity.workspaceBootstrap = diagnostics;
+        return;
+      } catch (error) {
+        diagnostics.attempts.push({ kind: 'embedded-default', role: 'fallback', ok: false, error: error?.message || String(error || '') });
+        lastError = error;
       }
     }
 
