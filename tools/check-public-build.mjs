@@ -97,6 +97,8 @@ try {
     if (bundle.includes('>Save workspace</button>')) fail('public bundle must not expose a topbar Save workspace side path.');
     if (!bundle.includes('workspace-config-update-current')) fail('public bundle workspace artifact editor must expose Update with current staging.');
     if (!bundle.includes('Current workspace set staged in this workspace artifact')) fail('public bundle Update with current must stage the active workspace set before local draft save.');
+    if (!bundle.includes('Workspace Label')) fail('public bundle must preserve explicit workspace labels in workspace exports.');
+    if (!bundle.includes("['Workspace Label', 'Label']")) fail('public bundle must parse explicit Workspace Label before fallback Label fields.');
     if (!bundle.includes('Workspace entries use the same draft/export/publish path as other artifacts')) fail('public bundle artifact wizard copy must include the workspace normal-flow contract.');
     if (!bundle.includes('githubWorkspacePresentationDelta')) fail('public bundle must keep workspace-specific GitHub issue preview summaries.');
     const sections = [
