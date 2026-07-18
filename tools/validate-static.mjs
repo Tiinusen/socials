@@ -1241,6 +1241,13 @@ function validateJavascriptSurface() {
     if (code.includes(token)) fail(`Forbidden historical runtime token found in code: ${token}`);
   }
 
+  if (!js.includes('githubHostedIssueSnapshotMetadataUrlCandidates') || !js.includes('disableRuntimeCache: true') || !js.includes("cacheMode: 'no-cache'")) {
+    fail('Hosted issue snapshots must use same-origin candidate paths with browser/runtime cache revalidation instead of stale runtime cache.');
+  }
+  if (!js.includes('site-issue-snapshot.metadata-candidate') || !js.includes('site-issue-snapshot.list-candidate')) {
+    fail('Hosted issue snapshot adapter must trace candidate path selection for issue threads and discovery lists.');
+  }
+
   if (js.includes('data-mode="issue"') || js.includes('Add issue thread')) {
     fail('GitHub issue discovery must be owned by the GitHub source/community UX, not a separate Add-flow source.');
   }

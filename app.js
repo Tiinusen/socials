@@ -1556,8 +1556,9 @@
     const key = adapterRequestKey(requestUrl, Object.assign({}, options, { adapter }));
     const runtime = ensureAdapterRuntime();
     const now = Date.now();
-    const cached = runtime.memory.get(key);
-    if (!options.hardRefresh && cached && cached.expiresAt && cached.expiresAt > now) {
+    const runtimeCacheDisabled = Boolean(options.disableRuntimeCache);
+    const cached = runtimeCacheDisabled ? null : runtime.memory.get(key);
+    if (!runtimeCacheDisabled && !options.hardRefresh && cached && cached.expiresAt && cached.expiresAt > now) {
       if (traceGitHubIssueRequest) githubIssueImportTrace('adapter.request.runtime-cache-hit', { adapter, label, url: requestUrl, rateLimitKey, expiresAt: cached.expiresAt });
       if (adapter === 'github-raw') githubRepoFetchTrace('raw.cache-hit', { label, url: requestUrl, rateLimitKey, cacheState: 'runtime-cache', expiresAt: cached.expiresAt });
       return Object.assign({}, cached.result, { fromRuntimeCache: true, cacheState: 'runtime-cache' });
@@ -1705,7 +1706,7 @@
       if (adapter === 'github-raw' && syntheticGitNativeResponse) githubRepoFetchTrace('git-native.raw-fetch-gate.adapter-success', { label, url: requestUrl, status: response.status, bytes: text.length, cacheState: 'git-native-fetch-gate' });
 
       const result = Object.assign({ text, data }, meta);
-      const shouldMemoryCache = !policy.noStore && !policy.noCache && policy.maxAgeMs > 0;
+      const shouldMemoryCache = !runtimeCacheDisabled && !policy.noStore && !policy.noCache && policy.maxAgeMs > 0;
       if (shouldMemoryCache) {
         runtime.memory.set(key, { result, expiresAt: Date.now() + policy.maxAgeMs });
       }
@@ -10596,11 +10597,45 @@
     return app.githubIssueThreadInFlight;
   }
 
-  function githubHostedIssueSnapshotMetadataUrl(spec = {}) {
-    if (!spec?.repo || typeof location === 'undefined' || !/^https?:$/iu.test(location.protocol || '')) return '';
+  function githubHostedIssueSnapshotMetadataUrlCandidates(spec = {}) {
+    if (!spec?.repo || typeof location === 'undefined' || !/^https?:$/iu.test(location.protocol || '')) return [];
     const repoPath = String(spec.repo || '').replace(/^\/+|\/+$/gu, '');
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repoPath)) return '';
-    return new URL(`issues/github.com/${repoPath}.json`, document.baseURI || location.href).toString();
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repoPath)) return [];
+    const repoName = repoPath.split('/').pop() || '';
+    const relative = `issues/github.com/${repoPath}.json`;
+    const values = [
+      new URL(relative, document.baseURI || location.href).toString(),
+      repoName ? new URL(`${repoName}/${relative}`, document.baseURI || location.href).toString() : '',
+      new URL(`/${relative}`, location.origin || location.href).toString(),
+      repoName ? new URL(`/${repoName}/${relative}`, location.origin || location.href).toString() : ''
+    ].filter(Boolean);
+    const seen = new Set();
+    return values.filter((url) => {
+      if (seen.has(url)) return false;
+      seen.add(url);
+      return true;
+    });
+  }
+
+  function githubHostedIssueSnapshotLocationRuntime() {
+    app.githubHostedIssueSnapshotLocations = app.githubHostedIssueSnapshotLocations || new Map();
+    return app.githubHostedIssueSnapshotLocations;
+  }
+
+  function githubHostedIssueSnapshotMetadataUrl(spec = {}) {
+    const locations = githubHostedIssueSnapshotLocationRuntime();
+    const cached = spec?.repo ? locations.get(String(spec.repo || '').toLowerCase()) : '';
+    return cached || githubHostedIssueSnapshotMetadataUrlCandidates(spec)[0] || '';
+  }
+
+  function githubHostedIssueSnapshotFetchOptions(options = {}, label = '') {
+    return Object.assign({}, options || {}, {
+      adapter: 'site-issue-snapshot',
+      label,
+      cacheMode: 'no-cache',
+      disableRuntimeCache: true,
+      skipGitNativeRawBridge: true
+    });
   }
 
   function githubHostedIssueSnapshotResolve(baseUrl = '', rel = '') {
@@ -10626,17 +10661,15 @@
     return Object.assign({}, meta || {}, { body: normalizeNewlines(body || ''), html_url: meta?.html_url || fallbackUrl || '' });
   }
 
-  async function fetchGitHubIssueThreadViaHostedSnapshot(spec, options = {}) {
-    const metadataUrl = githubHostedIssueSnapshotMetadataUrl(spec);
+  async function fetchGitHubIssueThreadViaHostedSnapshotAt(spec, metadataUrl, options = {}) {
     if (!metadataUrl) throw new Error('Hosted issue snapshot metadata URL could not be resolved.');
-    const metaResult = await adapterFetchJson(metadataUrl, {
-      adapter: 'site-issue-snapshot',
-      label: 'Hosted GitHub issue snapshot metadata',
+    const snapshotFetch = (url, extra = {}) => githubHostedIssueSnapshotFetchOptions(Object.assign({}, options || {}, extra || {}), extra.label || 'Hosted GitHub issue snapshot');
+    const metaResult = await adapterFetchJson(metadataUrl, Object.assign(snapshotFetch(metadataUrl, {
+      label: 'Hosted GitHub issue snapshot metadata'
+    }), {
       rateLimitKey: `site-issue-snapshot:${spec.repo}`,
-      hardRefresh: Boolean(options.hardRefresh),
-      skipGitNativeRawBridge: true,
       headers: { Accept: 'application/json,*/*' }
-    });
+    }));
     const meta = metaResult?.data || null;
     if (!meta || meta.type !== 'tiinex.github.issues.snapshot' || !githubHostedIssueSnapshotRepoMatches(meta, spec)) {
       throw new Error(`Hosted issue snapshot metadata did not match ${spec.repo}.`);
@@ -10647,36 +10680,30 @@
     let manifest = null;
     try {
       const manifestUrl = githubHostedIssueSnapshotResolve(metadataUrl, meta.manifest || `${directory}manifest.json`);
-      manifest = (await adapterFetchJson(manifestUrl, {
-        adapter: 'site-issue-snapshot',
-        label: 'Hosted GitHub issue snapshot manifest',
+      manifest = (await adapterFetchJson(manifestUrl, Object.assign(snapshotFetch(manifestUrl, {
+        label: 'Hosted GitHub issue snapshot manifest'
+      }), {
         rateLimitKey: `site-issue-snapshot:${spec.repo}`,
-        hardRefresh: Boolean(options.hardRefresh),
-        skipGitNativeRawBridge: true,
         headers: { Accept: 'application/json,*/*' }
-      })).data || null;
+      }))).data || null;
     } catch (error) {
-      githubIssueImportTrace('site-issue-snapshot.manifest-unavailable', { repo: spec.repo, issueNumber: spec.issueNumber, error });
+      githubIssueImportTrace('site-issue-snapshot.manifest-unavailable', { repo: spec.repo, issueNumber: spec.issueNumber, metadataUrl, error });
     }
     const entry = githubHostedIssueSnapshotIssueEntry(manifest || meta, spec.issueNumber) || { issue: `issues/${spec.issueNumber}/issue.json`, body: `issues/${spec.issueNumber}/issue.md` };
     const issueJsonUrl = githubHostedIssueSnapshotResolve(baseUrl, entry.issue || `issues/${spec.issueNumber}/issue.json`);
     const issueBodyUrl = githubHostedIssueSnapshotResolve(baseUrl, entry.body || `issues/${spec.issueNumber}/issue.md`);
-    const issueMeta = (await adapterFetchJson(issueJsonUrl, {
-      adapter: 'site-issue-snapshot',
-      label: 'Hosted GitHub issue snapshot item',
+    const issueMeta = (await adapterFetchJson(issueJsonUrl, Object.assign(snapshotFetch(issueJsonUrl, {
+      label: 'Hosted GitHub issue snapshot item'
+    }), {
       rateLimitKey: `site-issue-snapshot:${spec.repo}`,
-      hardRefresh: Boolean(options.hardRefresh),
-      skipGitNativeRawBridge: true,
       headers: { Accept: 'application/json,*/*' }
-    })).data || {};
-    const issueBody = await adapterFetchText(issueBodyUrl, {
-      adapter: 'site-issue-snapshot',
-      label: 'Hosted GitHub issue snapshot body',
+    }))).data || {};
+    const issueBody = await adapterFetchText(issueBodyUrl, Object.assign(snapshotFetch(issueBodyUrl, {
+      label: 'Hosted GitHub issue snapshot body'
+    }), {
       rateLimitKey: `site-issue-snapshot:${spec.repo}`,
-      hardRefresh: Boolean(options.hardRefresh),
-      skipGitNativeRawBridge: true,
       headers: { Accept: 'text/markdown,text/plain,*/*' }
-    }) || '';
+    })) || '';
     const commentsMode = String(options.commentsMode || 'always').trim().toLowerCase();
     const issueHasWorkspace = Boolean(workspaceUrlFromPointerMarkdown(issueBody, spec.issueUrl) || embeddedWorkspaceMarkdownFromPointerIssueBody(issueBody));
     const shouldLoadComments = commentsMode !== 'none' && !(commentsMode === 'if-needed' && issueHasWorkspace);
@@ -10687,22 +10714,18 @@
       for (const commentRef of commentRefs) {
         const commentJsonUrl = githubHostedIssueSnapshotResolve(issueJsonUrl, commentRef.json || `comments/${commentRef.id}.json`);
         const commentBodyUrl = githubHostedIssueSnapshotResolve(issueJsonUrl, commentRef.path || `comments/${commentRef.id}.md`);
-        const commentMeta = (await adapterFetchJson(commentJsonUrl, {
-          adapter: 'site-issue-snapshot',
-          label: 'Hosted GitHub issue comment snapshot item',
+        const commentMeta = (await adapterFetchJson(commentJsonUrl, Object.assign(snapshotFetch(commentJsonUrl, {
+          label: 'Hosted GitHub issue comment snapshot item'
+        }), {
           rateLimitKey: `site-issue-snapshot:${spec.repo}`,
-          hardRefresh: Boolean(options.hardRefresh),
-          skipGitNativeRawBridge: true,
           headers: { Accept: 'application/json,*/*' }
-        })).data || {};
-        const commentBody = await adapterFetchText(commentBodyUrl, {
-          adapter: 'site-issue-snapshot',
-          label: 'Hosted GitHub issue comment snapshot body',
+        }))).data || {};
+        const commentBody = await adapterFetchText(commentBodyUrl, Object.assign(snapshotFetch(commentBodyUrl, {
+          label: 'Hosted GitHub issue comment snapshot body'
+        }), {
           rateLimitKey: `site-issue-snapshot:${spec.repo}`,
-          hardRefresh: Boolean(options.hardRefresh),
-          skipGitNativeRawBridge: true,
           headers: { Accept: 'text/markdown,text/plain,*/*' }
-        }) || '';
+        })) || '';
         comments.push(githubHostedIssueSnapshotCleanItem(commentMeta, commentBody, commentRef.html_url || ''));
       }
     }
@@ -10716,8 +10739,29 @@
       snapshotSourceUpdatedAt: meta.sourceUpdatedAt || '',
       requestCount: 2 + (shouldLoadComments ? comments.length * 2 : 0)
     };
+    githubHostedIssueSnapshotLocationRuntime().set(String(spec.repo || '').toLowerCase(), metadataUrl);
     githubIssueImportTrace('site-issue-snapshot.thread-built', githubIssueThreadTraceSummary(thread));
     return thread;
+  }
+
+  async function fetchGitHubIssueThreadViaHostedSnapshot(spec, options = {}) {
+    const candidates = githubHostedIssueSnapshotMetadataUrlCandidates(spec);
+    const cached = githubHostedIssueSnapshotMetadataUrl(spec);
+    const ordered = [...new Set([cached, ...candidates].filter(Boolean))];
+    if (!ordered.length) throw new Error('Hosted issue snapshot metadata URL could not be resolved.');
+    const errors = [];
+    for (const metadataUrl of ordered) {
+      try {
+        githubIssueImportTrace('site-issue-snapshot.metadata-candidate', { repo: spec.repo, issueNumber: spec.issueNumber, metadataUrl });
+        return await fetchGitHubIssueThreadViaHostedSnapshotAt(spec, metadataUrl, options);
+      } catch (error) {
+        errors.push({ metadataUrl, error: error?.message || String(error) });
+        githubIssueImportTrace('site-issue-snapshot.metadata-candidate-failed', { repo: spec.repo, issueNumber: spec.issueNumber, metadataUrl, error });
+      }
+    }
+    const primary = new Error(`Hosted issue snapshot unavailable for ${spec.repo}.`);
+    primary.snapshotErrors = errors;
+    throw primary;
   }
 
   async function fetchGitHubIssueThreadWithFallback(spec, options = {}) {
@@ -10833,48 +10877,54 @@
     })).filter((entry) => Number.isInteger(entry.number) && entry.number > 0 && entry.issueUrl);
   }
 
+  async function fetchGitHubRepoIssueSpecsViaHostedSnapshotAt(repo, sampleSpec, metadataUrl, options = {}) {
+    const meta = (await adapterFetchJson(metadataUrl, Object.assign(githubHostedIssueSnapshotFetchOptions(options, 'Hosted GitHub issue snapshot metadata'), {
+      rateLimitKey: `site-issue-snapshot:${repo}`,
+      headers: { Accept: 'application/json,*/*' }
+    }))).data || null;
+    if (!meta || meta.type !== 'tiinex.github.issues.snapshot' || !githubHostedIssueSnapshotRepoMatches(meta, sampleSpec)) return null;
+    let manifest = meta;
+    try {
+      const manifestUrl = githubHostedIssueSnapshotResolve(metadataUrl, meta.manifest || `${String(meta.directory || '').trim() || `${sampleSpec.repoName}/`}manifest.json`);
+      manifest = (await adapterFetchJson(manifestUrl, Object.assign(githubHostedIssueSnapshotFetchOptions(options, 'Hosted GitHub issue snapshot manifest'), {
+        rateLimitKey: `site-issue-snapshot:${repo}`,
+        headers: { Accept: 'application/json,*/*' }
+      }))).data || meta;
+    } catch (error) {
+      githubIssueImportTrace('site-issue-snapshot.list-manifest-unavailable', { repo, metadataUrl, error });
+    }
+    const limit = Math.max(0, Number(options.limit || app.settings.githubIssueDiscoveryLimit || 10));
+    const specs = githubHostedIssueSnapshotManifestIssues(meta, manifest, sampleSpec.repo)
+      .filter((entry) => !entry.state || String(entry.state).toLowerCase() === 'open')
+      .sort((a, b) => Date.parse(b.updated_at || '') - Date.parse(a.updated_at || ''))
+      .slice(0, limit)
+      .map((entry) => parseGitHubIssueSpec(entry.issueUrl))
+      .filter(Boolean);
+    githubHostedIssueSnapshotLocationRuntime().set(String(repo || '').toLowerCase(), metadataUrl);
+    githubIssueImportTrace('site-issue-snapshot.list-built', { repo, count: specs.length, metadataUrl, generatedAt: meta.generatedAt || '', sourceUpdatedAt: meta.sourceUpdatedAt || '' });
+    return specs;
+  }
+
   async function fetchGitHubRepoIssueSpecsViaHostedSnapshot(repo, options = {}) {
     const sampleSpec = parseGitHubIssueSpec(`https://github.com/${String(repo || '').replace(/^\/+|\/+$/gu, '')}/issues/1`);
     if (!sampleSpec) return null;
-    const metadataUrl = githubHostedIssueSnapshotMetadataUrl(sampleSpec);
-    if (!metadataUrl) return null;
-    try {
-      const meta = (await adapterFetchJson(metadataUrl, {
-        adapter: 'site-issue-snapshot',
-        label: 'Hosted GitHub issue snapshot metadata',
-        rateLimitKey: `site-issue-snapshot:${repo}`,
-        hardRefresh: Boolean(options.hardRefresh),
-        skipGitNativeRawBridge: true,
-        headers: { Accept: 'application/json,*/*' }
-      })).data || null;
-      if (!meta || meta.type !== 'tiinex.github.issues.snapshot' || !githubHostedIssueSnapshotRepoMatches(meta, sampleSpec)) return null;
-      let manifest = meta;
+    const candidates = githubHostedIssueSnapshotMetadataUrlCandidates(sampleSpec);
+    const cached = githubHostedIssueSnapshotMetadataUrl(sampleSpec);
+    const ordered = [...new Set([cached, ...candidates].filter(Boolean))];
+    if (!ordered.length) return null;
+    const errors = [];
+    for (const metadataUrl of ordered) {
       try {
-        const manifestUrl = githubHostedIssueSnapshotResolve(metadataUrl, meta.manifest || `${String(meta.directory || '').trim() || `${sampleSpec.repoName}/`}manifest.json`);
-        manifest = (await adapterFetchJson(manifestUrl, {
-          adapter: 'site-issue-snapshot',
-          label: 'Hosted GitHub issue snapshot manifest',
-          rateLimitKey: `site-issue-snapshot:${repo}`,
-          hardRefresh: Boolean(options.hardRefresh),
-          skipGitNativeRawBridge: true,
-          headers: { Accept: 'application/json,*/*' }
-        })).data || meta;
+        githubIssueImportTrace('site-issue-snapshot.list-candidate', { repo, metadataUrl });
+        const specs = await fetchGitHubRepoIssueSpecsViaHostedSnapshotAt(repo, sampleSpec, metadataUrl, options);
+        if (Array.isArray(specs)) return specs;
       } catch (error) {
-        githubIssueImportTrace('site-issue-snapshot.list-manifest-unavailable', { repo, error });
+        errors.push({ metadataUrl, error: error?.message || String(error) });
+        githubIssueImportTrace('site-issue-snapshot.list-candidate-failed', { repo, metadataUrl, error });
       }
-      const limit = Math.max(0, Number(options.limit || app.settings.githubIssueDiscoveryLimit || 10));
-      const specs = githubHostedIssueSnapshotManifestIssues(meta, manifest, sampleSpec.repo)
-        .filter((entry) => !entry.state || String(entry.state).toLowerCase() === 'open')
-        .sort((a, b) => Date.parse(b.updated_at || '') - Date.parse(a.updated_at || ''))
-        .slice(0, limit)
-        .map((entry) => parseGitHubIssueSpec(entry.issueUrl))
-        .filter(Boolean);
-      githubIssueImportTrace('site-issue-snapshot.list-built', { repo, count: specs.length, metadataUrl, generatedAt: meta.generatedAt || '', sourceUpdatedAt: meta.sourceUpdatedAt || '' });
-      return specs;
-    } catch (error) {
-      githubIssueImportTrace('site-issue-snapshot.list-unavailable', { repo, error });
-      return null;
     }
+    githubIssueImportTrace('site-issue-snapshot.list-unavailable', { repo, errors });
+    return null;
   }
 
   async function fetchGitHubRepoIssueSpecs(repo, options = {}) {
