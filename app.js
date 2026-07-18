@@ -9991,7 +9991,7 @@ ${message}${detail ? ` · ${detail}` : ''}`;
         ws = createWorkspace(source.label || 'Config workspace', importMode === 'duplicate' ? 'Duplicated from .workspace.md workspace state.' : 'Loaded from .workspace.md workspace state.');
         opened += 1;
         if (source.kind === 'github-tree' || source.kind === 'github') {
-          if (!firstWs) maybePrewarmInitialRouteHash(source, ws, sources, 'source-created-before-github-load');
+          if (!firstWs && options.suppressRoutePrewarm !== true && options.suppressRouteStateWrite !== true) maybePrewarmInitialRouteHash(source, ws, sources, 'source-created-before-github-load');
           await loadGitHubStateSourceIntoWorkspace(ws, source, { startupProgress: true, respectSourceConfig: true, transportRefreshTier: 'cache', transportPolicy: githubSourceTransportPolicyForTier('cache', { startupProgress: true }) });
         } else {
           await loadUrlsIntoWorkspace(ws, source.urls || []);
@@ -10028,7 +10028,7 @@ ${message}${detail ? ` · ${detail}` : ''}`;
       if (active) app.activeWorkspaceId = active.id;
     }
     if (Number.isFinite(state.workspaceOffset)) app.workspaceOffset = Math.max(0, Number(state.workspaceOffset) || 0);
-    if (typeof setRouteState === 'function' && options.preserveShareHash !== true) setRouteState('replace');
+    if (typeof setRouteState === 'function' && options.preserveShareHash !== true && options.suppressRouteStateWrite !== true) setRouteState('replace');
     return opened || sources.length;
   }
 
@@ -17876,12 +17876,20 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       return;
     }
     const merge = options.workspaceOpenMode === 'merge';
+    const routeHistoryKind = options.routeHistoryKind || 'push';
     await openViewerConfigMarkdown(markdown, workspaceNodeConfigUrl(ws, node), {
       applyWorkspaceState: true,
       replaceNonDraftWorkspaces: !merge,
       workspaceOpenMode: merge ? 'merge' : 'open',
-      openedFromWorkspaceNode: node.path || node.title || 'workspace card'
+      openedFromWorkspaceNode: node.path || node.title || 'workspace card',
+      // User-facing workspace Open/Merge is view navigation. Suppress the
+      // internal workspace-state replace/prewarm writes so the final route can
+      // be pushed as a real browser history entry. This preserves mobile swipe
+      // Back after opening a workspace card from a fresh browser entry.
+      suppressRouteStateWrite: true,
+      suppressRoutePrewarm: true
     });
+    if (typeof setRouteState === 'function') setRouteState(routeHistoryKind);
   }
 
   async function mergeWorkspaceNode(ws, node) {
