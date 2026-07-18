@@ -1263,7 +1263,7 @@ function validateJavascriptSurface() {
   if (!js.includes('refresh-source-via-live-transport') || !js.includes('bypassRepositorySnapshot: true') || !js.includes('bypassHostedIssueSnapshot: true') || !js.includes('githubIssueTransportPresentation') || !js.includes('renderWorkspaceTransportPills')) {
     fail('Mirror/cache transport badges must provide an explicit next-level live-source refresh path for repository files and issue snapshots.');
   }
-  for (const token of ['TRANSPORT_TIER_ORDER', "['cache', 'mirror', 'proxy', 'direct']", 'data-transport-tier', 'restoreGitHubSourceUserConfig', 'preserveSourceConfig', 'forceDirectFallback', 'transportRefreshTier', 'allowLowerTierCacheFallback', 'stale-cache-suppressed-by-requested-tier']) {
+  for (const token of ['TRANSPORT_TIER_ORDER', "['cache', 'mirror', 'proxy', 'direct']", 'data-transport-tier', 'restoreGitHubSourceUserConfig', 'preserveSourceConfig', 'forceDirectFallback', 'transportRefreshTier', 'allowLowerTierCacheFallback', 'stale-cache-suppressed-by-requested-tier', 'resetWorkspaceTransportStateForSourceLoad', 'forceWorkspaceCacheTransportPresentation', 'activeSourceTransportTier']) {
     if (!js.includes(token)) fail(`Transport badge tier progression/source-config guard missing: ${token}`);
   }
   if (!js.includes("transportRefreshTier: 'cache', transportPolicy: githubSourceTransportPolicyForTier('cache', { routeOwnedStartup: true })")
@@ -1281,6 +1281,8 @@ function validateJavascriptSurface() {
     'source-material-cache.incomplete-fallback-to-mirror',
     'restoreConfiguredGitHubIssueThreadCachesIntoWorkspace',
     'githubSourceMaterialCacheLooksCompleteForSource',
+    'resetWorkspaceTransportStateForSourceLoad(ws, githubSource, transportPolicy)',
+    'ensureWorkspaceRequestedIssueTransportFallback(ws, githubSource, transportPolicy',
     'sourceLoadHardRefresh',
     'bypassRepositorySnapshot: Boolean(options.bypassRepositorySnapshot || !transportPolicy.allowMirror)',
     'liveGitHub: Boolean(options.liveGitHub || transportPolicy.allowProxy)',
@@ -1299,6 +1301,10 @@ function validateJavascriptSurface() {
   const issueDiscovery = js.slice(issueDiscoveryStart, issueDiscoveryEnd);
   for (const token of ['transportPolicy', 'liveGitHub: Boolean(options.liveGitHub || transportPolicy.allowProxy)', 'bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot || !transportPolicy.allowMirror)', 'forceDirectFallback: Boolean(options.forceDirectFallback || transportPolicy.allowDirect)', 'transportRefreshTier: transportPolicy.requestedTier']) {
     if (!issueDiscovery.includes(token)) fail(`Issue imports must receive the caller transport tier rather than resolving their own transport path: ${token}`);
+  }
+
+  for (const token of ['maybeScheduleTemporalLensAfterViewState', 'openModalOnMissingRef: false', 'time-portal-source-snapshot', "transportRefreshTier: 'direct'", 'bypassRepositorySnapshot: true']) {
+    if (!js.includes(token)) fail(`Time Portal source snapshots must survive route restore and use the explicit direct/raw-capable transport: ${token}`);
   }
 
   if (js.includes('data-mode="issue"') || js.includes('Add issue thread')) {
