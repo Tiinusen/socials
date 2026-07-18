@@ -8954,6 +8954,9 @@
       } else if (source.kind === 'github-tree' || source.kind === 'github') {
         await loadGitHubStateSourceIntoWorkspace(ws, source, { refreshExisting: true, allowSurfaceDisable: matchedByLabel });
       }
+      if (source.label && ws.label !== source.label) {
+        ws.label = source.label;
+      }
       if (!firstWs) firstWs = ws;
       if (typeof applyViewStateToWorkspace === 'function') applyViewStateToWorkspace(ws, source);
       if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
@@ -15182,7 +15185,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       if (!isAffirmative(firstKv(map, ['Open On Apply']), true)) return;
 
       const kindRaw = firstKv(map, ['Source Kind', 'Kind'], '').toLowerCase();
-      const label = firstKv(map, ['Label'], group.title) || group.title;
+      const label = firstKv(map, ['Workspace Label', 'Label'], group.title) || group.title;
       const selectedPath = firstKv(map, ['Selected Path'], '');
       const defaultView = firstKv(map, ['Default View'], 'feed').toLowerCase();
       const defaultFilter = firstKv(map, ['Default Filter', 'Filter'], 'all').toLowerCase();
@@ -15361,6 +15364,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return sections.join('\n\n');
   }
 
+  // Workspace entrypoint labels are serialized explicitly so Update with current
+  // preserves the user-visible names of every workspace, even if source loading
+  // later reuses a repo/ref match or default repository title.
   function workspaceEntrypointsMarkdown(descriptors) {
     const sections = [];
     (descriptors || []).forEach((item) => {
@@ -15369,6 +15375,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       if (item.shareable && source.kind === 'github-tree') {
         const surfaces = normalizeGithubSurfaceConfig(source.enabledSurfaces || {});
         lines.push('- Source Kind: github-tree');
+        lines.push(`- Workspace Label: ${item.label}`);
         if (source.repo) lines.push(`- Repository: ${source.repo}`);
         const exportRef = source.requestedRef || source.ref || '';
         if (exportRef) lines.push(`- Ref: ${exportRef}`);
@@ -15380,9 +15387,11 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         normalizedGitHubIssueUrls(source.issueUrls || source.configuredIssueUrls || [], source.repo || '').filter(Boolean).forEach((url) => lines.push(`- Issue URL: ${url}`));
       } else if (item.shareable && (source.urls || []).length) {
         lines.push('- Source Kind: urls');
+        lines.push(`- Workspace Label: ${item.label}`);
         (source.urls || []).forEach((url) => lines.push(`- URL: ${url}`));
       } else {
         lines.push('- Source Kind: local');
+        lines.push(`- Workspace Label: ${item.label}`);
         lines.push('- Open On Apply: yes');
         lines.push('- Restore From: Workspace State appendix');
       }
