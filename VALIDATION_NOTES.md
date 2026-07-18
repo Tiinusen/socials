@@ -270,3 +270,9 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - The Time Portal concrete-ref modal closes when historical repo material has actually landed, even if an earlier proxy/direct attempt had already written a transient unavailable status.
 - Public build cache-busting uses the publish run identity (`GITHUB_RUN_ID`/`GITHUB_RUN_ATTEMPT`, or build time locally) in the build id and release cache key. A public rebuild that republishes mirrors or issue snapshots from the same source commit is therefore still a cache boundary for source-material caches.
 
+
+## v64 issue fallback and single-leaf route polish
+
+- Configured GitHub issue targets may fall forward from hosted issue snapshot (`mirror`) to the GitHub API (`proxy`) when the repository/file mirror is already usable but the issue mirror has not been deployed for that source. The fallback is issue-surface-only and does not change the selected repository-file transport or source configuration.
+- Broad issue discovery remains bounded by the configured source toggle and limits. The mirror-miss proxy fallback is applied to explicit issue/social targets, not as a new startup crawler path.
+- After a workspace/source load completes, a discovery result that contains exactly one visible leaf is promoted to Lineage view with a route replace. The decision happens only after loading/progress is complete, ignores resolved adapter wrapper shells and target-only gaps, and does not push extra history.
