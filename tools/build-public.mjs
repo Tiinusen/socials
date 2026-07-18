@@ -115,6 +115,36 @@ function buildMetadata(buildSource) {
   };
 }
 
+
+function writeJsonFile(filePath, value) {
+  ensureParent(filePath);
+  writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+function publicBuildIdentity(buildMeta = {}, reason = 'viewer-build') {
+  const generatedAt = new Date().toISOString();
+  return {
+    type: 'tiinex.public.build.identity.v1',
+    version: 1,
+    reason,
+    generatedAt,
+    repository: buildMeta.repository || envValue('TIINEX_BUILD_REPOSITORY') || envValue('GITHUB_REPOSITORY') || '',
+    commitSha: buildMeta.commitSha || '',
+    commitCreatedAt: buildMeta.commitCreatedAt || '',
+    builtAt: buildMeta.builtAt || generatedAt,
+    runId: buildMeta.runId || envValue('GITHUB_RUN_ID'),
+    runAttempt: buildMeta.runAttempt || envValue('GITHUB_RUN_ATTEMPT'),
+    buildId: buildMeta.buildId || '',
+    releaseCacheKey: buildMeta.releaseCacheKey || buildMeta.buildId || buildMeta.commitSha || generatedAt
+  };
+}
+
+function writePublicBuildIdentity(outDir, buildMeta = {}, reason = 'viewer-build') {
+  const identity = publicBuildIdentity(buildMeta, reason);
+  writeJsonFile(join(outDir, 'tiinex.build.json'), identity);
+  return identity;
+}
+
 function cacheBustLocalAssets(html, token) {
   const value = safeBuildToken(token);
   if (!value) return html;
@@ -306,6 +336,7 @@ function main() {
   publicIndex = cacheBustLocalAssets(publicIndex, buildMeta.buildId || buildMeta.commitSha || buildMeta.builtAt);
   writeFileSync(join(out, 'index.html'), publicIndex, 'utf8');
   writeFileSync(join(out, 'tiinex.bundle.js'), bundleSource(buildMeta), 'utf8');
+  writePublicBuildIdentity(out, buildMeta, 'viewer-build');
 
   for (const file of ['styles.css', 'llms.txt', 'tiinex.app.llm.v1.md', 'tiinex.context.v1.md', 'tiinex.orientation.v1.md', 'tiinex.orientation.manifest.v1.json', 'robots.txt', 'favicon.ico']) {
     copyPathIfExists(file, out);
