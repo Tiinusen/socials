@@ -25452,7 +25452,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
             autoApply: true,
             cachedCommit,
             routeOwnedStartup: Boolean(options.routeOwnedStartup || options.reason === 'route-display-options'),
-            transportRefreshTier: options.transportRefreshTier || (options.routeOwnedStartup || options.reason === 'route-display-options' ? 'cache' : '')
+            transportRefreshTier: options.transportRefreshTier || 'proxy'
           });
         }, 0);
         return;
@@ -25478,7 +25478,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         refInput: refText,
         autoApply: true,
         routeOwnedStartup: Boolean(options.routeOwnedStartup || options.reason === 'route-display-options'),
-        transportRefreshTier: options.transportRefreshTier || (options.routeOwnedStartup || options.reason === 'route-display-options' ? 'cache' : '')
+        transportRefreshTier: options.transportRefreshTier || 'proxy'
       });
     }, 0);
   }
@@ -26040,6 +26040,19 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     }, 0);
   }
 
+  function timePortalTransportTierFromOptions(options = {}) {
+    const requested = normalizeTransportTier(options.transportRefreshTier || '');
+    // Time Portal source snapshots are commit-pinned historical material.
+    // Co-hosted latest mirrors and generic source-material cache do not own that
+    // boundary, so cache/mirror requests are promoted to the first transport
+    // that can resolve a historical Git state. Direct remains the explicit last
+    // resort selected from the transport badge chain.
+    if (requested === 'direct') return 'direct';
+    if (requested === 'proxy') return 'proxy';
+    if (requested === 'cache' || requested === 'mirror') return 'proxy';
+    return 'proxy';
+  }
+
   async function loadTemporalSourceSnapshot(ws, options = {}) {
     if (!ws || !temporalLensActive(ws)) return;
     const opts = workspaceDisplayOptions(ws);
@@ -26097,55 +26110,10 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         configuredIssueUrls: [],
         issueUrls: []
       });
-      const temporalRequestedTier = normalizeTransportTier(options.transportRefreshTier || '') || (options.routeOwnedStartup ? 'cache' : 'direct');
-      const temporalCachePolicy = githubSourceTransportPolicyForTier('cache', { reason: 'time-portal-source-snapshot-cache', routeOwnedStartup: Boolean(options.routeOwnedStartup) });
-      const temporalCachePayload = githubSourceMaterialCacheRead(temporalCacheSource);
-      if (temporalRequestedTier === 'cache' && temporalCachePayload) {
-        resetWorkspaceTransportStateForSourceLoad(ws, temporalCacheSource, temporalCachePolicy);
-        source.ref = commit.ref;
-        source.requestedRef = commit.ref;
-        source.label = gitHubSourceLabel(source.repo, commit.ref);
-        const restored = await restoreGitHubSourceMaterialCacheIntoWorkspace(ws, temporalCacheSource, Object.assign({}, options, { transportPolicy: temporalCachePolicy, transportRefreshTier: 'cache' }));
-        if (restored) {
-          ws.temporalSourceSnapshot = {
-            asOf: temporalLensSnapshotTargetAsOf(opts),
-            repo: source.repo,
-            ref: commit.ref,
-            sourceRef: baseRef || '',
-            committedAt: commit.committedAt || '',
-            loadedAt: new Date().toISOString(),
-            rootPaths,
-            resolver: commit.resolver || 'browser-source-material-cache',
-            resolverUrl: commit.resolverUrl || '',
-            confidence: commit.confidence || 'cached-historical-source-state',
-            warnings: commit.warnings || [],
-            state: 'loaded',
-            cacheState: 'browser-source-material-cache'
-          };
-          ws.logs.push(`Temporal source snapshot restored from browser cache: ${source.repo}@${commit.ref}.`);
-          if (options.toast !== false && !options.routeOwnedStartup) toast(`Loaded cached GitHub snapshot ${shortText(commit.ref, 8)} for ${temporalLensLabel(ws)}.`, 'ok');
-          return true;
-        }
-      }
-      if (temporalRequestedTier === 'cache' && options.routeOwnedStartup && !options.userInitiated) {
-        ws.temporalSourceSnapshot = {
-          asOf: temporalLensSnapshotTargetAsOf(opts),
-          repo: source.repo,
-          ref: commit.ref,
-          sourceRef: baseRef || '',
-          committedAt: commit.committedAt || '',
-          loadedAt: new Date().toISOString(),
-          rootPaths,
-          resolver: commit.resolver || 'browser-source-material-cache',
-          resolverUrl: commit.resolverUrl || '',
-          confidence: commit.confidence || 'cached-commit-known-source-state-not-loaded',
-          warnings: commit.warnings || [],
-          state: 'needs-direct',
-          error: 'Historical source files are not in browser cache; explicit direct refresh is required.'
-        };
-        ws.repositoryTransport = transportUnavailableForTier('cache', { reason: 'Time Portal exact source snapshot is not cached; direct refresh is user-initiated.' });
-        githubRepoFetchTrace('time-portal.cache-miss-direct-deferred', { repo: source.repo, commit: commit.ref, rootPaths, seedPaths: seedPaths.length });
-        return false;
+      const temporalRequestedTier = timePortalTransportTierFromOptions(options);
+      const temporalTransportPolicy = githubSourceTransportPolicyForTier(temporalRequestedTier, { userInitiated: Boolean(options.userInitiated || !options.routeOwnedStartup), reason: 'time-portal-source-snapshot' });
+      if (normalizeTransportTier(options.transportRefreshTier || '') && normalizeTransportTier(options.transportRefreshTier || '') !== temporalRequestedTier) {
+        githubRepoFetchTrace('time-portal.transport.promoted', { repo: source.repo, requestedTier: normalizeTransportTier(options.transportRefreshTier || ''), effectiveTier: temporalRequestedTier, reason: 'cache-and-mirror-do-not-own-historical-git-state' });
       }
       removeRepoFilesForSource(ws, source.id);
       source.ref = commit.ref;
@@ -26176,7 +26144,6 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         sourceUrl: commit.treeUrl || commit.commitUrl || commit.resolverUrl || ''
       });
       ws.logs.push(`Temporal source snapshot: ${source.repo}@${commit.ref} for ${temporalLensLabel(ws)} via ${ws.temporalSourceSnapshot.resolver}.`);
-      const temporalTransportPolicy = githubSourceTransportPolicyForTier('direct', { userInitiated: Boolean(options.userInitiated || !options.routeOwnedStartup), reason: 'time-portal-source-snapshot' });
       await discoverGitHubRepoIntoWorkspace(ws, {
         repo: source.repo,
         ref: commit.ref,
@@ -26185,20 +26152,37 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         refreshExisting: true,
         hardRefresh: true,
         preferStatic: false,
-        preferSeedPaths: true,
-        noApi: true,
+        preferSeedPaths: false,
+        noApi: temporalTransportPolicy.allowProxy && !temporalTransportPolicy.allowDirect,
         seedPaths,
-        seedPathsNote: 'Time Portal direct snapshot uses already-known artifact paths; no broad flat/tree listing is fetched.',
+        seedPathsNote: 'Time Portal snapshot may use already-known artifact paths only as a recovery fallback; proxy/direct own historical Git state.',
+        includeKnownFreshnessPaths: false,
         bypassRepositorySnapshot: true,
-        liveGitHub: false,
-        allowDirectGithubClone: true,
-        forceDirectFallback: true,
-        transportRefreshTier: 'direct',
+        liveGitHub: Boolean(temporalTransportPolicy.allowProxy),
+        allowDirectGithubClone: Boolean(temporalTransportPolicy.allowDirect),
+        allowSharedReaderFallback: Boolean(temporalTransportPolicy.allowDirect),
+        forceDirectFallback: Boolean(temporalTransportPolicy.allowDirect),
+        transportRefreshTier: temporalTransportPolicy.requestedTier,
         transportPolicy: temporalTransportPolicy
       });
+      const temporalLoadedRepoFiles = Array.from(ws.files?.values?.() || [])
+        .filter((file) => file?.sourceId === source.id && sourceSurfaceForEntry(file) === 'repoFiles').length;
+      if (!temporalLoadedRepoFiles) {
+        ws.temporalSourceSnapshot = Object.assign({}, ws.temporalSourceSnapshot || {}, {
+          asOf: temporalLensSnapshotTargetAsOf(opts),
+          repo: source.repo,
+          ref: commit.ref,
+          sourceRef: baseRef || '',
+          state: 'failed',
+          error: `${temporalTransportPolicy.requestedTier || temporalRequestedTier} transport did not return historical repo material.`
+        });
+        githubRepoFetchTrace('time-portal.transport.no-material', { repo: source.repo, commit: commit.ref, transportTier: temporalTransportPolicy.requestedTier || temporalRequestedTier, rootPaths });
+        if (options.toast !== false) toast(`Could not load historical source material through ${temporalTransportPolicy.requestedTier || temporalRequestedTier}. Try the next transport tier.`, 'warn');
+        return false;
+      }
       const temporalCacheCompleteness = githubSourceMaterialCacheLooksCompleteForSource(ws, temporalCacheSource, { temporalSourceSnapshot: true });
       if (temporalCacheCompleteness.ok) {
-        githubSourceMaterialCacheWrite(ws, temporalCacheSource, { transportPolicy: temporalTransportPolicy, transportRefreshTier: 'direct', temporalSourceSnapshot: true });
+        githubSourceMaterialCacheWrite(ws, temporalCacheSource, { transportPolicy: temporalTransportPolicy, transportRefreshTier: temporalTransportPolicy.requestedTier, temporalSourceSnapshot: true });
       } else {
         githubRepoFetchTrace('time-portal.source-material-cache.write-skipped-incomplete', { repo: source.repo, commit: commit.ref, cacheCompleteness: temporalCacheCompleteness });
       }
@@ -27107,7 +27091,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     return { paths: list, added };
   }
 
-  function discoverGitHubTracePathsViaSeedPaths(repo, ref, rootPaths, seedPaths = [], note = '') {
+  function discoverGitHubTracePathsViaSeedPaths(repo, ref, rootPaths, seedPaths = [], note = '', options = {}) {
     const resolvedRef = ref || 'master';
     const effectiveRoots = (rootPaths && rootPaths.length ? rootPaths : ['.topics']).map(normalizeRepoPath).filter(Boolean);
     const seen = new Set();
@@ -27121,7 +27105,9 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         return true;
       });
     allPaths = normalizeDiscoveredTiinexDocsArtifactPaths(repo, allPaths);
-    const supplement = supplementKnownTiinexDocsSchemaPaths(repo, resolvedRef, effectiveRoots, allPaths);
+    const supplement = options.includeKnownFreshnessPaths === false
+      ? { paths: allPaths, added: 0 }
+      : supplementKnownTiinexDocsSchemaPaths(repo, resolvedRef, effectiveRoots, allPaths);
     allPaths = supplement.paths;
     const traceOnly = allPaths.filter((path) => /\.trace\.md$/i.test(path));
     return {
@@ -27158,7 +27144,9 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       .filter((path) => pathLooksUsefulLineageArtifact(path))
       .filter((path) => effectiveRoots.some((root) => !root || path === root || path.startsWith(`${root}/`)));
     allPaths = normalizeDiscoveredTiinexDocsArtifactPaths(repo, allPaths);
-    const supplement = supplementKnownTiinexDocsSchemaPaths(repo, resolvedRef, effectiveRoots, allPaths);
+    const supplement = options.includeKnownFreshnessPaths === false
+      ? { paths: allPaths, added: 0 }
+      : supplementKnownTiinexDocsSchemaPaths(repo, resolvedRef, effectiveRoots, allPaths);
     allPaths = supplement.paths;
     const traceOnly = allPaths.filter((path) => /\.trace\.md$/i.test(path));
 
@@ -27193,7 +27181,8 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         resolvedRef,
         effectiveRoots,
         options.seedPaths,
-        options.seedPathsNote || 'Seeded path manifest used before external flat/tree discovery.'
+        options.seedPathsNote || 'Seeded path manifest used before external flat/tree discovery.',
+        { includeKnownFreshnessPaths: options.includeKnownFreshnessPaths }
       );
     }
     if (options.preferStatic) {
@@ -27212,7 +27201,8 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
               resolvedRef,
               effectiveRoots,
               options.seedPaths,
-              `Static flat source snapshot failed: ${staticError.message}; no GitHub API fallback used; seeded path manifest used.`
+              `Static flat source snapshot failed: ${staticError.message}; no GitHub API fallback used; seeded path manifest used.`,
+              { includeKnownFreshnessPaths: options.includeKnownFreshnessPaths }
             );
           }
           return {
@@ -27245,7 +27235,8 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
           resolvedRef,
           effectiveRoots,
           options.seedPaths,
-          'No GitHub API fallback used; seeded path manifest used.'
+          'No GitHub API fallback used; seeded path manifest used.',
+          { includeKnownFreshnessPaths: options.includeKnownFreshnessPaths }
         );
       }
       return {
@@ -27284,7 +27275,9 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         .map((item) => item.path)
         .filter((path) => effectiveRoots.some((root) => !root || path === root || path.startsWith(`${root}/`)));
       allPaths = normalizeDiscoveredTiinexDocsArtifactPaths(repo, allPaths);
-      const supplement = supplementKnownTiinexDocsSchemaPaths(repo, resolvedRef, effectiveRoots, allPaths);
+      const supplement = options.includeKnownFreshnessPaths === false
+        ? { paths: allPaths, added: 0 }
+        : supplementKnownTiinexDocsSchemaPaths(repo, resolvedRef, effectiveRoots, allPaths);
       allPaths = supplement.paths;
       const traceOnly = allPaths.filter((path) => /\.trace\.md$/i.test(path));
 
@@ -27316,7 +27309,8 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
             resolvedRef,
             effectiveRoots,
             options.seedPaths,
-            `GitHub tree discovery failed: ${apiError.message}; static flat fallback failed: ${fallbackError.message}; seeded path manifest used.`
+            `GitHub tree discovery failed: ${apiError.message}; static flat fallback failed: ${fallbackError.message}; seeded path manifest used.`,
+            { includeKnownFreshnessPaths: options.includeKnownFreshnessPaths }
           );
         }
         return {
@@ -37679,7 +37673,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
     if (!temporalLensNeedsSourceSnapshotForOptions(ws.displayOptions || {})) return false;
     const snap = temporalLensLoadedSnapshotForCurrentAsOf(ws);
     if (snap?.ref) return false;
-    scheduleTemporalSnapshotLoadAfterApply(ws, source.temporalSnapshotRef || '', { openModalOnMissingRef: false, reason: 'route-display-options', routeOwnedStartup: true, transportRefreshTier: 'cache' });
+    scheduleTemporalSnapshotLoadAfterApply(ws, source.temporalSnapshotRef || '', { openModalOnMissingRef: false, reason: 'route-display-options', routeOwnedStartup: true, transportRefreshTier: 'proxy' });
     return true;
   }
 
@@ -39231,8 +39225,11 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
       const discovery = await discoverGitHubTracePaths(repo, ref, rootPaths, {
         hardRefresh: Boolean(options.hardRefresh),
         preferStatic: Boolean(options.preferStatic),
+        preferSeedPaths: Boolean(options.preferSeedPaths),
         rateLimitKey: options.rateLimitKey || undefined,
         seedPaths: Array.isArray(options.seedPaths) ? options.seedPaths : [],
+        seedPathsNote: options.seedPathsNote || '',
+        includeKnownFreshnessPaths: options.includeKnownFreshnessPaths,
         noApi: Boolean(options.noApi)
       });
       ws.repo = repo;
@@ -39293,9 +39290,14 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
               maxReadsPerWindow: options.exactHistoricalMaxReadsPerWindow || undefined
             })
             : null;
-          const content = exactHistorical?.ok
-            ? String(exactHistorical.text || '')
-            : await fetchText(rawUrl, 'GitHub raw artifact', { hardRefresh: Boolean(options.hardRefresh) });
+          let content = '';
+          if (exactHistorical?.ok) {
+            content = String(exactHistorical.text || '');
+          } else if (exactParts?.repo && exactParts?.path && exactHistorical?.deferred) {
+            throw new Error(`Exact historical raw read deferred: ${exactHistorical.reason || 'network-not-requested'}`);
+          } else {
+            content = await fetchText(rawUrl, 'GitHub raw artifact', { hardRefresh: Boolean(options.hardRefresh) });
+          }
           addFileToWorkspace(ws, {
             path,
             content,
