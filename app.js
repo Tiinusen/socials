@@ -8734,7 +8734,10 @@
     const cfg = app.viewerIdentity || {};
     const configured = String(cfg.browserTitle || cfg.pageTitle || cfg.documentTitle || '').trim();
     const fallback = String(cfg.displayName || cfg.heading || cfg.label || 'Tiinex').trim();
-    const title = cleanWhitespace(hostTitle || configured || fallback || 'Tiinex');
+    // Workspace/browser identity owns the live app title once a workspace config
+    // has been parsed. Build-time TIINEX_VIEWER_TITLE is only an initial shell
+    // fallback; it must not permanently shadow Browser Title from .workspace.md.
+    const title = cleanWhitespace(configured || hostTitle || fallback || 'Tiinex');
     return title.slice(0, 90) || 'Tiinex';
   }
 
@@ -9340,12 +9343,7 @@
       seen.add(clean);
       out.push(clean);
     };
-    const sourceRe = /^##\s+Source Markdown(?:\s+Excerpt|\s+Payload)?\s*$/gim;
-    let sourceMatch;
-    while ((sourceMatch = sourceRe.exec(text))) {
-      const rest = text.slice(sourceMatch.index);
-      for (const block of extractMarkdownFenceBlocks(rest, { languages: ['md', 'markdown', ''] })) push(block || '');
-    }
+    for (const block of extractSourceMarkdownPayloadBlocks(text)) push(block || '');
     for (const block of extractMarkdownFenceBlocks(text, { languages: ['md', 'markdown', ''] })) push(block || '');
     if (looksLikeStandaloneTiinexArtifact(text.trim())) push(text.trim());
     return out;
@@ -10334,6 +10332,57 @@ ${fence}`;
       if (!close) break;
       blocks.push(source.slice(bodyStart, close.index));
       openerRe.lastIndex = close.index + close[0].length;
+    }
+    return blocks;
+  }
+
+
+  function extractOuterMarkdownFenceBlockGreedy(section = '', options = {}) {
+    const source = normalizeNewlines(section || '').trim();
+    const allowed = new Set((options.languages || ['md', 'markdown', '']).map((item) => String(item || '').trim().toLowerCase()));
+    const lines = source.split('\n');
+    let openIndex = -1;
+    let fence = '';
+    for (let i = 0; i < lines.length; i += 1) {
+      const match = lines[i].match(/^\s*(`{3,}|~{3,})([^`]*)\s*$/);
+      if (!match) continue;
+      const info = String(match[2] || '').trim().toLowerCase().split(/\s+/)[0] || '';
+      if (!allowed.has(info)) continue;
+      openIndex = i;
+      fence = match[1];
+      break;
+    }
+    if (openIndex < 0 || !fence) return '';
+    let closeIndex = -1;
+    const closeRe = new RegExp(`^\\s*${escapeRegExpLiteral(fence)}\\s*$`);
+    // Use the last matching close in the Source Markdown section. Old GitHub
+    // publications wrapped workspace markdown in triple fences even though the
+    // workspace body contains nested json/css fences. The first close may be an
+    // inner fence; the last close before Publication Notes is the intended
+    // outer wrapper.
+    for (let i = lines.length - 1; i > openIndex; i -= 1) {
+      if (closeRe.test(lines[i])) { closeIndex = i; break; }
+    }
+    if (closeIndex < 0) return '';
+    return lines.slice(openIndex + 1, closeIndex).join('\n').trim();
+  }
+
+  function extractSourceMarkdownPayloadBlocks(text = '') {
+    const source = normalizeNewlines(text || '');
+    const blocks = [];
+    const headingRe = /^##\s+Source Markdown(?:\s+Excerpt|\s+Payload)?\s*$/gim;
+    let match;
+    while ((match = headingRe.exec(source))) {
+      const start = headingRe.lastIndex;
+      const rest = source.slice(start);
+      const endMatch = rest.match(/\n##\s+(?:Publication Notes|Tiinex Boundary)\s*$|\n<\/details>\s*$/im);
+      const section = (endMatch ? rest.slice(0, endMatch.index) : rest).trim();
+      const greedy = extractOuterMarkdownFenceBlockGreedy(section, { languages: ['md', 'markdown', ''] });
+      if (greedy) blocks.push(greedy);
+      else {
+        for (const block of extractMarkdownFenceBlocks(section, { languages: ['md', 'markdown', ''] })) blocks.push(block || '');
+        if (looksLikeStandaloneTiinexArtifact(section)) blocks.push(section);
+      }
     }
     return blocks;
   }
@@ -15411,8 +15460,39 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     };
   }
 
+  function cleanWorkspaceHelpMarkdown(markdown = '') {
+    const text = normalizeNewlines(markdown || '').trim();
+    if (!text) return '';
+    const lines = text.split('\n');
+    const out = [];
+    let block = [];
+    const flush = () => {
+      if (!block.length) return;
+      const body = block.join('\n').trim();
+      block = [];
+      if (!body) return;
+      const sourceFieldCount = (body.match(/^\s*-\s*(?:Source Kind|Repository|Ref|Resolved Commit|Root Path|Repo Files Discovery|Issue Discovery|Issue URL)\s*:/gim) || []).length;
+      const prose = body
+        .replace(/^#{3,6}\s+.*$/gim, '')
+        .replace(/^\s*-\s*(?:Source Kind|Repository|Ref|Resolved Commit|Root Path|Repo Files Discovery|Issue Discovery|Issue URL)\s*:.*$/gim, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      // FAQ/help is human presentation content. If a help subsection contains
+      // only workspace entrypoint/source fields, it is leaked config material
+      // and belongs under Workspace Entrypoints, not Help.
+      if (sourceFieldCount >= 3 && !prose) return;
+      out.push(body);
+    };
+    for (const line of lines) {
+      if (/^#{3,6}\s+/.test(line) && block.length) flush();
+      block.push(line);
+    }
+    flush();
+    return out.join('\n\n').trim();
+  }
+
   function helpMarkdownFromConfig(markdown) {
-    return markdownSectionContent(markdown, 'Help', 2);
+    return cleanWorkspaceHelpMarkdown(markdownSectionContent(markdown, 'Help', 2));
   }
 
   function configHasHelp() {
@@ -16567,7 +16647,7 @@ ${bodySections}
       theme: parsed.theme || '',
       subtitles: (parsed.noWorkspaceSubtitles || viewerSubtitlePool?.() || []).join('\n'),
       customCss: parsed.customCss || extractViewerCustomCss(markdown || '') || '',
-      helpMarkdown: parsed.helpMarkdown || ''
+      helpMarkdown: cleanWorkspaceHelpMarkdown(parsed.helpMarkdown || '')
     };
   }
 
@@ -16673,7 +16753,8 @@ ${bodySections}
     out = replaceContinuityCurrentSummary(out, draft.summary || workspaceConfigSummaryFromMarkdown(out));
     out = replaceMarkdownSection(out, 'Viewer Identity', 2, workspaceConfigIdentityMarkdown(draft), 'Tiinex Viewer');
     out = replaceMarkdownSection(out, 'Empty Stage', 2, workspaceConfigEmptyStageMarkdown(draft), 'Viewer Identity');
-    if (String(draft.helpMarkdown || '').trim()) out = replaceMarkdownSection(out, 'Help', 2, String(draft.helpMarkdown || '').trim(), 'Workspace Entrypoints');
+    const cleanHelp = cleanWorkspaceHelpMarkdown(draft.helpMarkdown || '');
+    if (cleanHelp) out = replaceMarkdownSection(out, 'Help', 2, cleanHelp, 'Workspace Entrypoints');
     if (String(draft.customCss || '').trim()) out = replaceMarkdownSection(out, 'Custom CSS', 2, `\`\`\`css\n${String(draft.customCss || '').trim()}\n\`\`\``, 'Help');
     return out;
   }
@@ -16877,6 +16958,10 @@ Answer the reader should see in workspace help or GitHub presentation.">${escape
       if (!ws || !node) return toast('No workspace artifact selected.', 'warn');
       const sourceBacked = Boolean(original) || !nodeIsLocalEditableMaterial(ws, node);
       await saveNodeEdit(ws, node, markdown, Object.assign({ forceLocalDraft: true }, modal.parentEdited ? { parentNodeId: modal.parentNodeId || '', parentPath: modal.parentPath || '' } : {}));
+      const parsedAfterSave = parseViewerConfigMarkdown(markdown, modal.configUrl || app.viewerIdentity?.configUrl || location.href);
+      app.viewerIdentity = Object.assign(app.viewerIdentity || {}, parsedAfterSave || {}, { loaded: true, configUrl: modal.configUrl || app.viewerIdentity?.configUrl || '' });
+      syncDocumentTitle('workspace-config-save');
+      applyViewerCustomCss(app.viewerIdentity.customCss || '');
       app.modal = null;
       if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
       if (typeof saveLocalStateNow === 'function') saveLocalStateNow();
@@ -19409,7 +19494,7 @@ ${markdownExcerptForOutbound(node, 18000)}
   }
 
   function githubOutboundFileExcerpt(file, limit = 6500) {
-    const raw = normalizeNewlines(file?.content || file?.rawMarkdown || file?.body || '');
+    const raw = normalizeNewlines(file?.text || file?.rawMarkdown || file?.markdown || file?.body || file?.content || '');
     if (!raw.trim()) return '_No markdown body was available in the workspace file._';
     if (raw.length <= limit) return raw;
     return `${raw.slice(0, limit).trimEnd()}
