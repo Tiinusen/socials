@@ -6599,7 +6599,11 @@
       openArtifactCreateIntent({ mode: event.currentTarget.dataset.mode, wsId, nodeId, schemaId: event.currentTarget.dataset.schemaId || event.currentTarget.dataset.schema || '' });
       return;
     }
-    if (action === 'close-modal') { closeActiveModalRoute(); return; }
+    if (action === 'close-modal') {
+      if (await maybeFinalizeGithubExportBeforeModalClose()) return;
+      closeActiveModalRoute();
+      return;
+    }
   }
 
 
@@ -35680,6 +35684,65 @@ ${integrityFooterForPath(parent, path)}`,
     });
   }
 
+  async function maybeFinalizeGithubExportBeforeModalClose() {
+    const modal = app.modal;
+    if (!modal || modal.type !== 'export-workspace') return false;
+    if (exportCapabilityTarget(modal) !== 'github-draft' || exportSetupStage(modal) !== 'execute') return false;
+    const ctx = githubCurrentExportContext(modal);
+    if (!ctx.ws || !ctx.item || !ctx.state) return false;
+    const draft = githubSingleArtifactDraft(ctx.ws, modal, ctx.item, ctx.surface);
+    const ready = githubExportStateReady(ctx.state, draft, ctx.surface);
+    if (ready && githubExportAllItemsReady(modal, ctx.ws, buildExportPlan(ctx.ws, modal), ctx.surface)) {
+      await finalizeGithubExportRoutine(modal, 'github-export-close-ready');
+      return true;
+    }
+
+    // Closing the guided GitHub routine immediately after manually updating
+    // GitHub used to abandon the publication binding while leaving the local
+    // draft shadow in place. If the user already copied/opened a known target,
+    // treat close as "verify what I just posted" before allowing the modal to
+    // disappear. A second close after a recent failed verify is an explicit
+    // abandon and leaves the draft local/recoverable.
+    const recentFailureAt = Number(ctx.state.closeVerifyFailedAt || 0);
+    if (recentFailureAt && Date.now() - recentFailureAt < 30 * 1000) {
+      toast('GitHub export left as a local draft. Verify later to bind the published URL.', 'warn');
+      return false;
+    }
+
+    if (!ctx.state.copied || !ctx.state.opened) return false;
+    const candidates = githubExportTargetCandidates(ctx.ws, ctx.item, ctx.surface);
+    const mode = githubExportEffectiveTargetMode(modal, ctx.item, ctx.surface, candidates);
+    const inferredUrl = (mode === 'create-new' || mode === 'create-comment') ? '' : githubKnownPublicationUrlForDraft(ctx.state, draft, candidates);
+    const url = ctx.state.publishedUrl || modal.githubPublishedUrl || inferredUrl || '';
+    const valid = ctx.surface === 'discussion' ? Boolean(parseGitHubDiscussionSpec(url)) : Boolean(parseGitHubIssueSpec(url));
+    if (!valid) return false;
+
+    try {
+      await verifyGithubExportCurrentTarget(modal);
+      const after = githubCurrentExportContext(modal);
+      const afterDraft = after.item ? githubSingleArtifactDraft(after.ws, modal, after.item, after.surface) : null;
+      if (after.item && githubExportStateReady(after.state, afterDraft, after.surface)) {
+        if (githubExportAllItemsReady(modal, after.ws, buildExportPlan(after.ws, modal), after.surface)) {
+          await finalizeGithubExportRoutine(modal, 'github-export-close-autoverify');
+        } else {
+          app.modal.githubExportIndex = Math.min((Number(app.modal.githubExportIndex || 0) + 1), Math.max(0, githubExportItemsForModal(app.modal, buildExportPlan(after.ws, modal)).length - 1));
+          toast('GitHub publication verified. Next artifact ready.', 'ok');
+          render();
+        }
+      } else {
+        render();
+      }
+      return true;
+    } catch (error) {
+      ctx.state.verified = false;
+      ctx.state.error = error.message || String(error);
+      ctx.state.closeVerifyFailedAt = Date.now();
+      toast(`Could not verify GitHub publication yet: ${ctx.state.error}`, 'warn');
+      render();
+      return true;
+    }
+  }
+
   function githubExportNormalizeMarkdownForComparison(markdown) {
     const text = normalizeNewlines(markdown || '');
     try {
@@ -36710,12 +36773,12 @@ ${integrityFooterForPath(parent, path)}`,
       toast(`Published URL was verified, but local source binding needs retry: ${error.message}`, 'warn');
     }
     const result = refreshWorkspaceAfterGithubExport(ws, reason);
-    const refreshScheduled = scheduleGithubDiscoveryRefreshAfterExport(ws);
+    const refreshScheduled = binding.loaded ? false : scheduleGithubDiscoveryRefreshAfterExport(ws);
     app.modal = null;
     const removed = Number(binding.removed || 0) + Number(result.removed || 0);
     toast(removed
-      ? `GitHub export complete. Removed ${removed} published local draft${removed === 1 ? '' : 's'} and refreshed Discovery.`
-      : `GitHub export complete. Discovery refreshed${binding.loaded ? '; publication URL bound locally' : refreshScheduled ? '; GitHub source refresh queued' : ''}.`, 'ok');
+      ? `GitHub export complete. Removed ${removed} published local draft${removed === 1 ? '' : 's'} and bound the published URL locally.`
+      : `GitHub export complete${binding.loaded ? '; publication URL bound locally' : refreshScheduled ? '; GitHub source refresh queued' : ''}.`, 'ok');
     render();
   }
 
