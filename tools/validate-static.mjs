@@ -1244,8 +1244,14 @@ function validateJavascriptSurface() {
   if (!js.includes('githubHostedIssueSnapshotMetadataUrlCandidates') || !js.includes('disableRuntimeCache: true') || !js.includes("cacheMode: 'no-cache'")) {
     fail('Hosted issue snapshots must use same-origin candidate paths with browser/runtime cache revalidation instead of stale runtime cache.');
   }
+  if (!js.includes('hostedIssueSnapshotBaseUrlCandidates') || js.includes('${repoName}/${relative}')) {
+    fail('Hosted issue snapshot paths must follow mirror convention roots such as /issues/github.com/owner/repo.json, not repo-prefixed /repo/issues paths.');
+  }
   if (!js.includes('site-issue-snapshot.metadata-candidate') || !js.includes('site-issue-snapshot.list-candidate')) {
     fail('Hosted issue snapshot adapter must trace candidate path selection for issue threads and discovery lists.');
+  }
+  if (!js.includes('refresh-source-via-live-transport') || !js.includes('bypassRepositorySnapshot: true') || !js.includes('bypassHostedIssueSnapshot: true')) {
+    fail('Site mirror transport badge must provide an explicit live-source refresh path for repository files and issue snapshots.');
   }
 
   if (js.includes('data-mode="issue"') || js.includes('Add issue thread')) {

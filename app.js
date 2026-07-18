@@ -6000,6 +6000,38 @@
   }
 
 
+  function primaryGitHubSourceForWorkspace(ws) {
+    if (!ws) return null;
+    ensureWorkspaceSources(ws);
+    const repo = normalizeRepositoryTransportIdentity(ws.repo || ws.discoverySource?.repo || '').replace(/^github\.com\//u, '');
+    const sources = Array.from(ws.sources?.values?.() || []).filter((source) => source?.kind === 'github' && source.repo);
+    return sources.find((source) => !repo || normalizeRepositoryTransportIdentity(source.repo || '').endsWith(`/${repo}`)) || sources[0] || null;
+  }
+
+  async function refreshWorkspaceViaLiveSourceTransport(wsId = '') {
+    const ws = getWorkspace(wsId || app.activeWorkspaceId || '');
+    const source = primaryGitHubSourceForWorkspace(ws);
+    if (!ws || !source?.repo) {
+      toast('No GitHub source is available for a live transport refresh.', 'warn');
+      return;
+    }
+    toast(`Refreshing ${source.repo} from live source transport; hosted issue/file snapshots are bypassed for this request.`, 'info');
+    clearAdapterRuntimeCache(source.repo || '');
+    clearRepositoryTransportHealth(source.repo || '');
+    await loadGitHubStateSourceIntoWorkspace(ws, source, {
+      refreshExisting: true,
+      hardRefresh: true,
+      userInitiated: true,
+      bypassRepositorySnapshot: true,
+      bypassHostedIssueSnapshot: true,
+      liveGitHub: true,
+      sourceProgress: 'github-source-refresh'
+    });
+    setRouteState('replace');
+    render();
+  }
+
+
 
 
   async function onAction(event) {
@@ -6128,6 +6160,12 @@
       return;
     }
     if (action === 'open-source-modal') { openSourceModal(wsId || ''); return; }
+    if (action === 'refresh-source-via-live-transport') {
+      event.preventDefault();
+      event.stopPropagation();
+      await refreshWorkspaceViaLiveSourceTransport(wsId || event.currentTarget.dataset.ws || '');
+      return;
+    }
     if (action === 'edit-source') {
       event.preventDefault();
       event.stopPropagation();
@@ -10597,18 +10635,37 @@
     return app.githubIssueThreadInFlight;
   }
 
+  function hostedIssueSnapshotBaseUrlCandidates() {
+    const values = [];
+    const add = (value) => {
+      const clean = String(value || '').trim();
+      if (!clean) return;
+      try {
+        const url = new URL(clean, typeof location !== 'undefined' ? location.href : undefined);
+        if (!/^https?:$/iu.test(url.protocol || '')) return;
+        url.hash = '';
+        url.search = '';
+        values.push(new URL('.', url).toString());
+      } catch (_) {}
+    };
+    add(app.viewerIdentity?.publicBaseUrl || app.viewerIdentity?.viewerBaseUrl || app.viewerIdentity?.shareBaseUrl || '');
+    add(window.TIINEX_VIEWER_OPTIONS?.publicBaseUrl || window.TIINEX_VIEWER_OPTIONS?.viewerBaseUrl || window.TIINEX_VIEWER_OPTIONS?.shareBaseUrl || '');
+    if (typeof location !== 'undefined' && location.origin) add(`${location.origin}/`);
+    add(applicationMirrorBaseUrl());
+    const seen = new Set();
+    return values.filter((url) => {
+      if (seen.has(url)) return false;
+      seen.add(url);
+      return true;
+    });
+  }
+
   function githubHostedIssueSnapshotMetadataUrlCandidates(spec = {}) {
     if (!spec?.repo || typeof location === 'undefined' || !/^https?:$/iu.test(location.protocol || '')) return [];
     const repoPath = String(spec.repo || '').replace(/^\/+|\/+$/gu, '');
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repoPath)) return [];
-    const repoName = repoPath.split('/').pop() || '';
     const relative = `issues/github.com/${repoPath}.json`;
-    const values = [
-      new URL(relative, document.baseURI || location.href).toString(),
-      repoName ? new URL(`${repoName}/${relative}`, document.baseURI || location.href).toString() : '',
-      new URL(`/${relative}`, location.origin || location.href).toString(),
-      repoName ? new URL(`/${repoName}/${relative}`, location.origin || location.href).toString() : ''
-    ].filter(Boolean);
+    const values = hostedIssueSnapshotBaseUrlCandidates().map((baseUrl) => new URL(relative, baseUrl).toString());
     const seen = new Set();
     return values.filter((url) => {
       if (seen.has(url)) return false;
@@ -10811,11 +10868,15 @@
       // Hosted Pages builds publish exact raw issue markdown beside the viewer.
       // Prefer the same-origin snapshot over live GitHub so public browsing does
       // not turn each visitor into an anonymous GitHub/reader crawler.
-      const hostedSnapshotThread = await tryThread('Hosted issue snapshot', () => fetchGitHubIssueThreadViaHostedSnapshot(spec, Object.assign({}, options, {
-        commentsMode,
-        commentLimit: Math.min(100, Math.max(1, Number(options.commentLimit || 20)))
-      })), 'site-issue-snapshot', true);
-      if (hostedSnapshotThread) return hostedSnapshotThread;
+      if (options.bypassHostedIssueSnapshot !== true && options.liveGitHub !== true) {
+        const hostedSnapshotThread = await tryThread('Hosted issue snapshot', () => fetchGitHubIssueThreadViaHostedSnapshot(spec, Object.assign({}, options, {
+          commentsMode,
+          commentLimit: Math.min(100, Math.max(1, Number(options.commentLimit || 20)))
+        })), 'site-issue-snapshot', true);
+        if (hostedSnapshotThread) return hostedSnapshotThread;
+      } else {
+        githubIssueImportTrace('site-issue-snapshot.bypassed-for-live-refresh', { repo: spec?.repo || '', issueNumber: spec?.issueNumber || '' });
+      }
 
       // GitHub REST supports browser CORS and is the canonical exact-byte source.
       // One issue request plus at most one bounded comments request is cheaper and
@@ -10930,8 +10991,12 @@
   async function fetchGitHubRepoIssueSpecs(repo, options = {}) {
     const limit = Math.max(0, Number(options.limit || app.settings.githubIssueDiscoveryLimit || 10));
     if (!repo || !limit) return [];
-    const hostedSpecs = await fetchGitHubRepoIssueSpecsViaHostedSnapshot(repo, options);
-    if (Array.isArray(hostedSpecs)) return hostedSpecs;
+    if (options.bypassHostedIssueSnapshot !== true && options.liveGitHub !== true) {
+      const hostedSpecs = await fetchGitHubRepoIssueSpecsViaHostedSnapshot(repo, options);
+      if (Array.isArray(hostedSpecs)) return hostedSpecs;
+    } else {
+      githubIssueImportTrace('site-issue-snapshot.list-bypassed-for-live-refresh', { repo, limit });
+    }
     if (options.liveGitHub !== true && options.userInitiated !== true) {
       githubIssueImportTrace('issue-list.live-skipped-no-hosted-snapshot', { repo, limit });
       return [];
@@ -13667,7 +13732,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       }
       if (typeof render === 'function' && options.renderStatus !== false) render();
       try {
-        specs = await fetchGitHubRepoIssueSpecs(source.repo, { limit, hardRefresh: Boolean(options.hardRefresh), authMode: 'none' });
+        specs = await fetchGitHubRepoIssueSpecs(source.repo, { limit, hardRefresh: Boolean(options.hardRefresh), authMode: 'none', userInitiated: Boolean(options.userInitiated), liveGitHub: Boolean(options.liveGitHub), bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot) });
       } catch (error) {
         const message = `Could not list public GitHub issues for ${source.repo}: ${error.message}`;
         setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: 'failed', message, loaded: 0, failed: 1, error: message, mode });
@@ -13922,7 +13987,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           discoveryProgress: Boolean(progressScope),
           sourceProgress: progressScope,
           renderStatus: issueRenderStatus,
-          openWorkspaceIssueTarget: options.openWorkspaceIssueTarget === true
+          openWorkspaceIssueTarget: options.openWorkspaceIssueTarget === true,
+          liveGitHub: Boolean(options.liveGitHub),
+          bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot)
         });
         if (routeOwnedProgress) routeLoadPresentationStage('github-explicit-issues-loaded', { issueTargets: explicitIssueTargets.length, files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
       }
@@ -13934,7 +14001,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           userInitiated: Boolean(options.userInitiated),
           discoveryProgress: Boolean(progressScope),
           sourceProgress: progressScope,
-          renderStatus: issueRenderStatus
+          renderStatus: issueRenderStatus,
+          liveGitHub: Boolean(options.liveGitHub),
+          bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot)
         });
         if (routeOwnedProgress) routeLoadPresentationStage('github-broad-issues-loaded', { files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
       }
@@ -26533,9 +26602,17 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
 
 
   function renderRepositoryTransportPill(ws) {
-    const presentation = repositoryTransportPresentation(ws?.repositoryTransport || {});
+    const transport = ws?.repositoryTransport || {};
+    const presentation = repositoryTransportPresentation(transport);
     if (!presentation) return '';
-    return `<span class="workspace-transport-pill ${escapeAttr(presentation.className)}" title="${escapeAttr(presentation.title)}" aria-label="${escapeAttr(presentation.title)}"><i class="${escapeAttr(presentation.icon)}"></i><span>${escapeHtml(presentation.label)}</span></span>`;
+    const refreshable = transport.convention === 'co-hosted-public' || presentation.className === 'transport-site-mirror';
+    const attrs = refreshable
+      ? ` data-action="refresh-source-via-live-transport" data-ws="${escapeAttr(ws?.id || '')}" role="button" tabindex="0"`
+      : '';
+    const title = refreshable
+      ? `${presentation.title} · Click to bypass the hosted site mirror once and refresh from the live source transport for files and issue snapshots.`
+      : presentation.title;
+    return `<span class="workspace-transport-pill ${escapeAttr(presentation.className)}${refreshable ? ' transport-refreshable' : ''}"${attrs} title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}"><i class="${escapeAttr(presentation.icon)}"></i><span>${escapeHtml(presentation.label)}</span></span>`;
   }
 
   function renderWorkspaceSourceStrip(ws) {
@@ -38143,15 +38220,18 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
         if (await finalizeGitNativeMaterial(localGit)) return;
       }
 
-      const repositorySnapshot = await tryDiscoverGitHubRepoViaRepositorySnapshot(ws, {
-        repo,
-        ref,
-        rootPaths,
-        githubSource,
-        sessionId: repoFetchSessionId,
-        transportDeadlineAt: repositoryTransportDeadlineAt,
-        options
-      });
+      const repositorySnapshot = options.bypassRepositorySnapshot === true
+        ? { ok: false, skipped: true, reason: 'site-mirror-bypassed-for-live-refresh' }
+        : await tryDiscoverGitHubRepoViaRepositorySnapshot(ws, {
+          repo,
+          ref,
+          rootPaths,
+          githubSource,
+          sessionId: repoFetchSessionId,
+          transportDeadlineAt: repositoryTransportDeadlineAt,
+          options
+        });
+      if (options.bypassRepositorySnapshot === true) githubRepoFetchTrace('repository-snapshot.bypassed-for-live-refresh', { sessionId: repoFetchSessionId, repo, ref, rootPaths });
       if (repositorySnapshot.ok) {
         count = repositorySnapshot.count || 0;
         failed = repositorySnapshot.failed || 0;
