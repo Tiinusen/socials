@@ -255,3 +255,9 @@ Hosted issue snapshot publication is cooldown/coalesced. The workflow serializes
 ### Time Portal historical transport
 
 End-bound Time Portal snapshots are commit-pinned historical Git state. They do not use the normal latest-state cache or hosted mirror. Cache/mirror badge requests are promoted to the historical proxy tier, and direct remains the explicit raw fallback. Historical proxy uses static flat/file surfaces, while historical direct uses immutable raw file reads through `readExactHistoricalFile`. The resolver and badge refresh path must not call the GitHub tree API from the browser while presenting the No-API Time Portal contract.
+
+### Portable publisher workflow
+
+The public-branch workflow can be copied with `tools/` into content repositories that do not contain the Tiinex viewer app. In that mode it publishes static material, repository mirrors, hosted issue snapshots, `tiinex.build.json`, and issue-publication state, while skipping viewer bundle checks. A copied `tools/` directory alone is not treated as a broken partial viewer.
+
+Post-publication verification is live-source only: guided GitHub export verification and post-export rediscovery bypass browser cache and hosted mirrors, then use proxy/API first with direct fallback when necessary.

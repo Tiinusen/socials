@@ -10368,6 +10368,51 @@ ${message}${detail ? ` · ${detail}` : ''}`;
     return { issue, comments, truncated, adapterMode: 'github-api', commentsMode, requestCount: 2 };
   }
 
+
+  async function fetchGitHubIssueThreadForPublicationCheck(spec, options = {}) {
+    const commentLimit = Math.min(100, Math.max(1, Number(options.commentLimit || 20)));
+    const proxyOptions = Object.assign({}, options, {
+      commentLimit,
+      hardRefresh: true,
+      authMode: options.authMode || 'none',
+      ignoreRateLimitGuard: false
+    });
+    try {
+      const thread = await fetchGitHubIssueThread(spec, proxyOptions);
+      if (thread) {
+        thread.publicationCheckTransport = 'proxy';
+        return thread;
+      }
+    } catch (proxyError) {
+      if (options.allowDirectFallback === false) throw proxyError;
+      try {
+        const directPolicy = githubSourceTransportPolicyForTier('direct', { userInitiated: true, reason: options.reason || 'github-publication-check-direct-fallback' });
+        const thread = await fetchGitHubIssueThreadWithFallback(spec, Object.assign({}, options, {
+          commentLimit: Math.min(20, commentLimit),
+          hardRefresh: true,
+          preferCache: false,
+          cacheMaxAgeMs: 0,
+          authMode: 'none',
+          liveGitHub: false,
+          bypassHostedIssueSnapshot: true,
+          forceDirectFallback: true,
+          allowSharedReaderFallback: true,
+          transportRefreshTier: 'direct',
+          transportPolicy: directPolicy,
+          userInitiated: true
+        }));
+        if (thread) {
+          thread.publicationCheckTransport = 'direct';
+          return thread;
+        }
+      } catch (directError) {
+        proxyError.directFallbackError = directError;
+      }
+      throw proxyError;
+    }
+    throw new Error('GitHub publication check returned no issue material.');
+  }
+
   function githubWebIssueTextFromElement(root) {
     if (!root) return '';
     const textLines = [];
@@ -36045,11 +36090,16 @@ ${integrityFooterForPath(parent, path)}`,
     const commentId = githubIssueCommentIdFromAnchor(spec.commentAnchor || '');
     const body = draft?.body || '';
     if (commentId) {
-      const comment = await fetchGitHubIssueCommentById(spec.repo, commentId, { hardRefresh: true, authMode: 'none' });
-      if (comment?.html_url && githubExportPublishedBodyMatchesDraft(comment.body || '', body)) return comment.html_url;
+      try {
+        const comment = await fetchGitHubIssueCommentById(spec.repo, commentId, { hardRefresh: true, authMode: 'none' });
+        if (comment?.html_url && githubExportPublishedBodyMatchesDraft(comment.body || '', body)) return comment.html_url;
+      } catch (_) {}
+      const thread = await fetchGitHubIssueThreadForPublicationCheck(spec, { commentLimit: options.commentLimit || 100, reason: 'github-export-comment-verify' });
+      const match = (Array.isArray(thread.comments) ? thread.comments : []).find((comment) => String(comment?.id || '').trim() === commentId && githubExportPublishedBodyMatchesDraft(comment?.body || '', body));
+      if (match?.html_url) return match.html_url;
       throw new Error('The known GitHub comment was found, but its body does not match the copied Tiinex draft yet. Update the comment on GitHub, then verify again.');
     }
-    const thread = await fetchGitHubIssueThread(spec, { commentLimit: options.commentLimit || 20, hardRefresh: true, authMode: 'none' });
+    const thread = await fetchGitHubIssueThreadForPublicationCheck(spec, { commentLimit: options.commentLimit || 20, reason: 'github-export-verify' });
     const match = (Array.isArray(thread.comments) ? thread.comments : []).find((comment) => githubExportPublishedBodyMatchesDraft(comment?.body || '', body));
     if (match?.html_url) return match.html_url;
     throw new Error('Tiinex could not find a GitHub issue comment whose body matches the copied draft. Post/update the comment, then verify again.');
@@ -36065,7 +36115,7 @@ ${integrityFooterForPath(parent, path)}`,
       return { url, kind: 'comment', targetKind: descriptor.targetKind, verifyKind: descriptor.verifyKind, title: '', state: '' };
     }
 
-    const thread = await fetchGitHubIssueThread(spec, { commentLimit: options.commentLimit || 20, hardRefresh: true, authMode: 'none' });
+    const thread = await fetchGitHubIssueThreadForPublicationCheck(spec, { commentLimit: options.commentLimit || 20, reason: 'github-export-verify' });
     if (githubExportPublishedBodyMatchesDraft(thread?.issue?.body || '', body)) {
       return {
         url: spec.issueUrl || githubPublishedResultUrlFromSpec(spec, ''),
@@ -36333,13 +36383,21 @@ ${integrityFooterForPath(parent, path)}`,
       let loaded = 0;
       try {
         for (const source of sources) {
+          const proxyPolicy = githubSourceTransportPolicyForTier('proxy', { userInitiated: true, reason: 'post-export-refresh-proxy' });
           loaded += await discoverGitHubIssuesIntoWorkspace(ws, source, activeGitHubIssueUrls(source, source.repo || '', ws), {
             refreshExisting: true,
-            hardRefresh: false,
-            preferCache: true,
-            cacheMaxAgeMs: 10 * 60 * 1000,
+            hardRefresh: true,
+            preferCache: false,
+            cacheMaxAgeMs: 0,
             commentLimit: 100,
-            renderStatus: false
+            renderStatus: false,
+            userInitiated: true,
+            liveGitHub: true,
+            bypassHostedIssueSnapshot: true,
+            forceDirectFallback: false,
+            allowSharedReaderFallback: false,
+            transportRefreshTier: 'proxy',
+            transportPolicy: proxyPolicy
           });
         }
         const removed = pruneLocalDuplicatesNowOwnedBySource(ws);
@@ -37468,7 +37526,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
       ctx.state.resolvedNumber = resultSpec.issueNumber || spec.issueNumber;
       if (mode === 'create-new') {
         try {
-          const thread = await fetchGitHubIssueThread(resultSpec, { commentLimit: 1, hardRefresh: true, authMode: 'none' });
+          const thread = await fetchGitHubIssueThreadForPublicationCheck(resultSpec, { commentLimit: 1, reason: 'github-export-url-resolve' });
           ctx.state.resolvedTitle = thread.issue?.title || ctx.state.resolvedTitle;
           ctx.state.resolvedState = thread.issue?.state || ctx.state.resolvedState;
         } catch (error) {
