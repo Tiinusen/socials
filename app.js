@@ -4022,7 +4022,7 @@
             <i class="fa-solid fa-up-right-and-down-left-from-center"></i>
           </button>
           <div class="collapsed-workspace-title">
-            <span>${escapeHtml(shortLabel)}</span>
+            <button class="workspace-title-rename collapsed" data-action="rename-workspace" data-ws="${escapeAttr(ws.id)}" title="Rename workspace" aria-label="Rename workspace ${escapeAttr(displayLabel)}">${escapeHtml(shortLabel)}</button>
           </div>
           <div class="collapsed-workspace-stats" aria-label="${escapeAttr(ws.nodes.length + ' traces, ' + ws.leaves.length + ' leaves')}">
             <span title="Trace files"><i class="fa-regular fa-file-lines"></i>${ws.nodes.length}</span>
@@ -10874,14 +10874,21 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return '';
   }
 
+  function githubRecoveredEmbeddedArtifactExtension(markdown = '', schema = '') {
+    const schemaId = String(schema || schemaIdFromText(markdown, '') || '').trim().toLowerCase();
+    if (schemaId === 'tiinex.workspace.v1' || looksLikeWorkspaceMarkdown(markdown)) return '.workspace.md';
+    return '.trace.md';
+  }
+
   function githubRecoveredEmbeddedArtifactPath(ws, base, item, ordinal, markdown, sourceKind = 'comment') {
     const schema = schemaIdFromText(markdown, 'tiinex.topic.v1');
     const title = markdownTitleFromFile({ content: markdown, currentSchema: schema });
     const folder = normalizeAssetPath(base || gitHubAdapterSurfaceRoot('issue'));
     const id = String(item?.id || ordinal || sourceKind || 'source').replace(/[^A-Za-z0-9_.-]+/g, '-');
     const slug = slugifyTitle(title || schema || 'artifact').slice(0, 52) || 'artifact';
-    if (sourceKind === 'issue') return `${folder}/issue-root-recovered-${slug}.trace.md`;
-    return `${folder}/comment-${String(ordinal || 1).padStart(3, '0')}-${id}-recovered-${slug}.trace.md`;
+    const extension = githubRecoveredEmbeddedArtifactExtension(markdown, schema);
+    if (sourceKind === 'issue') return `${folder}/issue-root-recovered-${slug}${extension}`;
+    return `${folder}/comment-${String(ordinal || 1).padStart(3, '0')}-${id}-recovered-${slug}${extension}`;
   }
 
   function githubRecoveredCommentArtifactPath(ws, base, comment, ordinal, markdown) {
@@ -12597,29 +12604,35 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       const issueRecoveredPath = embeddedIssue ? githubRecoveredEmbeddedArtifactPath(ws, base, issue, 0, embeddedIssue, 'issue') : '';
       const issueRecoveredSchema = embeddedIssue ? schemaIdFromText(embeddedIssue, 'tiinex.topic.v1') : '';
       const issueRecoveredTitle = embeddedIssue ? markdownTitleFromFile({ content: embeddedIssue, currentSchema: issueRecoveredSchema }) : '';
-      addFileToWorkspace(ws, {
-        path: rootPath,
-        content: rootMarkdown,
-        preserveAsAsset: true,
-        sourceId: source.id,
-        sourceKind: source.kind,
-        sourceLabel: source.label,
-        sourceOrigin: spec.issueUrl,
-        rawUrl: spec.issueUrl,
-        browseUrl: spec.issueUrl,
-        repo: spec.repo,
-        ref: source.ref || options.ref || `issue-${spec.issueNumber}`,
-        sourceSurface: 'issues',
-        resolvedEnvelope: Boolean(embeddedIssue),
-        resolvedByPath: issueRecoveredPath,
-        resolvedBySchema: issueRecoveredSchema,
-        resolvedByTitle: issueRecoveredTitle,
-        embeddedTiinexSchema: issueRecoveredSchema,
-        embeddedTiinexTitle: issueRecoveredTitle
-      });
-      githubIssueImportTrace('issue-thread-loader.root-added', { path: rootPath, contentLength: rootMarkdown.length, issueBodyLength: String(issue?.body || '').length, resolvedEnvelope: Boolean(embeddedIssue), resolvedByPath: issueRecoveredPath });
-      githubIssueIndexedAfterImport(ws, 'issue-root-added');
-      rootNode = sameWorkspacePathLookup(ws, rootPath, source.id) || sameWorkspacePathLookup(ws, rootPath, '') || { path: rootPath, rawMarkdown: rootMarkdown, currentSchemaText: 'tiinex.discovery.finding.v1', currentSchema: 'tiinex.discovery.finding.v1', resolvedEnvelope: Boolean(embeddedIssue), resolvedByPath: issueRecoveredPath, resolvedBySchema: issueRecoveredSchema, resolvedByTitle: issueRecoveredTitle };
+      const embeddedIssueIsWorkspace = Boolean(embeddedIssue && (issueRecoveredSchema === 'tiinex.workspace.v1' || looksLikeWorkspaceMarkdown(embeddedIssue)));
+      if (!embeddedIssueIsWorkspace) {
+        addFileToWorkspace(ws, {
+          path: rootPath,
+          content: rootMarkdown,
+          preserveAsAsset: true,
+          sourceId: source.id,
+          sourceKind: source.kind,
+          sourceLabel: source.label,
+          sourceOrigin: spec.issueUrl,
+          rawUrl: spec.issueUrl,
+          browseUrl: spec.issueUrl,
+          repo: spec.repo,
+          ref: source.ref || options.ref || `issue-${spec.issueNumber}`,
+          sourceSurface: 'issues',
+          resolvedEnvelope: Boolean(embeddedIssue),
+          resolvedByPath: issueRecoveredPath,
+          resolvedBySchema: issueRecoveredSchema,
+          resolvedByTitle: issueRecoveredTitle,
+          embeddedTiinexSchema: issueRecoveredSchema,
+          embeddedTiinexTitle: issueRecoveredTitle
+        });
+        githubIssueImportTrace('issue-thread-loader.root-added', { path: rootPath, contentLength: rootMarkdown.length, issueBodyLength: String(issue?.body || '').length, resolvedEnvelope: Boolean(embeddedIssue), resolvedByPath: issueRecoveredPath });
+        githubIssueIndexedAfterImport(ws, 'issue-root-added');
+        rootNode = sameWorkspacePathLookup(ws, rootPath, source.id) || sameWorkspacePathLookup(ws, rootPath, '') || { path: rootPath, rawMarkdown: rootMarkdown, currentSchemaText: 'tiinex.discovery.finding.v1', currentSchema: 'tiinex.discovery.finding.v1', resolvedEnvelope: Boolean(embeddedIssue), resolvedByPath: issueRecoveredPath, resolvedBySchema: issueRecoveredSchema, resolvedByTitle: issueRecoveredTitle };
+      } else {
+        githubIssueImportTrace('issue-thread-loader.workspace-root-suppressed', { path: rootPath, recoveredPath: issueRecoveredPath, schema: issueRecoveredSchema, reason: 'embedded workspace issue body is the source artifact; issue shell is not a discovery finding' });
+        rootNode = { path: rootPath, rawMarkdown: rootMarkdown, currentSchemaText: 'tiinex.discovery.finding.v1', currentSchema: 'tiinex.discovery.finding.v1', resolvedEnvelope: true, resolvedByPath: issueRecoveredPath, resolvedBySchema: issueRecoveredSchema, resolvedByTitle: issueRecoveredTitle, wrapperSuppressed: true };
+      }
       issueWorkingParentNode = rootNode;
       if (embeddedIssue) {
         const recoveredPath = issueRecoveredPath;
@@ -12837,6 +12850,40 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (options.toast !== false) toast(`Loaded GitHub issue discussion${modeNote || cacheNote}: ${commentCount} comment node${commentCount === 1 ? '' : 's'}.`, adapterMode === 'github-cache-stale' ? 'warn' : 'ok');
   }
 
+  function embeddedWorkspaceMarkdownFromGitHubIssueThread(thread = {}) {
+    const body = thread?.issue?.body || '';
+    if (!body) return '';
+    return embeddedWorkspaceMarkdownFromPointerIssueBody(body);
+  }
+
+  async function openConfiguredWorkspaceIssueTarget(ws, spec, thread, options = {}) {
+    // Explicit Issue URLs in the GitHub source form can be workspace entrypoints,
+    // but bounded issue discovery must remain discovery. Only user-initiated
+    // configured targets open the embedded workspace; startup rediscovery then
+    // imports/refreshes issue material without re-entering this path.
+    if (!ws || !spec || options.configuredTarget !== true || options.userInitiated !== true || options.openWorkspaceIssueTarget === false) return false;
+    const key = spec.issueUrl || '';
+    app.configuredWorkspaceIssueOpenInFlight = app.configuredWorkspaceIssueOpenInFlight || new Set();
+    if (!key || app.configuredWorkspaceIssueOpenInFlight.has(key)) return false;
+    const markdown = embeddedWorkspaceMarkdownFromGitHubIssueThread(thread);
+    if (!markdown || !looksLikeWorkspaceMarkdown(markdown)) return false;
+    app.configuredWorkspaceIssueOpenInFlight.add(key);
+    try {
+      githubIssueImportTrace('issue-import.configured-workspace-open', { issueUrl: spec.issueUrl, workspace: ws?.id || '', title: thread?.issue?.title || '', bytes: markdown.length });
+      await openViewerConfigMarkdown(markdown, spec.issueUrl, {
+        applyWorkspaceState: true,
+        replaceNonDraftWorkspaces: true,
+        workspaceOpenMode: 'open',
+        preserveShareHash: true,
+        sourceIssueUrl: spec.issueUrl
+      });
+      toast(`Opened workspace from GitHub issue ${spec.repo}#${spec.issueNumber}.`, 'ok');
+      return true;
+    } finally {
+      app.configuredWorkspaceIssueOpenInFlight.delete(key);
+    }
+  }
+
   async function loadGitHubIssueIntoWorkspace(ws, issueUrl, options = {}) {
     const spec = parseGitHubIssueSpec(issueUrl);
     if (!spec) throw new Error('Paste a GitHub issue URL like https://github.com/owner/repo/issues/123.');
@@ -12847,6 +12894,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       if (!/^github-cache/u.test(String(thread.adapterMode || ''))) {
         cacheGitHubIssueThread(spec, thread, { source: thread.adapterMode || 'github-issue-loader', freshness: 'observed-live' });
         githubIssueImportTrace('issue-import.cache-written', { source: thread.adapterMode || 'github-issue-loader' });
+      }
+      if (await openConfiguredWorkspaceIssueTarget(ws, spec, thread, options)) {
+        githubIssueImportTrace('issue-import.configured-workspace-opened', { issueUrl: spec.issueUrl });
+        return { openedWorkspace: true };
       }
       const result = await loadGitHubIssueThreadSnapshotIntoWorkspace(ws, spec, thread, options);
       githubIssueImportTrace('issue-import.complete', { result: Boolean(result), files: ws?.files?.size || 0, nodes: Array.isArray(ws?.nodes) ? ws.nodes.length : 0 });
@@ -24692,7 +24743,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       <section class="workspace workspace-foundation workspace-shell workspace-drop-target ${active ? 'active' : ''} ${ws.mobileChromeCompact ? 'mobile-chrome-compact' : ''}" data-ws="${escapeAttr(ws.id)}">
         <div class="workspace-strip workspace-shell-strip" translate="no">
           <div class="workspace-identity" title="${escapeAttr(ws.sourceNote || ws.label || '')}">
-            <h2 class="workspace-title">${escapeHtml(displayLabel)} ${workspaceRefBadge(ws)} ${localName} ${active ? '<span class="badge-soft active-chip"><i class="fa-solid fa-circle-dot"></i>active</span>' : ''}</h2>
+            <h2 class="workspace-title"><button class="workspace-title-rename" data-action="rename-workspace" data-ws="${escapeAttr(ws.id)}" title="Rename workspace" aria-label="Rename workspace ${escapeAttr(displayLabel)}">${escapeHtml(displayLabel)}</button> ${workspaceRefBadge(ws)} ${localName} ${active ? '<span class="badge-soft active-chip"><i class="fa-solid fa-circle-dot"></i>active</span>' : ''}</h2>
           </div>
           <div class="workspace-actions workspace-actions-foundation workspace-actions-shell">
             <span class="stat-pill" title="Trace files"><i class="fa-regular fa-file-lines"></i>${ws.nodes.length}</span>
@@ -24716,6 +24767,27 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         ${renderWorkspaceFeed(ws, selected)}
       </section>`;
   }
+  registerActionHandler(async function workspaceRenameAction(event, next) {
+    const action = event.currentTarget?.dataset?.action || '';
+    if (action !== 'rename-workspace') return next(event);
+    event.preventDefault();
+    event.stopPropagation();
+    const ws = getWorkspace(event.currentTarget.dataset.ws || '');
+    if (!ws) return;
+    const current = String(ws.label || workspaceDisplayLabel(ws) || '').trim();
+    const value = window.prompt('Workspace name', current);
+    if (value === null) return;
+    const label = String(value || '').trim();
+    if (!label) { toast('Workspace name cannot be empty.', 'warn'); return; }
+    ws.label = label;
+    ws.displayName = label;
+    if (ws.discoverySource && !ws.discoverySource.label) ws.discoverySource.label = label;
+    if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
+    if (typeof setRouteState === 'function') setRouteState('replace');
+    render();
+    toast(`Workspace renamed to ${label}. Use Update with current on a workspace artifact to persist this label into .workspace.md.`, 'ok');
+  });
+
   registerActionHandler(async function displayOptionsAction(event, next) {
     const action = event.currentTarget?.dataset?.action || '';
     if (action === 'open-display-options') {
