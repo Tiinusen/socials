@@ -237,3 +237,5 @@ Startup/public route reconciliation is cache-first: warm durable source cache ma
 ### Source material cache
 
 The public viewer's transport chain is `cache → mirror → proxy → direct`. The `cache` tier is a durable source-material cache keyed by the GitHub source configuration. It stores the bounded text artifact set produced by a successful mirror/proxy/direct load, then restores that same artifact shape on reload. Route/share state is not treated as source cache, and warm local Git preflight is not allowed to satisfy cache by default because it can omit issue-snapshot material.
+
+A cache hit must be complete enough for the configured source surfaces. For configured GitHub issue URLs, cache restore rehydrates the same issue-thread materialization path used by mirror/proxy/direct from the durable issue-thread cache. One-card placeholders or partial issue material do not become durable source-material cache hits; they fall forward to the hosted mirror.
