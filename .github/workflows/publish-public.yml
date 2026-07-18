@@ -25,7 +25,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: publish-public
+  group: publish-public-${{ github.repository }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -160,6 +160,13 @@ jobs:
           else
             echo "Publish disabled for this push; no public branch update will be attempted."
           fi
+
+      - name: Publish not required
+        if: steps.settings.outputs.publish_enabled != 'true'
+        shell: bash
+        run: |
+          echo "::notice title=Publish not required::${GITHUB_REF_NAME} is intentionally not a publish source for this repository configuration."
+          echo "No public branch or GitHub Pages deployment was attempted."
 
       - name: Check out source
         if: steps.settings.outputs.publish_enabled == 'true'
