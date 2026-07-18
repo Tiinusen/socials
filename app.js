@@ -17382,39 +17382,84 @@ Answer the reader should see in workspace help or GitHub presentation.">${escape
     return looksLikeWorkspaceMarkdown(direct) ? direct : '';
   }
 
+  function workspacePointerIssueMaterialCandidates(thread = {}, spec = {}) {
+    const out = [];
+    const push = (kind, item = {}) => {
+      const body = normalizeNewlines(item?.body || '').trim();
+      if (!body) return;
+      out.push({
+        kind,
+        body,
+        title: item?.title || '',
+        url: item?.html_url || spec?.issueUrl || '',
+        id: item?.id || '',
+        updatedAt: item?.updated_at || item?.updatedAt || ''
+      });
+    };
+    push('issue', thread.issue || {});
+    (Array.isArray(thread.comments) ? thread.comments : []).forEach((comment) => push('comment', comment));
+    return out;
+  }
+
+  async function fetchWorkspacePointerIssueThread(spec, options = {}) {
+    if (typeof fetchGitHubIssueThreadWithFallback === 'function') {
+      return await fetchGitHubIssueThreadWithFallback(spec, Object.assign({
+        hardRefresh: true,
+        configuredTarget: true,
+        userInitiated: true,
+        allowWebFallback: true,
+        preferApiFirst: false,
+        ignoreRateLimitGuard: true,
+        commentLimit: 20,
+        cacheMaxAgeMs: 60 * 1000
+      }, options || {}));
+    }
+    const issue = (await fetchGitHubJson(spec.apiIssueUrl, { hardRefresh: true })).data;
+    return { issue, comments: [], adapterMode: 'github-api' };
+  }
+
   async function resolveWorkspaceIssuePointer(candidate, visited = new Set()) {
     const issueUrl = workspaceBootstrapCandidateUrl(candidate);
     const spec = parseGitHubIssueSpec(issueUrl);
     if (!spec) throw new Error(`Workspace pointer is not a GitHub issue URL: ${issueUrl}`);
     if (visited.has(spec.issueUrl)) throw new Error(`Workspace pointer loop detected at ${spec.issueUrl}`);
     visited.add(spec.issueUrl);
-    const issue = (await fetchGitHubJson(spec.apiIssueUrl, { hardRefresh: true })).data;
-    const workspaceUrl = workspaceUrlFromPointerMarkdown(issue?.body || '', spec.issueUrl);
-    if (workspaceUrl) {
+    const thread = await fetchWorkspacePointerIssueThread(spec);
+    const material = workspacePointerIssueMaterialCandidates(thread, spec);
+    const issue = thread?.issue || {};
+
+    for (const item of material) {
+      const workspaceUrl = workspaceUrlFromPointerMarkdown(item.body || '', item.url || spec.issueUrl);
+      if (!workspaceUrl) continue;
       if (parseGitHubIssueSpec(workspaceUrl)) {
         return await resolveWorkspaceIssuePointer({ kind: 'github-issue-pointer', url: workspaceUrl, role: candidate.role, label: candidate.label, source: spec.issueUrl }, visited);
       }
       return {
         url: normalizeViewerConfigUrl(workspaceUrl),
-        sourceUrl: spec.issueUrl,
+        sourceUrl: item.url || spec.issueUrl,
         source: `github-issue:${spec.repo}#${spec.issueNumber}`,
-        issueTitle: issue?.title || '',
+        issueTitle: issue?.title || item.title || '',
         issueNumber: spec.issueNumber,
-        repo: spec.repo
+        repo: spec.repo,
+        adapterMode: thread?.adapterMode || '',
+        pointerMaterialKind: item.kind || 'issue'
       };
     }
 
-    const embeddedWorkspace = embeddedWorkspaceMarkdownFromPointerIssueBody(issue?.body || '');
-    if (embeddedWorkspace) {
+    for (const item of material) {
+      const embeddedWorkspace = embeddedWorkspaceMarkdownFromPointerIssueBody(item.body || '');
+      if (!embeddedWorkspace) continue;
       return {
         url: spec.issueUrl,
-        sourceUrl: spec.issueUrl,
+        sourceUrl: item.url || spec.issueUrl,
         source: `github-issue-embedded-workspace:${spec.repo}#${spec.issueNumber}`,
-        issueTitle: issue?.title || '',
+        issueTitle: issue?.title || item.title || '',
         issueNumber: spec.issueNumber,
         repo: spec.repo,
         markdown: embeddedWorkspace,
-        resolvedKind: 'embedded-workspace-markdown'
+        resolvedKind: 'embedded-workspace-markdown',
+        adapterMode: thread?.adapterMode || '',
+        pointerMaterialKind: item.kind || 'issue'
       };
     }
 
