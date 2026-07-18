@@ -251,3 +251,9 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - Direct Time Portal loads may use the GitHub tree listing to recover the full historical path set before immutable raw file reads. Cache/mirror remain excluded from historical Git-state ownership.
 - The resolver dialog copy now matches the runtime: proxy first, direct/raw fallback if needed. It no longer claims a strict No API boundary while the direct fallback may need the tree listing.
 - Desktop workspace cards keep the labeled blue Open action; mobile workspace rails prioritize only the blue Open icon and leave Edit in the More sheet.
+
+## v61 workspace card desktop action order correction
+
+- Desktop workspace artifact cards restore the pre-mobile-polish order: Edit remains the green authoring action, Continue and Reference are compact icon-only lineage actions, and the labeled blue Open action sits before labeled Merge at the tail of the row.
+- Mobile workspace artifact cards keep the v60 behavior: the visible primary rail surfaces Open workspace as a blue icon-only action and leaves Edit in the More sheet.
+- Static validation now guards both contracts so desktop and mobile workspace action ordering can evolve independently without regressing the other artifact card layouts.

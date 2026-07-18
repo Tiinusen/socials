@@ -1875,6 +1875,8 @@ function validateArchitectureBoundaries() {
   if (!appJs.includes("['Workspace Label', 'Label']")) fail('workspace parser must prefer explicit Workspace Label over generated headings.');
   if (!appJs.includes('preserves the user-visible names of every workspace')) fail('workspace update-current label preservation policy must be documented in code.');
   if (!appJs.includes('workspace-transition-icon-only')) fail('workspace Continue/Reference transitions must render icon-only to preserve single-row card actions.');
+  if (!/if \(isWorkspaceNode\(node\)\) \{[\s\S]{0,300}?editActions\.push\(edit\(\{ label: 'Edit'[\s\S]{0,1600}?writeActions\.push\([\s\S]{0,220}?workspaceContinueAction,[\s\S]{0,120}?workspaceReferenceAction,[\s\S]{0,260}?label: 'Open',[\s\S]{0,420}?label: 'Merge'/u.test(appJs)) fail('desktop workspace card actions must preserve Edit, icon-only Continue/Reference, then labeled Open and Merge order.');
+  if (!appJs.includes("? ['read', 'markdown', 'share', 'workspace-open']")) fail('mobile workspace card primary actions must surface Open icon-only instead of Edit.');
   if (!appJs.includes("'tiinex.workspace.v1': schemaPolicyEntry('tiinex.workspace.v1', 'Workspace', 'core-artifact', 'tiinex.root.v1', 'Portable workspace entrypoint.', 'yes'")) fail('workspace artifacts must be creatable through the ordinary artifact wizard.');
   if (!appJs.includes('Workspace entries use the same draft/export/publish path as other artifacts')) fail('artifact wizard copy must explain workspace artifacts use the normal draft/export path.');
   if (!appJs.includes('githubWorkspacePresentationDelta')) fail('GitHub issue previews must have a workspace-specific human summary path.');
