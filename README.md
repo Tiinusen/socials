@@ -222,7 +222,7 @@ Workspace entrypoints are normal Tiinex artifacts. Use Create → Workspace to c
 
 After a GitHub issue or issue comment is verified, Tiinex keeps a small local publication receipt. On refresh, the receipt lets the viewer distinguish the verified source artifact from its older browser-local editing shadow. The local shadow is removed only when the imported source carries the same v2 self seal; a newer unpublished edit remains local.
 
-Public builds attach the commit-derived build id to local CSS, bundle, icon, and logo URLs. When a new build identity loads, volatile runtime traces/transport health are invalidated while local drafts, named local workspace state, and durable source-material caches such as GitHub issue threads are preserved; source freshness is owned by the visible cache → mirror → proxy → direct transport path.
+Public builds attach a publish-run-derived build id to local CSS, bundle, icon, and logo URLs. The source commit remains visible in build diagnostics, but the browser cache-bust token and runtime release key change on each public publish so updated mirrors and issue snapshots can invalidate stale source-material caches without waiting for an app-code commit. Local drafts, named local workspace state, and publication receipts stay outside that invalidation boundary.
 
 ### Source transport ownership
 
@@ -244,7 +244,7 @@ Transport badges show the effective tier for the current source load. Cache rest
 
 ### Source cache freshness
 
-The browser source-material cache is release-aware. When the public viewer build identity changes, Tiinex invalidates cached GitHub source material and issue-thread observations while preserving local/draft workspaces. Source-material cache entries also age out after the configured TTL (`TIINEX_VIEWER_OPTIONS.sourceMaterialCacheMaxAgeMs`, default two hours), at which point the normal `cache → mirror → proxy → direct` transport chain falls forward to mirror without requiring the user to click the cache badge.
+The browser source-material cache is release-aware. When the public viewer release key changes, Tiinex invalidates cached GitHub source material and issue-thread observations while preserving local/draft workspaces. The public build uses the Actions run identity when available, not only the source commit, so an issue-snapshot/mirror-only publish can still refresh the viewer cache boundary. Source-material cache entries also age out after the configured TTL (`TIINEX_VIEWER_OPTIONS.sourceMaterialCacheMaxAgeMs`, default two hours), at which point the normal `cache → mirror → proxy → direct` transport chain falls forward to mirror without requiring the user to click the cache badge.
 
 ### Time Portal historical transport
 
