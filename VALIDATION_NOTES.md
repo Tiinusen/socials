@@ -203,3 +203,10 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - Cache restore rehydrates configured issue targets from the durable GitHub issue-thread cache before indexing. This makes cache use the same issue-thread materialization path as mirror/proxy/direct, including recovered embedded artifacts and comments.
 - `browser-cache` is now a first-class transport kind in repository and issue badge presentation. It renders as `cache`, not a generic transport/proxy badge, so the user-facing order remains `cache -> mirror -> proxy -> direct`.
 - Incomplete material is not written back as source-material cache. Failed/unavailable issue placeholders can remain visible for the current attempt, but they no longer poison the next release/reload as a durable cache hit.
+
+## v54 strict transport presentation and Time Portal restore
+
+- Starting a GitHub source load clears stale repository/issue transport presentation for that source before new material is applied. Cache restores force both repository and configured issue surfaces to present as `cache`, even if the cached issue thread was originally observed through proxy or direct. This prevents stale `direct`/`proxy` badges from leaking into cache mode.
+- The workspace transport strip now keys off the active requested tier for the current source load when that tier has material/presentation. Moving `cache -> mirror -> proxy -> direct` replaces the previous tier badge instead of accumulating stale lower-tier badges.
+- Time Portal display options restored from a route/share link schedule the historical source snapshot path after view-state hydration. Cached commit observations can load the source snapshot without opening a modal; otherwise the workspace is marked as needing a concrete ref while the display filter still applies to loaded issue/comment observations.
+- Historical source snapshot loads explicitly use the direct/raw-capable transport path for repository files and continue to filter issue/comment material by timestamp, because issue snapshots are observations rather than Git tree contents.
