@@ -69,10 +69,12 @@ try {
     if (html.includes('id="viewer-entrypoint-notice"')) fail('public index must not restore the removed visible viewer entrypoint notice.');
     if (!/<section\s+id="tiinex-llm-entrypoint"[\s\S]*?\bhidden\b/u.test(html)) fail('public index must preserve the hidden Tiinex LLM entrypoint.');
     if (!html.includes('data-tiinex-llm-entrypoint="./llms.txt"')) fail('public index hidden Tiinex LLM entrypoint must retain the llms.txt binding.');
-    const localScripts = [...html.matchAll(/<script\s+src=["']\.\/[^"']+\.js["']><\/script>/gu)].map((match) => match[0]);
+    const localScripts = [...html.matchAll(/<script\s+src=["']\.\/[^"']+\.js(?:\?[^"']*)?["']><\/script>/gu)].map((match) => match[0]);
     if (localScripts.length !== 1 || !localScripts[0].includes('tiinex.bundle.js')) {
       fail(`public index must load exactly one local JS bundle, found: ${localScripts.join(', ') || 'none'}`);
     }
+    if (!/tiinex\.bundle\.js\?v=/u.test(localScripts[0])) fail('public index must cache-bust the local JS bundle for release builds.');
+    if (!/styles\.css\?v=/u.test(html)) fail('public index must cache-bust the local stylesheet for release builds.');
     for (const forbidden of ['./src/app/core-runtime.js', './src/app/services-runtime.js', './src/app/state-runtime.js', './src/app/ui-runtime.js', './src/app/viewstate-runtime.js', './app.js']) {
       if (html.includes(forbidden)) fail(`public index must not load development script directly: ${forbidden}`);
     }

@@ -138,6 +138,83 @@
     });
   }
 
+  function releaseCacheIdentityKey() {
+    const identity = tiinexConfiguredBuildIdentity();
+    return String(identity.releaseCacheKey || identity.buildId || identity.commitSha || identity.builtAt || '').trim();
+  }
+
+  function storageRemoveExact(storage, key) {
+    try { if (storage && key) storage.removeItem(key); } catch (_) {}
+  }
+
+  function storageRemovePrefixes(storage, prefixes = []) {
+    try {
+      if (!storage) return 0;
+      let removed = 0;
+      for (const key of Object.keys(storage)) {
+        if (!prefixes.some((prefix) => String(key || '').startsWith(prefix))) continue;
+        storage.removeItem(key);
+        removed += 1;
+      }
+      return removed;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  function invalidateRuntimeCachesForReleaseIfNeeded() {
+    const releaseKey = releaseCacheIdentityKey();
+    const markerKey = 'tiinex.release.cacheIdentity.v1';
+    if (!releaseKey) return { releaseKey: '', changed: false, removed: 0 };
+    let previous = '';
+    try { previous = localStorage.getItem(markerKey) || ''; } catch (_) {}
+    if (previous === releaseKey) return { releaseKey, previous, changed: false, removed: 0 };
+
+    let removed = 0;
+    [
+      STORAGE_KEYS.githubCommitCache,
+      STORAGE_KEYS.githubIssueThreadCache,
+      STORAGE_KEYS.githubIssueImportTrace,
+      STORAGE_KEYS.githubRepoFetchTrace,
+      STORAGE_KEYS.repositoryTransportHealth,
+      STORAGE_KEYS.exactHistoricalReadBudget
+    ].forEach((key) => { storageRemoveExact(localStorage, key); removed += 1; });
+    removed += storageRemovePrefixes(localStorage, [
+      STORAGE_KEYS.adapterRateLimitPrefix,
+      STORAGE_KEYS.browserScrollStatePrefix
+    ]);
+    removed += storageRemovePrefixes(sessionStorage, [
+      STORAGE_KEYS.lensSessionPrefix,
+      STORAGE_KEYS.browserScrollStatePrefix
+    ]);
+    try { localStorage.setItem(markerKey, releaseKey); } catch (_) {}
+    app.releaseCacheInvalidation = { releaseKey, previous, changed: true, removed, at: new Date().toISOString() };
+    return app.releaseCacheInvalidation;
+  }
+
+  function buildFooterTooltip() {
+    const identity = tiinexConfiguredBuildIdentity();
+    const sha = String(identity.commitSha || identity.buildId || '').trim();
+    const shortSha = sha ? sha.slice(0, 12) : '';
+    const rawDate = String(identity.commitCreatedAt || identity.builtAt || '').trim();
+    let dateLabel = rawDate;
+    const timestamp = Date.parse(rawDate);
+    if (timestamp && Number.isFinite(timestamp)) {
+      const ageMs = Math.max(0, Date.now() - timestamp);
+      if (ageMs < 24 * 60 * 60 * 1000) {
+        const minutes = Math.max(1, Math.round(ageMs / 60000));
+        dateLabel = minutes < 60 ? `${minutes} min ago` : `${Math.round(minutes / 60)} h ago`;
+      } else {
+        dateLabel = new Date(timestamp).toISOString().slice(0, 10);
+      }
+    }
+    const pieces = [];
+    if (shortSha) pieces.push(`commit ${shortSha}`);
+    if (dateLabel) pieces.push(`created ${dateLabel}`);
+    if (identity.repository) pieces.push(identity.repository);
+    return pieces.join(' · ') || 'Tiinex build identity unavailable';
+  }
+
   function routeLoadPresentationEnsure() {
     app.routeLoadPresentation = app.routeLoadPresentation || { sessions: [], active: null, renderEvents: [], contentClears: 0 };
   app.lifecycleResponsiveness = app.lifecycleResponsiveness || { events: [], skippedSyncLocalSaves: 0, lightweightFlushes: 0 };
@@ -237,6 +314,8 @@
     repositoryTransportHealth: 'tiinex.repositoryTransportHealth.v1'
   });
 
+
+  invalidateRuntimeCachesForReleaseIfNeeded();
 
   const GIT_NATIVE_DISCOVERY_CONFIG_KEYS = Object.freeze([
     'enabled',
@@ -2161,7 +2240,7 @@
       let result = null;
       let exactSelfHash = '';
       if (entry.method === TIINEX_SHA256_C14N_V2_METHOD_ID && integrityTowardsIsSelf(entry.towards)) {
-        exactSelfHash = await sha256Base64Url(canonicalizeTiinexMarkdownForV2(node.rawMarkdown || '', entry.index));
+        exactSelfHash = await sha256Base64Url(canonicalizeTiinexMarkdownForV2(nodeMarkdownForIntegrity(node), entry.index));
         result = {
           status: 'ok',
           confidence: 'exact',
@@ -8089,7 +8168,8 @@
       await loadGitHubStateSourceIntoWorkspace(ws, source, {
         refreshExisting: true,
         hardRefresh: Boolean(hardRefresh),
-        userInitiated: true
+        userInitiated: true,
+        openWorkspaceIssueTarget: false
       });
       if (typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
     } finally {
@@ -8365,10 +8445,10 @@
                 </label>
               </div>
               <details class="github-advanced-issues" ${modal.issueUrls ? 'open' : ''}>
-                <summary>Issue URLs <em>optional</em></summary>
-                <textarea class="form-control source-url-box" id="source-issue-urls" placeholder="Optional explicit issue targets. Leave empty to test bounded public issue discovery. Imported/discovered issues can be preserved by Save workspace.&#10;https://github.com/Tiinex/docs/issues/123">${escapeHtml(modal.issueUrls || '')}</textarea>
+                <summary>Issue / Discussion URLs <em>optional</em></summary>
+                <textarea class="form-control source-url-box" id="source-issue-urls" placeholder="Optional explicit GitHub issue or discussion targets. Issues can be imported; discussions are registered as target findings until the discussion adapter lands.&#10;https://github.com/Tiinex/docs/issues/123&#10;https://github.com/Tiinex/docs/discussions/123">${escapeHtml(modal.issueUrls || '')}</textarea>
               </details>
-              <p class="source-safety-note">Read-only: no GitHub write, token, auth prompt, backend, or telemetry. Leave explicit targets empty to test bounded public issue discovery. Issue targets saved here are re-used as known source anchors. GitHub Discussions are a separate future surface and are not imported by this checkbox.</p>
+              <p class="source-safety-note">Read-only: no GitHub write, token, auth prompt, backend, or telemetry. Leave explicit targets empty to test bounded public issue discovery. Issue/discussion targets saved here are re-used as known source anchors; discussions are registered now and get a full reader in the discussion adapter.</p>
             </div>
             ${sourceRefreshNotice}
 
@@ -13019,16 +13099,17 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   }
 
   function parseSourceIssueUrls(value, repo = '') {
-    // Source configuration currently supports GitHub issues as importable
-    // social material. Discussions are intentionally not persisted here until a
-    // real discussion reader exists, so the UI cannot imply parity with issues.
+    // The field name is historical: it stores explicit GitHub social targets.
+    // Issues are imported where public material is available; discussions are
+    // registered as first-class target findings until the discussion adapter can
+    // read bodies/comments reliably in anonymous browser mode.
     return String(value || '')
       .split(/[\n,]+/)
       .map((item) => item.trim())
       .filter(Boolean)
-      .map((item) => parseGitHubIssueSpec(item))
+      .map((item) => parseGitHubSocialTargetSpec(item))
       .filter((spec) => spec && (!repo || spec.repo.toLowerCase() === repo.toLowerCase()))
-      .map((spec) => spec.issueUrl)
+      .map((spec) => spec.targetUrl || spec.issueUrl || spec.discussionUrl)
       .filter((url, index, arr) => url && arr.indexOf(url) === index);
   }
 
@@ -13105,7 +13186,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
   function githubIssueDiscoveryManualHint(source) {
     const repo = source?.repo || 'owner/repo';
-    return `Leave issue URLs empty to discover recent open public issues for ${repo} within bounded limits, or add explicit targets such as https://github.com/${repo}/issues/123. GitHub Discussions are disabled in this browser adapter until an explicit discussion importer exists.`;
+    return `Leave issue URLs empty to discover recent open public issues for ${repo} within bounded limits, or add explicit targets such as https://github.com/${repo}/issues/123. GitHub Discussions are registered as explicit social targets until the discussion reader/importer exists.`;
   }
 
   async function discoverGitHubIssuesIntoWorkspace(ws, source, issueUrls = [], options = {}) {
@@ -13388,7 +13469,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           userInitiated: Boolean(options.userInitiated),
           discoveryProgress: Boolean(progressScope),
           sourceProgress: progressScope,
-          renderStatus: issueRenderStatus
+          renderStatus: issueRenderStatus,
+          openWorkspaceIssueTarget: options.openWorkspaceIssueTarget === true
         });
         if (routeOwnedProgress) routeLoadPresentationStage('github-explicit-issues-loaded', { issueTargets: explicitIssueTargets.length, files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
       }
@@ -13523,7 +13605,15 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     if (githubSource) {
       const explicitIssueTargets = configuredGitHubIssueUrls(githubSource, githubSource.repo || '');
       if (explicitIssueTargets.length) {
-        await discoverGitHubIssuesIntoWorkspace(ws, githubSource, explicitIssueTargets, { userInitiated: true, hardRefresh: true });
+        await discoverGitHubIssuesIntoWorkspace(ws, githubSource, explicitIssueTargets, {
+          userInitiated: true,
+          hardRefresh: true,
+          // Editing or appending source configuration must not re-open an older
+          // workspace issue and overwrite the source list the user just saved.
+          // Only top-level create-from-pointer flows may opt into opening a
+          // configured workspace target as app state.
+          openWorkspaceIssueTarget: Boolean(!editingSource && !appendWs)
+        });
       }
       if (enabledSurfaces.issues) {
         await discoverGitHubIssuesIntoWorkspace(ws, githubSource, [], { userInitiated: true, hardRefresh: true });
@@ -16010,7 +16100,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         ${canPage ? renderWorkspacePager(count) : ''}
         ${renderWorkspaceGridHtml(count, visible)}
       </div>
-      <footer class="app-footer" translate="no">Powered by <a href="https://github.com/Tiinex" target="_blank" rel="noopener">Tiinex</a></footer>
+      <footer class="app-footer" translate="no" title="${escapeAttr(buildFooterTooltip())}">Powered by <a href="https://github.com/Tiinex" target="_blank" rel="noopener" title="${escapeAttr(buildFooterTooltip())}">Tiinex</a></footer>
       ${renderToastsHtml()}
       ${renderModalRootHtml()}
     `;
@@ -27862,7 +27952,13 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
   }
 
   function nodeMarkdownForIntegrity(node) {
-    return node?.rawMarkdown || node?.file?.text || node?.file?.content || node?.text || node?.content || '';
+    return node?.file?.text
+      || node?.file?.rawMarkdown
+      || node?.text
+      || node?.rawMarkdown
+      || node?.file?.content
+      || node?.content
+      || '';
   }
 
   function integrityTowardsIsSelf(towards) {
@@ -28450,15 +28546,11 @@ ${originLines.length ? `  - Origin:\n${originLines.join('\n')}\n` : ''}`;
   registerRenderModalWrapper(function renderModalWithAddLauncher(modal, next) {
     const html = next(modal);
     if (!modal || modal.type !== 'source') return html;
-    const wsId = modal.wsId || app.activeWorkspaceId || '';
-    const launcher = addArtifactLauncherButton(wsId);
-
-    if (html.includes('data-action="open-add-artifact"')) return html;
-
-    if (html.includes('data-action="close-modal"')) {
-      return html.replace(/(<button[^>]+data-action="close-modal"[\s\S]*?<\/button>)/, `${launcher}$1`);
-    }
-    return html.replace('</div></div>', `${launcher}</div></div>`);
+    // Source modals already own Create/Add/Save semantics. Injecting a generic
+    // artifact launcher into this modal caused hit-target confusion after source
+    // refresh/reset re-renders, where closing the dialog could open a creation
+    // flow. Keep authoring launchers on workspace surfaces, not source config.
+    return html;
   });
 
 
@@ -33861,15 +33953,22 @@ ${integrityFooterForPath(parent, path)}`,
   }
 
   function githubExportEffectiveMarkdown(file = {}, node = null) {
+    // Publication must use the current authorable markdown, not an older
+    // imported/source-cache snapshot. file.content is deliberately last
+    // because many source-backed nodes keep the originally imported body there
+    // while local edits/finalized integrity live in file.text/rawMarkdown.
     return normalizeNewlines(
       file?.text
-      || file?.content
       || file?.rawMarkdown
+      || file?.markdown
       || file?.body
+      || node?.file?.text
+      || node?.file?.rawMarkdown
       || node?.rawMarkdown
       || node?.body
-      || node?.file?.text
+      || file?.content
       || node?.file?.content
+      || node?.content
       || ''
     );
   }
