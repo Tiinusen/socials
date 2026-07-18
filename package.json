@@ -10,7 +10,9 @@
     "storage:scan": "node tools/inspect-storage.mjs",
     "build:public": "node tools/build-public.mjs",
     "public:check": "node tools/check-public-build.mjs",
-    "issues:snapshot": "node tools/build-issue-snapshots.mjs"
+    "issues:snapshot": "node tools/build-issue-snapshots.mjs",
+    "public:identity": "node tools/write-public-build-identity.mjs",
+    "issues:state": "node tools/write-issue-publish-state.mjs"
   },
   "engines": {
     "node": ">=18"
