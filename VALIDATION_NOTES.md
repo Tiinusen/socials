@@ -216,3 +216,11 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - Time Portal route/share restore is cache-first and network-silent. If the exact historical source-material cache is present, it restores the commit-pinned repo-file view from browser cache. If it is absent during route-owned startup, the app records `needs-direct` and surfaces cache-unavailable instead of silently issuing raw GitHub/jsDelivr requests while the badge says `cache`.
 - Time Portal direct refresh now uses already-known seeded artifact paths before any external flat/tree listing. The broad Tiinex/docs schema freshness supplement is not injected into historical route restore, which prevents a route load from expanding into hundreds of root/schema raw reads.
 - Commit-pinned raw file reads use the exact historical immutable-file cache (`readExactHistoricalFile`) before the network and write successful direct reads back to both immutable-file cache and bounded source-material cache. Repeating the same Time Portal view should therefore use cache, not fresh raw GETs.
+
+
+## v56 Time Portal transport boundary
+
+- Time Portal no longer claims the normal latest-state `cache` or `mirror` tiers. Cache/mirror requests for a commit-pinned historical source snapshot are promoted to `proxy`, and `direct` remains the explicit last-resort raw fallback tier.
+- Proxy Time Portal loads bypass hosted repository mirrors and attempt the configured Git/proxy transport for the historical commit. If no historical repo material is returned, the snapshot is marked failed/unavailable instead of showing a loaded state for a partial tree.
+- Direct Time Portal loads may use GitHub tree/raw fallback, but commit-pinned file reads must pass through `readExactHistoricalFile`; deferred or budget-suppressed exact reads no longer fall through to generic raw `fetchText`.
+- Tiinex/docs schema/root freshness supplements are disabled for historical snapshot path discovery. Time Portal must not expand a route restore into unrelated root/schema raw probes.
