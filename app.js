@@ -781,6 +781,53 @@
     return JSON.stringify(githubIssueImportTraceEnsure(), null, 2);
   }
 
+  function githubIssueNetworkSafetyReport(events = githubIssueImportTraceEnsure()) {
+    const rows = Array.isArray(events) ? events : [];
+    const requestStarts = rows.filter((row) => row?.event === 'adapter.request.start');
+    const urls = new Map();
+    let githubApiRequests = 0;
+    let sharedReaderRequests = 0;
+    let cacheHits = 0;
+    let singleflightHits = 0;
+    let providerCircuitBlocks = 0;
+    let rateLimited = 0;
+    for (const row of rows) {
+      const event = row?.event || '';
+      const detail = row?.detail || {};
+      if (event === 'adapter.request.start') {
+        const url = String(detail.url || '');
+        if (url) urls.set(url, (urls.get(url) || 0) + 1);
+        if (detail.adapter === 'github-rest') githubApiRequests += 1;
+        if (/shared-reader|jina|allorigins|corsproxy/i.test(`${detail.adapter || ''} ${detail.rateLimitKey || ''} ${url}`)) sharedReaderRequests += 1;
+      }
+      if (/cache-hit/.test(event)) cacheHits += 1;
+      if (event === 'issue-thread.singleflight-hit') singleflightHits += 1;
+      if (event === 'adapter.request.provider-circuit-open') providerCircuitBlocks += 1;
+      if (event === 'adapter.request.rate-limit-guard' || detail.rateLimited) rateLimited += 1;
+    }
+    const duplicateRequests = Array.from(urls.values()).reduce((sum, count) => sum + Math.max(0, count - 1), 0);
+    const requestCount = requestStarts.length;
+    return {
+      schema: 'tiinex.github-issue-network-safety.report.v1',
+      policy: 'cache first; GitHub REST exact source; one bounded comments page; shared anonymous reader disabled unless explicitly opted in; provider abuse blocks open a circuit instead of retrying',
+      requestCount,
+      uniqueRequestUrls: urls.size,
+      duplicateRequests,
+      githubApiRequests,
+      sharedReaderRequests,
+      cacheHits,
+      singleflightHits,
+      providerCircuitBlocks,
+      rateLimited,
+      topDuplicateUrls: Array.from(urls.entries()).filter(([, count]) => count > 1).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([url, count]) => ({ url, count })),
+      verdict: sharedReaderRequests > 1 ? 'shared-reader-fanout-regression'
+        : duplicateRequests > 2 ? 'duplicate-request-regression'
+        : requestCount > 8 ? 'request-budget-exceeded'
+        : rateLimited ? 'rate-limited-circuit-protected'
+        : 'bounded'
+    };
+  }
+
   function crossWorkspaceRelationPickerReport() {
     const picker = app.parentPicker || null;
     const rows = [];
@@ -1114,6 +1161,7 @@
     buildIdentityReport: () => buildIdentityReport(),
     githubIssueImportTrace: () => githubIssueImportTraceEnsure().slice(),
     githubIssueImportTraceJson,
+    githubIssueNetworkSafetyReport: () => githubIssueNetworkSafetyReport(),
     clearGithubIssueImportTrace,
     lastGithubIssueImportTrace: () => githubIssueImportTraceEnsure().slice(-40),
     githubIssueNestedContinuityReport: () => githubIssueNestedContinuityReport(),
@@ -1438,6 +1486,25 @@
     return app.adapterRequests;
   }
 
+  function adapterSharedProviderRateLimitKey(url = '') {
+    try {
+      const host = new URL(String(url || ''), location.href).hostname.toLowerCase();
+      if (host === 'r.jina.ai') return 'github-shared-reader:r.jina.ai';
+    } catch (_) {}
+    return '';
+  }
+
+  function adapterAbuseAlleviationUntil(text = '', status = 0) {
+    const body = String(text || '');
+    if (Number(status || 0) !== 403) return 0;
+    if (!/AbuseAlleviationError|DDoS attack suspected|anonymous access .* blocked until/i.test(body)) return 0;
+    const match = body.match(/blocked until\s+(.+?)\s+due to/i);
+    const parsed = match?.[1] ? Date.parse(match[1]) : NaN;
+    // Provider responses sometimes omit a machine-readable Retry-After. A long
+    // local circuit breaker is safer than retrying a shared anonymous service.
+    return Number.isFinite(parsed) ? Math.max(Date.now() + 60_000, parsed) : Date.now() + (6 * 60 * 60 * 1000);
+  }
+
   function clearAdapterRuntimeCache(match = '') {
     const runtime = ensureAdapterRuntime();
     if (!match) {
@@ -1496,6 +1563,20 @@
       return Object.assign({}, cached.result, { fromRuntimeCache: true, cacheState: 'runtime-cache' });
     }
 
+    const providerRateLimitKey = adapterSharedProviderRateLimitKey(requestUrl);
+    const providerGuard = providerRateLimitKey ? readAdapterRateLimit(providerRateLimitKey) : null;
+    if (!options.ignoreRateLimitGuard && providerGuard?.until && Number(providerGuard.until) > now) {
+      if (traceGitHubIssueRequest) githubIssueImportTrace('adapter.request.provider-circuit-open', { adapter, label, url: requestUrl, rateLimitKey: providerRateLimitKey, until: Number(providerGuard.until), reason: providerGuard.reason || '' });
+      throw makeAdapterError(adapterRateLimitMessage(label, Number(providerGuard.until), providerGuard.reason || ''), {
+        adapter,
+        status: 429,
+        rateLimited: true,
+        abuseAlleviation: true,
+        rateLimitUntil: Number(providerGuard.until),
+        rateLimitKey: providerRateLimitKey,
+        cacheState: 'provider-circuit-open'
+      });
+    }
     const guard = readAdapterRateLimit(rateLimitKey);
     if (!options.ignoreRateLimitGuard && guard?.until && Number(guard.until) > now) {
       if (traceGitHubIssueRequest) githubIssueImportTrace('adapter.request.rate-limit-guard', { adapter, label, url: requestUrl, rateLimitKey, until: Number(guard.until), reason: guard.reason || '' });
@@ -1562,6 +1643,17 @@
       }
 
       const text = await response.text();
+      const abuseUntil = adapterAbuseAlleviationUntil(text, response.status);
+      if (abuseUntil) {
+        const abuseState = {
+          adapter,
+          until: abuseUntil,
+          reason: 'Shared reader abuse-alleviation block; automatic retries disabled.',
+          updatedAt: new Date().toISOString()
+        };
+        writeAdapterRateLimit(rateLimitKey, abuseState);
+        if (providerRateLimitKey) writeAdapterRateLimit(providerRateLimitKey, abuseState);
+      }
       if (traceGitHubIssueRequest) githubIssueImportTrace('adapter.fetch.text', {
         adapter,
         label,
@@ -1603,7 +1695,9 @@
         if (adapter === 'github-raw') githubRepoFetchTrace('raw.failed', { label, url: requestUrl, status: response.status, statusText: response.statusText || '', rateUntil, rateLimited: Boolean(rateUntil || response.status === 429), bytes: text.length, cacheState: meta.cacheState || '' });
         throw makeAdapterError(`${response.status} ${response.statusText || ''}${apiMessage}${rateHint}`.trim(), Object.assign(meta, {
           errorBody: text,
-          rateLimited: Boolean(rateUntil || response.status === 429)
+          abuseAlleviation: Boolean(abuseUntil),
+          rateLimitUntil: abuseUntil || rateUntil || 0,
+          rateLimited: Boolean(abuseUntil || rateUntil || response.status === 429)
         }));
       }
 
@@ -9327,17 +9421,27 @@
 
   async function fetchGitHubIssueThread(spec, options = {}) {
     const issue = (await fetchGitHubJson(spec.apiIssueUrl, options)).data;
-    const comments = [];
-    const limit = Math.max(1, Number(options.commentLimit || 500));
-    let url = `${spec.apiCommentsUrl}?per_page=${Math.min(100, limit)}`;
-    let pages = 0;
-    while (url && pages < 5 && comments.length < limit) {
-      const page = await fetchGitHubJson(url, options);
-      if (Array.isArray(page.data)) comments.push(...page.data.slice(0, Math.max(0, limit - comments.length)));
-      url = comments.length >= limit ? '' : githubNextLink(page.headers);
-      pages += 1;
+    const commentsMode = String(options.commentsMode || 'always').trim().toLowerCase();
+    const issueBody = normalizeNewlines(issue?.body || '');
+    const pointerResolvedFromIssueBody = commentsMode === 'if-needed' && Boolean(
+      workspaceUrlFromPointerMarkdown(issueBody, spec.issueUrl)
+      || embeddedWorkspaceMarkdownFromPointerIssueBody(issueBody)
+    );
+    const shouldFetchComments = commentsMode !== 'none' && !pointerResolvedFromIssueBody;
+    if (!shouldFetchComments) {
+      return { issue, comments: [], truncated: false, adapterMode: 'github-api', commentsMode, requestCount: 1 };
     }
-    return { issue, comments, truncated: Boolean(url), adapterMode: 'github-api' };
+
+    const comments = [];
+    // Anonymous issue reads must remain bounded. One comments page is enough for
+    // the viewer's explicit issue targets; deeper history remains reachable by
+    // opening GitHub directly instead of turning a browser viewer into a crawler.
+    const limit = Math.min(100, Math.max(1, Number(options.commentLimit || 20)));
+    const url = `${spec.apiCommentsUrl}?per_page=${limit}`;
+    const page = await fetchGitHubJson(url, options);
+    if (Array.isArray(page.data)) comments.push(...page.data.slice(0, limit));
+    const truncated = Boolean(githubNextLink(page.headers));
+    return { issue, comments, truncated, adapterMode: 'github-api', commentsMode, requestCount: 2 };
   }
 
   function githubWebIssueTextFromElement(root) {
@@ -9496,19 +9600,11 @@
 
   function githubReaderFallbackUrls(spec) {
     if (!spec?.issueUrl) return [];
-    const stripped = spec.issueUrl.replace(/^https?:\/\//i, '');
-    const noScheme = stripped.replace(/^www\./i, '');
-    return Array.from(new Set([
-      // Jina Reader style endpoints. Use valid target URL shapes first; the
-      // previous malformed http://https:// variants made the fallback behave
-      // like a different adapter because no issue material was ever read.
-      `https://r.jina.ai/http://https://${noScheme}`,
-      `https://r.jina.ai/http://http://${noScheme}`,
-      `https://r.jina.ai/http://${noScheme}`,
-      `https://r.jina.ai/http://r.jina.ai/http://https://${noScheme}`,
-      `https://r.jina.ai/http://r.jina.ai/http://http://${noScheme}`,
-      `https://r.jina.ai/http://r.jina.ai/http://${noScheme}`
-    ]));
+    const target = spec.issueUrl.replace(/^https?:\/\//i, '');
+    // A shared reader is a last-resort, explicitly enabled transport. Never fan
+    // out across URL variants: they hit the same provider and can look like an
+    // abusive retry storm while providing no independent redundancy.
+    return [`https://r.jina.ai/http://${target}`];
   }
 
   function stripReaderBoilerplateLine(line = '') {
@@ -9649,7 +9745,7 @@
         const markdown = await adapterFetchText(url, {
           adapter: 'github-reader',
           label: 'GitHub issue reader fallback',
-          rateLimitKey: `github-reader:${spec.repo}`,
+          rateLimitKey: 'github-shared-reader:r.jina.ai',
           hardRefresh: Boolean(options.hardRefresh),
           ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard),
           headers: { Accept: 'text/plain,text/markdown,*/*' }
@@ -9808,23 +9904,10 @@
   function publicReaderProxyUrls(url = '') {
     const clean = String(url || '').trim();
     if (!clean) return [];
-    const encoded = encodeURIComponent(clean);
-    const withoutScheme = clean.replace(/^https?:\/\//i, '');
-    // Client-only GitHub fallback must use CORS-readable reader/proxy surfaces.
-    // Keep the list bounded, but include both Jina Reader URL shapes seen in
-    // practice. Bad reader URLs were causing explicit issue targets to degrade
-    // immediately to target-only findings even when a public reader could have
-    // fetched the GitHub issue/API JSON.
-    return Array.from(new Set([
-      `https://r.jina.ai/http://https://${withoutScheme}`,
-      `https://r.jina.ai/http://http://${withoutScheme}`,
-      `https://r.jina.ai/http://${clean}`,
-      `https://r.jina.ai/http://r.jina.ai/http://https://${withoutScheme}`,
-      `https://r.jina.ai/http://r.jina.ai/http://http://${withoutScheme}`,
-      `https://r.jina.ai/http://r.jina.ai/http://${withoutScheme}`,
-      `https://api.allorigins.win/raw?url=${encoded}`,
-      `https://corsproxy.io/?${encoded}`
-    ]));
+    const target = clean.replace(/^https?:\/\//i, '');
+    // Deliberately one shared-reader origin and one URL shape. allorigins,
+    // corsproxy and nested r.jina.ai variants caused multipliers, not resilience.
+    return [`https://r.jina.ai/http://${target}`];
   }
 
   function escapeJsonStringControlCharacters(source = '') {
@@ -10149,7 +10232,7 @@
         const text = await adapterFetchText(readerUrl, {
           adapter: 'github-public-reader',
           label: options.label || 'GitHub public reader',
-          rateLimitKey: `github-public-reader:${url}`,
+          rateLimitKey: 'github-shared-reader:r.jina.ai',
           hardRefresh: Boolean(options.hardRefresh),
           ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard),
           headers: { Accept: 'application/json,text/plain,*/*' }
@@ -10178,7 +10261,7 @@
           issueText = await adapterFetchText(readerUrl, {
             adapter: 'github-public-reader',
             label: 'GitHub issue public-reader API fallback text',
-            rateLimitKey: `github-public-reader:${issueApiUrl}`,
+            rateLimitKey: 'github-shared-reader:r.jina.ai',
             hardRefresh: Boolean(options.hardRefresh),
             ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard),
             headers: { Accept: 'text/plain,text/markdown,*/*' }
@@ -10207,7 +10290,7 @@
           const commentsText = await adapterFetchText(readerUrl, {
             adapter: 'github-public-reader',
             label: 'GitHub issue comments public-reader API fallback text',
-            rateLimitKey: `github-public-reader:${commentsApiUrl}`,
+            rateLimitKey: 'github-shared-reader:r.jina.ai',
             hardRefresh: Boolean(options.hardRefresh),
             ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard),
             headers: { Accept: 'text/plain,text/markdown,*/*' }
@@ -10327,7 +10410,7 @@
     const issueText = await adapterFetchText(issueReaderUrl, {
       adapter: 'github-jina-api-reader',
       label: 'GitHub issue Jina API reader',
-      rateLimitKey: `github-jina-api-reader:${issueApiUrl}`,
+      rateLimitKey: 'github-shared-reader:r.jina.ai',
       hardRefresh: Boolean(options.hardRefresh),
       ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard),
       headers: { Accept: 'text/plain,text/markdown,*/*' }
@@ -10363,7 +10446,7 @@
       const commentsText = await adapterFetchText(commentsReaderUrl, {
         adapter: 'github-jina-api-reader',
         label: 'GitHub issue comments Jina API reader',
-        rateLimitKey: `github-jina-api-reader:${commentsApiUrl}`,
+        rateLimitKey: 'github-shared-reader:r.jina.ai',
         hardRefresh: Boolean(options.hardRefresh),
         ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard),
         headers: { Accept: 'text/plain,text/markdown,*/*' }
@@ -10429,96 +10512,248 @@
     return { ok: failures.length === 0, checked, failures };
   }
 
-  async function fetchGitHubIssueThreadWithFallback(spec, options = {}) {
-    const cacheMaxAgeMs = Number(options.cacheMaxAgeMs || 5 * 60 * 1000);
-    githubIssueImportTrace('issue-thread-fallback.start', { spec: { repo: spec?.repo || '', issueNumber: spec?.issueNumber || '', issueUrl: spec?.issueUrl || '' }, options: { hardRefresh: Boolean(options.hardRefresh), preferCache: Boolean(options.preferCache), configuredTarget: Boolean(options.configuredTarget), userInitiated: Boolean(options.userInitiated), allowWebFallback: options.allowWebFallback !== false, preferApiFirst: Boolean(options.preferApiFirst), cacheMaxAgeMs } });
-    if (options.preferCache && !options.hardRefresh) {
-      const hit = cachedGitHubIssueThread(spec, { maxAgeMs: cacheMaxAgeMs, allowStale: false });
-      if (hit) {
-        githubIssueImportTrace('issue-thread-fallback.cache-hit', githubIssueThreadTraceSummary(hit));
-        return hit;
-      }
-      githubIssueImportTrace('issue-thread-fallback.cache-miss', { cacheMaxAgeMs });
-    }
+  function githubIssueErrorIsRateOrAbuseBlocked(error) {
+    const status = Number(error?.status || 0);
+    const body = `${error?.message || ''} ${error?.errorBody || ''}`;
+    return Boolean(error?.rateLimited || error?.abuseAlleviation || status === 429 || (status === 403 && /rate limit|AbuseAlleviationError|DDoS attack suspected|blocked until/i.test(body)));
+  }
 
-    const errors = [];
-    const remember = (label, error) => {
-      if (!error) return;
-      errors.push({ label, error });
-      githubIssueImportTrace('issue-thread-fallback.attempt-failed', { label, error });
-    };
-    const tryThread = async (label, loader, cacheSource) => {
-      githubIssueImportTrace('issue-thread-fallback.attempt-start', { label, cacheSource });
-      try {
-        const thread = await loader();
-        const fidelity = await githubIssueThreadEmbeddedPayloadFidelity(thread);
-        const exactSource = cacheSource === 'github-api' || cacheSource === 'github-export-publication-anchor';
-        if (!fidelity.ok && !exactSource) {
-          const error = new Error(`${label} changed embedded Tiinex Source Markdown bytes; ${fidelity.failures.length} v2 self seal${fidelity.failures.length === 1 ? '' : 's'} no longer match.`);
-          error.code = 'TIINEX_GITHUB_READER_LOSSY_PAYLOAD';
-          error.fidelity = fidelity;
-          throw error;
-        }
-        thread.embeddedPayloadFidelity = Object.assign({}, fidelity, { exactSource });
-        githubIssueImportTrace('issue-thread-fallback.attempt-ok', { label, fidelity, thread: githubIssueThreadTraceSummary(thread) });
-        cacheGitHubIssueThread(spec, thread, { source: cacheSource || thread.adapterMode || label, freshness: 'observed-live' });
-        if (errors.length) thread.fallbackErrors = errors.slice();
-        return thread;
-      } catch (error) {
-        remember(label, error);
-        return null;
-      }
-    };
+  function githubIssueErrorAllowsSharedReader(error) {
+    if (!error || githubIssueErrorIsRateOrAbuseBlocked(error)) return false;
+    const status = Number(error?.status || 0);
+    const text = `${error?.name || ''} ${error?.message || ''}`;
+    return status === 0 || /TypeError|Failed to fetch|NetworkError|CORS|Load failed/i.test(text);
+  }
 
-    // Issue detail reads are the rate-limit hot path. Prefer public reader/web
-    // surfaces before GitHub REST when the caller has not explicitly requested
-    // API-first behavior. Listing open issues can still use the API; known issue
-    // targets should not burn detail requests when a read-only web surface works.
-    const liveOptions = Object.assign({}, options, {
-      // Explicit issue targets should not be trapped behind a stale reader-side
-      // guard once the browser can actually read the issue again. REST detail
-      // calls use apiOptions below so a remembered GitHub API rate limit is
-      // still respected across refreshes.
-      ignoreRateLimitGuard: Boolean(options.ignoreRateLimitGuard || options.configuredTarget || options.userInitiated)
+  function githubIssueThreadInFlightRuntime() {
+    app.githubIssueThreadInFlight = app.githubIssueThreadInFlight || new Map();
+    return app.githubIssueThreadInFlight;
+  }
+
+  function githubHostedIssueSnapshotMetadataUrl(spec = {}) {
+    if (!spec?.repo || typeof location === 'undefined' || !/^https?:$/iu.test(location.protocol || '')) return '';
+    const repoPath = String(spec.repo || '').replace(/^\/+|\/+$/gu, '');
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repoPath)) return '';
+    return new URL(`issues/github.com/${repoPath}.json`, document.baseURI || location.href).toString();
+  }
+
+  function githubHostedIssueSnapshotResolve(baseUrl = '', rel = '') {
+    const path = String(rel || '').trim().replace(/^\/+|\/+$/gu, '');
+    if (!path || path.split('/').includes('..') || path.includes('\\')) throw new Error(`Unsafe hosted issue snapshot path: ${rel}`);
+    return new URL(path, baseUrl).toString();
+  }
+
+  function githubHostedIssueSnapshotRepoMatches(meta = {}, spec = {}) {
+    const repo = String(spec?.repo || '').trim().toLowerCase();
+    const metaRepo = String(meta?.repo || '').trim().toLowerCase();
+    const repository = String(meta?.repository || '').replace(/^https?:\/\/github\.com\//iu, '').replace(/\/+$/u, '').toLowerCase();
+    return Boolean(repo && (metaRepo === repo || repository === repo));
+  }
+
+  function githubHostedIssueSnapshotIssueEntry(meta = {}, issueNumber = '') {
+    const list = Array.isArray(meta?.issues) ? meta.issues : [];
+    const wanted = Number(issueNumber || 0);
+    return list.find((entry) => Number(entry?.number || 0) === wanted) || null;
+  }
+
+  function githubHostedIssueSnapshotCleanItem(meta = {}, body = '', fallbackUrl = '') {
+    return Object.assign({}, meta || {}, { body: normalizeNewlines(body || ''), html_url: meta?.html_url || fallbackUrl || '' });
+  }
+
+  async function fetchGitHubIssueThreadViaHostedSnapshot(spec, options = {}) {
+    const metadataUrl = githubHostedIssueSnapshotMetadataUrl(spec);
+    if (!metadataUrl) throw new Error('Hosted issue snapshot metadata URL could not be resolved.');
+    const metaResult = await adapterFetchJson(metadataUrl, {
+      adapter: 'site-issue-snapshot',
+      label: 'Hosted GitHub issue snapshot metadata',
+      rateLimitKey: `site-issue-snapshot:${spec.repo}`,
+      hardRefresh: Boolean(options.hardRefresh),
+      skipGitNativeRawBridge: true,
+      headers: { Accept: 'application/json,*/*' }
     });
-    const apiOptions = Object.assign({}, options, { ignoreRateLimitGuard: false });
+    const meta = metaResult?.data || null;
+    if (!meta || meta.type !== 'tiinex.github.issues.snapshot' || !githubHostedIssueSnapshotRepoMatches(meta, spec)) {
+      throw new Error(`Hosted issue snapshot metadata did not match ${spec.repo}.`);
+    }
+    const directory = String(meta.directory || '').trim();
+    if (!directory) throw new Error(`Hosted issue snapshot metadata for ${spec.repo} is missing directory.`);
+    const baseUrl = githubHostedIssueSnapshotResolve(metadataUrl, directory);
+    let manifest = null;
+    try {
+      const manifestUrl = githubHostedIssueSnapshotResolve(metadataUrl, meta.manifest || `${directory}manifest.json`);
+      manifest = (await adapterFetchJson(manifestUrl, {
+        adapter: 'site-issue-snapshot',
+        label: 'Hosted GitHub issue snapshot manifest',
+        rateLimitKey: `site-issue-snapshot:${spec.repo}`,
+        hardRefresh: Boolean(options.hardRefresh),
+        skipGitNativeRawBridge: true,
+        headers: { Accept: 'application/json,*/*' }
+      })).data || null;
+    } catch (error) {
+      githubIssueImportTrace('site-issue-snapshot.manifest-unavailable', { repo: spec.repo, issueNumber: spec.issueNumber, error });
+    }
+    const entry = githubHostedIssueSnapshotIssueEntry(manifest || meta, spec.issueNumber) || { issue: `issues/${spec.issueNumber}/issue.json`, body: `issues/${spec.issueNumber}/issue.md` };
+    const issueJsonUrl = githubHostedIssueSnapshotResolve(baseUrl, entry.issue || `issues/${spec.issueNumber}/issue.json`);
+    const issueBodyUrl = githubHostedIssueSnapshotResolve(baseUrl, entry.body || `issues/${spec.issueNumber}/issue.md`);
+    const issueMeta = (await adapterFetchJson(issueJsonUrl, {
+      adapter: 'site-issue-snapshot',
+      label: 'Hosted GitHub issue snapshot item',
+      rateLimitKey: `site-issue-snapshot:${spec.repo}`,
+      hardRefresh: Boolean(options.hardRefresh),
+      skipGitNativeRawBridge: true,
+      headers: { Accept: 'application/json,*/*' }
+    })).data || {};
+    const issueBody = await adapterFetchText(issueBodyUrl, {
+      adapter: 'site-issue-snapshot',
+      label: 'Hosted GitHub issue snapshot body',
+      rateLimitKey: `site-issue-snapshot:${spec.repo}`,
+      hardRefresh: Boolean(options.hardRefresh),
+      skipGitNativeRawBridge: true,
+      headers: { Accept: 'text/markdown,text/plain,*/*' }
+    }) || '';
+    const commentsMode = String(options.commentsMode || 'always').trim().toLowerCase();
+    const issueHasWorkspace = Boolean(workspaceUrlFromPointerMarkdown(issueBody, spec.issueUrl) || embeddedWorkspaceMarkdownFromPointerIssueBody(issueBody));
+    const shouldLoadComments = commentsMode !== 'none' && !(commentsMode === 'if-needed' && issueHasWorkspace);
+    const commentLimit = Math.min(100, Math.max(0, Number(options.commentLimit || 20)));
+    const comments = [];
+    if (shouldLoadComments && commentLimit) {
+      const commentRefs = Array.isArray(issueMeta.comments) ? issueMeta.comments.slice(0, commentLimit) : [];
+      for (const commentRef of commentRefs) {
+        const commentJsonUrl = githubHostedIssueSnapshotResolve(issueJsonUrl, commentRef.json || `comments/${commentRef.id}.json`);
+        const commentBodyUrl = githubHostedIssueSnapshotResolve(issueJsonUrl, commentRef.path || `comments/${commentRef.id}.md`);
+        const commentMeta = (await adapterFetchJson(commentJsonUrl, {
+          adapter: 'site-issue-snapshot',
+          label: 'Hosted GitHub issue comment snapshot item',
+          rateLimitKey: `site-issue-snapshot:${spec.repo}`,
+          hardRefresh: Boolean(options.hardRefresh),
+          skipGitNativeRawBridge: true,
+          headers: { Accept: 'application/json,*/*' }
+        })).data || {};
+        const commentBody = await adapterFetchText(commentBodyUrl, {
+          adapter: 'site-issue-snapshot',
+          label: 'Hosted GitHub issue comment snapshot body',
+          rateLimitKey: `site-issue-snapshot:${spec.repo}`,
+          hardRefresh: Boolean(options.hardRefresh),
+          skipGitNativeRawBridge: true,
+          headers: { Accept: 'text/markdown,text/plain,*/*' }
+        }) || '';
+        comments.push(githubHostedIssueSnapshotCleanItem(commentMeta, commentBody, commentRef.html_url || ''));
+      }
+    }
+    const thread = {
+      issue: githubHostedIssueSnapshotCleanItem(issueMeta, issueBody, spec.issueUrl),
+      comments,
+      truncated: Boolean(issueMeta.truncated_comments || entry.truncated_comments),
+      adapterMode: 'site-issue-snapshot',
+      snapshotMetadataUrl: metadataUrl,
+      snapshotGeneratedAt: meta.generatedAt || '',
+      snapshotSourceUpdatedAt: meta.sourceUpdatedAt || '',
+      requestCount: 2 + (shouldLoadComments ? comments.length * 2 : 0)
+    };
+    githubIssueImportTrace('site-issue-snapshot.thread-built', githubIssueThreadTraceSummary(thread));
+    return thread;
+  }
 
-    if (options.allowWebFallback !== false && options.preferApiFirst !== true) {
-      const jinaApiThread = await tryThread('GitHub Jina API reader fallback', () => fetchGitHubIssueThreadViaJinaApiDirect(spec, liveOptions), 'github-jina-api-reader-fallback');
-      if (jinaApiThread) return jinaApiThread;
-      const publicReaderApiThread = await tryThread('GitHub public reader API fallback', () => fetchGitHubIssueThreadViaPublicReaderApi(spec, liveOptions), 'github-public-reader-api-fallback');
-      if (publicReaderApiThread) return publicReaderApiThread;
-      const readerThread = await tryThread('GitHub reader fallback', () => fetchGitHubIssueThreadViaReader(spec, liveOptions), 'github-reader-fallback');
-      if (readerThread) return readerThread;
-      // Direct github.com issue HTML is not a viable browser fallback because
-      // GitHub does not send Access-Control-Allow-Origin for issue pages. Keep
-      // the parser for pasted/saved HTML, but do not spend an automatic fallback
-      // attempt on a guaranteed CORS failure.
+  async function fetchGitHubIssueThreadWithFallback(spec, options = {}) {
+    const cacheMaxAgeMs = Number(options.cacheMaxAgeMs || 10 * 60 * 1000);
+    const preferCache = options.preferCache !== false;
+    const commentsMode = String(options.commentsMode || 'always');
+    const requestKey = `${githubIssueCacheKey(spec)}::${commentsMode}::${Number(options.commentLimit || 20)}::${options.hardRefresh ? 'refresh' : 'normal'}`;
+    const inFlight = githubIssueThreadInFlightRuntime();
+    if (inFlight.has(requestKey)) {
+      githubIssueImportTrace('issue-thread.singleflight-hit', { requestKey, repo: spec?.repo || '', issueNumber: spec?.issueNumber || '' });
+      return await inFlight.get(requestKey);
     }
 
-    const apiThread = await tryThread('GitHub API', () => fetchGitHubIssueThread(spec, apiOptions), 'github-api');
-    if (apiThread) return apiThread;
+    const task = (async () => {
+      githubIssueImportTrace('issue-thread.start', { spec: { repo: spec?.repo || '', issueNumber: spec?.issueNumber || '', issueUrl: spec?.issueUrl || '' }, options: { hardRefresh: Boolean(options.hardRefresh), preferCache, commentsMode, commentLimit: Number(options.commentLimit || 20), allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback), cacheMaxAgeMs } });
+      if (preferCache && !options.hardRefresh) {
+        const hit = cachedGitHubIssueThread(spec, { maxAgeMs: cacheMaxAgeMs, allowStale: false });
+        if (hit) {
+          githubIssueImportTrace('issue-thread.cache-hit', githubIssueThreadTraceSummary(hit));
+          return hit;
+        }
+      }
 
-    if (options.allowWebFallback !== false && options.preferApiFirst === true) {
-      const jinaApiThread = await tryThread('GitHub Jina API reader fallback', () => fetchGitHubIssueThreadViaJinaApiDirect(spec, liveOptions), 'github-jina-api-reader-fallback');
-      if (jinaApiThread) return jinaApiThread;
-      const publicReaderApiThread = await tryThread('GitHub public reader API fallback', () => fetchGitHubIssueThreadViaPublicReaderApi(spec, liveOptions), 'github-public-reader-api-fallback');
-      if (publicReaderApiThread) return publicReaderApiThread;
-      const readerThread = await tryThread('GitHub reader fallback', () => fetchGitHubIssueThreadViaReader(spec, liveOptions), 'github-reader-fallback');
-      if (readerThread) return readerThread;
-    }
+      const errors = [];
+      const tryThread = async (label, loader, cacheSource, exactSource = false) => {
+        githubIssueImportTrace('issue-thread.attempt-start', { label, cacheSource });
+        try {
+          const thread = await loader();
+          const fidelity = await githubIssueThreadEmbeddedPayloadFidelity(thread);
+          if (!fidelity.ok && !exactSource) {
+            const error = new Error(`${label} changed embedded Tiinex Source Markdown bytes; ${fidelity.failures.length} v2 self seal${fidelity.failures.length === 1 ? '' : 's'} no longer match.`);
+            error.code = 'TIINEX_GITHUB_READER_LOSSY_PAYLOAD';
+            error.fidelity = fidelity;
+            throw error;
+          }
+          thread.embeddedPayloadFidelity = Object.assign({}, fidelity, { exactSource });
+          cacheGitHubIssueThread(spec, thread, { source: cacheSource || thread.adapterMode || label, freshness: 'observed-live' });
+          githubIssueImportTrace('issue-thread.attempt-ok', { label, fidelity, thread: githubIssueThreadTraceSummary(thread) });
+          return thread;
+        } catch (error) {
+          errors.push({ label, error });
+          githubIssueImportTrace('issue-thread.attempt-failed', { label, error });
+          return null;
+        }
+      };
 
-    const cached = cachedGitHubIssueThread(spec, { maxAgeMs: 0, allowStale: true });
-    if (cached) {
-      cached.fallbackErrors = errors.slice();
-      cached.warning = errors[0]?.error?.message || 'Live GitHub issue material unavailable; cached snapshot used.';
-      githubIssueImportTrace('issue-thread-fallback.stale-cache-hit', { warning: cached.warning, thread: githubIssueThreadTraceSummary(cached), priorErrors: errors });
-      return cached;
-    }
-    const primary = errors[0]?.error || new Error('GitHub issue material unavailable.');
-    primary.fallbackErrors = errors;
-    githubIssueImportTrace('issue-thread-fallback.failed-all', { error: primary, errors });
-    throw primary;
+      // Hosted Pages builds publish exact raw issue markdown beside the viewer.
+      // Prefer the same-origin snapshot over live GitHub so public browsing does
+      // not turn each visitor into an anonymous GitHub/reader crawler.
+      const hostedSnapshotThread = await tryThread('Hosted issue snapshot', () => fetchGitHubIssueThreadViaHostedSnapshot(spec, Object.assign({}, options, {
+        commentsMode,
+        commentLimit: Math.min(100, Math.max(1, Number(options.commentLimit || 20)))
+      })), 'site-issue-snapshot', true);
+      if (hostedSnapshotThread) return hostedSnapshotThread;
+
+      // GitHub REST supports browser CORS and is the canonical exact-byte source.
+      // One issue request plus at most one bounded comments request is cheaper and
+      // safer than probing multiple anonymous proxy providers, and only runs when
+      // no same-origin snapshot is available.
+      const apiThread = await tryThread('GitHub API', () => fetchGitHubIssueThread(spec, Object.assign({}, options, {
+        ignoreRateLimitGuard: false,
+        commentsMode,
+        commentLimit: Math.min(100, Math.max(1, Number(options.commentLimit || 20)))
+      })), 'github-api', true);
+      if (apiThread) return apiThread;
+
+      const apiError = errors[0]?.error || null;
+      const cached = cachedGitHubIssueThread(spec, { maxAgeMs: 0, allowStale: true });
+      if (cached && githubIssueErrorIsRateOrAbuseBlocked(apiError)) {
+        cached.fallbackErrors = errors.slice();
+        cached.warning = apiError?.message || 'GitHub API is temporarily unavailable; cached snapshot used.';
+        githubIssueImportTrace('issue-thread.stale-cache-rate-limit', { warning: cached.warning, thread: githubIssueThreadTraceSummary(cached) });
+        return cached;
+      }
+
+      // Shared anonymous readers are disabled by default. They are not mirrors,
+      // have shared abuse domains, and must never be multiplied or retried. A
+      // caller may explicitly opt in for one attempt after a network/CORS error.
+      if (options.allowSharedReaderFallback === true && githubIssueErrorAllowsSharedReader(apiError)) {
+        const readerThread = await tryThread('GitHub shared reader fallback', () => fetchGitHubIssueThreadViaJinaApiDirect(spec, Object.assign({}, options, {
+          hardRefresh: false,
+          ignoreRateLimitGuard: false,
+          commentLimit: Math.min(20, Math.max(1, Number(options.commentLimit || 20)))
+        })), 'github-jina-api-reader-fallback', false);
+        if (readerThread) return readerThread;
+      }
+
+      if (cached) {
+        cached.fallbackErrors = errors.slice();
+        cached.warning = apiError?.message || 'Live GitHub issue material unavailable; cached snapshot used.';
+        githubIssueImportTrace('issue-thread.stale-cache-hit', { warning: cached.warning, thread: githubIssueThreadTraceSummary(cached) });
+        return cached;
+      }
+      const primary = apiError || new Error('GitHub issue material unavailable.');
+      primary.fallbackErrors = errors;
+      githubIssueImportTrace('issue-thread.failed', { error: primary, errors });
+      throw primary;
+    })();
+
+    inFlight.set(requestKey, task);
+    try { return await task; }
+    finally { if (inFlight.get(requestKey) === task) inFlight.delete(requestKey); }
   }
 
   async function fetchGitHubRepoIssueSpecs(repo, options = {}) {
@@ -13297,9 +13532,9 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           await loadGitHubIssueIntoWorkspace(ws, spec.issueUrl, {
             source: canonicalSource,
             ref: canonicalSource.ref || ws.ref || '',
-            commentLimit: options.commentLimit || 100,
+            commentLimit: options.commentLimit || 20,
             toast: false,
-            hardRefresh: Boolean(options.hardRefresh || options.userInitiated),
+            hardRefresh: Boolean(options.hardRefresh),
             preferCache: options.preferCache !== false,
             cacheMaxAgeMs: options.cacheMaxAgeMs || 5 * 60 * 1000,
             includeBody: true,
@@ -13411,17 +13646,21 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       const knownTargets = normalizedGitHubIssueUrls([...explicitIssueTargets, ...discoveredIssueTargets], canonical.repo || '');
       if (knownTargets.length) {
         loaded += await discoverGitHubIssuesIntoWorkspace(ws, canonical, knownTargets, {
-          commentLimit: options.commentLimit || 50,
+          commentLimit: options.commentLimit || 20,
           refreshExisting: true,
-          hardRefresh: Boolean(options.hardRefresh || existingIssueSurface || knownTargets.length),
+          hardRefresh: Boolean(options.hardRefresh),
+          preferCache: true,
+          cacheMaxAgeMs: options.cacheMaxAgeMs || 10 * 60 * 1000,
           renderStatus: false
         });
       }
       if (surfaces.issues) {
         loaded += await discoverGitHubIssuesIntoWorkspace(ws, canonical, [], {
-          commentLimit: options.commentLimit || 50,
+          commentLimit: options.commentLimit || 20,
           refreshExisting: Boolean(options.refreshExisting || existingIssueSurface),
-          hardRefresh: Boolean(options.hardRefresh || existingIssueSurface),
+          hardRefresh: Boolean(options.hardRefresh),
+          preferCache: true,
+          cacheMaxAgeMs: options.cacheMaxAgeMs || 10 * 60 * 1000,
           renderStatus: false
         });
       }
@@ -13500,8 +13739,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       if (explicitIssueTargets.length) {
         await discoverGitHubIssuesIntoWorkspace(ws, githubSource, explicitIssueTargets, {
           refreshExisting: true,
-          hardRefresh: Boolean(options.hardRefresh || options.userInitiated || options.refreshExisting),
-          preferCache: !Boolean(options.userInitiated || options.refreshExisting || options.hardRefresh),
+          hardRefresh: Boolean(options.hardRefresh),
+          preferCache: !Boolean(options.hardRefresh),
           userInitiated: Boolean(options.userInitiated),
           discoveryProgress: Boolean(progressScope),
           sourceProgress: progressScope,
@@ -13514,7 +13753,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         await discoverGitHubIssuesIntoWorkspace(ws, githubSource, [], {
           refreshExisting: Boolean(options.refreshExisting),
           hardRefresh: Boolean(options.hardRefresh),
-          preferCache: !Boolean(options.userInitiated || options.refreshExisting || options.hardRefresh),
+          preferCache: !Boolean(options.hardRefresh),
           userInitiated: Boolean(options.userInitiated),
           discoveryProgress: Boolean(progressScope),
           sourceProgress: progressScope,
@@ -17604,17 +17843,18 @@ Answer the reader should see in workspace help or GitHub presentation.">${escape
   async function fetchWorkspacePointerIssueThread(spec, options = {}) {
     if (typeof fetchGitHubIssueThreadWithFallback === 'function') {
       return await fetchGitHubIssueThreadWithFallback(spec, Object.assign({
-        hardRefresh: true,
+        hardRefresh: false,
+        preferCache: true,
         configuredTarget: true,
-        userInitiated: true,
-        allowWebFallback: true,
-        preferApiFirst: false,
-        ignoreRateLimitGuard: true,
+        userInitiated: false,
+        allowSharedReaderFallback: false,
+        ignoreRateLimitGuard: false,
+        commentsMode: 'if-needed',
         commentLimit: 20,
-        cacheMaxAgeMs: 60 * 1000
+        cacheMaxAgeMs: 10 * 60 * 1000
       }, options || {}));
     }
-    const issue = (await fetchGitHubJson(spec.apiIssueUrl, { hardRefresh: true })).data;
+    const issue = (await fetchGitHubJson(spec.apiIssueUrl, { hardRefresh: false, ignoreRateLimitGuard: false })).data;
     return { issue, comments: [], adapterMode: 'github-api' };
   }
 
@@ -34230,7 +34470,7 @@ ${integrityFooterForPath(parent, path)}`,
       if (comment?.html_url && githubExportPublishedBodyMatchesDraft(comment.body || '', body)) return comment.html_url;
       throw new Error('The known GitHub comment was found, but its body does not match the copied Tiinex draft yet. Update the comment on GitHub, then verify again.');
     }
-    const thread = await fetchGitHubIssueThread(spec, { commentLimit: options.commentLimit || 100, hardRefresh: true, authMode: 'none' });
+    const thread = await fetchGitHubIssueThread(spec, { commentLimit: options.commentLimit || 20, hardRefresh: true, authMode: 'none' });
     const match = (Array.isArray(thread.comments) ? thread.comments : []).find((comment) => githubExportPublishedBodyMatchesDraft(comment?.body || '', body));
     if (match?.html_url) return match.html_url;
     throw new Error('Tiinex could not find a GitHub issue comment whose body matches the copied draft. Post/update the comment, then verify again.');
@@ -34246,7 +34486,7 @@ ${integrityFooterForPath(parent, path)}`,
       return { url, kind: 'comment', targetKind: descriptor.targetKind, verifyKind: descriptor.verifyKind, title: '', state: '' };
     }
 
-    const thread = await fetchGitHubIssueThread(spec, { commentLimit: options.commentLimit || 100, hardRefresh: true, authMode: 'none' });
+    const thread = await fetchGitHubIssueThread(spec, { commentLimit: options.commentLimit || 20, hardRefresh: true, authMode: 'none' });
     if (githubExportPublishedBodyMatchesDraft(thread?.issue?.body || '', body)) {
       return {
         url: spec.issueUrl || githubPublishedResultUrlFromSpec(spec, ''),
