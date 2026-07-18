@@ -4306,6 +4306,79 @@
     return best;
   }
 
+  function commentIdFromGitHubIssueTarget(target = {}, spec = null) {
+    const values = [
+      target?.url || '',
+      spec?.commentAnchor || '',
+      spec?.targetUrl || '',
+      spec?.issueUrl || ''
+    ];
+    for (const value of values) {
+      const match = String(value || '').match(/issuecomment-(\d+)/i);
+      if (match?.[1]) return match[1];
+    }
+    return '';
+  }
+
+  function embeddedWorkspaceMarkdownForPublicIssueShare(thread = {}, target = {}, spec = null) {
+    const commentId = commentIdFromGitHubIssueTarget(target, spec);
+    const candidates = typeof workspacePointerIssueMaterialCandidates === 'function'
+      ? workspacePointerIssueMaterialCandidates(thread, spec || {})
+      : [];
+    const matchingComment = commentId
+      ? candidates.find((item) => String(item?.kind || '') === 'comment' && (String(item?.id || '') === commentId || String(item?.url || '').includes(`issuecomment-${commentId}`)))
+      : null;
+    const ordered = [
+      matchingComment,
+      !commentId ? candidates.find((item) => String(item?.kind || '') === 'issue') : null,
+      ...candidates.filter((item) => item && item !== matchingComment)
+    ].filter(Boolean);
+    for (const item of ordered) {
+      const markdown = embeddedWorkspaceMarkdownFromPointerIssueBody(item.body || '');
+      if (markdown && looksLikeWorkspaceMarkdown(markdown)) {
+        return { markdown, sourceUrl: item.url || spec?.issueUrl || target?.url || '', kind: item.kind || '', commentId };
+      }
+    }
+    return { markdown: '', sourceUrl: '', kind: '', commentId };
+  }
+
+  async function openPublicWorkspaceIssueShareTarget(target = {}, spec = null, options = {}) {
+    if (!target?.url || !spec?.issueUrl || typeof fetchWorkspacePointerIssueThread !== 'function') return false;
+    try {
+      const thread = await fetchWorkspacePointerIssueThread(spec, {
+        hardRefresh: true,
+        configuredTarget: true,
+        userInitiated: true,
+        openWorkspaceIssueTarget: false,
+        preserveShareHash: true,
+        reason: options.reason || 'workspace-hash-issue-direct-payload'
+      });
+      const payload = embeddedWorkspaceMarkdownForPublicIssueShare(thread, target, spec);
+      if (!payload.markdown || !looksLikeWorkspaceMarkdown(payload.markdown)) return false;
+      await openViewerConfigMarkdown(payload.markdown, payload.sourceUrl || target.url, {
+        applyWorkspaceState: true,
+        replaceNonDraftWorkspaces: true,
+        workspaceOpenMode: 'open',
+        preserveShareHash: true,
+        sourceIssueUrl: spec.issueUrl,
+        reason: 'workspace-hash-issue-direct-payload-open'
+      });
+      app.viewerIdentity.publicShareTarget = {
+        adapter: 'workspace',
+        url: target.url,
+        configUrl: payload.sourceUrl || target.url,
+        commentId: payload.commentId || ''
+      };
+      app.activePublicShareTarget = app.viewerIdentity.publicShareTarget;
+      if (typeof recordPublicLinkOpenEvent === 'function') recordPublicLinkOpenEvent('workspace-issue-direct-payload-open', { url: target.url, issueUrl: spec.issueUrl, kind: payload.kind || '', commentId: payload.commentId || '', reason: options.reason || 'hash-share-target' });
+      render();
+      return true;
+    } catch (error) {
+      if (typeof githubIssueImportTrace === 'function') githubIssueImportTrace('workspace-issue-direct-payload-open.failed', { issueUrl: spec.issueUrl, url: target.url, message: error?.message || String(error) });
+      return false;
+    }
+  }
+
   async function loadHashShareTarget(target, options = {}) {
     if (!target?.url) return false;
     const normalizedHashTarget = { adapter: normalizeShareAdapter(target.adapter) || defaultAdapterForShareTarget(target.url), url: target.url, startedAt: new Date().toISOString(), reason: options.reason || 'hash-share-target' };
@@ -4320,6 +4393,7 @@
     const adapter = normalizedHashTarget.adapter;
     const spec = typeof parseGitHubSocialTargetSpec === 'function' ? parseGitHubSocialTargetSpec(target.url) : null;
     if (adapter === 'workspace' && spec?.kind === 'issue') {
+      if (await openPublicWorkspaceIssueShareTarget(target, spec, options)) return true;
       const label = spec?.targetLabel || 'Shared Tiinex workspace issue';
       const ws = createWorkspace(label, `Loaded workspace entrypoint from public hash target: ${target.url}`);
       ws.publicShareTarget = { adapter, url: target.url };

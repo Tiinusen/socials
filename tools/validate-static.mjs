@@ -2314,6 +2314,8 @@ function validateWorkspaceShareAndIssueOpenContracts(source) {
     fail('workspace share target must prefer workspace entrypoint before selected artifact fallback');
   }
   if (!source.includes('const workspaceTargetNode = selected && isWorkspaceNode(selected)')) fail('workspace hash issue open should fall back to recovered workspace node when the issue shell was selected');
+  if (!source.includes('openPublicWorkspaceIssueShareTarget(target, spec, options)')) fail('workspace hash issue shares should open embedded workspace payload directly before importing the card shell');
+  if (!source.includes('embeddedWorkspaceMarkdownForPublicIssueShare')) fail('workspace hash issue shares must prefer matching issue/comment Source Markdown payloads');
   if (!source.includes('userInitiated: Boolean(options.userInitiated)')) fail('configured GitHub issue workspace open must propagate userInitiated from discovery/source refresh');
   if (!source.includes('openWorkspaceIssueTarget: options.openWorkspaceIssueTarget !== false')) fail('configured GitHub issue workspace open must propagate openWorkspaceIssueTarget');
   if (!source.includes('file?.text || file?.rawMarkdown || file?.markdown || file?.body || file?.content')) fail('GitHub publish/local draft binding should hash current local text before stale file.content');
