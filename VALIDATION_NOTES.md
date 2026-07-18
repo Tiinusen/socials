@@ -126,3 +126,9 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - GitHub Source Markdown recovery now treats the Source Markdown section as the authority and unwraps its outer fence greedily. This preserves `.workspace.md` payloads that contain nested `json`/`css` fences, including older issue bodies published with a triple-fence wrapper.
 - GitHub outbound single-artifact payloads now prefer the current file text/local draft markdown before stale `content` fields, so newly saved artifacts publish the same bytes that the user sees locally.
 - Workspace Help/FAQ is sanitized as human-facing help. Leaked workspace entrypoint/source field blocks are kept under Workspace Entrypoints, not rendered as FAQ items.
+
+## V36 hosted workspace bootstrap fallback
+
+- Hosted GitHub Pages deployments must not rely on dot-prefixed workspace paths such as `.topics/.workspaces/viewer.workspace.md` being fetchable at runtime. Even when `.nojekyll` and the public branch contain the files, public serving can still return 404 for dot-paths.
+- Runtime/query workspace candidates still own startup when provided, but if no external candidate exists, the embedded default workspace is the portable hosted default.
+- If runtime candidates fail and the user did not provide an explicit workspace query, startup falls back to the embedded workspace instead of leaving the viewer on an empty stage.
