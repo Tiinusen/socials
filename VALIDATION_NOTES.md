@@ -210,3 +210,9 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - The workspace transport strip now keys off the active requested tier for the current source load when that tier has material/presentation. Moving `cache -> mirror -> proxy -> direct` replaces the previous tier badge instead of accumulating stale lower-tier badges.
 - Time Portal display options restored from a route/share link schedule the historical source snapshot path after view-state hydration. Cached commit observations can load the source snapshot without opening a modal; otherwise the workspace is marked as needing a concrete ref while the display filter still applies to loaded issue/comment observations.
 - Historical source snapshot loads explicitly use the direct/raw-capable transport path for repository files and continue to filter issue/comment material by timestamp, because issue snapshots are observations rather than Git tree contents.
+
+## v55 Time Portal cache boundary
+
+- Time Portal route/share restore is cache-first and network-silent. If the exact historical source-material cache is present, it restores the commit-pinned repo-file view from browser cache. If it is absent during route-owned startup, the app records `needs-direct` and surfaces cache-unavailable instead of silently issuing raw GitHub/jsDelivr requests while the badge says `cache`.
+- Time Portal direct refresh now uses already-known seeded artifact paths before any external flat/tree listing. The broad Tiinex/docs schema freshness supplement is not injected into historical route restore, which prevents a route load from expanding into hundreds of root/schema raw reads.
+- Commit-pinned raw file reads use the exact historical immutable-file cache (`readExactHistoricalFile`) before the network and write successful direct reads back to both immutable-file cache and bounded source-material cache. Repeating the same Time Portal view should therefore use cache, not fresh raw GETs.
