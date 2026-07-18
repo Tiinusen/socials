@@ -9618,9 +9618,13 @@ ${message}${detail ? ` · ${detail}` : ''}`;
     if (!ws || !source?.repo) return false;
     const key = githubSourceMaterialCacheKey(source);
     if (!key) return false;
-    const files = githubSourceMaterialEntriesForCache(ws, source);
-    if (!files.length) return false;
     const surfaces = normalizeGithubSurfaceConfig(source.enabledSurfaces || ws.discoverySource?.enabledSurfaces || {});
+    const files = githubSourceMaterialEntriesForCache(ws, source).filter((file) => {
+      const surface = sourceSurfaceForEntry(file);
+      if (surface === 'issues') return Boolean(surfaces.issues);
+      return Boolean(surfaces.repoFiles);
+    });
+    if (!files.length) return false;
     const payload = {
       type: 'tiinex.github.source-material-cache',
       version: 1,
@@ -25443,7 +25447,13 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         setTimeout(() => {
           const current = getWorkspace(ws.id);
           if (!current || !temporalLensActive(current)) return;
-          loadTemporalSourceSnapshot(current, { refInput: cachedCommit.ref, autoApply: true, cachedCommit });
+          loadTemporalSourceSnapshot(current, {
+            refInput: cachedCommit.ref,
+            autoApply: true,
+            cachedCommit,
+            routeOwnedStartup: Boolean(options.routeOwnedStartup || options.reason === 'route-display-options'),
+            transportRefreshTier: options.transportRefreshTier || (options.routeOwnedStartup || options.reason === 'route-display-options' ? 'cache' : '')
+          });
         }, 0);
         return;
       }
@@ -25464,7 +25474,12 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     setTimeout(() => {
       const current = getWorkspace(ws.id);
       if (!current || !temporalLensActive(current)) return;
-      loadTemporalSourceSnapshot(current, { refInput: refText, autoApply: true });
+      loadTemporalSourceSnapshot(current, {
+        refInput: refText,
+        autoApply: true,
+        routeOwnedStartup: Boolean(options.routeOwnedStartup || options.reason === 'route-display-options'),
+        transportRefreshTier: options.transportRefreshTier || (options.routeOwnedStartup || options.reason === 'route-display-options' ? 'cache' : '')
+      });
     }, 0);
   }
 
@@ -25942,7 +25957,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     return removed;
   }
 
-  function collectSourceSnapshotSeedPaths(ws, sourceId, rootPaths) {
+  function collectSourceSnapshotSeedPaths(ws, sourceId, rootPaths, options = {}) {
     const effectiveRoots = (Array.isArray(rootPaths) && rootPaths.length ? rootPaths : ['.topics']).map(normalizeRepoPath).filter(Boolean);
     const seen = new Set();
     const add = (value) => {
@@ -25960,7 +25975,12 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       if (sourceId && node?.sourceId && node.sourceId !== sourceId) continue;
       add(node?.path);
     }
-    if (String(ws?.repo || '').toLowerCase() === 'tiinex/docs' || String(primaryTemporalGitHubSource(ws)?.repo || '').toLowerCase() === 'tiinex/docs') {
+    // Time Portal snapshot loads must stay bounded to already-materialized
+    // source paths unless the caller explicitly asks for the Tiinex/docs
+    // freshness supplement. The broad schema supplement is useful for latest
+    // repository discovery, but it can create a large burst of raw immutable
+    // reads when a route merely restores a historical view.
+    if (options.includeKnownFreshnessPaths !== false && (String(ws?.repo || '').toLowerCase() === 'tiinex/docs' || String(primaryTemporalGitHubSource(ws)?.repo || '').toLowerCase() === 'tiinex/docs')) {
       for (const path of TIINEX_DOCS_SCHEMA_FRESHNESS_PATHS || []) add(path);
     }
     return Array.from(seen).sort((a, b) => a.localeCompare(b));
@@ -26068,9 +26088,68 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         return;
       }
       const rootPaths = Array.isArray(source.rootPaths) && source.rootPaths.length ? source.rootPaths : (ws.discoverySource?.rootPaths || ['.topics']);
-      const seedPaths = collectSourceSnapshotSeedPaths(ws, source.id, rootPaths);
+      const seedPaths = collectSourceSnapshotSeedPaths(ws, source.id, rootPaths, { includeKnownFreshnessPaths: false });
+      const temporalCacheSource = Object.assign({}, source, {
+        ref: commit.ref,
+        requestedRef: commit.ref,
+        rootPaths,
+        enabledSurfaces: { repoFiles: true, issues: false },
+        configuredIssueUrls: [],
+        issueUrls: []
+      });
+      const temporalRequestedTier = normalizeTransportTier(options.transportRefreshTier || '') || (options.routeOwnedStartup ? 'cache' : 'direct');
+      const temporalCachePolicy = githubSourceTransportPolicyForTier('cache', { reason: 'time-portal-source-snapshot-cache', routeOwnedStartup: Boolean(options.routeOwnedStartup) });
+      const temporalCachePayload = githubSourceMaterialCacheRead(temporalCacheSource);
+      if (temporalRequestedTier === 'cache' && temporalCachePayload) {
+        resetWorkspaceTransportStateForSourceLoad(ws, temporalCacheSource, temporalCachePolicy);
+        source.ref = commit.ref;
+        source.requestedRef = commit.ref;
+        source.label = gitHubSourceLabel(source.repo, commit.ref);
+        const restored = await restoreGitHubSourceMaterialCacheIntoWorkspace(ws, temporalCacheSource, Object.assign({}, options, { transportPolicy: temporalCachePolicy, transportRefreshTier: 'cache' }));
+        if (restored) {
+          ws.temporalSourceSnapshot = {
+            asOf: temporalLensSnapshotTargetAsOf(opts),
+            repo: source.repo,
+            ref: commit.ref,
+            sourceRef: baseRef || '',
+            committedAt: commit.committedAt || '',
+            loadedAt: new Date().toISOString(),
+            rootPaths,
+            resolver: commit.resolver || 'browser-source-material-cache',
+            resolverUrl: commit.resolverUrl || '',
+            confidence: commit.confidence || 'cached-historical-source-state',
+            warnings: commit.warnings || [],
+            state: 'loaded',
+            cacheState: 'browser-source-material-cache'
+          };
+          ws.logs.push(`Temporal source snapshot restored from browser cache: ${source.repo}@${commit.ref}.`);
+          if (options.toast !== false && !options.routeOwnedStartup) toast(`Loaded cached GitHub snapshot ${shortText(commit.ref, 8)} for ${temporalLensLabel(ws)}.`, 'ok');
+          return true;
+        }
+      }
+      if (temporalRequestedTier === 'cache' && options.routeOwnedStartup && !options.userInitiated) {
+        ws.temporalSourceSnapshot = {
+          asOf: temporalLensSnapshotTargetAsOf(opts),
+          repo: source.repo,
+          ref: commit.ref,
+          sourceRef: baseRef || '',
+          committedAt: commit.committedAt || '',
+          loadedAt: new Date().toISOString(),
+          rootPaths,
+          resolver: commit.resolver || 'browser-source-material-cache',
+          resolverUrl: commit.resolverUrl || '',
+          confidence: commit.confidence || 'cached-commit-known-source-state-not-loaded',
+          warnings: commit.warnings || [],
+          state: 'needs-direct',
+          error: 'Historical source files are not in browser cache; explicit direct refresh is required.'
+        };
+        ws.repositoryTransport = transportUnavailableForTier('cache', { reason: 'Time Portal exact source snapshot is not cached; direct refresh is user-initiated.' });
+        githubRepoFetchTrace('time-portal.cache-miss-direct-deferred', { repo: source.repo, commit: commit.ref, rootPaths, seedPaths: seedPaths.length });
+        return false;
+      }
       removeRepoFilesForSource(ws, source.id);
       source.ref = commit.ref;
+      source.requestedRef = commit.ref;
       source.label = gitHubSourceLabel(source.repo, commit.ref);
       ws.temporalSourceSnapshot = {
         asOf: temporalLensSnapshotTargetAsOf(opts),
@@ -26097,7 +26176,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         sourceUrl: commit.treeUrl || commit.commitUrl || commit.resolverUrl || ''
       });
       ws.logs.push(`Temporal source snapshot: ${source.repo}@${commit.ref} for ${temporalLensLabel(ws)} via ${ws.temporalSourceSnapshot.resolver}.`);
-      const temporalTransportPolicy = githubSourceTransportPolicyForTier('direct', { userInitiated: Boolean(options.userInitiated), reason: 'time-portal-source-snapshot' });
+      const temporalTransportPolicy = githubSourceTransportPolicyForTier('direct', { userInitiated: Boolean(options.userInitiated || !options.routeOwnedStartup), reason: 'time-portal-source-snapshot' });
       await discoverGitHubRepoIntoWorkspace(ws, {
         repo: source.repo,
         ref: commit.ref,
@@ -26105,9 +26184,11 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         source,
         refreshExisting: true,
         hardRefresh: true,
-        preferStatic: true,
+        preferStatic: false,
+        preferSeedPaths: true,
         noApi: true,
         seedPaths,
+        seedPathsNote: 'Time Portal direct snapshot uses already-known artifact paths; no broad flat/tree listing is fetched.',
         bypassRepositorySnapshot: true,
         liveGitHub: false,
         allowDirectGithubClone: true,
@@ -26115,6 +26196,12 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         transportRefreshTier: 'direct',
         transportPolicy: temporalTransportPolicy
       });
+      const temporalCacheCompleteness = githubSourceMaterialCacheLooksCompleteForSource(ws, temporalCacheSource, { temporalSourceSnapshot: true });
+      if (temporalCacheCompleteness.ok) {
+        githubSourceMaterialCacheWrite(ws, temporalCacheSource, { transportPolicy: temporalTransportPolicy, transportRefreshTier: 'direct', temporalSourceSnapshot: true });
+      } else {
+        githubRepoFetchTrace('time-portal.source-material-cache.write-skipped-incomplete', { repo: source.repo, commit: commit.ref, cacheCompleteness: temporalCacheCompleteness });
+      }
       toast(`Loaded GitHub snapshot ${shortText(commit.ref, 8)} for ${temporalLensLabel(ws)}.`, 'ok');
       return true;
     } catch (error) {
@@ -27100,6 +27187,15 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     const resolvedRef = ref || 'master';
     const roots = Array.isArray(rootPath) ? rootPath.map(normalizeRepoPath).filter(Boolean) : parseRootPaths(rootPath);
     const effectiveRoots = roots.length ? roots : ['.topics'];
+    if (options.preferSeedPaths === true && Array.isArray(options.seedPaths) && options.seedPaths.length) {
+      return discoverGitHubTracePathsViaSeedPaths(
+        repo,
+        resolvedRef,
+        effectiveRoots,
+        options.seedPaths,
+        options.seedPathsNote || 'Seeded path manifest used before external flat/tree discovery.'
+      );
+    }
     if (options.preferStatic) {
       try {
         const fallback = await discoverGitHubTracePathsViaJsdelivr(repo, resolvedRef, effectiveRoots, options);
@@ -37583,7 +37679,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
     if (!temporalLensNeedsSourceSnapshotForOptions(ws.displayOptions || {})) return false;
     const snap = temporalLensLoadedSnapshotForCurrentAsOf(ws);
     if (snap?.ref) return false;
-    scheduleTemporalSnapshotLoadAfterApply(ws, source.temporalSnapshotRef || '', { openModalOnMissingRef: false, reason: 'route-display-options' });
+    scheduleTemporalSnapshotLoadAfterApply(ws, source.temporalSnapshotRef || '', { openModalOnMissingRef: false, reason: 'route-display-options', routeOwnedStartup: true, transportRefreshTier: 'cache' });
     return true;
   }
 
@@ -39186,9 +39282,20 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
 
       await runWithConcurrency(paths, concurrency, async (path) => {
         const rawUrl = githubRawUrl(repo, discovery.ref, path);
-        githubRepoFetchTrace('raw.request', { sessionId: repoFetchSessionId, repo, ref: discovery.ref, path, rawUrl, total: paths.length, concurrency, hardRefresh: Boolean(options.hardRefresh) });
+        githubRepoFetchTrace('raw.request', { sessionId: repoFetchSessionId, repo, ref: discovery.ref, path, rawUrl, total: paths.length, concurrency, hardRefresh: Boolean(options.hardRefresh), transportTier: transportPolicy.requestedTier || '' });
         try {
-          const content = await fetchText(rawUrl, 'GitHub raw artifact', { hardRefresh: Boolean(options.hardRefresh) });
+          const exactParts = isCommitRef(discovery.ref) ? rawGithubSourceParts(rawUrl) : null;
+          const exactHistorical = exactParts?.repo && exactParts?.path
+            ? await readExactHistoricalFile(exactParts, {
+              networkRequested: Boolean(transportPolicy.allowDirect || options.forceDirectFallback),
+              label: 'Time Portal direct raw artifact',
+              requestingWorkspaceId: ws.id,
+              maxReadsPerWindow: options.exactHistoricalMaxReadsPerWindow || undefined
+            })
+            : null;
+          const content = exactHistorical?.ok
+            ? String(exactHistorical.text || '')
+            : await fetchText(rawUrl, 'GitHub raw artifact', { hardRefresh: Boolean(options.hardRefresh) });
           addFileToWorkspace(ws, {
             path,
             content,
@@ -39203,7 +39310,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
             rootPaths: githubSource.rootPaths,
             enabledSurfaces: githubSource.enabledSurfaces,
             sourceAccessMode: githubSource.sourceAccessMode || 'web-surface',
-            sourceResolutionKind: 'github-raw-file',
+            sourceResolutionKind: exactHistorical?.sourceResolutionKind || 'github-raw-file',
             sourceResultBoundary: githubSource.sourceBoundary?.sourceResultBoundary || 'bounded web/raw observation',
             sourceCacheBoundary: githubSource.sourceBoundary?.sourceCacheBoundary || 'browser-runtime-http-cache',
             sourceSurface: 'repoFiles'
