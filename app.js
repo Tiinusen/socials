@@ -274,8 +274,27 @@
     return row;
   }
 
-  async function checkPublicBuildIdentity(reason = 'scheduled') {
+  function publicBuildIdentityCheckMinIntervalMs(reason = 'scheduled') {
+    const explicit = Number(window.TIINEX_VIEWER_OPTIONS?.publicBuildCheckMinIntervalMs);
+    if (Number.isFinite(explicit) && explicit >= 0) return explicit;
+    if (reason === 'startup-delay' || reason === 'manual') return 0;
+    return 10 * 60 * 1000;
+  }
+
+  function shouldCheckPublicBuildIdentity(reason = 'scheduled') {
+    if (app.publicBuildIdentityCheckInFlight) return false;
+    const last = Number(app.publicBuildIdentityLastCheckAt || 0);
+    const minAge = publicBuildIdentityCheckMinIntervalMs(reason);
+    return !last || Date.now() - last >= minAge;
+  }
+
+  async function checkPublicBuildIdentity(reason = 'scheduled', options = {}) {
     if (app.publicBuildIdentityCheckInFlight) return app.publicBuildIdentityCheckInFlight;
+    const force = Boolean(options.force);
+    if (!force && !shouldCheckPublicBuildIdentity(reason)) {
+      publicBuildUpdateTrace({ reason, status: 'skipped-recent', checkedAt: app.publicBuildIdentityLastCheckAt ? new Date(app.publicBuildIdentityLastCheckAt).toISOString() : '' });
+      return null;
+    }
     const url = publicBuildIdentityUrl();
     if (!url || !/^https?:/iu.test(url)) return null;
     const currentEmbedded = embeddedReleaseCacheIdentityKey();
@@ -283,8 +302,8 @@
     const previousCacheIdentity = releaseCacheIdentityKey();
     app.publicBuildIdentityCheckInFlight = (async () => {
       try {
-        const requestUrl = `${url}${url.includes('?') ? '&' : '?'}check=${Date.now()}`;
-        const response = await fetch(requestUrl, { cache: 'no-store', headers: { Accept: 'application/json' } });
+        app.publicBuildIdentityLastCheckAt = Date.now();
+        const response = await fetch(url, { cache: 'no-cache', headers: { Accept: 'application/json' } });
         if (!response.ok) {
           publicBuildUpdateTrace({ reason, status: 'unavailable', httpStatus: response.status, url });
           return null;
@@ -323,9 +342,13 @@
   function schedulePublicBuildIdentityChecks() {
     if (app.publicBuildIdentityChecksStarted) return;
     app.publicBuildIdentityChecksStarted = true;
-    const intervalMs = Number(window.TIINEX_VIEWER_OPTIONS?.publicBuildCheckIntervalMs || 60000) || 60000;
-    setTimeout(() => { checkPublicBuildIdentity('startup-delay'); }, Math.min(8000, Math.max(1000, intervalMs / 4)));
-    setInterval(() => { if (!document.hidden) checkPublicBuildIdentity('interval'); }, Math.max(15000, intervalMs));
+    const configuredInterval = Number(window.TIINEX_VIEWER_OPTIONS?.publicBuildCheckIntervalMs || 0) || 0;
+    const pollEnabled = window.TIINEX_VIEWER_OPTIONS?.publicBuildPollingEnabled === true;
+    const startupDelay = Number(window.TIINEX_VIEWER_OPTIONS?.publicBuildStartupCheckDelayMs || 8000) || 8000;
+    setTimeout(() => { checkPublicBuildIdentity('startup-delay'); }, Math.max(1000, startupDelay));
+    if (pollEnabled && configuredInterval > 0) {
+      setInterval(() => { if (!document.hidden) checkPublicBuildIdentity('interval'); }, Math.max(5 * 60 * 1000, configuredInterval));
+    }
     window.addEventListener('focus', () => { checkPublicBuildIdentity('focus'); });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) checkPublicBuildIdentity('visibility-visible'); });
   }
@@ -11530,6 +11553,8 @@ ${message}${detail ? ` · ${detail}` : ''}`;
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repoPath)) return [];
     const relative = `issues/github.com/${repoPath}.json`;
     const values = hostedIssueSnapshotBaseUrlCandidates().map((baseUrl) => new URL(relative, baseUrl).toString());
+    const sourcePagesBaseUrl = githubPagesDefaultBaseUrlForRepository(repoPath);
+    if (sourcePagesBaseUrl) values.push(new URL(relative, sourcePagesBaseUrl).toString());
     const seen = new Set();
     return values.filter((url) => {
       if (seen.has(url)) return false;
@@ -16666,6 +16691,38 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.localhost');
   }
 
+  function githubPagesDefaultBaseUrlForRepository(repo) {
+    const parts = repositoryTransportIdentityParts(repo);
+    if (!parts || parts.host !== 'github.com' || parts.path.length < 2) return '';
+    const [owner, repository] = parts.path.slice(-2);
+    if (!/^[A-Za-z0-9_.-]+$/u.test(owner || '') || !/^[A-Za-z0-9_.-]+$/u.test(repository || '')) return '';
+    return `https://${String(owner).toLowerCase()}.github.io/${encodeURIComponent(repository)}/`;
+  }
+
+  function githubPagesRepositorySnapshotTransports(repo) {
+    const parts = repositoryTransportIdentityParts(repo);
+    const baseUrl = githubPagesDefaultBaseUrlForRepository(repo);
+    if (!parts?.host || !parts.path?.length || !baseUrl) return [];
+    const identityPath = [parts.host, ...parts.path].map((segment) => encodeURIComponent(segment)).join('/');
+    return [Object.freeze({
+      id: `github-pages-public-${normalizeRepositoryTransportIdentity(repo).replace(/[^a-z0-9]+/gi, '-')}`,
+      label: 'Source Pages mirror',
+      kind: 'snapshot',
+      order: Number.MAX_SAFE_INTEGER - 1,
+      repository: parts.path.slice(-2).join('/'),
+      repositoryIdentity: normalizeRepositoryTransportIdentity(repo),
+      match: '',
+      metadataUrl: new URL(`mirrors/${identityPath}.json`, baseUrl).toString(),
+      proxyUrl: '',
+      workspaceUrl: '',
+      inferred: true,
+      coHosted: false,
+      sourcePages: true,
+      localSource: false,
+      convention: 'github-pages-source-public'
+    })];
+  }
+
   function coHostedRepositorySnapshotTransports(repo, options = {}) {
     const parts = repositoryTransportIdentityParts(repo);
     const baseUrl = String(options.baseUrl || applicationMirrorBaseUrl()).trim();
@@ -16683,7 +16740,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         id: `co-hosted-source-${normalizeRepositoryTransportIdentity(repo).replace(/[^a-z0-9]+/gi, '-')}`,
         label: 'Local mirror',
         kind: 'snapshot',
-        order: Number.MAX_SAFE_INTEGER - 1,
+        order: Number.MAX_SAFE_INTEGER - 3,
         repository: parts.path.slice(-2).join('/'),
         repositoryIdentity: normalizeRepositoryTransportIdentity(repo),
         match: '',
@@ -16700,7 +16757,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       id: `co-hosted-public-${normalizeRepositoryTransportIdentity(repo).replace(/[^a-z0-9]+/gi, '-')}`,
       label: 'Site mirror',
       kind: 'snapshot',
-      order: Number.MAX_SAFE_INTEGER,
+      order: Number.MAX_SAFE_INTEGER - 2,
       repository: parts.path.slice(-2).join('/'),
       repositoryIdentity: normalizeRepositoryTransportIdentity(repo),
       match: '',
@@ -16766,7 +16823,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       return repositoryTransportPatternMatches(transport.match, identity);
     }).sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
     if (!kind || kind === 'snapshot') {
-      for (const inferred of coHostedRepositorySnapshotTransports(repo)) {
+      for (const inferred of [...coHostedRepositorySnapshotTransports(repo), ...githubPagesRepositorySnapshotTransports(repo)]) {
         if (!matching.some((transport) => transport.kind === 'snapshot' && transport.metadataUrl === inferred.metadataUrl)) matching.push(inferred);
       }
     }
@@ -17019,6 +17076,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       snapshotTimeoutMs: Number(app.settings.repositorySnapshotTimeoutMs || 35000),
       snapshotMetadataTimeoutMs: Number(app.settings.repositorySnapshotMetadataTimeoutMs || 5000),
       inferredCoHostedSnapshots: coHostedRepositorySnapshotTransports(repo),
+      inferredSourcePagesSnapshots: githubPagesRepositorySnapshotTransports(repo),
       gitTransportMaxNetworkDurationMs: Number(app.settings.gitNativeTransportTimeoutMs || 35000),
       gitTransportResponseStartTimeoutMs: Number(app.settings.gitNativeResponseStartTimeoutMs || 6000),
       gitTransportIdleTimeoutMs: Number(app.settings.gitNativeIdleTimeoutMs || 8000),

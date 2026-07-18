@@ -296,3 +296,13 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - The publish workflow treats `.github/workflows` plus `tools/` as portable publisher tooling, not as partial viewer app markers. Content/docs repositories can copy the workflow and tools to publish static lineage material, repository mirrors, and hosted issue snapshots without carrying `app.js`, `index.html`, or `package.json` from the viewer repo.
 - Issue snapshot, public identity, and issue publication state steps now run the Node tools directly when package scripts are unavailable. Viewer repos keep using the normal app build path; non-viewer repos use the static/mirror path.
 - Guided GitHub export verification and post-export rediscovery bypass cache and hosted mirrors. They read GitHub via the live proxy/API tier first and may fall to direct reader/raw fallback when needed, because freshly published GitHub issue/comment material cannot be verified against stale cache or mirror snapshots.
+
+- GitHub-backed repository mirrors now try the viewer-owned mirror first and then a single source-owned default GitHub Pages mirror candidate, such as `https://tiinex.github.io/docs/mirrors/github.com/Tiinex/docs.json`, before proxy/direct transport. Non-GitHub sources are not given a guessed Pages candidate.
+- Hosted issue snapshots use the same bounded mirror ordering: viewer-owned `/issues/github.com/<owner>/<repo>.json` first, then the source repository's default GitHub Pages issue snapshot when the source is GitHub-backed.
+
+
+## v68 cross-repo mirrors and gentle public identity checks
+
+- GitHub-backed repository mirrors now resolve in a bounded order: explicit/configured transports, viewer-owned co-hosted mirrors, then a single source-repository default GitHub Pages mirror such as `https://tiinex.github.io/docs/mirrors/github.com/Tiinex/docs.json`. Non-GitHub sources do not get a guessed Pages mirror.
+- Hosted issue snapshots use the same source-owned Pages fallback after the viewer-owned issue snapshot path, so a content repo can publish its own issues without forcing the viewer repo to carry every issue mirror.
+- Public build identity checks no longer use unique `?check=Date.now()` no-store requests or a default minute interval. They use the stable `/tiinex.build.json` URL with browser revalidation, check once on startup and on focus/visibility only after a conservative TTL, and allow interval polling only as explicit opt-in.
