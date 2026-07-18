@@ -689,8 +689,8 @@ function validateGitHubRecoveredContinuityContract() {
     fail('GitHub issue recovery must not strip an unresolved declared Parent and reseal it as a root.');
   }
   const stripParentCalls = (js.match(/stripContinuityParentBlock\(/g) || []).length;
-  if (stripParentCalls !== 3 || !js.includes('function replaceWorkspaceConfigContinuityParent')) {
-    fail(`Parent stripping must remain owned by the helper definition, explicit root/detach save path, and workspace artifact parent-edit path; found ${stripParentCalls} references.`);
+  if (stripParentCalls !== 4 || !js.includes('function replaceWorkspaceConfigContinuityParent') || !js.includes('function preserveWorkspaceConfigContinuityParent')) {
+    fail(`Parent stripping must remain owned by the helper definition, explicit root/detach save path, workspace artifact parent-edit path, and workspace parent-preservation path; found ${stripParentCalls} references.`);
   }
   if (!/resolveAdapterParentTraversalForWorkspace\(ws,\s*\{[\s\S]{0,220}?sourceId:\s*source\.id/u.test(js)) {
     fail('GitHub issue import must run source-bounded parent reconciliation after all issue artifacts are indexed.');

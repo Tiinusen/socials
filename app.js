@@ -8931,7 +8931,29 @@
     return true;
   }
 
+  function workspaceStateForOpenDefaultView(state, options = {}) {
+    if (!state || typeof state !== 'object') return state;
+    const mode = workspaceImportMode(state, options);
+    // Opening a workspace entrypoint should show the workspace's discovery/feed
+    // view, not resurrect the lineage selection that happened to be active when
+    // the .workspace.md was saved. Merge/duplicate keep more state because they
+    // are explicit composition operations.
+    if (mode !== 'open' || options.restoreWorkspaceSelection === true) return state;
+    const next = Object.assign({}, state);
+    next.sources = (Array.isArray(state.sources) ? state.sources : []).map((source) => Object.assign({}, source || {}, {
+      selectedNodeId: '',
+      selectedPath: '',
+      selectedTitle: '',
+      mode: 'discovery',
+      scrollMode: 'discovery',
+      scrollSelectedPath: ''
+    }));
+    next.workspaceSelectionReset = 'open-default-discovery';
+    return next;
+  }
+
   async function applyViewerStatePreservingLocal(state, options = {}) {
+    state = workspaceStateForOpenDefaultView(state, options);
     const sources = Array.isArray(state?.sources) ? state.sources : [];
     if (!sources.length) return 0;
 
@@ -16893,6 +16915,53 @@ ${bodySections}
   }
 
 
+  function continuityParentBlockFromMarkdown(markdown) {
+    const normalized = normalizeNewlines(markdown || '').trim();
+    const separatorIndex = normalized.indexOf('\n---');
+    if (separatorIndex < 0) return '';
+    const lines = normalized.slice(0, separatorIndex).split('\n');
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      const indent = line.search(/\S/);
+      if (indent <= 1 && /^-\s+Parent(?:\s*$|\s|:)/i.test(trimmed)) {
+        const block = [line];
+        for (let j = i + 1; j < lines.length; j += 1) {
+          const nextLine = lines[j];
+          const nextTrimmed = nextLine.trim();
+          const nextIndent = nextLine.search(/\S/);
+          if (nextIndent <= 1 && /^-\s+/i.test(nextTrimmed)) break;
+          block.push(nextLine);
+        }
+        return block.join('\n').trimEnd();
+      }
+    }
+    return '';
+  }
+
+  function insertContinuityParentBlock(markdown, parentBlock) {
+    const block = String(parentBlock || '').trimEnd();
+    if (!block) return markdown;
+    let out = stripContinuityParentBlock(markdown || '');
+    const lines = markdownLines(out);
+    const envelopeEnd = lines.findIndex((line, index) => index > 0 && /^---+\s*$/.test(line.trim()));
+    const limit = envelopeEnd >= 0 ? envelopeEnd : Math.min(lines.length, 80);
+    let insertAt = -1;
+    for (let i = 0; i < limit; i += 1) {
+      if (/^\s*-\s*Envelope Schema\s*:/i.test(lines[i])) { insertAt = i + 1; break; }
+    }
+    if (insertAt < 0) return `${block}\n${out}`;
+    lines.splice(insertAt, 0, ...block.split('\n'));
+    return lines.join('\n');
+  }
+
+  function preserveWorkspaceConfigContinuityParent(markdown, sourceMarkdown, parent, childPath, modal = {}) {
+    if (modal?.parentEdited) return replaceWorkspaceConfigContinuityParent(markdown, parent, childPath, modal);
+    if (parent) return replaceWorkspaceConfigContinuityParent(markdown, parent, childPath, modal);
+    const block = continuityParentBlockFromMarkdown(sourceMarkdown || '');
+    return block ? insertContinuityParentBlock(markdown, block) : markdown;
+  }
+
   function replaceWorkspaceConfigContinuityParent(markdown, parent, childPath, modal = {}) {
     let out = stripContinuityParentBlock(markdown || '');
     if (!parent) return out;
@@ -16970,6 +17039,16 @@ ${bodySections}
   }
 
 
+  function workspaceConfigCanExcludeContaining(modal) {
+    return (app.workspaces || []).length > 1 && Boolean(modal?.wsId && getWorkspace(modal.wsId));
+  }
+
+  function workspaceConfigFooterExcludeHtml(modal) {
+    if (!workspaceConfigCanExcludeContaining(modal)) return '';
+    const checked = modal?.excludeContainingWorkspaceFromCurrent ? 'checked' : '';
+    return `<label class="workspace-config-footer-checkbox option-toggle" title="Keep the workspace that stores this .workspace.md outside the saved workspace set."><input type="checkbox" data-field="workspaceConfig.excludeContainingWorkspaceFromCurrent" ${checked}><span>Exclude containing workspace</span></label>`;
+  }
+
   function workspaceConfigCurrentSummaryHtml(modal) {
     const workspaces = app.workspaces || [];
     const sourceCount = workspaces.reduce((total, ws) => total + (ws?.sources instanceof Map ? ws.sources.size : Array.isArray(ws?.sources) ? ws.sources.length : 0), 0);
@@ -16977,7 +17056,7 @@ ${bodySections}
     const workspaceArtifactCount = workspaces.reduce((total, ws) => total + Array.from(ws?.nodeById?.values?.() || []).filter((node) => isWorkspaceNode(node)).length, 0);
     const fileState = modal?.sourceBacked ? (modal?.existingDraft ? 'source + local draft' : 'source-backed') : 'local draft';
     const updated = modal?.updatedFromCurrent ? '<span class="summary-chip ok"><i class="fa-solid fa-circle-check"></i>current view staged</span>' : '<span class="summary-chip"><i class="fa-solid fa-layer-group"></i>file content unchanged</span>';
-    const canExcludeContaining = workspaces.length > 1 && Boolean(modal?.wsId && getWorkspace(modal.wsId));
+    const canExcludeContaining = workspaceConfigCanExcludeContaining(modal);
     const excludeContaining = canExcludeContaining && Boolean(modal?.excludeContainingWorkspaceFromCurrent);
     const excludeControl = canExcludeContaining ? `<label class="workspace-config-checkbox option-toggle"><input type="checkbox" data-field="workspaceConfig.excludeContainingWorkspaceFromCurrent" ${excludeContaining ? 'checked' : ''}><span>Exclude the workspace that stores this .workspace.md from Update with current</span></label><p class="form-text">Use this when the workspace artifact should live in one workspace but describe another workspace set. Hidden when only one workspace is open so Update with current cannot create an empty .workspace.md.</p>` : '';
     return `<section class="export-section workspace-config-summary-section">
@@ -16996,6 +17075,7 @@ ${bodySections}
 
   function renderWorkspaceConfigEditorModal(modal) {
     const draft = modal.draft || {};
+    const footerExclude = workspaceConfigFooterExcludeHtml(modal);
     return `<div class="modal-backdrop-custom focus-modal workspace-config-editor-backdrop" role="dialog" aria-modal="true" aria-labelledby="workspace-config-editor-title">
       <div class="modal-panel export-panel workspace-config-editor-panel">
         <div class="modal-header-lite export-head compact-export-head">
@@ -17040,6 +17120,7 @@ Answer the reader should see in workspace help or GitHub presentation.">${escape
         <div class="modal-footer-actions export-actions">
           <button class="tv-btn primary" data-action="workspace-config-save"><i class="fa-solid fa-floppy-disk"></i>Save local draft</button>
           <button class="tv-btn constructive" data-action="workspace-config-update-current"><i class="fa-solid fa-rotate"></i>Update with current</button>
+          ${footerExclude}
           <button class="tv-btn subtle" data-action="workspace-config-apply"><i class="fa-solid fa-eye"></i>Apply preview</button>
           <button class="tv-btn subtle" data-action="close-modal">Cancel</button>
         </div>
@@ -17060,7 +17141,13 @@ Answer the reader should see in workspace help or GitHub presentation.">${escape
       try {
         const excludeContainingWorkspace = Boolean(app.modal.excludeContainingWorkspaceFromCurrent) && (app.workspaces || []).length > 1;
         const current = await buildCurrentLensConfigMarkdown({ excludeWorkspaceId: excludeContainingWorkspace ? app.modal.wsId : '' });
-        const staged = updateWorkspaceConfigMarkdown(current, app.modal.draft || {});
+        const ws = getWorkspace(app.modal.wsId || '');
+        const node = ws?.nodeById?.get?.(app.modal.nodeId || '');
+        const original = ws?.nodeById?.get?.(app.modal.originalNodeId || '') || null;
+        const childPath = node?.path || original?.path || '';
+        const parent = wizardNodeById(ws, app.modal.parentNodeId || '');
+        const stagedBase = updateWorkspaceConfigMarkdown(current, app.modal.draft || {});
+        const staged = preserveWorkspaceConfigContinuityParent(stagedBase, app.modal.originalMarkdown || '', parent, childPath, app.modal);
         app.modal.originalMarkdown = staged;
         app.modal.draft = workspaceConfigDraftFromMarkdown(staged, app.modal.configUrl || location.href);
         app.modal.updatedFromCurrent = true;
@@ -17081,7 +17168,7 @@ Answer the reader should see in workspace help or GitHub presentation.">${escape
       const childPath = node?.path || original?.path || '';
       const parent = wizardNodeById(ws, modal.parentNodeId || '');
       let markdown = updateWorkspaceConfigMarkdown(modal.originalMarkdown || '', modal.draft || {});
-      if (modal.parentEdited) markdown = replaceWorkspaceConfigContinuityParent(markdown, parent, childPath, modal);
+      markdown = preserveWorkspaceConfigContinuityParent(markdown, modal.originalMarkdown || '', parent, childPath, modal);
       if (action === 'workspace-config-apply') {
         const parsed = parseViewerConfigMarkdown(markdown, modal.configUrl || location.href);
         app.viewerIdentity = Object.assign(app.viewerIdentity || {}, parsed || {}, { loaded: true, configUrl: modal.configUrl || app.viewerIdentity?.configUrl || '' });
@@ -17096,7 +17183,8 @@ Answer the reader should see in workspace help or GitHub presentation.">${escape
       }
       if (!ws || !node) return toast('No workspace artifact selected.', 'warn');
       const sourceBacked = Boolean(original) || !nodeIsLocalEditableMaterial(ws, node);
-      await saveNodeEdit(ws, node, markdown, Object.assign({ forceLocalDraft: true }, modal.parentEdited ? { parentNodeId: modal.parentNodeId || '', parentPath: modal.parentPath || '' } : {}));
+      const parentSaveOptions = (modal.parentEdited || modal.parentNodeId || modal.parentPath) ? { parentNodeId: modal.parentNodeId || '', parentPath: modal.parentPath || '' } : {};
+      await saveNodeEdit(ws, node, markdown, Object.assign({ forceLocalDraft: true }, parentSaveOptions));
       const parsedAfterSave = parseViewerConfigMarkdown(markdown, modal.configUrl || app.viewerIdentity?.configUrl || location.href);
       app.viewerIdentity = Object.assign(app.viewerIdentity || {}, parsedAfterSave || {}, { loaded: true, configUrl: modal.configUrl || app.viewerIdentity?.configUrl || '' });
       syncDocumentTitle('workspace-config-save');
