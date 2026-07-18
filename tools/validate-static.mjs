@@ -1253,6 +1253,9 @@ function validateJavascriptSurface() {
   if (!js.includes('refresh-source-via-live-transport') || !js.includes('bypassRepositorySnapshot: true') || !js.includes('bypassHostedIssueSnapshot: true') || !js.includes('githubIssueTransportPresentation') || !js.includes('renderWorkspaceTransportPills')) {
     fail('Mirror/cache transport badges must provide an explicit next-level live-source refresh path for repository files and issue snapshots.');
   }
+  for (const token of ['TRANSPORT_TIER_ORDER', "['cache', 'mirror', 'proxy', 'direct']", 'data-transport-tier', 'restoreGitHubSourceUserConfig', 'preserveSourceConfig', 'forceDirectFallback']) {
+    if (!js.includes(token)) fail(`Transport badge tier progression/source-config guard missing: ${token}`);
+  }
 
   if (js.includes('data-mode="issue"') || js.includes('Add issue thread')) {
     fail('GitHub issue discovery must be owned by the GitHub source/community UX, not a separate Add-flow source.');
@@ -2059,7 +2062,7 @@ function validateRepositoryTransportContracts() {
   if (presentation({ kind: 'snapshot', inferred: true, convention: 'co-hosted-source' })?.label !== 'mirror') fail('Local co-hosted snapshots must present as mirror.');
   if (presentation({ kind: 'snapshot', inferred: true, convention: 'co-hosted-public' })?.label !== 'mirror') fail('Published co-hosted snapshots must present as mirror.');
   if (presentation({ kind: 'git-proxy' })?.label !== 'proxy') fail('Network Git material must present as proxy.');
-  if (presentation({ kind: 'github-raw' })?.label !== 'proxy') fail('Raw fallback material must present as proxy.');
+  if (presentation({ kind: 'github-raw' })?.label !== 'direct') fail('Raw fallback material must present as direct.');
   const failureKindStart = app.indexOf('  function repositoryTransportFailureKind(error) {');
   const failureKindEnd = app.indexOf('  function rememberRepositoryTransportFailure(', failureKindStart);
   if (failureKindStart < 0 || failureKindEnd <= failureKindStart) fail('Could not isolate repository transport failure classification.');
