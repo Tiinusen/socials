@@ -5,6 +5,13 @@ Use current command output and Git history as the validation record. This file d
 Run the checks relevant to the changed surface. `npm test` is not the sole pass signal when known static-hygiene findings are unrelated to runtime behavior.
 
 
+
+## v43 Hosted issue snapshot discovery and source-config preservation
+
+Bounded GitHub issue discovery must list issue targets from the same-origin hosted snapshot index before any live GitHub issue-list request. If no hosted snapshot is present during automatic startup/discovery, the viewer should report an unavailable/stale issue surface rather than crawling GitHub on behalf of every visitor.
+
+Source edit, Refresh, and Reset cache are not source-configuration owners. They must preserve the explicit Issue/Discussion URL list and surface checkboxes currently shown in the source dialog. Discovery may add `discoveredIssueUrls`, but it must not rewrite `configuredIssueUrls` or re-open an older workspace issue in a way that replaces the just-edited source settings.
+
 ## v42 Hosted issue snapshots and abuse-safe issue transport
 
 Hosted public viewers must prefer same-origin issue snapshots before live GitHub issue reads. The publish workflow now materializes public issue bodies and comments under `issues/github.com/<owner>/<repo>/` during normal site publication. Issue and issue-comment events run a debounced issues-only public-branch update; after the bounded grace period the workflow reconciles the full configured snapshot set, so burst interactions collapse without dropping intermediate issue changes.
