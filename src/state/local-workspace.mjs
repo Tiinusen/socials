@@ -82,7 +82,7 @@ export function serializeFileForLocalState(file) {
     sourceLabel: file.sourceLabel || '',
     storageKey: file.storageKey || '',
     name: file.name || fileNameFromPath(file.path),
-    content: normalizeLineEndings(file.content || file.text || ''),
+    content: normalizeLineEndings(file.text || file.rawMarkdown || file.content || ''),
     rawUrl: '',
     browseUrl: '',
     repo: '',
@@ -98,6 +98,7 @@ export function serializeFileForLocalState(file) {
     shadowSourceOrigin: file.shadowSourceOrigin || '',
     localDraftOf: file.localDraftOf || '',
     localEditDraft: Boolean(file.localEditDraft),
+    updatedAt: file.updatedAt || '',
     isGenerated: Boolean(file.isGenerated),
     generatedAt: file.generatedAt || ''
   };

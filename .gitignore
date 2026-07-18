@@ -1,6 +1,7 @@
 # Local development noise
 .DS_Store
 Thumbs.db
+[Dd]esktop.ini
 *.log
 *.tmp
 *.bak
