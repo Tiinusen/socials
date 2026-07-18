@@ -32447,7 +32447,15 @@ ${integrityFooterForPath(parent, path)}`,
   }
 
   async function exportFileWithIntegrityRefresh(ws, file) {
-    const original = normalizeNewlines(file?.content || file?.text || '');
+    const node = typeof githubExportFileNode === 'function' ? githubExportFileNode(ws, file) : null;
+    const original = normalizeNewlines(
+      (typeof githubExportEffectiveMarkdown === 'function' ? githubExportEffectiveMarkdown(file, node) : '')
+      || file?.text
+      || file?.content
+      || file?.rawMarkdown
+      || file?.body
+      || ''
+    );
     const profile = exportIntegrityProfile(original);
     const localTarget = exportFileIsLocalIntegrityTarget(file);
     if (!localTarget || !profile.refreshable) {
@@ -33866,6 +33874,50 @@ ${integrityFooterForPath(parent, path)}`,
     );
   }
 
+  function githubExportFileNeedsLocalIntegrityRefresh(file = {}) {
+    return Boolean(exportFileIsLocalIntegrityTarget(file) || file?.localEditDraft || file?.localDraftOf || file?.shadowSourceKey || file?.shadowSourceNodeId);
+  }
+
+  async function prepareGithubExportItemIntegrity(ws, item) {
+    const file = item?.file || item || null;
+    if (!ws || !file || !githubExportFileNeedsLocalIntegrityRefresh(file)) return false;
+    const node = githubExportFileNode(ws, file);
+    const path = canonicalWorkspacePath(file.path || file.name || node?.path || node?.file?.path || '');
+    const original = githubExportEffectiveMarkdown(file, node);
+    if (!path || !markdownLooksAuthorableTiinexArtifact(original)) return false;
+    const finalized = await finalizeSavedLocalIntegrity(ws, path, original, { existingNode: node });
+    if (!finalized || finalized === original) return false;
+    file.text = finalized;
+    file.content = finalized;
+    file.rawMarkdown = finalized;
+    if (node?.file && node.file !== file && githubExportFileNeedsLocalIntegrityRefresh(node.file)) {
+      node.file.text = finalized;
+      node.file.content = finalized;
+      node.file.rawMarkdown = finalized;
+    }
+    return true;
+  }
+
+  async function prepareGithubExportIntegrityPayloads(modal, ws) {
+    if (!modal || !ws || exportCapabilityTarget(modal) !== 'github-draft') return { changed: 0, total: 0 };
+    const plan = buildExportPlan(ws, modal);
+    const items = githubExportItemsForModal(modal, plan);
+    let changed = 0;
+    for (const item of items) {
+      if (await prepareGithubExportItemIntegrity(ws, item)) changed += 1;
+    }
+    if (changed) {
+      computeWorkspaceIndex(ws);
+      markWorkspaceIntegrityDirty(ws, 'github-export-integrity-refresh');
+      if (typeof scheduleLocalStateSave === 'function') scheduleLocalStateSave();
+    }
+    modal.githubPreparedIntegritySignature = hashFast(items.map((item) => {
+      const file = item?.file || item || {};
+      return [item.key || '', file.path || file.name || '', file.text || file.content || file.rawMarkdown || ''].join('\n');
+    }).join('\n---\n'));
+    return { changed, total: items.length };
+  }
+
   function githubExactFileSpecFromParentFields(values = []) {
     for (const value of values || []) {
       const spec = parseGitHubExactFileSpec(value || '');
@@ -35240,6 +35292,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
   async function verifyGithubExportCurrentTarget(modal) {
     const ctx = githubCurrentExportContext(modal);
     if (!ctx.ws || !ctx.item || !ctx.state) throw new Error('No export artifact selected.');
+    await prepareGithubExportItemIntegrity(ctx.ws, ctx.item);
     const candidates = githubExportTargetCandidates(ctx.ws, ctx.item, ctx.surface);
     const draft = githubSingleArtifactDraft(ctx.ws, modal, ctx.item, ctx.surface);
     const mode = githubExportEffectiveTargetMode(modal, ctx.item, ctx.surface, candidates);
@@ -35431,8 +35484,11 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
     if (action === 'export-step-continue') {
       event.preventDefault(); event.stopPropagation();
       if (!app.modal || app.modal.type !== 'export-workspace') return;
+      const ws = getWorkspace(app.modal.wsId || '');
+      const prepared = await prepareGithubExportIntegrityPayloads(app.modal, ws);
       app.modal.exportStage = 'execute';
       render();
+      if (prepared.changed) toast(`Refreshed ${prepared.changed} local integrity footer${prepared.changed === 1 ? '' : 's'} for GitHub publication.`, 'ok');
       return;
     }
     if (action === 'export-step-back') {
@@ -35504,6 +35560,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
       const items = githubExportItemsForModal(app.modal, plan);
       const item = items[githubExportCurrentIndex(app.modal, items)];
       if (!item) return toast('No export artifact selected.', 'warn');
+      await prepareGithubExportItemIntegrity(ws, item);
       const draft = githubSingleArtifactDraft(ws, app.modal, item, githubOutboundSurface(app.modal));
       try {
         await navigator.clipboard.writeText(draft.body || '');
@@ -35526,6 +35583,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
       const items = githubExportItemsForModal(app.modal, plan);
       const item = items[githubExportCurrentIndex(app.modal, items)];
       if (!item) return toast('No export artifact selected.', 'warn');
+      await prepareGithubExportItemIntegrity(ws, item);
       const draft = githubSingleArtifactDraft(ws, app.modal, item, githubOutboundSurface(app.modal));
       if (!draft.url) return toast('No GitHub form URL is available for this export.', 'warn');
       const state = githubExportCheckState(app.modal, item.key);
@@ -35559,6 +35617,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
       event.preventDefault(); event.stopPropagation();
       if (!app.modal || app.modal.type !== 'export-workspace') return;
       const ctx = githubCurrentExportContext(app.modal);
+      if (ctx.item) await prepareGithubExportItemIntegrity(ctx.ws, ctx.item);
       const draft = ctx.item ? githubSingleArtifactDraft(ctx.ws, app.modal, ctx.item, ctx.surface) : null;
       if (!ctx.item || !githubExportStateReady(ctx.state, draft, ctx.surface)) {
         toast('Complete copy, open, and verify for the current artifact before continuing. Changing the target or body resets the checklist.', 'warn');
