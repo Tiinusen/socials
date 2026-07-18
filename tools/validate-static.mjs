@@ -1261,8 +1261,8 @@ function validateJavascriptSurface() {
   if (!js.includes('hostedIssueSnapshotBaseUrlCandidates') || !js.includes('githubHostedIssueSnapshotResolveDirectory') || !js.includes('githubPagesDefaultBaseUrlForRepository') || js.includes('${repoName}/${relative}')) {
     fail('Hosted issue snapshot paths must follow mirror convention roots such as /issues/github.com/owner/repo.json, then a source repo GitHub Pages mirror candidate for GitHub-backed repos, and preserve the repository directory for issue item paths.');
   }
-  if (!js.includes('site-issue-snapshot.metadata-candidate') || !js.includes('site-issue-snapshot.list-candidate')) {
-    fail('Hosted issue snapshot adapter must trace candidate path selection for issue threads and discovery lists.');
+  if (!js.includes('site-issue-snapshot.metadata-candidate') || !js.includes('site-issue-snapshot.metadata-selected') || !js.includes('resolveFreshestGitHubHostedIssueSnapshotMetadata') || !js.includes('githubHostedIssueSnapshotFreshnessValue')) {
+    fail('Hosted issue snapshot adapter must trace and select the freshest available viewer/source mirror metadata instead of stopping at the first 200 response.');
   }
   if (!js.includes('refresh-source-via-live-transport') || !js.includes('bypassRepositorySnapshot: true') || !js.includes('bypassHostedIssueSnapshot: true') || !js.includes('githubIssueTransportPresentation') || !js.includes('renderWorkspaceTransportPills')) {
     fail('Mirror/cache transport badges must provide an explicit next-level live-source refresh path for repository files and issue snapshots.');
