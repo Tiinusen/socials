@@ -171,9 +171,11 @@
     if (previous === releaseKey) return { releaseKey, previous, changed: false, removed: 0 };
 
     let removed = 0;
+    // Keep durable source-material caches across app releases. App asset
+    // cache-busting is owned by ?v= build ids; GitHub issue cache freshness is
+    // owned by the transport tier and explicit cache→mirror/proxy refresh path.
     [
       STORAGE_KEYS.githubCommitCache,
-      STORAGE_KEYS.githubIssueThreadCache,
       STORAGE_KEYS.githubIssueImportTrace,
       STORAGE_KEYS.githubRepoFetchTrace,
       STORAGE_KEYS.repositoryTransportHealth,
@@ -6120,6 +6122,7 @@
       allowSharedReaderFallback: Boolean(tierOptions.allowSharedReaderFallback),
       allowDirectGithubClone: Boolean(tierOptions.allowDirectGithubClone),
       forceDirectFallback: Boolean(tierOptions.forceDirectFallback),
+      transportRefreshTier: nextTier,
       preserveSourceConfig: true,
       respectSourceConfig: true,
       sourceProgress: 'github-source-refresh'
@@ -11035,7 +11038,7 @@ ${message}${detail ? ` · ${detail}` : ''}`;
     }
 
     const task = (async () => {
-      githubIssueImportTrace('issue-thread.start', { spec: { repo: spec?.repo || '', issueNumber: spec?.issueNumber || '', issueUrl: spec?.issueUrl || '' }, options: { hardRefresh: Boolean(options.hardRefresh), preferCache, commentsMode, commentLimit: Number(options.commentLimit || 20), allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback), cacheMaxAgeMs } });
+      githubIssueImportTrace('issue-thread.start', { spec: { repo: spec?.repo || '', issueNumber: spec?.issueNumber || '', issueUrl: spec?.issueUrl || '' }, options: { hardRefresh: Boolean(options.hardRefresh), preferCache, commentsMode, commentLimit: Number(options.commentLimit || 20), allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback), liveGitHub: Boolean(options.liveGitHub), bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot), forceDirectFallback: Boolean(options.forceDirectFallback), transportRefreshTier: options.transportRefreshTier || '', cacheMaxAgeMs } });
       if (preferCache && !options.hardRefresh) {
         const hit = cachedGitHubIssueThread(spec, { maxAgeMs: cacheMaxAgeMs, allowStale: false });
         if (hit) {
@@ -13805,7 +13808,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   async function loadGitHubIssueIntoWorkspace(ws, issueUrl, options = {}) {
     const spec = parseGitHubIssueSpec(issueUrl);
     if (!spec) throw new Error('Paste a GitHub issue URL like https://github.com/owner/repo/issues/123.');
-    githubIssueImportTrace('issue-import.start', { issueUrl, spec: { repo: spec.repo, issueNumber: spec.issueNumber, issueUrl: spec.issueUrl }, workspace: { id: ws?.id || '', label: ws?.label || '' }, options: { hardRefresh: Boolean(options.hardRefresh), preferCache: Boolean(options.preferCache), configuredTarget: Boolean(options.configuredTarget), userInitiated: Boolean(options.userInitiated), includeBody: options.includeBody !== false } });
+    githubIssueImportTrace('issue-import.start', { issueUrl, spec: { repo: spec.repo, issueNumber: spec.issueNumber, issueUrl: spec.issueUrl }, workspace: { id: ws?.id || '', label: ws?.label || '' }, options: { hardRefresh: Boolean(options.hardRefresh), preferCache: Boolean(options.preferCache), configuredTarget: Boolean(options.configuredTarget), userInitiated: Boolean(options.userInitiated), includeBody: options.includeBody !== false, liveGitHub: Boolean(options.liveGitHub), bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot), forceDirectFallback: Boolean(options.forceDirectFallback), transportRefreshTier: options.transportRefreshTier || '' } });
     try {
       const thread = await fetchGitHubIssueThreadWithFallback(spec, options);
       githubIssueImportTrace('issue-import.thread-ready', githubIssueThreadTraceSummary(thread));
@@ -13920,7 +13923,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
   async function discoverGitHubIssuesIntoWorkspace(ws, source, issueUrls = [], options = {}) {
     if (!ws || !source?.repo) return 0;
     clearGithubIssueImportTrace();
-    githubIssueImportTrace('discovery.start', { workspace: { id: ws?.id || '', label: ws?.label || '', fileCount: ws?.files?.size || 0, nodeCount: Array.isArray(ws?.nodes) ? ws.nodes.length : 0 }, source: { id: source?.id || '', repo: source?.repo || '', ref: source?.ref || '', kind: source?.kind || '' }, issueUrls, options: { hardRefresh: Boolean(options.hardRefresh), userInitiated: Boolean(options.userInitiated), preferCache: Boolean(options.preferCache), limit: options.limit || '' } });
+    githubIssueImportTrace('discovery.start', { workspace: { id: ws?.id || '', label: ws?.label || '', fileCount: ws?.files?.size || 0, nodeCount: Array.isArray(ws?.nodes) ? ws.nodes.length : 0 }, source: { id: source?.id || '', repo: source?.repo || '', ref: source?.ref || '', kind: source?.kind || '' }, issueUrls, options: { hardRefresh: Boolean(options.hardRefresh), userInitiated: Boolean(options.userInitiated), preferCache: Boolean(options.preferCache), limit: options.limit || '', liveGitHub: Boolean(options.liveGitHub), bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot), forceDirectFallback: Boolean(options.forceDirectFallback), transportRefreshTier: options.transportRefreshTier || '' } });
     const canonicalSource = registerGitHubSource(ws, source);
     let specs = (Array.isArray(issueUrls) ? issueUrls.slice() : [])
       .map((url) => parseGitHubSocialTargetSpec(url))
@@ -13997,7 +14000,13 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
             includeBody: true,
             configuredTarget: Boolean(issueUrls && issueUrls.length),
             userInitiated: Boolean(options.userInitiated),
-            openWorkspaceIssueTarget: options.openWorkspaceIssueTarget !== false
+            openWorkspaceIssueTarget: options.openWorkspaceIssueTarget !== false,
+            liveGitHub: Boolean(options.liveGitHub),
+            bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot),
+            allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback),
+            allowDirectGithubClone: Boolean(options.allowDirectGithubClone),
+            forceDirectFallback: Boolean(options.forceDirectFallback),
+            transportRefreshTier: options.transportRefreshTier || ''
           });
           importedIssues += 1;
           loaded += 1;
@@ -14186,7 +14195,13 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         noApi: true,
         source: githubSource,
         sourceProgress: progressScope,
-        keepDiscoveryProgress: keepProgressForIssueStage
+        keepDiscoveryProgress: keepProgressForIssueStage,
+        bypassRepositorySnapshot: Boolean(options.bypassRepositorySnapshot),
+        liveGitHub: Boolean(options.liveGitHub),
+        allowDirectGithubClone: Boolean(options.allowDirectGithubClone),
+        allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback),
+        forceDirectFallback: Boolean(options.forceDirectFallback),
+        transportRefreshTier: options.transportRefreshTier || ''
       });
       if (routeOwnedProgress) routeLoadPresentationStage('github-repo-files-loaded', { files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
     } else {
@@ -14210,7 +14225,11 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           renderStatus: issueRenderStatus,
           openWorkspaceIssueTarget: options.openWorkspaceIssueTarget === true,
           liveGitHub: Boolean(options.liveGitHub),
-          bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot)
+          bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot),
+          allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback),
+          allowDirectGithubClone: Boolean(options.allowDirectGithubClone),
+          forceDirectFallback: Boolean(options.forceDirectFallback),
+          transportRefreshTier: options.transportRefreshTier || ''
         });
         if (!enabledSurfaces.issues) pruneGitHubIssueSurfaceToConfiguredTargets(ws, githubSource, explicitIssueTargets);
         if (routeOwnedProgress) routeLoadPresentationStage('github-explicit-issues-loaded', { issueTargets: explicitIssueTargets.length, files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
@@ -14225,7 +14244,11 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
           sourceProgress: progressScope,
           renderStatus: issueRenderStatus,
           liveGitHub: Boolean(options.liveGitHub),
-          bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot)
+          bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot),
+          allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback),
+          allowDirectGithubClone: Boolean(options.allowDirectGithubClone),
+          forceDirectFallback: Boolean(options.forceDirectFallback),
+          transportRefreshTier: options.transportRefreshTier || ''
         });
         if (routeOwnedProgress) routeLoadPresentationStage('github-broad-issues-loaded', { files: ws.files?.size || 0, nodes: ws.nodes?.length || 0 });
       }

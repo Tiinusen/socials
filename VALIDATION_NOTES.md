@@ -169,3 +169,9 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 
 - Workflow concurrency is scoped by repository and ref so a push to an upstream-sync branch cannot cancel a valid working-branch deployment.
 - A branch that is intentionally not a publish source completes through a successful `Publish not required` step. No public branch or Pages mutation is attempted.
+
+## v49 transport tier ownership
+
+- Transport badge clicks now pass the selected tier through the single GitHub source loader into both repository-file discovery and issue-thread imports. `mirror → proxy` bypasses hosted repository/issue snapshots, and `proxy → direct` uses the explicit direct/raw fallback path.
+- Source/discovery configuration remains user-owned. Tier changes refresh material using the saved source config, but they do not enable broad issue discovery or rewrite configured Issue/Discussion URLs.
+- App release cache-busting no longer erases durable GitHub issue-thread cache entries. App assets are busted by build ids; source-material freshness is surfaced through transport badges and explicit refresh tiers.
