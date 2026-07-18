@@ -26468,6 +26468,21 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       </div>`;
   }
 
+  function temporalRefResolverHasLoadedRepoMaterial(ws, source, ref = '') {
+    if (!ws || !source?.id) return false;
+    const expectedRef = String(ref || '').trim().toLowerCase();
+    const snap = ws.temporalSourceSnapshot || null;
+    if (snap?.state === 'failed' && !Array.from(ws.files?.values?.() || []).some((file) => file?.sourceId === source.id && sourceSurfaceForEntry(file) === 'repoFiles')) return false;
+    if (expectedRef && String(snap?.ref || '').trim().toLowerCase() && String(snap.ref || '').trim().toLowerCase() !== expectedRef) return false;
+    return Array.from(ws.files?.values?.() || []).some((file) => {
+      if (file?.sourceId !== source.id) return false;
+      if (sourceSurfaceForEntry(file) !== 'repoFiles') return false;
+      if (!expectedRef) return true;
+      const fileRef = String(file.ref || file.gitRef || file.resolvedCommit || '').trim().toLowerCase();
+      return !fileRef || fileRef === expectedRef;
+    });
+  }
+
   async function applyTemporalRefResolverInput(target) {
     const ws = typeof eventTargetWorkspace === 'function' ? eventTargetWorkspace(target) : getWorkspace(target?.dataset?.ws || '');
     if (!ws || app.modal?.type !== 'temporal-source-ref' || app.modal.wsId !== ws.id) return false;
@@ -26491,7 +26506,10 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       transportRefreshTier: 'proxy',
       allowDirectFallbackOnProxyMiss: true
     });
-    if (ok) {
+    if (ok || temporalRefResolverHasLoadedRepoMaterial(ws, source, parsed.ref)) {
+      if (ws.temporalSourceSnapshot?.state === 'failed') {
+        ws.temporalSourceSnapshot = Object.assign({}, ws.temporalSourceSnapshot, { state: 'loaded', error: '', loadedAt: ws.temporalSourceSnapshot.loadedAt || new Date().toISOString() });
+      }
       app.modal = null;
       if (typeof setRouteState === 'function') setRouteState('replace');
       render();
@@ -39195,13 +39213,27 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
       return;
     }
 
-    if (app.repoDiscoveryInFlight?.has?.(key)) {
+    app.repoDiscoveryInFlight = app.repoDiscoveryInFlight || new Set();
+    app.repoDiscoveryPromises = app.repoDiscoveryPromises || new Map();
+    const existingDiscoveryPromise = app.repoDiscoveryPromises.get(key);
+    if (existingDiscoveryPromise) {
+      if (!options.joinExistingDiscoverySilent) toast(`Discovery already running for ${key}; joining existing load.`, 'warn');
+      await existingDiscoveryPromise;
+      return;
+    }
+    if (app.repoDiscoveryInFlight.has(key)) {
       toast(`Discovery already running for ${key}.`, 'warn');
       return;
     }
 
-    app.repoDiscoveryInFlight = app.repoDiscoveryInFlight || new Set();
     app.repoDiscoveryInFlight.add(key);
+    let resolveRepoDiscoveryPromise;
+    let rejectRepoDiscoveryPromise;
+    const repoDiscoveryPromise = new Promise((resolve, reject) => {
+      resolveRepoDiscoveryPromise = resolve;
+      rejectRepoDiscoveryPromise = reject;
+    });
+    app.repoDiscoveryPromises.set(key, repoDiscoveryPromise);
     ws.loading = true;
     ws.repo = repo;
     if (ref) ws.ref = ref;
@@ -39510,6 +39542,14 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
       toast(`Repo discovery failed for ${repo}: ${error.message}`, 'warn');
     } finally {
       app.repoDiscoveryInFlight.delete(key);
+      if (app.repoDiscoveryPromises?.get?.(key) === repoDiscoveryPromise) {
+        app.repoDiscoveryPromises.delete(key);
+      }
+      if (typeof resolveRepoDiscoveryPromise === 'function') {
+        resolveRepoDiscoveryPromise({ repo, ref, rootPaths, count, failed, indexed, fileCount: ws.files?.size || 0 });
+      } else if (typeof rejectRepoDiscoveryPromise === 'function') {
+        rejectRepoDiscoveryPromise(new Error(`Repo discovery promise for ${key} was not initialized.`));
+      }
       if (!options.keepDiscoveryProgress) {
         ws.loading = false;
         ws.discoveryProgress = null;

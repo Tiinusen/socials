@@ -90,15 +90,28 @@ function buildMetadata(buildSource) {
   const builtAt = envValue('TIINEX_BUILD_TIME') || new Date().toISOString();
   const shortSha = commitSha ? commitSha.slice(0, 12) : '';
   const runId = envValue('GITHUB_RUN_ID');
-  const buildId = safeBuildToken(envValue('TIINEX_BUILD_ID') || shortSha || builtAt);
+  const runAttempt = envValue('GITHUB_RUN_ATTEMPT');
+  const runKey = [runId, runAttempt].filter(Boolean).join('-');
+  // A public build can legitimately republish updated mirror/issue snapshot
+  // material from the same source commit. If the browser asset token and
+  // runtime release key only use the commit SHA, users can keep an old bundle
+  // with an old cache identity after a publish. Prefer the Actions run identity
+  // when available, and fall back to builtAt locally, so every public publish is
+  // an explicit cache boundary while still keeping the source commit visible.
+  const defaultBuildId = runKey
+    ? [shortSha || 'build', runKey].filter(Boolean).join('-')
+    : [shortSha || 'local', builtAt].filter(Boolean).join('-');
+  const buildId = safeBuildToken(envValue('TIINEX_BUILD_ID') || defaultBuildId);
+  const releaseCacheKey = safeBuildToken(envValue('TIINEX_RELEASE_CACHE_KEY') || `${buildSource || 'local'}-${commitSha || 'no-commit'}-${runKey || builtAt}`);
   return {
     repository: buildSource,
     commitSha,
     commitCreatedAt,
     builtAt,
     runId,
+    runAttempt,
     buildId,
-    releaseCacheKey: safeBuildToken(`${buildSource || 'local'}-${commitSha || builtAt}`)
+    releaseCacheKey
   };
 }
 
