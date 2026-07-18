@@ -1778,6 +1778,9 @@ function validateArchitectureBoundaries() {
   if (!appJs.includes("syncDocumentTitle('viewer-config-after-workspace-state')")) fail('workspace Browser Title must be re-applied after workspace state restore.');
   if (!appJs.includes("configured || hostTitle")) fail('workspace Browser Title from .workspace.md must take precedence over build-time viewer shell title.');
   if (!appJs.includes("syncDocumentTitle('workspace-config-save')")) fail('saving workspace identity must apply the Browser Title preview to the active viewer.');
+  if (!appJs.includes('Workspace Label')) fail('workspace exports must serialize explicit Workspace Label fields.');
+  if (!appJs.includes("['Workspace Label', 'Label']")) fail('workspace parser must prefer explicit Workspace Label over generated headings.');
+  if (!appJs.includes('preserves the user-visible names of every workspace')) fail('workspace update-current label preservation policy must be documented in code.');
   if (!appJs.includes('workspace-transition-icon-only')) fail('workspace Continue/Reference transitions must render icon-only to preserve single-row card actions.');
   if (!appJs.includes("'tiinex.workspace.v1': schemaPolicyEntry('tiinex.workspace.v1', 'Workspace', 'core-artifact', 'tiinex.root.v1', 'Portable workspace entrypoint.', 'yes'")) fail('workspace artifacts must be creatable through the ordinary artifact wizard.');
   if (!appJs.includes('Workspace entries use the same draft/export/publish path as other artifacts')) fail('artifact wizard copy must explain workspace artifacts use the normal draft/export path.');
