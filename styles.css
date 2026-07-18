@@ -23522,3 +23522,30 @@ body.mobile-lens .workspace.single-source-state > .mobile-source-mode-row .works
     grid-template-columns: 1fr;
   }
 }
+
+.workspace-title-rename {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  cursor: text;
+}
+.workspace-title-rename:hover,
+.workspace-title-rename:focus-visible {
+  color: var(--tiinex-accent-strong, #d7a7ff);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+  outline: none;
+}
+.collapsed-workspace-title .workspace-title-rename {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
