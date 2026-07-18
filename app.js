@@ -1938,6 +1938,13 @@
     return `https://data.jsdelivr.com/v1/package/gh/${repo}@${encodeURIComponent(resolvedRef)}/flat${bust}`;
   }
 
+  function repoJsdelivrFileUrl(repo, ref, path) {
+    const cleanPath = normalizeRepoPath(path || '');
+    if (!repo || !ref || !cleanPath) return '';
+    const encodedPath = cleanPath.split('/').map((part) => encodeURIComponent(part)).join('/');
+    return `https://cdn.jsdelivr.net/gh/${repo}@${encodeURIComponent(ref)}/${encodedPath}`;
+  }
+
   async function fetchRepoRootFileMap(repo, ref, options = {}) {
     const url = repoRootJsdelivrFlatUrl(repo, ref, options);
     if (!url) return new Map();
@@ -4687,7 +4694,8 @@
     gitNativeMinBytesPerSecond: 65536,
     repositoryTransportBudgetMs: 35000,
     repositoryTransportCooldownMs: 60000,
-    repositoryTransportMaxCooldownMs: 3600000
+    repositoryTransportMaxCooldownMs: 3600000,
+    timePortalDirectMaxHistoricalReadsPerWindow: 320
   }, app.settings || {});
 
   function normalizeRepoPath(path) {
@@ -6187,8 +6195,22 @@
       toast('No GitHub source is available for a transport refresh.', 'warn');
       return;
     }
-    const sourceConfig = githubSourceUserConfigSnapshot(source);
     const nextTier = nextTransportTier(currentTier || source.repositoryTransport?.tier || ws.repositoryTransport?.tier || ws.githubIssueTransport?.tier || 'cache');
+    if (temporalLensNeedsSourceSnapshotForOptions(workspaceDisplayOptions(ws))) {
+      const refInput = temporalSnapshotRefInput(ws);
+      if (!refInput) {
+        openTemporalSourceRefModal(ws, { reason: 'transport-badge' });
+        return;
+      }
+      await loadTemporalSourceSnapshot(ws, {
+        refInput,
+        userInitiated: true,
+        hardRefresh: true,
+        transportRefreshTier: nextTier
+      });
+      return;
+    }
+    const sourceConfig = githubSourceUserConfigSnapshot(source);
     const tierOptions = transportRefreshOptionsForNextTier(nextTier);
     toast(`${tierOptions.message} (${source.repo})`, 'info');
     clearAdapterRuntimeCache(source.repo || '');
@@ -19548,6 +19570,11 @@ Answer the reader should see in workspace help or GitHub presentation.">${escape
           cooldownUntil: Math.max(0, Number(prior.cooldownUntil || 0)),
           lastAttemptAt: Math.max(0, Number(prior.lastAttemptAt || 0))
         };
+    if (record.cooldownUntil > now && options.resetCooldown === true && record.count < maxReads) {
+      record.cooldownUntil = 0;
+      snapshot[origin] = record;
+      writeExactHistoricalReadBudget(snapshot);
+    }
     if (record.cooldownUntil > now) return { ok: false, reason: 'persistent-cooldown', nextAllowedAt: record.cooldownUntil, count: record.count, maxReads };
     if (record.count >= maxReads) {
       record.cooldownUntil = record.windowStartedAt + windowMs;
@@ -22321,6 +22348,14 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     const referenceAction = write({ label: 'Reference', icon: 'fa-solid fa-link', className: 'mutating-action transition-action', dataset: Object.assign({ action: 'open-create', mode: 'reference' }, base, transitionDataset('reference')), title: transitionActionTitle('reference', 'Create a reference leaf pointing at this artifact') });
 
     if (isWorkspaceNode(node)) {
+      editActions.push(withIntent('write', {
+        label: 'Open workspace',
+        icon: 'fa-solid fa-layer-group',
+        iconOnly: true,
+        className: 'workspace-open-action workspace-primary-open-action mutating-action conditional-mutating-action',
+        dataset: Object.assign({ action: 'open-workspace-artifact' }, base),
+        title: 'Open this .workspace.md entrypoint as the current workspace set; non-draft workspaces may close'
+      }));
       editActions.push(edit({ label: 'Edit', icon: 'fa-solid fa-pen-to-square', className: 'workspace-config-action edit-action', dataset: Object.assign({ action: 'configure-workspace-artifact' }, base), title: 'Edit this workspace artifact' }));
       // Workspace artifacts are lineage-capable root artifacts. Keep Continue and
       // Reference before workspace-specific Open/Merge so they remain visible on
@@ -22338,7 +22373,6 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       writeActions.push(
         workspaceContinueAction,
         workspaceReferenceAction,
-        write({ label: 'Open', icon: 'fa-solid fa-layer-group', className: 'workspace-open-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'open-workspace-artifact' }, base), title: 'Open this .workspace.md entrypoint as the current workspace set; non-draft workspaces may close' }),
         write({ label: 'Merge', icon: 'fa-solid fa-code-merge', className: 'workspace-merge-action mutating-action conditional-mutating-action', dataset: Object.assign({ action: 'merge-workspace-artifact' }, base), title: 'Merge this .workspace.md into the current workspace set without closing existing workspaces' })
       );
     }
@@ -26087,6 +26121,29 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     return 'proxy';
   }
 
+  function temporalSnapshotRefInput(ws) {
+    const snap = ws?.temporalSourceSnapshot || null;
+    const candidates = [
+      snap?.ref,
+      snap?.commit,
+      snap?.commitSha,
+      primaryTemporalGitHubSource(ws)?.requestedRef,
+      primaryTemporalGitHubSource(ws)?.ref,
+      ws?.resolvedCommit,
+      ws?.ref
+    ];
+    for (const candidate of candidates) {
+      const ref = normalizeGitHubCommitCacheRef(candidate || '');
+      if (ref) return ref;
+    }
+    return '';
+  }
+
+  function timePortalDirectHistoricalReadBudget(options = {}) {
+    if (normalizeTransportTier(options.transportRefreshTier || '') !== 'direct' && !options.forceDirectFallback) return undefined;
+    return Math.max(24, Number(window.TIINEX_VIEWER_OPTIONS?.timePortalDirectMaxHistoricalReadsPerWindow || app.settings?.timePortalDirectMaxHistoricalReadsPerWindow || 320));
+  }
+
   async function loadTemporalSourceSnapshot(ws, options = {}) {
     if (!ws || !temporalLensActive(ws)) return;
     const opts = workspaceDisplayOptions(ws);
@@ -26096,8 +26153,9 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
       return;
     }
     const baseRef = source.ref && !isCommitRef(source.ref) ? source.ref : (ws.discoverySource?.ref && !isCommitRef(ws.discoverySource.ref) ? ws.discoverySource.ref : '');
-    const manualTarget = extractGitHubRepoRefInput(options.refInput || '', source.repo);
-    if (options.refInput && !manualTarget?.ref) {
+    const refInput = String(options.refInput || temporalSnapshotRefInput(ws) || '').trim();
+    const manualTarget = extractGitHubRepoRefInput(refInput, source.repo);
+    if (refInput && !manualTarget?.ref) {
       toast('Paste a GitHub tree URL, commit URL, or commit SHA.', 'warn');
       return;
     }
@@ -26178,6 +26236,10 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         sourceUrl: commit.treeUrl || commit.commitUrl || commit.resolverUrl || ''
       });
       ws.logs.push(`Temporal source snapshot: ${source.repo}@${commit.ref} for ${temporalLensLabel(ws)} via ${ws.temporalSourceSnapshot.resolver}.`);
+      const exactHistoricalMaxReads = timePortalDirectHistoricalReadBudget({
+        transportRefreshTier: temporalTransportPolicy.requestedTier,
+        forceDirectFallback: temporalTransportPolicy.allowDirect
+      });
       await discoverGitHubRepoIntoWorkspace(ws, {
         repo: source.repo,
         ref: commit.ref,
@@ -26185,12 +26247,16 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         source,
         refreshExisting: true,
         hardRefresh: true,
-        preferStatic: false,
+        preferStatic: true,
         preferSeedPaths: false,
-        noApi: temporalTransportPolicy.allowProxy && !temporalTransportPolicy.allowDirect,
+        // Time Portal has a concrete commit. Use static tree manifests plus raw
+        // immutable file reads; do not hit the GitHub tree API from the browser.
+        noApi: true,
         seedPaths,
         seedPathsNote: 'Time Portal snapshot may use already-known artifact paths only as a recovery fallback; proxy/direct own historical Git state.',
         includeKnownFreshnessPaths: false,
+        exactHistoricalMaxReadsPerWindow: exactHistoricalMaxReads,
+        exactHistoricalResetCooldown: Boolean(temporalTransportPolicy.allowDirect),
         bypassRepositorySnapshot: true,
         liveGitHub: Boolean(temporalTransportPolicy.allowProxy),
         allowDirectGithubClone: Boolean(temporalTransportPolicy.allowDirect),
@@ -39244,7 +39310,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
         return;
       }
 
-      ws.repositoryTransport = { kind: 'github-raw', label: 'GitHub raw fallback', reason: gitNative.reason || repositorySnapshot.reason || 'repository-transports-unavailable' };
+      ws.repositoryTransport = { kind: 'github-raw', label: 'GitHub raw fallback', reason: gitNative.reason || repositorySnapshot.reason || 'repository-transports-unavailable', tier: 'direct' };
       ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
         phase: 'tree',
         transportFallbackReason: ws.repositoryTransport.reason,
@@ -39326,21 +39392,31 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
               networkRequested: Boolean(transportPolicy.allowDirect || options.forceDirectFallback),
               label: 'Time Portal direct raw artifact',
               requestingWorkspaceId: ws.id,
-              maxReadsPerWindow: options.exactHistoricalMaxReadsPerWindow || undefined
+              maxReadsPerWindow: options.exactHistoricalMaxReadsPerWindow || undefined,
+              resetCooldown: Boolean(options.exactHistoricalResetCooldown)
             })
             : null;
           let content = '';
+          let resolvedSourceResolutionKind = exactHistorical?.sourceResolutionKind || '';
+          let recoveredFromUrl = '';
           if (exactHistorical?.ok) {
             content = String(exactHistorical.text || '');
+          } else if (exactParts?.repo && exactParts?.path && exactHistorical?.deferred && transportPolicy.allowProxy && !transportPolicy.allowDirect) {
+            recoveredFromUrl = repoJsdelivrFileUrl(repo, discovery.ref, path);
+            if (!recoveredFromUrl) throw new Error(`Historical proxy file URL unavailable for ${path}`);
+            content = await fetchText(recoveredFromUrl, 'Time Portal proxy artifact', { hardRefresh: Boolean(options.hardRefresh) });
+            resolvedSourceResolutionKind = 'jsdelivr-historical-file';
           } else if (exactParts?.repo && exactParts?.path && exactHistorical?.deferred) {
             throw new Error(`Exact historical raw read deferred: ${exactHistorical.reason || 'network-not-requested'}`);
           } else {
             content = await fetchText(rawUrl, 'GitHub raw artifact', { hardRefresh: Boolean(options.hardRefresh) });
+            resolvedSourceResolutionKind = 'github-raw-file';
           }
           addFileToWorkspace(ws, {
             path,
             content,
             rawUrl,
+            recoveredFromUrl,
             browseUrl: githubBrowseUrl(repo, discovery.ref, path),
             repo,
             ref: discovery.ref,
@@ -39351,7 +39427,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
             rootPaths: githubSource.rootPaths,
             enabledSurfaces: githubSource.enabledSurfaces,
             sourceAccessMode: githubSource.sourceAccessMode || 'web-surface',
-            sourceResolutionKind: exactHistorical?.sourceResolutionKind || 'github-raw-file',
+            sourceResolutionKind: resolvedSourceResolutionKind || 'github-raw-file',
             sourceResultBoundary: githubSource.sourceBoundary?.sourceResultBoundary || 'bounded web/raw observation',
             sourceCacheBoundary: githubSource.sourceBoundary?.sourceCacheBoundary || 'browser-runtime-http-cache',
             sourceSurface: 'repoFiles'
