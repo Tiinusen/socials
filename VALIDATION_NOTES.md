@@ -290,3 +290,9 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - A failed close-verify keeps the modal open once; a second close within 30 seconds intentionally abandons the routine and leaves the draft local/recoverable.
 - Post-export refresh now avoids broad discovery when the verified publication snapshot was already bound locally, reducing stale source churn.
 
+
+## v67 portable static/issue publisher and post-publication live verification
+
+- The publish workflow treats `.github/workflows` plus `tools/` as portable publisher tooling, not as partial viewer app markers. Content/docs repositories can copy the workflow and tools to publish static lineage material, repository mirrors, and hosted issue snapshots without carrying `app.js`, `index.html`, or `package.json` from the viewer repo.
+- Issue snapshot, public identity, and issue publication state steps now run the Node tools directly when package scripts are unavailable. Viewer repos keep using the normal app build path; non-viewer repos use the static/mirror path.
+- Guided GitHub export verification and post-export rediscovery bypass cache and hosted mirrors. They read GitHub via the live proxy/API tier first and may fall to direct reader/raw fallback when needed, because freshly published GitHub issue/comment material cannot be verified against stale cache or mirror snapshots.

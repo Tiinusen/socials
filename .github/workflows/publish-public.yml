@@ -193,13 +193,20 @@ jobs:
 
           viewer_build=false
           viewer_markers=false
-          if [ -f app.js ] || [ -f tools/build-public.mjs ] || [ -f tools/check-public-build.mjs ]; then
+          viewer_script_markers=false
+          if [ -f app.js ]; then
             viewer_markers=true
           fi
           if [ -f package.json ] && jq -e '.scripts["build:public"] or .scripts["public:check"] or .scripts.test' package.json >/dev/null; then
             viewer_markers=true
+            viewer_script_markers=true
           fi
 
+          # The publish workflow and tools directory are intentionally portable:
+          # docs/content repositories may copy them in order to publish static
+          # material, repository mirrors, and issue snapshots without carrying
+          # the viewer app itself. A tools/ directory alone is not a broken
+          # viewer marker.
           if [ -f package.json ] && [ -f app.js ] && [ -f index.html ]; then
             missing=()
             [ -f tools/build-public.mjs ] || missing+=(tools/build-public.mjs)
@@ -209,13 +216,13 @@ jobs:
             fi
             if [ "${#missing[@]}" -gt 0 ]; then
               printf 'Viewer-like repository is missing required publish input(s): %s\n' "${missing[*]}" >&2
-              printf 'Either restore the viewer build tooling or remove the partial viewer markers so the publisher can run as static lineage/mirror material.\n' >&2
+              printf 'Either restore the viewer build tooling or remove the partial viewer app/package markers so the publisher can run as static lineage/mirror material.\n' >&2
               exit 1
             fi
             viewer_build=true
-          elif [ "$viewer_markers" = true ]; then
-            echo "Partial viewer markers are present, but package.json + app.js + index.html are not all present." >&2
-            echo "Refusing to publish mirror/static output over a broken viewer branch." >&2
+          elif [ "$viewer_markers" = true ] && { [ -f app.js ] || [ "$viewer_script_markers" = true ]; }; then
+            echo "Partial viewer app/package markers are present, but package.json + app.js + index.html are not all present." >&2
+            echo "Refusing to publish over a broken viewer branch. A repository with only .github/workflows plus tools/ is treated as static/mirror-capable." >&2
             exit 1
           fi
 
@@ -831,11 +838,29 @@ jobs:
         if: steps.settings.outputs.publish_enabled == 'true'
         env:
           SOURCE_REF: ${{ steps.settings.outputs.source_ref }}
-        run: npm run issues:snapshot -- --out .site-publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f tools/build-issue-snapshots.mjs ]; then
+            node tools/build-issue-snapshots.mjs --out .site-publish
+          elif [ -f package.json ] && jq -e '.scripts["issues:snapshot"]' package.json >/dev/null; then
+            npm run issues:snapshot -- --out .site-publish
+          else
+            echo "Issue snapshot tooling is unavailable; skipping hosted issue snapshots for this repository." >&2
+          fi
 
       - name: Write issue publication state
         if: steps.settings.outputs.publish_enabled == 'true'
-        run: npm run issues:state -- --out .site-publish --mode full-publish --cooldown ${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f tools/write-issue-publish-state.mjs ]; then
+            node tools/write-issue-publish-state.mjs --out .site-publish --mode full-publish --cooldown ${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}
+          elif [ -f package.json ] && jq -e '.scripts["issues:state"]' package.json >/dev/null; then
+            npm run issues:state -- --out .site-publish --mode full-publish --cooldown ${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}
+          else
+            echo "Issue publish state tooling is unavailable; continuing without .tiinex/issue-publish-state.json." >&2
+          fi
 
       - name: Sanitize public deploy root
         if: steps.settings.outputs.publish_enabled == 'true'
@@ -1068,24 +1093,57 @@ jobs:
           fi
 
       - name: Build hosted issue snapshots
-        run: npm run issues:snapshot -- --out .site-publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f tools/build-issue-snapshots.mjs ]; then
+            node tools/build-issue-snapshots.mjs --out .site-publish
+          elif [ -f package.json ] && jq -e '.scripts["issues:snapshot"]' package.json >/dev/null; then
+            npm run issues:snapshot -- --out .site-publish
+          else
+            echo "Issue snapshot tooling is unavailable; skipping hosted issue snapshots for this repository." >&2
+          fi
 
       - name: Write public issue publish identity
-        run: npm run public:identity -- --out .site-publish --reason issue-sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f tools/write-public-build-identity.mjs ]; then
+            node tools/write-public-build-identity.mjs --out .site-publish --reason issue-sync
+          elif [ -f package.json ] && jq -e '.scripts["public:identity"]' package.json >/dev/null; then
+            npm run public:identity -- --out .site-publish --reason issue-sync
+          else
+            mkdir -p .site-publish
+            node -e "const fs=require('fs'),path=require('path');const out='.site-publish';const now=new Date().toISOString();const id=[process.env.GITHUB_SHA||'source',process.env.GITHUB_RUN_ID||now,process.env.GITHUB_RUN_ATTEMPT||'1'].join('-').replace(/[^A-Za-z0-9_.-]+/g,'-');fs.writeFileSync(path.join(out,'tiinex.build.json'),JSON.stringify({type:'tiinex.public.build.identity.v1',version:1,reason:'issue-sync',generatedAt:now,repository:process.env.GITHUB_REPOSITORY||'',commitSha:process.env.GITHUB_SHA||'',runId:process.env.GITHUB_RUN_ID||'',runAttempt:process.env.GITHUB_RUN_ATTEMPT||'',buildId:id,releaseCacheKey:id},null,2)+'\n');"
+          fi
 
       - name: Write issue publication state
         env:
           GITHUB_EVENT_ACTION: ${{ github.event.action || '' }}
           TIINEX_ISSUE_EVENT_NUMBER: ${{ github.event.issue.number || '' }}
           TIINEX_ISSUE_COMMENT_ID: ${{ github.event.comment.id || '' }}
-        run: npm run issues:state -- --out .site-publish --mode issue-sync --cooldown ${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f tools/write-issue-publish-state.mjs ]; then
+            node tools/write-issue-publish-state.mjs --out .site-publish --mode issue-sync --cooldown ${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}
+          elif [ -f package.json ] && jq -e '.scripts["issues:state"]' package.json >/dev/null; then
+            npm run issues:state -- --out .site-publish --mode issue-sync --cooldown ${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}
+          else
+            echo "Issue publish state tooling is unavailable; continuing without .tiinex/issue-publish-state.json." >&2
+          fi
 
       - name: Validate hosted issue snapshots
         shell: bash
         run: |
           set -euo pipefail
-          test -f .site-publish/issues/manifest.json
-          node --check tools/build-issue-snapshots.mjs
+          if [ ! -f .site-publish/issues/manifest.json ]; then
+            echo "No hosted issue snapshot manifest was produced. If this repository has issues disabled or TIINEX_ISSUE_SNAPSHOTS=false this is expected; otherwise copy tools/build-issue-snapshots.mjs with the workflow." >&2
+            exit 1
+          fi
+          if [ -f tools/build-issue-snapshots.mjs ]; then
+            node --check tools/build-issue-snapshots.mjs
+          fi
 
       - name: Publish public branch
         uses: peaceiris/actions-gh-pages@v4
