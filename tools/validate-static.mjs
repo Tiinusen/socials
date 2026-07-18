@@ -2212,11 +2212,28 @@ function validatePublicBuildContracts() {
   for (const required of ['npm test', 'npm run build:public', 'publish_dir: .site-publish', 'publish_branch: public']) {
     if (!workflow.includes(required)) fail(`publish workflow must include ${required}`);
   }
-  if (!workflow.includes('group: publish-public-${{ github.repository }}-${{ github.ref }}')) {
-    fail('publish workflow concurrency must be scoped per repository/ref so a non-publish branch run cannot cancel a valid working-branch deploy.');
+  const branchScopedConcurrency = workflow.includes('group: publish-public-${{ github.repository }}-${{ github.ref }}');
+  const issueAwareConcurrency = workflow.includes("group: publish-public-${{ github.repository }}-${{ (github.event_name == 'issues' || github.event_name == 'issue_comment') && 'issues' || github.ref }}")
+    && workflow.includes("cancel-in-progress: ${{ github.event_name == 'issues' || github.event_name == 'issue_comment' }}");
+  if (!branchScopedConcurrency && !issueAwareConcurrency) {
+    fail('publish workflow concurrency must keep branch publishing isolated while allowing issue-event debounce to cancel only issue snapshot runs.');
   }
   if (!workflow.includes('- name: Publish not required') || !workflow.includes("if: steps.settings.outputs.publish_enabled != 'true'")) {
     fail('publish workflow must finish intentionally disabled branch runs through an explicit successful Publish not required step.');
+  }
+  if (!workflow.includes('issues:') || !workflow.includes('issue_comment:') || !workflow.includes('sync-issues:') || !workflow.includes('TIINEX_ISSUE_PUBLISH_GRACE_SECONDS')) {
+    fail('publish workflow must support debounced hosted issue snapshot publication from issue and comment events.');
+  }
+  if (!workflow.includes('npm run issues:snapshot -- --out .site-publish')) {
+    fail('publish workflow must generate hosted issue snapshots into the public artifact.');
+  }
+  const packageJsonForIssues = JSON.parse(read('package.json'));
+  if (packageJsonForIssues.scripts?.['issues:snapshot'] !== 'node tools/build-issue-snapshots.mjs') {
+    fail('package.json must expose issues:snapshot for hosted issue snapshot publication.');
+  }
+  const issueSnapshotScript = read('tools/build-issue-snapshots.mjs');
+  for (const token of ['tiinex.github.issues.snapshot', "'issues', 'github.com'", 'TIINEX_ISSUE_SNAPSHOT_REPOSITORIES', 'TIINEX_ISSUE_SNAPSHOT_MAX_COMMENTS_PER_ISSUE']) {
+    if (!issueSnapshotScript.includes(token)) fail(`issue snapshot publisher contract missing ${token}`);
   }
   if (/rsync\b/u.test(workflow)) fail('publish workflow must publish build output, not rsync the raw repository');
 
@@ -2333,6 +2350,15 @@ function validateWorkspaceShareAndIssueOpenContracts(source) {
   if (!source.includes('file?.text || file?.rawMarkdown || file?.markdown || file?.body || file?.content')) fail('GitHub publish/local draft binding should hash current local text before stale file.content');
   if (!source.includes('githubIssueThreadEmbeddedPayloadFidelity')) fail('GitHub issue fallback readers must verify embedded v2 Source Markdown bytes before accepting a thread.');
   if (!source.includes('TIINEX_GITHUB_READER_LOSSY_PAYLOAD')) fail('lossy GitHub reader payloads must be rejected instead of cached as exact source material.');
+  if (!source.includes("allowSharedReaderFallback === true")) fail('shared anonymous GitHub readers must be explicit opt-in, never an automatic fan-out fallback.');
+  if (!source.includes("return [`https://r.jina.ai/http://${target}`]")) fail('shared reader fallback must use one bounded URL shape.');
+  if (source.includes('https://api.allorigins.win/raw?url=') || source.includes('https://corsproxy.io/?') || source.includes('http://r.jina.ai/http://')) fail('GitHub issue reads must not fan out through allorigins, corsproxy, or nested reader URLs.');
+  if (!source.includes('adapterAbuseAlleviationUntil') || !source.includes('adapter.request.provider-circuit-open')) fail('shared provider abuse responses must open a persisted circuit breaker.');
+  if (!source.includes("commentsMode: 'if-needed'")) fail('workspace issue pointers must read the issue body before fetching comments.');
+  if (!source.includes('issue-thread.singleflight-hit')) fail('GitHub issue threads must coalesce concurrent identical reads.');
+  if (!source.includes('githubIssueNetworkSafetyReport')) fail('GitHub issue request-budget diagnostics must remain available.');
+  if (source.includes('hardRefresh: Boolean(options.hardRefresh || existingIssueSurface || knownTargets.length)')) fail('startup issue discovery must not hard-refresh merely because issue targets exist.');
+  if (!source.includes('fetchGitHubIssueThreadViaHostedSnapshot') || !source.includes("'site-issue-snapshot'")) fail('hosted viewers must prefer same-origin issue snapshots before live GitHub reads.');
   if (!source.includes("githubPublicationReceipts: 'tiinex.github.publicationReceipts.v1'")) fail('verified GitHub publication receipts must have a durable storage owner.');
   if (!source.includes('recordVerifiedGithubPublicationReceipts(snapshots)')) fail('verified GitHub export completion must record durable publication receipts.');
   if (!source.includes("reconcileVerifiedGithubPublicationReceipts(ws, 'verified GitHub publication')")) fail('verified GitHub publication must reconcile its local shadow immediately.');

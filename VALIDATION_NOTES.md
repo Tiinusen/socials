@@ -5,6 +5,13 @@ Use current command output and Git history as the validation record. This file d
 Run the checks relevant to the changed surface. `npm test` is not the sole pass signal when known static-hygiene findings are unrelated to runtime behavior.
 
 
+## v42 Hosted issue snapshots and abuse-safe issue transport
+
+Hosted public viewers must prefer same-origin issue snapshots before live GitHub issue reads. The publish workflow now materializes public issue bodies and comments under `issues/github.com/<owner>/<repo>/` during normal site publication. Issue and issue-comment events run a debounced issues-only public-branch update; after the bounded grace period the workflow reconciles the full configured snapshot set, so burst interactions collapse without dropping intermediate issue changes.
+
+The browser transport is cache/snapshot-first. Shared anonymous readers remain explicit opt-in recovery, not an automatic startup fan-out. Static validation guards the hosted snapshot adapter, the one-shape reader fallback, provider-level abuse circuit breaker, issue-event workflow, and `issues:snapshot` publication script.
+
+
 ## v39 GitHub publication integrity refresh
 
 Save/edit flows continue to seal authored artifacts with `sha256-base64url-c14n-v2`. GitHub browser publication now prepares the selected local draft payload before copy/open/verify, using the same effective markdown and local integrity finalizer as Save draft. This prevents a stale `file.content` snapshot from being posted inside the GitHub `Source Markdown` payload while the local card temporarily shows a refreshed footer.

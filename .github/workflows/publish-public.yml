@@ -4,6 +4,10 @@ on:
   push:
     branches-ignore:
       - public
+  issues:
+    types: [opened, edited, deleted, closed, reopened, transferred]
+  issue_comment:
+    types: [created, edited, deleted]
   workflow_dispatch:
     inputs:
       source_ref:
@@ -25,8 +29,8 @@ permissions:
   id-token: write
 
 concurrency:
-  group: publish-public-${{ github.repository }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: publish-public-${{ github.repository }}-${{ (github.event_name == 'issues' || github.event_name == 'issue_comment') && 'issues' || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'issues' || github.event_name == 'issue_comment' }}
 
 jobs:
   publish:
@@ -62,6 +66,10 @@ jobs:
       TIINEX_PAGES_DEPLOY: ${{ vars.TIINEX_PAGES_DEPLOY || secrets.TIINEX_PAGES_DEPLOY || '' }}
       TIINEX_WORKFLOW_PAGES_DEPLOY: ${{ github.event.inputs.deploy_pages || '' }}
       TIINEX_PUBLISH_SOURCE_REF: ${{ vars.TIINEX_PUBLISH_SOURCE_REF || secrets.TIINEX_PUBLISH_SOURCE_REF || '' }}
+      TIINEX_ISSUE_SNAPSHOTS: ${{ vars.TIINEX_ISSUE_SNAPSHOTS || 'true' }}
+      TIINEX_ISSUE_SNAPSHOT_REPOSITORIES: ${{ vars.TIINEX_ISSUE_SNAPSHOT_REPOSITORIES || '' }}
+      TIINEX_ISSUE_SNAPSHOT_MAX_ISSUES: ${{ vars.TIINEX_ISSUE_SNAPSHOT_MAX_ISSUES || '' }}
+      TIINEX_ISSUE_SNAPSHOT_MAX_COMMENTS_PER_ISSUE: ${{ vars.TIINEX_ISSUE_SNAPSHOT_MAX_COMMENTS_PER_ISSUE || '' }}
 
     steps:
       - name: Resolve source ref
@@ -221,7 +229,7 @@ jobs:
           fi
 
       - name: Set up Node.js
-        if: steps.settings.outputs.publish_enabled == 'true' && steps.publish_mode.outputs.viewer_build == 'true'
+        if: steps.settings.outputs.publish_enabled == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: 20
@@ -819,6 +827,12 @@ jobs:
             printf '%s\n'               "$mirror_root/$public_identity.json"               "$mirror_root/$public_identity.zip"
           done | sort
 
+      - name: Build hosted issue snapshots
+        if: steps.settings.outputs.publish_enabled == 'true'
+        env:
+          SOURCE_REF: ${{ steps.settings.outputs.source_ref }}
+        run: npm run issues:snapshot -- --out .site-publish
+
       - name: Sanitize public deploy root
         if: steps.settings.outputs.publish_enabled == 'true'
         shell: bash
@@ -955,6 +969,112 @@ jobs:
         uses: actions/upload-pages-artifact@v4
         with:
           path: .site-publish
+
+  sync-issues:
+    if: github.event_name == 'issues' || github.event_name == 'issue_comment'
+    runs-on: ubuntu-latest
+    outputs:
+      pages_deploy_enabled: ${{ steps.issue_settings.outputs.pages_deploy_enabled }}
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PAGES_CNAME: ${{ vars.PAGES_CNAME || '' }}
+      TIINEX_PAGES_DEPLOY: ${{ vars.TIINEX_PAGES_DEPLOY || secrets.TIINEX_PAGES_DEPLOY || '' }}
+      TIINEX_ISSUE_SNAPSHOTS: ${{ vars.TIINEX_ISSUE_SNAPSHOTS || 'true' }}
+      TIINEX_ISSUE_SNAPSHOT_REPOSITORIES: ${{ vars.TIINEX_ISSUE_SNAPSHOT_REPOSITORIES || '' }}
+      TIINEX_ISSUE_SNAPSHOT_MAX_ISSUES: ${{ vars.TIINEX_ISSUE_SNAPSHOT_MAX_ISSUES || '' }}
+      TIINEX_ISSUE_SNAPSHOT_MAX_COMMENTS_PER_ISSUE: ${{ vars.TIINEX_ISSUE_SNAPSHOT_MAX_COMMENTS_PER_ISSUE || '' }}
+      TIINEX_ISSUE_PUBLISH_GRACE_SECONDS: ${{ vars.TIINEX_ISSUE_PUBLISH_GRACE_SECONDS || '120' }}
+    steps:
+      - name: Issue snapshot settings
+        id: issue_settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          pages_deploy="${TIINEX_PAGES_DEPLOY:-auto}"
+          case "${pages_deploy,,}" in
+            false|no|off|0|branch|branch-only) pages_deploy_enabled=false ;;
+            *) pages_deploy_enabled=true ;;
+          esac
+          echo "pages_deploy_enabled=$pages_deploy_enabled" >> "$GITHUB_OUTPUT"
+          echo "Issue snapshot publish will wait up to ${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}s, then reconcile all configured issues from GitHub once."
+
+      - name: Debounce issue burst
+        shell: bash
+        run: |
+          set -euo pipefail
+          grace="${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}"
+          case "$grace" in ''|*[!0-9]*) grace=120 ;; esac
+          if [ "$grace" -gt 120 ]; then grace=120; fi
+          if [ "$grace" -gt 0 ]; then
+            echo "Waiting ${grace}s so issue/comment bursts collapse into one public snapshot reconcile."
+            sleep "$grace"
+          fi
+
+      - name: Check out source tooling
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+
+      - name: Restore current public branch artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .site-publish
+          mkdir -p .site-publish
+          if git fetch origin public:refs/remotes/origin/public; then
+            git archive --format=tar origin/public | tar -xf - -C .site-publish
+          else
+            echo "No public branch exists yet; creating a minimal issue snapshot artifact."
+            touch .site-publish/.nojekyll
+          fi
+
+      - name: Build hosted issue snapshots
+        run: npm run issues:snapshot -- --out .site-publish
+
+      - name: Validate hosted issue snapshots
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .site-publish/issues/manifest.json
+          node --check tools/build-issue-snapshots.mjs
+
+      - name: Publish public branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: .site-publish
+          publish_branch: public
+          force_orphan: true
+          commit_message: >-
+            Publish issue snapshots after ${{ github.event_name }} #${{ github.event.issue.number || '' }} @ ${{ github.sha }}
+
+      - name: Configure GitHub Pages
+        if: steps.issue_settings.outputs.pages_deploy_enabled == 'true'
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        if: steps.issue_settings.outputs.pages_deploy_enabled == 'true'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: .site-publish
+
+  deploy-issues-pages:
+    needs: sync-issues
+    if: needs.sync-issues.outputs.pages_deploy_enabled == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.pages_deployment.outputs.page_url }}
+    steps:
+      - name: Deploy issue snapshot update to GitHub Pages
+        id: pages_deployment
+        uses: actions/deploy-pages@v4
 
   deploy-pages:
     needs: publish
