@@ -4,6 +4,13 @@ Use current command output and Git history as the validation record. This file d
 
 Run the checks relevant to the changed surface. `npm test` is not the sole pass signal when known static-hygiene findings are unrelated to runtime behavior.
 
+
+## v37 workspace issue pointer runtime fallback
+
+Workspace issue pointers must use the same GitHub issue material fallback stack as ordinary issue imports. Runtime startup must not depend only on `api.github.com` for configured workspace issues; it should try public reader/web-readable issue surfaces, then REST, then cached material before falling back to the embedded default workspace.
+
+Static validation guards that `resolveWorkspaceIssuePointer` uses `fetchWorkspacePointerIssueThread` and does not directly call `fetchGitHubJson(spec.apiIssueUrl)`.
+
 ## v35 package validation repair
 
 The v34 runtime changes were valid, but the distributed zip had stale `VALIDATION_NOTES.md` content that omitted static architecture-readiness markers required by `tools/validate-static.mjs`. v35 republishes the same runtime/editor UX surface with the readiness markers present in the packaged source.
