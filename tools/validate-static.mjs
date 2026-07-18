@@ -1545,6 +1545,12 @@ function validateIntegrityLifecycleUxContract() {
   if (!js.includes('exportFileWithIntegrityRefresh(ws, file)') || !js.includes('integrityRefresh') || !js.includes('refreshed-self-target')) {
     fail('Workspace export must run a non-mutating integrity refresh pass and report export integrity outcomes.');
   }
+  if (!js.includes('prepareGithubExportIntegrityPayloads(modal, ws)') || !js.includes('prepareGithubExportItemIntegrity(ws, item)')) {
+    fail('GitHub publication must prepare local draft integrity before copy/open/verify so posted Source Markdown is already v2-sealed.');
+  }
+  if (!js.includes('githubExportEffectiveMarkdown(file, node)') || /const original = normalizeNewlines\(file\?\.content \|\| file\?\.text/.test(js)) {
+    fail('Integrity refresh must prefer current file.text/effective markdown over stale file.content.');
+  }
   if (/function\s+exportWorkspaceZip\s*\(/.test(js) || /exportWorkspaceZipEncrypted/.test(js) || /export-toggle-encryption/.test(js)) {
     fail('Workspace export must have one canonical archive exporter; old zip/encryption export actions must not remain as parallel owners.');
   }

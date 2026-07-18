@@ -5,6 +5,12 @@ Use current command output and Git history as the validation record. This file d
 Run the checks relevant to the changed surface. `npm test` is not the sole pass signal when known static-hygiene findings are unrelated to runtime behavior.
 
 
+## v39 GitHub publication integrity refresh
+
+Save/edit flows continue to seal authored artifacts with `sha256-base64url-c14n-v2`. GitHub browser publication now prepares the selected local draft payload before copy/open/verify, using the same effective markdown and local integrity finalizer as Save draft. This prevents a stale `file.content` snapshot from being posted inside the GitHub `Source Markdown` payload while the local card temporarily shows a refreshed footer.
+
+Static validation guards that GitHub publication calls `prepareGithubExportIntegrityPayloads(modal, ws)` / `prepareGithubExportItemIntegrity(ws, item)` and that export integrity refresh prefers `file.text` / `githubExportEffectiveMarkdown(file, node)` over stale `file.content`. Old valid v1 claims remain readable; local save replaces refreshable authored claims with v2.
+
 ## v37 workspace issue pointer runtime fallback
 
 Workspace issue pointers must use the same GitHub issue material fallback stack as ordinary issue imports. Runtime startup must not depend only on `api.github.com` for configured workspace issues; it should try public reader/web-readable issue surfaces, then REST, then cached material before falling back to the embedded default workspace.
