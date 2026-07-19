@@ -676,7 +676,11 @@ function validateGitHubRecoveredContinuityContract() {
     "case: 'basename-only-parent-collision-remains-unresolved-known'",
     'function tiinexHintConcreteIdentityKeys',
     "unresolvedKnown('ambiguous-explicit-parent'",
-    'githubParentResolutionSpecificity'
+    'githubParentResolutionSpecificity',
+    'function isAdapterDiscoveryFindingNode',
+    'function integrityParentNodeForArtifact',
+    "case: 'adapter-finding-does-not-become-recovered-artifact-parent'",
+    "case: 'integrity-parent-prefers-declared-recovered-parent-over-adapter-finding'"
   ];
   for (const token of requiredTokens) {
     if (!js.includes(token)) fail(`GitHub recovered continuity contract missing app token: ${token}`);
@@ -1427,6 +1431,15 @@ function validateMobileActionOwnership() {
   const broadDispatcherPattern = /function\s+mobileOnlyActionClick\s*\([\s\S]*?const\s+button\s*=\s*event\.target\?\.closest\?\.\('\[data-mobile-action\]'\);\s*if\s*\(\s*!button\s*\)\s*return;[\s\S]*?event\.preventDefault\s*\(/;
   if (broadDispatcherPattern.test(js)) {
     fail('mobileOnlyActionClick must not claim every [data-mobile-action]. Mobile top rail actions must remain owned by mobileTopRailClick.');
+  }
+  if (!js.includes('data-mobile-action="mobile-remove-workspace"') || !js.includes("if (action === 'mobile-remove-workspace') return { action: 'remove-workspace'")) {
+    fail('Mobile global workspace menu must expose Remove workspace instead of burying workspace close behind desktop-only chrome.');
+  }
+  if (js.includes('data-mobile-action="mobile-display"')) {
+    fail('Mobile global workspace menu must not include the Display shortcut; display options remain available from the toolbar/filter owner.');
+  }
+  if (!/function\s+mobileGlobalActions[\s\S]{0,1200}<i class="fa-solid fa-bars"><\/i>/u.test(js)) {
+    fail('Mobile global workspace menu launcher must use a hamburger/menu icon rather than a plus icon.');
   }
 }
 
