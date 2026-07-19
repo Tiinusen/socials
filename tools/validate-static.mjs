@@ -2452,6 +2452,8 @@ function validateRootPackageShape() {
 
 function validateWorkspaceShareAndIssueOpenContracts(source) {
   if (!source.includes('function shareWorkspaceEntrypointTarget')) fail('workspace share should have explicit entrypoint target helper');
+  if (!source.includes('function shareWorkspaceTargetOpenAdapter')) fail('workspace share should coerce GitHub issue/comment workspace entrypoints to the workspace hash adapter');
+  if (!source.includes("parts.length >= 4 && parts[2] === 'issues') return 'workspace'")) fail('workspace share GitHub issue targets must open as workspaces, not issue shells');
   if (!source.includes("workspace-entrypoint-artifact-source")) fail('workspace share should prefer workspace artifact entrypoint before selected normal artifact');
   const shareStart = source.indexOf('function shareWorkspacePublicTarget');
   const shareEnd = source.indexOf('function shareWorkspaceLocalOnlyCounts');
@@ -2476,6 +2478,9 @@ function validateWorkspaceShareAndIssueOpenContracts(source) {
   if (!source.includes("commentsMode: 'if-needed'")) fail('workspace issue pointers must read the issue body before fetching comments.');
   if (!source.includes('issue-thread.singleflight-hit')) fail('GitHub issue threads must coalesce concurrent identical reads.');
   if (!source.includes('githubIssueNetworkSafetyReport')) fail('GitHub issue request-budget diagnostics must remain available.');
+  for (const token of ['beginDeferredGitHubIssueIndexing', 'endDeferredGitHubIssueIndexing', 'issue-thread-loader.live-index-deferred', 'deferIssueIndexing: deferIssueBatchIndexing', 'deferParentTraversal: deferIssueBatchIndexing', 'scheduleAdapterParentTraversalForWorkspace']) {
+    if (!source.includes(token)) fail(`GitHub issue batch import must defer repeated index/parent traversal work so large mirrors do not lock the UI: ${token}`);
+  }
   if (source.includes('hardRefresh: Boolean(options.hardRefresh || existingIssueSurface || knownTargets.length)')) fail('startup issue discovery must not hard-refresh merely because issue targets exist.');
   if (!source.includes('fetchGitHubIssueThreadViaHostedSnapshot') || !source.includes("'site-issue-snapshot'")) fail('hosted viewers must prefer same-origin issue snapshots before live GitHub reads.');
   if (!source.includes('fetchGitHubRepoIssueSpecsViaHostedSnapshot') || !source.includes('issue-list.live-skipped-no-hosted-snapshot')) fail('bounded issue discovery must list from same-origin hosted snapshots before any live GitHub issue-list request.');

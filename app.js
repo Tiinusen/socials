@@ -13172,8 +13172,37 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return self?.value || '';
   }
 
+  function beginDeferredGitHubIssueIndexing(ws, reason = 'github-issue-batch') {
+    if (!ws) return false;
+    ws.githubIssueDeferredIndexDepth = Number(ws.githubIssueDeferredIndexDepth || 0) + 1;
+    ws.githubIssueDeferredIndexReason = reason;
+    githubIssueImportTrace('issue-thread-loader.defer-index-start', { reason, depth: ws.githubIssueDeferredIndexDepth });
+    return true;
+  }
+
+  function endDeferredGitHubIssueIndexing(ws, reason = 'github-issue-batch') {
+    if (!ws) return false;
+    ws.githubIssueDeferredIndexDepth = Math.max(0, Number(ws.githubIssueDeferredIndexDepth || 0) - 1);
+    githubIssueImportTrace('issue-thread-loader.defer-index-end', { reason, depth: ws.githubIssueDeferredIndexDepth, dirty: Boolean(ws.githubIssueDeferredIndexDirty) });
+    if (ws.githubIssueDeferredIndexDepth > 0 || !ws.githubIssueDeferredIndexDirty) return false;
+    ws.githubIssueDeferredIndexDirty = false;
+    try {
+      computeWorkspaceIndex(ws, { reason });
+      return true;
+    } catch (error) {
+      githubIssueImportTrace('issue-thread-loader.deferred-index-failed', { reason, message: error?.message || String(error || '') });
+      return false;
+    }
+  }
+
   function githubIssueIndexedAfterImport(ws, reason = 'github-issue-import-live-index') {
     if (!ws) return;
+    if (Number(ws.githubIssueDeferredIndexDepth || 0) > 0) {
+      ws.githubIssueDeferredIndexDirty = true;
+      ws.githubIssueDeferredIndexReasons = (ws.githubIssueDeferredIndexReasons || []).concat([reason]).slice(-12);
+      githubIssueImportTrace('issue-thread-loader.live-index-deferred', { reason, depth: ws.githubIssueDeferredIndexDepth });
+      return;
+    }
     try {
       computeWorkspaceIndex(ws, { reason });
     } catch (error) {
@@ -14120,6 +14149,48 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     return summary;
   }
 
+  function scheduleAdapterParentTraversalForWorkspace(ws, options = {}) {
+    if (!ws) return false;
+    const sourceId = String(options.sourceId || '').trim();
+    const reason = options.reason || 'scheduled-parent-traversal';
+    const key = `${reason}:${sourceId || 'all'}:${ws.files?.size || 0}:${Array.isArray(ws.nodes) ? ws.nodes.length : 0}`;
+    ws.githubIssueParentTraversalSchedule = ws.githubIssueParentTraversalSchedule || {};
+    if (ws.githubIssueParentTraversalSchedule.key === key && ws.githubIssueParentTraversalSchedule.pending) return false;
+    if (ws.githubIssueParentTraversalSchedule.timer) {
+      try { clearTimeout(ws.githubIssueParentTraversalSchedule.timer); } catch (_) {}
+    }
+    const delayMs = Math.max(250, Number(options.delayMs || 900));
+    ws.githubIssueParentTraversalSchedule = { key, reason, sourceId, pending: true, scheduledAt: new Date().toISOString() };
+    const run = async () => {
+      if (!ws.githubIssueParentTraversalSchedule || ws.githubIssueParentTraversalSchedule.key !== key) return;
+      ws.githubIssueParentTraversalSchedule.pending = false;
+      ws.githubIssueParentTraversalSchedule.running = true;
+      try {
+        const summary = await resolveAdapterParentTraversalForWorkspace(ws, {
+          reason,
+          sourceId,
+          hardRefresh: Boolean(options.hardRefresh)
+        });
+        ws.githubIssueParentTraversalSchedule.summary = summary;
+        if (summary?.resolved && typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws, { reason: `${reason}-resolved` });
+        if (summary?.resolved && typeof render === 'function') render();
+        githubIssueImportTrace('issue-thread-loader.parent-reconciliation-scheduled-complete', { reason, sourceId, summary });
+      } catch (error) {
+        ws.githubIssueParentTraversalSchedule.error = error?.message || String(error || '');
+        githubIssueImportTrace('issue-thread-loader.parent-reconciliation-scheduled-failed', { reason, sourceId, error });
+      } finally {
+        if (ws.githubIssueParentTraversalSchedule && ws.githubIssueParentTraversalSchedule.key === key) ws.githubIssueParentTraversalSchedule.running = false;
+      }
+    };
+    const timer = setTimeout(() => {
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(() => { run(); }, { timeout: 2500 });
+      else run();
+    }, delayMs);
+    ws.githubIssueParentTraversalSchedule.timer = timer;
+    githubIssueImportTrace('issue-thread-loader.parent-reconciliation-scheduled', { reason, sourceId, delayMs });
+    return true;
+  }
+
   function preferredGitHubParentNodeForRecoveredArtifact(ws, embeddedMarkdown = '', fallbackParent = null, newComment = null, contextText = '') {
     return resolveGitHubIssueParentNodeForRecoveredArtifact(ws, embeddedMarkdown, fallbackParent, newComment, contextText).node || fallbackParent;
   }
@@ -14580,14 +14651,19 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
 
     const prunedLocalCopies = pruneLocalDraftShadowsAfterSourceMaterial(ws, `GitHub issue ${spec.repo}#${spec.issueNumber}`);
     githubIssueImportTrace('issue-thread-loader.local-shadow-pruned', { prunedLocalCopies });
-    computeWorkspaceIndex(ws);
-    const parentTraversal = await resolveAdapterParentTraversalForWorkspace(ws, {
-      reason: 'github-issue-import',
-      spec,
-      sourceId: source.id,
-      hardRefresh: Boolean(options.hardRefresh)
-    });
-    githubIssueImportTrace('issue-thread-loader.parent-reconciliation', parentTraversal);
+    githubIssueIndexedAfterImport(ws, 'issue-thread-complete');
+    if (options.deferParentTraversal === true) {
+      ws.githubIssueParentTraversalDirty = true;
+      githubIssueImportTrace('issue-thread-loader.parent-reconciliation-deferred', { reason: 'github-issue-import-batch', repo: spec.repo, issueNumber: spec.issueNumber, sourceId: source.id });
+    } else {
+      const parentTraversal = await resolveAdapterParentTraversalForWorkspace(ws, {
+        reason: 'github-issue-import',
+        spec,
+        sourceId: source.id,
+        hardRefresh: Boolean(options.hardRefresh)
+      });
+      githubIssueImportTrace('issue-thread-loader.parent-reconciliation', parentTraversal);
+    }
     if (!ws.discoverySource) ws.discoverySource = { kind: 'github-tree', repo: spec.repo, ref: source.ref || '', rootPath: '.topics', rootPaths: ['.topics'], sourceId: source.id, issueUrls: configuredGitHubIssueUrls(source, spec.repo) };
     const modeNote = adapterMode === 'github-web-fallback' ? ' via GitHub web fallback' : '';
     ws.logs.push(`Loaded GitHub issue discussion ${spec.repo}#${spec.issueNumber}${modeNote}: ${commentCount} comment node(s)${truncated ? ' (truncated after 500 comments)' : ''}.`);
@@ -14820,7 +14896,10 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     let registeredDiscussions = 0;
     let loaded = 0;
     const failures = [];
-    githubIssueImportTrace('discovery.specs-ready', { mode, count: specs.length, specs: specs.map((spec) => ({ kind: spec.kind, repo: spec.repo, issueNumber: spec.issueNumber || spec.number || '', targetUrl: spec.targetUrl || spec.issueUrl || spec.discussionUrl || '' })) });
+    const deferIssueBatchIndexing = options.deferIssueIndexing === true || specs.length > 1 || Boolean(options.discoveryProgress || options.sourceProgress);
+    if (deferIssueBatchIndexing) beginDeferredGitHubIssueIndexing(ws, `github-issue-discovery:${mode}`);
+    githubIssueImportTrace('discovery.specs-ready', { mode, count: specs.length, deferIssueBatchIndexing, specs: specs.map((spec) => ({ kind: spec.kind, repo: spec.repo, issueNumber: spec.issueNumber || spec.number || '', targetUrl: spec.targetUrl || spec.issueUrl || spec.discussionUrl || '' })) });
+    try {
     for (const spec of specs) {
       const targetUrl = spec.targetUrl || spec.issueUrl || spec.discussionUrl;
       if (!targetUrl) continue;
@@ -14839,6 +14918,8 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
             configuredTarget: Boolean(issueUrls && issueUrls.length),
             userInitiated: Boolean(options.userInitiated),
             openWorkspaceIssueTarget: options.openWorkspaceIssueTarget !== false,
+            deferIssueIndexing: deferIssueBatchIndexing,
+            deferParentTraversal: deferIssueBatchIndexing,
             liveGitHub: Boolean(options.liveGitHub || transportPolicy.allowProxy),
             bypassHostedIssueSnapshot: Boolean(options.bypassHostedIssueSnapshot || !transportPolicy.allowMirror),
             allowSharedReaderFallback: Boolean(options.allowSharedReaderFallback || transportPolicy.allowDirect),
@@ -14901,6 +14982,20 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
         }
       }
     }
+    } finally {
+      if (deferIssueBatchIndexing) {
+        endDeferredGitHubIssueIndexing(ws, `github-issue-discovery:${mode}`);
+        if (ws.githubIssueParentTraversalDirty) {
+          ws.githubIssueParentTraversalDirty = false;
+          scheduleAdapterParentTraversalForWorkspace(ws, {
+            reason: 'github-issue-batch-postload',
+            sourceId: canonicalSource.id,
+            hardRefresh: Boolean(options.hardRefresh),
+            delayMs: Number(options.parentTraversalDelayMs || 900)
+          });
+        }
+      }
+    }
 
     ws.githubIssueDiscoveryRuns = ws.githubIssueDiscoveryRuns || {};
     ws.githubIssueDiscoveryRuns[canonicalSource.id] = {
@@ -14924,7 +15019,7 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
       setGitHubIssueDiscoveryStatus(ws, canonicalSource, { state: 'loaded', message, loaded, importedIssues, registeredDiscussions, failed: 0, traceKey: STORAGE_KEYS.githubIssueImportTrace, mode });
       if (loaded) toast(message, 'ok');
     }
-    if (loaded && typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
+    if (loaded && !deferIssueBatchIndexing && typeof computeWorkspaceIndex === 'function') computeWorkspaceIndex(ws);
     if (typeof render === 'function' && options.renderStatus !== false) render();
     return loaded;
   }
@@ -45681,17 +45776,31 @@ window.addEventListener('popstate', (event) => {
     return null;
   }
 
+  function shareWorkspaceTargetOpenAdapter(target = null) {
+    const url = String(target?.url || '').trim();
+    const adapter = normalizeShareAdapter(target?.adapter || '') || defaultAdapterForShareTarget(url);
+    if (!url) return adapter;
+    try {
+      const parsed = new URL(url, location.href);
+      const host = parsed.hostname.toLowerCase();
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      if (/\.workspace\.md(?:$|[?#])/i.test(parsed.pathname)) return 'workspace';
+      if (host === 'github.com' && parts.length >= 4 && parts[2] === 'issues') return 'workspace';
+    } catch (_) {}
+    return adapter;
+  }
+
   function shareWorkspacePublicTarget(ws = null) {
     if (!ws) return null;
     const publicTarget = ws.publicShareTarget || ws.shareTarget || null;
     if (publicTarget?.url && !shareUrlIsLocalOrVolatile(publicTarget.url)) {
-      return { adapter: normalizeShareAdapter(publicTarget.adapter || '') || defaultAdapterForShareTarget(publicTarget.url), url: publicTarget.url, source: 'workspace-public-share-target' };
+      return { adapter: shareWorkspaceTargetOpenAdapter(publicTarget), url: publicTarget.url, source: 'workspace-public-share-target' };
     }
     const entrypointTarget = shareWorkspaceEntrypointTarget(ws);
     if (entrypointTarget?.url) return entrypointTarget;
     const identityTarget = app.viewerIdentity?.publicShareTarget || app.activePublicShareTarget || null;
     if (identityTarget?.url && !shareUrlIsLocalOrVolatile(identityTarget.url)) {
-      return { adapter: normalizeShareAdapter(identityTarget.adapter || '') || defaultAdapterForShareTarget(identityTarget.url), url: identityTarget.url, source: 'active-public-share-target' };
+      return { adapter: shareWorkspaceTargetOpenAdapter(identityTarget), url: identityTarget.url, source: 'active-public-share-target' };
     }
     const configUrl = shareClean(app.viewerIdentity?.configUrl || '');
     if (configUrl && /\.workspace\.md(?:$|[?#])/i.test(configUrl) && !shareUrlIsLocalOrVolatile(configUrl)) {
