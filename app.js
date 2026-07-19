@@ -277,7 +277,7 @@
   function publicBuildIdentityCheckMinIntervalMs(reason = 'scheduled') {
     const explicit = Number(window.TIINEX_VIEWER_OPTIONS?.publicBuildCheckMinIntervalMs);
     if (Number.isFinite(explicit) && explicit >= 0) return explicit;
-    if (reason === 'startup-delay' || reason === 'manual') return 0;
+    if (reason === 'startup-first-load' || reason === 'startup-delay' || reason === 'manual') return 0;
     return 10 * 60 * 1000;
   }
 
@@ -345,6 +345,17 @@
     const configuredInterval = Number(window.TIINEX_VIEWER_OPTIONS?.publicBuildCheckIntervalMs || 0) || 0;
     const pollEnabled = window.TIINEX_VIEWER_OPTIONS?.publicBuildPollingEnabled === true;
     const startupDelay = Number(window.TIINEX_VIEWER_OPTIONS?.publicBuildStartupCheckDelayMs || 8000) || 8000;
+    const firstLoadDelay = Number(window.TIINEX_VIEWER_OPTIONS?.publicBuildFirstLoadCheckDelayMs || 1200) || 1200;
+    const runStartupFirstLoadPublicBuildCheck = () => {
+      if (app.publicBuildFirstLoadCheckDone) return;
+      app.publicBuildFirstLoadCheckDone = true;
+      checkPublicBuildIdentity('startup-first-load', { force: true });
+    };
+    const scheduleStartupFirstLoadPublicBuildCheck = () => {
+      setTimeout(runStartupFirstLoadPublicBuildCheck, Math.max(250, firstLoadDelay));
+    };
+    if (document.readyState === 'complete') scheduleStartupFirstLoadPublicBuildCheck();
+    else window.addEventListener('load', scheduleStartupFirstLoadPublicBuildCheck, { once: true });
     setTimeout(() => { checkPublicBuildIdentity('startup-delay'); }, Math.max(1000, startupDelay));
     if (pollEnabled && configuredInterval > 0) {
       setInterval(() => { if (!document.hidden) checkPublicBuildIdentity('interval'); }, Math.max(5 * 60 * 1000, configuredInterval));
@@ -42598,7 +42609,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
     if (action === 'mobile-add-source') return { action: 'open-source-modal', ws: ws.id };
     if (action === 'mobile-export') return { action: 'save-workspace', ws: ws.id };
     if (action === 'mobile-copy-link') return { action: 'copy-share' };
-    if (action === 'mobile-display') return { action: 'open-display-options', ws: ws.id };
+    if (action === 'mobile-remove-workspace') return { action: 'remove-workspace', ws: ws.id };
     if (action === 'mobile-help') return { action: 'open-config-help' };
     return { action, ws: ws.id };
   }
