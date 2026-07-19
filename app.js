@@ -2370,7 +2370,7 @@
       };
     }
 
-    const parent = node?.parentNode || null;
+    const parent = integrityParentNodeForArtifact(ws, node);
     const explicitHints = explicitParentHintsForIntegrityRole(node);
     const entryHint = integrityEntryTargetHint(entry);
     const matchesDeclaredParent = explicitHints.some((hint) => tiinexHintsReferenceSameIdentity(hint, entryHint));
@@ -2490,7 +2490,7 @@
       });
     }
 
-    const parent = node?.parentNode || null;
+    const parent = integrityParentNodeForArtifact(ws, node);
     if (parent && role.parentScoped) {
       const targetsParent = integrityTargetReferencesNode(ws, node, target, parent);
       if (!targetsParent) {
@@ -12795,7 +12795,43 @@ ${body ? markdownFence(body, 'md') : '_No comment body was present._'}
     const sourceRoot = await materializeRecoveredTiinexArtifactMarkdown(root, { bindingMode: 'fallback' }, recoveredPath);
     const issueContainer = { path: '.topics/.github/.issues/example/issue-root.trace.md', rawMarkdown: root };
     const suppressedContainer = await materializeRecoveredTiinexArtifactMarkdown(root, { bindingMode: 'resolved', node: issueContainer }, recoveredPath);
+    const adapterFindingParent = {
+      id: 'fixture-adapter-finding',
+      path: '.topics/.github/.issues/example/comment-001-123.trace.md',
+      title: 'GitHub issue comment',
+      currentSchema: 'tiinex.discovery.finding.v1',
+      rawMarkdown: root
+    };
+    const realIssueParent = {
+      id: 'fixture-recovered-issue-root',
+      path: '.topics/.github/.issues/example/issue-root-recovered-tiinusphere.workspace.md',
+      title: 'Tiinusphere',
+      currentSchema: 'tiinex.workspace.v1',
+      rawMarkdown: parentMarkdown,
+      recoveryKind: 'github-issue-embedded-tiinex-artifact'
+    };
+    const childWithRecoveredParent = parented
+      .replace('../parent.trace.md', 'issue-root-recovered-tiinusphere.workspace.md')
+      .replace(parentBrowseUrl, 'https://github.com/Tiinusen/socials/issues/1');
+    const adapterCollisionWs = { nodeById: new Map([[adapterFindingParent.id, adapterFindingParent], [realIssueParent.id, realIssueParent]]) };
+    const adapterCollisionResolution = resolveGitHubIssueParentNodeForRecoveredArtifact(adapterCollisionWs, childWithRecoveredParent, adapterFindingParent, null, childWithRecoveredParent);
+    const integrityParent = integrityParentNodeForArtifact(adapterCollisionWs, Object.assign({}, adapterFindingParent, { rawMarkdown: childWithRecoveredParent, parentNode: adapterFindingParent, path: '.topics/.github/.issues/example/comment-001-5009191994-recovered-hobbies.workspace.md' }));
     const rows = [
+      {
+        case: 'adapter-finding-does-not-become-recovered-artifact-parent',
+        pass: adapterCollisionResolution.bindingMode === 'resolved'
+          && adapterCollisionResolution.node === realIssueParent
+          && !isAdapterDiscoveryFindingNode(adapterCollisionResolution.node),
+        bindingMode: adapterCollisionResolution.bindingMode,
+        parentPath: adapterCollisionResolution.node?.path || '',
+        parentIsAdapterFinding: isAdapterDiscoveryFindingNode(adapterCollisionResolution.node)
+      },
+      {
+        case: 'integrity-parent-prefers-declared-recovered-parent-over-adapter-finding',
+        pass: integrityParent === realIssueParent,
+        parentPath: integrityParent?.path || '',
+        parentIsAdapterFinding: isAdapterDiscoveryFindingNode(integrityParent)
+      },
       {
         case: 'declared-parent-resolves-as-unresolved-known-before-index',
         pass: unresolvedResolution.bindingMode === 'unresolved-known'
@@ -23284,7 +23320,7 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
   }
 
   function parentEdgeIntegrityMismatch(ws, node, target) {
-    const parent = node?.parentNode || null;
+    const parent = integrityParentNodeForArtifact(ws, node);
     if (!parent || !integrityHasClaim(node?.integrity)) return null;
     const entries = Array.isArray(node?.integrity?.entries) ? node.integrity.entries : [];
     const parentEntries = entries.filter((entry) => {
@@ -33666,7 +33702,7 @@ ${integrityFooterForPath(parent, path)}`,
 
   function folderAddButton(ws, folderPath, label = 'Add artifact in folder') {
     return `<button type="button" class="tree-folder-add" data-action="open-artifact-wizard-folder" data-ws="${escapeAttr(ws.id)}" data-folder="${escapeAttr(folderPath || '')}" title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}">
-      <i class="fa-solid fa-plus"></i>
+      <i class="fa-solid fa-bars"></i>
     </button>`;
   }
 
@@ -36079,6 +36115,45 @@ ${integrityFooterForPath(parent, path)}`,
     };
   }
 
+  function isAdapterDiscoveryFindingNode(node = null) {
+    if (!node) return false;
+    const schema = schemaKey(node.currentSchemaText || node.currentSchema || node.file?.currentSchema || '');
+    const path = node.path || node.file?.path || '';
+    const kind = String(node.recoveryKind || node.file?.recoveryKind || '').toLowerCase();
+    const resolvedEnvelope = Boolean(node.resolvedEnvelope || node.file?.resolvedEnvelope || node.resolvedByPath || node.file?.resolvedByPath);
+    // GitHub issue/discussion adapter shells are useful observations, but they
+    // are not Tiinex continuity parents for an embedded recovered artifact.
+    // When an artifact declares a concrete Parent, verification/export must
+    // bind to the recovered parent artifact or preserve the declaration as
+    // unresolved-known; otherwise we end up checksumming the adapter finding.
+    return schema === 'discovery.finding'
+      && isGitHubSocialSurfacePath(path)
+      && !resolvedEnvelope
+      && !/embedded-tiinex-artifact/i.test(kind);
+  }
+
+  function integrityParentNodeForArtifact(ws, node = null) {
+    const raw = node?.rawMarkdown || node?.file?.text || node?.file?.rawMarkdown || node?.file?.content || '';
+    const currentPath = canonicalWorkspacePath(node?.path || node?.file?.path || '');
+    let resolved = null;
+    if (markdownDeclaresContinuityParent(raw)) {
+      try {
+        resolved = resolveGitHubIssueParentNodeForRecoveredArtifact(ws, raw, null, null, raw).node || null;
+      } catch (_) {
+        resolved = null;
+      }
+      if (resolved && resolved !== node) {
+        const resolvedPath = canonicalWorkspacePath(resolved.path || resolved.file?.path || '');
+        if (resolvedPath && currentPath && sameImportedPath(resolvedPath, currentPath)) resolved = null;
+        if (isAdapterDiscoveryFindingNode(resolved)) resolved = null;
+      }
+    }
+    if (resolved) return resolved;
+    const graphParent = node?.parentNode || null;
+    if (isAdapterDiscoveryFindingNode(graphParent) && markdownDeclaresContinuityParent(raw)) return null;
+    return graphParent;
+  }
+
   function githubParentDescriptorMatchesNode(descriptor = null, node = null) {
     if (!descriptor || !node) return false;
     const path = canonicalWorkspacePath(node.path || node.file?.path || '');
@@ -36095,7 +36170,7 @@ ${integrityFooterForPath(parent, path)}`,
   function githubExportParentFromMarkdown(ws, markdown = '', currentNode = null, currentPath = '') {
     if (!ws || !markdown) return null;
     const resolved = resolveGitHubIssueParentNodeForRecoveredArtifact(ws, markdown, null, null, markdown).node || null;
-    if (!resolved || resolved === currentNode) return null;
+    if (!resolved || resolved === currentNode || isAdapterDiscoveryFindingNode(resolved)) return null;
     const parentPath = canonicalWorkspacePath(resolved.path || resolved.file?.path || '');
     const selfPath = canonicalWorkspacePath(currentPath || currentNode?.path || currentNode?.file?.path || '');
     if (parentPath && selfPath && sameImportedPath(parentPath, selfPath)) return null;
@@ -42366,7 +42441,7 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
     if (action === 'mobile-add-source') return { action: 'open-source-modal', ws: ws.id };
     if (action === 'mobile-export') return { action: 'save-workspace', ws: ws.id };
     if (action === 'mobile-copy-link') return { action: 'copy-share' };
-    if (action === 'mobile-display') return { action: 'open-display-options', ws: ws.id };
+    if (action === 'mobile-remove-workspace') return { action: 'remove-workspace', ws: ws.id };
     if (action === 'mobile-help') return { action: 'open-config-help' };
     return { action, ws: ws.id };
   }
@@ -42493,15 +42568,15 @@ ${markdownFence(githubOutboundFileExcerpt(file, Number.MAX_SAFE_INTEGER), 'md')}
   function mobileGlobalActions(ws) {
     if (!ws) return '';
     if (workspaceIsDiscoveryTree(ws)) return '';
-    return `<button class="mobile-fab" data-mobile-action="toggle-global-actions" data-ws="${escapeAttr(ws.id)}" aria-label="Workspace actions" title="Workspace actions">
-      <i class="fa-solid fa-plus"></i>
+    return `<button class="mobile-fab" data-mobile-action="toggle-global-actions" data-ws="${escapeAttr(ws.id)}" aria-label="Workspace menu" title="Workspace menu">
+      <i class="fa-solid fa-bars"></i>
     </button>
     ${app.mobileGlobalActionsOpen ? `<div class="mobile-fab-sheet" role="menu" aria-label="Workspace actions">
       <button data-mobile-action="mobile-create" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-file-circle-plus"></i><span>Create</span></button>
       <button data-mobile-action="mobile-add-source" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-folder-plus"></i><span>Add source/material</span></button>
       <button data-mobile-action="mobile-export" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-download"></i><span>Export</span></button>
       <button data-mobile-action="mobile-copy-link"><i class="fa-solid fa-link"></i><span>Copy link</span></button>
-      <button data-mobile-action="mobile-display" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-sliders"></i><span>Display</span></button>
+      <button data-mobile-action="mobile-remove-workspace" data-ws="${escapeAttr(ws.id)}"><i class="fa-solid fa-xmark"></i><span>Remove workspace</span></button>
       <button data-mobile-action="mobile-help"><i class="fa-regular fa-circle-question"></i><span>Help</span></button>
     </div>` : ''}`;
   }
