@@ -1435,6 +1435,9 @@ function validateMobileActionOwnership() {
   if (!js.includes('data-mobile-action="mobile-remove-workspace"') || !js.includes("if (action === 'mobile-remove-workspace') return { action: 'remove-workspace'")) {
     fail('Mobile global workspace menu must expose Remove workspace instead of burying workspace close behind desktop-only chrome.');
   }
+  if (!/function\s+mobileFabActionDataset\s*\([\s\S]*?if \(action === 'mobile-remove-workspace'\) return \{ action: 'remove-workspace', ws: ws\.id \};[\s\S]*?function\s+genericMobileActionOwnsButton/u.test(js)) {
+    fail('The active mobile global action dispatcher must map Remove workspace to the normal remove-workspace handler.');
+  }
   if (js.includes('data-mobile-action="mobile-display"')) {
     fail('Mobile global workspace menu must not include the Display shortcut; display options remain available from the toolbar/filter owner.');
   }
@@ -2309,7 +2312,7 @@ function validatePublicBuildContracts() {
   for (const token of ['tiinex.build.json', 'publicBuildIdentity', 'releaseCacheKey']) {
     if (!buildScript.includes(token)) fail(`public build must emit a fetchable publication identity for open-tab cache invalidation: ${token}`);
   }
-  for (const token of ['checkPublicBuildIdentity', 'publicBuildIdentityUrl', 'invalidateRuntimeCachesForExplicitRelease', 'publicContentIdentity', 'autoReloadOnPublicBuildChange', 'shouldCheckPublicBuildIdentity', 'publicBuildIdentityCheckMinIntervalMs', 'publicBuildPollingEnabled']) {
+  for (const token of ['checkPublicBuildIdentity', 'publicBuildIdentityUrl', 'invalidateRuntimeCachesForExplicitRelease', 'publicContentIdentity', 'autoReloadOnPublicBuildChange', 'shouldCheckPublicBuildIdentity', 'publicBuildIdentityCheckMinIntervalMs', 'publicBuildPollingEnabled', 'startup-first-load', 'publicBuildFirstLoadCheckDone']) {
     if (!appJs.includes(token)) fail(`runtime must monitor public build identity and invalidate stale source cache without manual F5: ${token}`);
   }
   if (appJs.includes('check=${Date.now()}') || appJs.includes("cache: 'no-store'")) {
