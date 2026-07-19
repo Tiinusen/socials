@@ -23241,6 +23241,19 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
   function remoteIntegrityTarget(ws, node, target) {
     const href = target.href || target.text || '';
     if (!href || /^self$/i.test(href)) return null;
+    const localPath = normalizeRepoPath(joinPath(dirname(node?.path || ''), href));
+    if (pathLooksLikeRecoveredIssueAdapterArtifact(href) || pathLooksLikeRecoveredIssueAdapterArtifact(localPath)) {
+      const loaded = loadedIntegrityTarget(ws, node, target, null);
+      if (!loaded) {
+        recordPublicLinkOpenEvent('integrity-skip-issue-recovered-raw-target', {
+          repo: node?.repo || ws?.repo || '',
+          ref: node?.ref || ws?.ref || '',
+          path: localPath || href,
+          reason: 'issue-adapter-integrity-target-not-repo-raw'
+        });
+      }
+      return null;
+    }
 
     if (/^https?:\/\//i.test(href)) {
       const converted = convertSourceUrl(href);
@@ -25367,6 +25380,48 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     return Object.assign(ref, { kind: ref.kind === 'trace' ? 'file' : ref.kind, origin: true });
   }
 
+  function pathLooksLikeRecoveredIssueAdapterArtifact(path = '') {
+    const clean = canonicalWorkspacePath(stripUrlDecorations(stripMarkdownInline(String(path || '').trim())));
+    if (!clean) return false;
+    const file = fileNameFromPath(clean).toLowerCase();
+    if (/^issue-root-recovered-[^.\/]+\.(?:trace|workspace)\.md$/i.test(file)) return true;
+    if (/^comment-\d+-\d+-recovered-[^.\/]+\.(?:trace|workspace)\.md$/i.test(file)) return true;
+    return /(?:^|\/)(?:\.github\/\.issues|github-issues)\//i.test(clean) && /(?:issue-root-recovered-|comment-\d+-\d+-recovered-)/i.test(clean);
+  }
+
+  function parentReferenceIsIssueAdapterBound(ws, node, relativeParentPath = '') {
+    const values = [
+      relativeParentPath,
+      node?.parentHref,
+      node?.parentResolvedPath,
+      node?.parentTrace,
+      node?.parentOriginBrowse,
+      node?.parentOrigin?.absolute,
+      node?.parentOrigin?.relative
+    ];
+    if (!values.some(pathLooksLikeRecoveredIssueAdapterArtifact)) return false;
+
+    const explicitUrls = [
+      originValueUrl(node?.parentOriginBrowse || ''),
+      originValueUrl(node?.parentOrigin?.absolute || ''),
+      node?.parentHref || ''
+    ].filter(Boolean);
+    // Explicit GitHub issue/discussion origins are container/adaptor targets.
+    // The recovered artifact path is authored inside the issue snapshot, not a
+    // repository blob path. Never synthesize raw.githubusercontent.com reads for it.
+    if (explicitUrls.some((url) => parseGitHubSocialTargetSpec(url))) return true;
+
+    const kind = String(node?.recoveryKind || node?.file?.recoveryKind || '').toLowerCase();
+    if (kind.includes('github') && kind.includes('embedded')) return true;
+
+    const source = sourceById(ws, node?.sourceId || node?.file?.sourceId || '') || {};
+    const sourceKind = String(source.kind || node?.sourceKind || node?.file?.sourceKind || '').toLowerCase();
+    if (sourceKind.includes('issue') || sourceKind.includes('discussion')) return true;
+
+    const origins = [node?.sourceOrigin, node?.recoveredFromUrl, node?.browseUrl, node?.rawUrl, node?.file?.sourceOrigin, node?.file?.recoveredFromUrl].filter(Boolean);
+    return origins.some((url) => parseGitHubSocialTargetSpec(url));
+  }
+
   function parentFetchCandidate(ws, node) {
     if (!ws || !node || node.parentNode || !node.parentHref) return null;
 
@@ -25380,11 +25435,31 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         recordPublicLinkOpenEvent('parent-traversal-skip-issue-ref', { repo: candidate.repo || '', ref: candidate.ref || '', path: candidate.path || '', reason: candidate.reason || 'parent-fetch-candidate' });
         return null;
       }
+      if (pathLooksLikeRecoveredIssueAdapterArtifact(candidate.path || candidate.rawUrl || candidate.browseUrl || '')
+        && !parseGitHubSocialTargetSpec(candidate.rawUrl || candidate.browseUrl || '')) {
+        recordPublicLinkOpenEvent('parent-traversal-skip-issue-recovered-raw', {
+          repo: candidate.repo || '',
+          ref: candidate.ref || '',
+          path: candidate.path || '',
+          reason: candidate.reason || 'parent-fetch-candidate'
+        });
+        return null;
+      }
       return candidate;
     }
 
     const adapterCandidate = adapterParentFetchCandidate(ws, node);
     if (adapterCandidate) return done(adapterCandidate);
+
+    if (parentReferenceIsIssueAdapterBound(ws, node, relativeParentPath)) {
+      recordPublicLinkOpenEvent('parent-traversal-skip-issue-adapter-bound', {
+        repo: node.repo || ws.repo || '',
+        ref: node.ref || ws.ref || '',
+        path: relativeParentPath || node.parentHref || '',
+        reason: 'issue-adapter-parent-not-repo-raw'
+      });
+      return null;
+    }
 
     function remoteCandidate(url, reason, keyPrefix) {
       if (!url) return null;
