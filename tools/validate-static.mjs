@@ -868,6 +868,9 @@ async function validateGitSourceAdapterResearchContract() {
   if (appJs.includes("await scheduleIntegrityVerification(ws, { discoveryProgress: true })")) {
     fail('Progressive repo indexing must not block current-snapshot rendering on full integrity verification.');
   }
+  for (const token of ['function integrityVerificationYield', 'requestIdleCallback', 'integrityVerificationSliceBudgetMs', 'integrityRescanPending']) {
+    if (!appJs.includes(token)) fail(`Integrity verification must be cooperative and idle-yielded for large mirrors: ${token}`);
+  }
   if (!appJs.includes("networkRequested: options.allowHistoricalNetwork === true")) {
     fail('Exact historical network reads must require an explicit caller-owned allowHistoricalNetwork decision.');
   }
