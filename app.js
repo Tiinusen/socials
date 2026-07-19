@@ -23281,22 +23281,59 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
     return null;
   }
 
+  function integrityVerificationClock() {
+    return (typeof performance !== 'undefined' && typeof performance.now === 'function') ? performance.now() : Date.now();
+  }
+
+  function integrityVerificationSliceBudgetMs(withProgress = false) {
+    const configured = Number(app.settings.integrityVerificationSliceBudgetMs || 0);
+    if (Number.isFinite(configured) && configured > 0) return Math.max(2, configured);
+    return withProgress ? 12 : 7;
+  }
+
+  function integrityVerificationYield(ws, reason = 'integrity-background-yield') {
+    try { updateDiscoveryProgressDom(ws); } catch (_) {}
+    return new Promise((resolve) => {
+      const done = () => resolve();
+      if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(done, { timeout: 120 });
+        return;
+      }
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => setTimeout(done, 0));
+        return;
+      }
+      setTimeout(done, 0);
+    });
+  }
+
   async function scheduleIntegrityVerification(ws, options = {}) {
-    if (!ws) return;
+    if (!ws) return null;
     const withProgress = Boolean(options.discoveryProgress);
     if (ws.integrityInFlight) {
+      ws.integrityRescanPending = true;
+      ws.integrityRescanReason = options.reason || ws.integrityRescanReason || 'integrity-rescan-pending';
       if (withProgress && ws.integrityInFlightPromise) await ws.integrityInFlightPromise;
-      return;
+      return ws.integrityInFlightPromise || null;
     }
 
     let changed = false;
     const cache = ws.integrityCache || {};
     const nodes = Array.from(ws.nodes || []);
     const progressEvery = Math.max(1, Number(app.settings.integrityProgressEvery || 4));
-
+    const sliceBudgetMs = integrityVerificationSliceBudgetMs(withProgress);
+    const generation = Number(ws.integrityGeneration || 0) + 1;
+    ws.integrityGeneration = generation;
     ws.integrityInFlight = true;
+    ws.integrityRescanPending = false;
+
     const work = (async () => {
       try {
+        // Always yield once before the first verification. Repository/index load
+        // may call this right after a render; starting a full checksum pass in the
+        // same task makes large mirrors such as Tiinex/docs feel locked.
+        await integrityVerificationYield(ws, 'integrity-start');
+        if (ws.integrityGeneration !== generation) return;
         if (withProgress) {
           ws.discoveryProgress = Object.assign({}, ws.discoveryProgress || {}, {
             phase: 'integrity',
@@ -23304,10 +23341,12 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
             integrityTotal: nodes.length
           });
           updateDiscoveryProgressDom(ws);
-          await progressYield(ws);
+          await integrityVerificationYield(ws, 'integrity-progress-start');
         }
 
+        let sliceStartedAt = integrityVerificationClock();
         for (let index = 0; index < nodes.length; index += 1) {
+          if (ws.integrityGeneration !== generation) break;
           const node = nodes[index];
           node.workspace = ws;
           const cacheKey = node.storageKey || node.path;
@@ -23323,7 +23362,12 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
             ws.discoveryProgress.integrityLoaded = index + 1;
             ws.discoveryProgress.integrityTotal = nodes.length;
             updateDiscoveryProgressDom(ws);
-            if (((index + 1) % progressEvery) === 0) await progressYield(ws);
+          }
+
+          const elapsed = integrityVerificationClock() - sliceStartedAt;
+          if (elapsed >= sliceBudgetMs || ((index + 1) % progressEvery) === 0) {
+            await integrityVerificationYield(ws, 'integrity-background-slice');
+            sliceStartedAt = integrityVerificationClock();
           }
         }
       } catch (error) {
@@ -23334,11 +23378,18 @@ ${lineagePolicyBoundaryLinesFor(ws, null) ? '- Preserve the workspace lineage po
         ws.integrityInFlight = false;
         ws.integrityInFlightPromise = null;
         if (changed) render();
+        if (ws.integrityRescanPending) {
+          const reason = ws.integrityRescanReason || 'integrity-rescan-pending';
+          ws.integrityRescanPending = false;
+          ws.integrityRescanReason = '';
+          scheduleIntegrityVerification(ws, { reason });
+        }
       }
     })();
 
     ws.integrityInFlightPromise = work;
-    await work;
+    if (withProgress) await work;
+    return work;
   }
 
 

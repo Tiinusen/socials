@@ -312,3 +312,10 @@ The publish workflow now updates the inspectable `public` branch, uploads the sa
 - Hosted issue snapshot resolution no longer stops at the first successful mirror metadata response. It probes the bounded candidate set (viewer-owned mirror, then source-owned GitHub Pages mirror for GitHub-backed sources), compares `sourceUpdatedAt`/`generatedAt`, and selects the freshest valid metadata.
 - The selected mirror is cached only after freshness selection. This prevents a stale viewer-owned issue mirror from masking a newer source-repository Pages issue snapshot.
 - Thread imports and issue-list discovery share the same metadata selector, so mirror transport produces the same latest issue state for configured issue targets and bounded discovery without enabling proxy/direct or broad discovery.
+
+## v73 cooperative integrity verification
+
+- Large source/mirror loads no longer start a full workspace checksum pass in the same browser task as indexing/rendering.
+- Integrity verification is sliced through an idle/yield boundary (`requestIdleCallback` with frame/timeout fallback), so large workspaces such as `Tiinex/docs` can keep painting and accepting input while byte-integrity statuses settle.
+- Repeated index/import events while an integrity pass is running coalesce into one rescan instead of stacking parallel verifier passes.
+- The change is runtime scheduling only: checksum semantics, parent-target validation, and exact-target rules are unchanged.
