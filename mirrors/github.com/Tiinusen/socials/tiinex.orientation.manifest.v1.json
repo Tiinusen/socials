@@ -1,0 +1,42 @@
+{
+  "manifest": "tiinex.orientation.manifest.v1",
+  "repo": "Tiinex/site",
+  "identity": "Tiinex keeps provenance readable in Markdown artifacts you own.",
+  "role": "static client-side viewer/reference implementation",
+  "stableIdentity": "tiinex.orientation.v1.md",
+  "boundedContext": "tiinex.context.v1.md",
+  "repoEntrypoint": "README.md",
+  "appGuidance": "tiinex.app.llm.v1.md",
+  "llmRouter": "llms.txt",
+  "publicEntrypoint": "index.html",
+  "implementationChronology": "git-history",
+  "runtimeSurfaces": [
+    "index.html",
+    "app.js",
+    "src/",
+    "styles.css"
+  ],
+  "semantics": {
+    "artifact": "A readable Markdown record of some work, claim, decision, source boundary, evidence, policy, or continuation state.",
+    "provenance": "The visible trail around material: where it came from, what changed, what supports it, and what limits apply.",
+    "root": "The starting authority or boundary for a lineage.",
+    "parent": "The declared continuity edge that says what an artifact follows from.",
+    "origin": "Where the material came from or what grounds it.",
+    "transition": "How one artifact became the next.",
+    "policy": "Explicit boundaries around use, consent, attribution, interpretation, or continuation.",
+    "workspace": "A view over artifacts and sources, not the whole project."
+  },
+  "validationCommands": [
+    "node --check app.js",
+    "npm run build:public",
+    "npm run public:check",
+    "node --check .site-publish/tiinex.bundle.js",
+    "npm run metrics",
+    "npm run storage:scan"
+  ],
+  "notes": [
+    "This repo is one viewer implementation, not the whole Tiinex project.",
+    "AI and LLM workflows are use cases and pressure tests, not the identity boundary.",
+    "Keep runtime behavior in runtime files, not docs-only files."
+  ]
+}

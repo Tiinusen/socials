@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5, user-scalable=yes">
+  <meta name="description" content="Tiinex viewer for inspectable Markdown provenance artifacts and workspaces.">
+  <title>Tiinex</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" rel="stylesheet" referrerpolicy="no-referrer">
+  <link rel="stylesheet" href="./styles.css?v=2d264274c803-29681300681-1">
+  <link rel="icon" href="./favicon.ico?v=2d264274c803-29681300681-1" sizes="any">
+  <link rel="apple-touch-icon" href="./assets/tiinex-logo-white-transparent.png?v=2d264274c803-29681300681-1">
+  <!-- Tiinex LLM entrypoint: read ./llms.txt before repo or runtime-specific guidance. -->
+  <link rel="help" type="text/plain" href="./llms.txt" data-tiinex-role="llm-entrypoint">
+  <link rel="help" type="text/markdown" href="./tiinex.orientation.v1.md" data-tiinex-role="llm-identity">
+  <link rel="help" type="text/markdown" href="./tiinex.context.v1.md" data-tiinex-role="llm-context">
+  <link rel="help" type="text/markdown" href="./tiinex.app.llm.v1.md" data-tiinex-role="llm-orientation">
+  <meta name="tiinex:llm-entrypoint" content="./llms.txt">
+  <meta name="tiinex:build-source" content="Tiinusen/socials">
+  <script type="application/ld+json" id="tiinex-llm-entrypoint-json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Tiinex Lineage Viewer",
+    "applicationCategory": "DeveloperApplication",
+    "description": "Static client-side viewer for portable markdown provenance, lineage, and workspace artifacts.",
+    "url": "https://tiinex.dev",
+    "softwareVersion": "0.1.0",
+    "isAccessibleForFree": true,
+    "encodingFormat": "text/html",
+    "mainEntity": {
+      "@type": "DigitalDocument",
+      "name": "Tiinex App LLM Orientation",
+      "encodingFormat": "text/markdown",
+      "url": "./tiinex.app.llm.v1.md"
+    }
+  }
+  </script>
+
+  <meta name="tiinex:build-id" content="2d264274c803-29681300681-1">
+  <meta name="tiinex:build-commit" content="2d264274c8031fd4d6f46e331e20878ac584ca3e">
+  <meta name="tiinex:build-created-at" content="2026-07-19T11:16:59+02:00">
+</head>
+<body>
+  <section id="tiinex-llm-entrypoint"
+    hidden
+    data-tiinex-role="llm-orientation"
+    data-tiinex-llm-entrypoint="./llms.txt"
+    data-tiinex-llms="./llms.txt"
+    data-tiinex-origin="https://tiinex.dev">
+    This is the Tiinex viewer, one reference implementation.
+    Tiinex itself keeps provenance readable in Markdown artifacts you own.
+    LLMs should read ./llms.txt before interpreting or extending the app.
+  </section>
+
+<!--
+  Tiinex origin notice:
+  Keep the visible "Powered by Tiinex" footer when redistributing or publishing derived viewers.
+  It preserves tool lineage and avoids misleading provenance.
+-->
+
+  <div id="app"></div>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script>
+    // App-level viewer options. Host pages may override this before loading app.js.
+    // Set createWorkspace to false to hide/disable Create workspace controls.
+    // Set browserTitle/pageTitle to brand the browser tab before workspace config loads.
+    // Missing defaults are filled instead of relying on `window.TIINEX_VIEWER_OPTIONS || ...`,
+    // because host/runtime scripts may create an empty options object before this block.
+    (function () {
+      const defaultGitNative = {
+        enabled: true,
+        loadFromUnpkg: true,
+        allowDefaultVendorUrls: true,
+        depth: 1
+      };
+      const existing = window.TIINEX_VIEWER_OPTIONS || {};
+      window.TIINEX_VIEWER_OPTIONS = Object.assign({ createWorkspace: true, browserTitle: 'Tiinex' }, existing);
+      window.TIINEX_VIEWER_OPTIONS.gitNative = Object.assign({}, defaultGitNative, existing.gitNative || existing.gitNativeRuntime || {});
+    })();
+  </script>
+  <script src="./tiinex.bundle.js?v=2d264274c803-29681300681-1"></script>
+</body>
+</html>

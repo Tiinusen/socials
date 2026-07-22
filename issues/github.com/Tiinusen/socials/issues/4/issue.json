@@ -1,0 +1,26 @@
+{
+  "type": "tiinex.github.issue.snapshot.issue.v1",
+  "repository": "Tiinusen/socials",
+  "number": 4,
+  "id": 4920260816,
+  "node_id": "I_kwDOTa9HQs8AAAABJUU40A",
+  "html_url": "https://github.com/Tiinusen/socials/issues/4",
+  "title": "Metrology",
+  "state": "open",
+  "state_reason": "",
+  "locked": false,
+  "author_association": "OWNER",
+  "user": {
+    "login": "Tiinusen",
+    "id": 1564942,
+    "html_url": "https://github.com/Tiinusen"
+  },
+  "labels": [],
+  "assignees": [],
+  "created_at": "2026-07-18T22:14:31Z",
+  "updated_at": "2026-07-18T23:55:08Z",
+  "closed_at": "",
+  "comments": [],
+  "truncated_comments": false,
+  "body_path": "issue.md"
+}

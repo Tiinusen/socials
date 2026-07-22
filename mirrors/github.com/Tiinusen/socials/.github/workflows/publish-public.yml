@@ -1,0 +1,1190 @@
+name: Publish Public Branch
+
+on:
+  push:
+    branches-ignore:
+      - public
+  issues:
+    types: [opened, edited, deleted, closed, reopened, transferred]
+  issue_comment:
+    types: [created, edited, deleted]
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag, or commit to publish from
+        required: false
+        default: ""
+      extra_mirrors:
+        description: Optional additional repository mirrors, one per line; use owner/repo or repo = clone-url
+        required: false
+        default: ""
+      deploy_pages:
+        description: Optional direct GitHub Pages deploy override; false keeps branch publication only
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  publish:
+    concurrency:
+      group: publish-public-${{ github.repository }}-public-branch
+      cancel-in-progress: false
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'branch' && github.ref_name != 'public')
+    runs-on: ubuntu-latest
+    outputs:
+      pages_deploy_enabled: ${{ steps.settings.outputs.pages_deploy_enabled }}
+      publish_enabled: ${{ steps.settings.outputs.publish_enabled }}
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PAGES_CNAME: ${{ vars.PAGES_CNAME || '' }}
+      TIINEX_USE_SOURCE_CNAME: ${{ vars.TIINEX_USE_SOURCE_CNAME || '' }}
+      TIINEX_PUBLIC_STATIC_PATHS: ${{ vars.TIINEX_PUBLIC_STATIC_PATHS || '' }}
+      TIINEX_PUBLIC_REDIRECTS: ${{ vars.TIINEX_PUBLIC_REDIRECTS || '' }}
+      TIINEX_CANONICAL_SOURCE_REF: ${{ vars.TIINEX_CANONICAL_SOURCE_REF || '' }}
+      TIINEX_VIEWER_TITLE: ${{ vars.TIINEX_VIEWER_TITLE || '' }}
+      TIINEX_VIEWER_GIT_REPO: ${{ vars.TIINEX_VIEWER_GIT_REPO || '' }}
+      TIINEX_VIEWER_GIT_REF: ${{ vars.TIINEX_VIEWER_GIT_REF || '' }}
+      TIINEX_VIEWER_GIT_ROOTS: ${{ vars.TIINEX_VIEWER_GIT_ROOTS || '' }}
+      TIINEX_VIEWER_GIT_ENABLED: ${{ vars.TIINEX_VIEWER_GIT_ENABLED || '' }}
+      TIINEX_VIEWER_GIT_DEPTH: ${{ vars.TIINEX_VIEWER_GIT_DEPTH || '' }}
+      TIINEX_WORKSPACE_POINTER_PRIMARY: ${{ vars.TIINEX_WORKSPACE_POINTER_PRIMARY || secrets.TIINEX_WORKSPACE_POINTER_PRIMARY || '' }}
+      TIINEX_WORKSPACE_POINTER_SECONDARY: ${{ vars.TIINEX_WORKSPACE_POINTER_SECONDARY || secrets.TIINEX_WORKSPACE_POINTER_SECONDARY || '' }}
+      TIINEX_WORKSPACE_POINTERS: ${{ vars.TIINEX_WORKSPACE_POINTERS || secrets.TIINEX_WORKSPACE_POINTERS || '' }}
+      TIINEX_DEFAULT_WORKSPACE: ${{ vars.TIINEX_DEFAULT_WORKSPACE || '' }}
+      TIINEX_FALLBACK_WORKSPACE: ${{ vars.TIINEX_FALLBACK_WORKSPACE || '' }}
+      TIINEX_WORKSPACE_FALLBACKS: ${{ vars.TIINEX_WORKSPACE_FALLBACKS || '' }}
+      TIINEX_LOCAL_WORKSPACE_PATH: ${{ vars.TIINEX_LOCAL_WORKSPACE_PATH || '' }}
+      TIINEX_REPOSITORY_MIRRORS: ${{ vars.TIINEX_REPOSITORY_MIRRORS || secrets.TIINEX_REPOSITORY_MIRRORS || '' }}
+      TIINEX_WORKFLOW_REPOSITORY_MIRRORS: ${{ github.event.inputs.extra_mirrors || '' }}
+      TIINEX_WORKSPACE_REPOSITORY_MIRRORS: ${{ vars.TIINEX_WORKSPACE_REPOSITORY_MIRRORS || '' }}
+      TIINEX_GITMODULES_REPOSITORY_MIRRORS: ${{ vars.TIINEX_GITMODULES_REPOSITORY_MIRRORS || '' }}
+      TIINEX_PAGES_DEPLOY: ${{ vars.TIINEX_PAGES_DEPLOY || secrets.TIINEX_PAGES_DEPLOY || '' }}
+      TIINEX_WORKFLOW_PAGES_DEPLOY: ${{ github.event.inputs.deploy_pages || '' }}
+      TIINEX_PUBLISH_SOURCE_REF: ${{ vars.TIINEX_PUBLISH_SOURCE_REF || secrets.TIINEX_PUBLISH_SOURCE_REF || '' }}
+      TIINEX_ISSUE_SNAPSHOTS: ${{ vars.TIINEX_ISSUE_SNAPSHOTS || 'true' }}
+      TIINEX_ISSUE_SNAPSHOT_REPOSITORIES: ${{ vars.TIINEX_ISSUE_SNAPSHOT_REPOSITORIES || '' }}
+      TIINEX_ISSUE_SNAPSHOT_MAX_ISSUES: ${{ vars.TIINEX_ISSUE_SNAPSHOT_MAX_ISSUES || '' }}
+      TIINEX_ISSUE_SNAPSHOT_MAX_COMMENTS_PER_ISSUE: ${{ vars.TIINEX_ISSUE_SNAPSHOT_MAX_COMMENTS_PER_ISSUE || '' }}
+      TIINEX_ISSUE_PUBLISH_GRACE_SECONDS: ${{ vars.TIINEX_ISSUE_PUBLISH_GRACE_SECONDS || '120' }}
+
+    steps:
+      - name: Resolve source ref
+        id: settings
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source_ref="${{ github.event.inputs.source_ref }}"
+          pinned_source_ref="${TIINEX_PUBLISH_SOURCE_REF:-}"
+          canonical_source_ref="${TIINEX_CANONICAL_SOURCE_REF:-master}"
+          publish_enabled=true
+
+          list_publishable_branches() {
+            local repo_url auth_header
+            repo_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+            if [ -n "${GITHUB_TOKEN:-}" ]; then
+              auth_header="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+              git -c "http.${GITHUB_SERVER_URL}/.extraheader=AUTHORIZATION: basic $auth_header" \
+                ls-remote --heads "$repo_url" \
+                | awk '{print $2}' \
+                | sed 's#^refs/heads/##' \
+                | grep -v '^public$' \
+                | sort -u
+            else
+              git ls-remote --heads "$repo_url" \
+                | awk '{print $2}' \
+                | sed 's#^refs/heads/##' \
+                | grep -v '^public$' \
+                | sort -u
+            fi
+          }
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            if [ -n "$pinned_source_ref" ]; then
+              source_ref="$pinned_source_ref"
+              if [ "$GITHUB_REF_NAME" != "$pinned_source_ref" ]; then
+                publish_enabled=false
+                echo "Skipping publish for $GITHUB_REF_NAME because TIINEX_PUBLISH_SOURCE_REF is pinned to $pinned_source_ref."
+              fi
+            elif [ "$GITHUB_REPOSITORY" = "Tiinex/site" ]; then
+              source_ref="$canonical_source_ref"
+              if [ "$GITHUB_REF_NAME" != "$canonical_source_ref" ]; then
+                publish_enabled=false
+                echo "Skipping publish for $GITHUB_REF_NAME because Tiinex/site only auto-publishes $canonical_source_ref without an override."
+              fi
+            else
+              mapfile -t publishable_branches < <(list_publishable_branches || printf '%s\n' "$GITHUB_REF_NAME")
+              if [ "${#publishable_branches[@]}" -eq 1 ]; then
+                source_ref="${publishable_branches[0]}"
+                if [ "$GITHUB_REF_NAME" != "$source_ref" ]; then
+                  publish_enabled=false
+                  echo "Skipping publish for $GITHUB_REF_NAME because $source_ref is the only non-public branch."
+                fi
+              elif [ "${#publishable_branches[@]}" -gt 1 ] && [ "$GITHUB_REF_NAME" = "$canonical_source_ref" ]; then
+                source_ref="$GITHUB_REF_NAME"
+                publish_enabled=false
+                echo "Skipping $canonical_source_ref because other non-public working branches exist; push a working branch or set TIINEX_PUBLISH_SOURCE_REF."
+              else
+                source_ref="$GITHUB_REF_NAME"
+                echo "Publishing pushed working branch $source_ref because this fork has multiple non-public branches."
+              fi
+            fi
+          fi
+
+          if [ -z "$source_ref" ]; then
+            source_ref="$pinned_source_ref"
+          fi
+          if [ -z "$source_ref" ]; then
+            source_ref="$canonical_source_ref"
+          fi
+          if [ -z "$source_ref" ]; then
+            echo "Unable to resolve a source ref." >&2
+            exit 1
+          fi
+
+          pages_deploy="${TIINEX_WORKFLOW_PAGES_DEPLOY:-}"
+          if [ -z "$pages_deploy" ]; then
+            pages_deploy="${TIINEX_PAGES_DEPLOY:-auto}"
+          fi
+          case "${pages_deploy,,}" in
+            false|no|off|0|branch|branch-only) pages_deploy_enabled=false ;;
+            *) pages_deploy_enabled=true ;;
+          esac
+
+          echo "source_ref=$source_ref" >> "$GITHUB_OUTPUT"
+          echo "pages_deploy_enabled=$pages_deploy_enabled" >> "$GITHUB_OUTPUT"
+          echo "publish_enabled=$publish_enabled" >> "$GITHUB_OUTPUT"
+          if [ "$pages_deploy_enabled" = true ]; then
+            echo "Direct GitHub Pages deployment is enabled for this run."
+          else
+            echo "Direct GitHub Pages deployment is disabled; public branch publication remains enabled as the inspectable fallback."
+          fi
+          if [ "$publish_enabled" = true ]; then
+            echo "Publishing source ref: $source_ref"
+          else
+            echo "Publish disabled for this push; no public branch update will be attempted."
+          fi
+
+      - name: Publish not required
+        if: steps.settings.outputs.publish_enabled != 'true'
+        shell: bash
+        run: |
+          echo "::notice title=Publish not required::${GITHUB_REF_NAME} is intentionally not a publish source for this repository configuration."
+          echo "No public branch or GitHub Pages deployment was attempted."
+
+      - name: Check out source
+        if: steps.settings.outputs.publish_enabled == 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.settings.outputs.source_ref }}
+          fetch-depth: 0
+          submodules: false
+
+      - name: Detect publish mode
+        if: steps.settings.outputs.publish_enabled == 'true'
+        id: publish_mode
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          viewer_build=false
+          viewer_markers=false
+          viewer_script_markers=false
+          if [ -f app.js ]; then
+            viewer_markers=true
+          fi
+          if [ -f package.json ] && jq -e '.scripts["build:public"] or .scripts["public:check"] or .scripts.test' package.json >/dev/null; then
+            viewer_markers=true
+            viewer_script_markers=true
+          fi
+
+          # The publish workflow and tools directory are intentionally portable:
+          # docs/content repositories may copy them in order to publish static
+          # material, repository mirrors, and issue snapshots without carrying
+          # the viewer app itself. A tools/ directory alone is not a broken
+          # viewer marker.
+          if [ -f package.json ] && [ -f app.js ] && [ -f index.html ]; then
+            missing=()
+            [ -f tools/build-public.mjs ] || missing+=(tools/build-public.mjs)
+            [ -f tools/check-public-build.mjs ] || missing+=(tools/check-public-build.mjs)
+            if ! jq -e '.scripts["build:public"] and .scripts.test' package.json >/dev/null; then
+              missing+=(package.json:scripts.build:public/test)
+            fi
+            if [ "${#missing[@]}" -gt 0 ]; then
+              printf 'Viewer-like repository is missing required publish input(s): %s\n' "${missing[*]}" >&2
+              printf 'Either restore the viewer build tooling or remove the partial viewer app/package markers so the publisher can run as static lineage/mirror material.\n' >&2
+              exit 1
+            fi
+            viewer_build=true
+          elif [ "$viewer_markers" = true ] && { [ -f app.js ] || [ "$viewer_script_markers" = true ]; }; then
+            echo "Partial viewer app/package markers are present, but package.json + app.js + index.html are not all present." >&2
+            echo "Refusing to publish over a broken viewer branch. A repository with only .github/workflows plus tools/ is treated as static/mirror-capable." >&2
+            exit 1
+          fi
+
+          echo "viewer_build=$viewer_build" >> "$GITHUB_OUTPUT"
+          if [ "$viewer_build" = true ]; then
+            echo "mode=viewer-static-and-mirrors" >> "$GITHUB_OUTPUT"
+            echo "Publish mode: viewer plus optional static material plus repository mirrors"
+          else
+            echo "mode=static-and-mirrors" >> "$GITHUB_OUTPUT"
+            echo "Publish mode: static lineage material plus repository mirrors"
+          fi
+
+      - name: Set up Node.js
+        if: steps.settings.outputs.publish_enabled == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+
+      - name: Validate app syntax
+        if: steps.settings.outputs.publish_enabled == 'true' && steps.publish_mode.outputs.viewer_build == 'true'
+        run: node --check app.js
+
+      - name: Build public viewer
+        if: steps.settings.outputs.publish_enabled == 'true' && steps.publish_mode.outputs.viewer_build == 'true'
+        env:
+          SOURCE_REF: ${{ steps.settings.outputs.source_ref }}
+          TIINEX_BUILD_REPOSITORY: ${{ github.repository }}
+        run: npm run build:public
+
+      - name: Prepare non-viewer publish artifact
+        if: steps.settings.outputs.publish_enabled == 'true' && steps.publish_mode.outputs.viewer_build != 'true'
+        shell: bash
+        env:
+          SOURCE_REF: ${{ steps.settings.outputs.source_ref }}
+          TIINEX_BUILD_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          rm -rf .site-publish
+          mkdir -p .site-publish
+          touch .site-publish/.nojekyll
+          python3 - <<'PY'
+          import os
+          import shutil
+          from pathlib import Path
+
+          root = Path('.').resolve()
+          out = root / '.site-publish'
+          default_paths = [
+              'index.html', 'styles.css', 'robots.txt', 'favicon.ico', 'llms.txt',
+              'README.md', 'LICENSE', 'NOTICE', 'LINEAGE_POLICY.md',
+              'tiinex.app.llm.v1.md', 'tiinex.context.v1.md', 'tiinex.orientation.v1.md', 'tiinex.orientation.manifest.v1.json',
+              '.topics', 'assets'
+          ]
+          configured = os.environ.get('TIINEX_PUBLIC_STATIC_PATHS', '').strip()
+          paths = [item.strip() for chunk in configured.splitlines() for item in chunk.split(',') if item.strip()] if configured else default_paths
+          excluded_names = {'.git', '.mirrors', '.site-publish', 'node_modules'}
+
+          def safe_rel(value):
+              candidate = Path(value)
+              if candidate.is_absolute() or '..' in candidate.parts:
+                  raise SystemExit(f'Unsafe public static path: {value}')
+              return candidate
+
+          def ignore(dirpath, names):
+              return {name for name in names if name in excluded_names}
+
+          copied = []
+          for raw in paths:
+              rel = safe_rel(raw)
+              src = root / rel
+              if not src.exists():
+                  print(f'Skipping absent optional static publish source: {raw}')
+                  continue
+              dst = out / rel
+              if src.is_dir():
+                  shutil.rmtree(dst, ignore_errors=True)
+                  dst.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copytree(src, dst, ignore=ignore)
+              else:
+                  dst.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(src, dst)
+              copied.append(raw)
+          print('Static publish material:', ', '.join(copied) if copied else '(none)')
+
+          cname = os.environ.get('PAGES_CNAME', '').strip()
+          use_source_cname = os.environ.get('TIINEX_USE_SOURCE_CNAME', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+          source_cname = (root / 'CNAME').read_text(encoding='utf-8').strip() if use_source_cname and (root / 'CNAME').exists() else ''
+          cname = cname or source_cname
+          if cname:
+              (out / 'CNAME').write_text(cname + '\n', encoding='utf-8')
+
+          def html_escape(value):
+              return (value.replace('&', '&amp;')
+                           .replace('<', '&lt;')
+                           .replace('>', '&gt;')
+                           .replace('"', '&quot;'))
+
+          def parse_redirect(line):
+              line = str(line or '').strip()
+              if not line or line.startswith('#'):
+                  return None
+              for sep in ('=', '|'):
+                  if sep in line:
+                      left, right = [part.strip() for part in line.split(sep, 1)]
+                      break
+              else:
+                  parts = line.split(None, 1)
+                  if len(parts) != 2:
+                      raise SystemExit(f'Invalid TIINEX_PUBLIC_REDIRECTS line: {line}')
+                  left, right = parts[0].strip(), parts[1].strip()
+              target = right
+              rel = safe_rel(left.strip('/'))
+              if not str(rel) or str(rel) == '.':
+                  raise SystemExit(f'Redirect path must not target public root: {line}')
+              if not (target.startswith('https://') or target.startswith('http://')):
+                  raise SystemExit(f'Redirect target must be absolute HTTP(S): {line}')
+              return rel, target
+
+          redirects = os.environ.get('TIINEX_PUBLIC_REDIRECTS', '')
+          for line in redirects.splitlines():
+              parsed = parse_redirect(line)
+              if not parsed:
+                  continue
+              rel, target = parsed
+              redirect_dir = out / rel
+              if redirect_dir.exists() and not redirect_dir.is_dir():
+                  raise SystemExit(f'Redirect path collides with file: {rel}')
+              redirect_dir.mkdir(parents=True, exist_ok=True)
+              escaped = html_escape(target)
+              html = f'''<!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta http-equiv="refresh" content="0; url={escaped}">
+            <meta name="robots" content="noindex">
+            <link rel="canonical" href="{escaped}">
+            <title>Redirecting</title>
+          </head>
+          <body>
+            <p>Redirecting to <a href="{escaped}">{escaped}</a>.</p>
+          </body>
+          </html>
+          '''
+              (redirect_dir / 'index.html').write_text(html, encoding='utf-8')
+          PY
+
+      - name: Remove inherited custom domain from forks
+        if: steps.settings.outputs.publish_enabled == 'true' && steps.publish_mode.outputs.viewer_build == 'true' && github.event.repository.fork && vars.PAGES_CNAME == ''
+        shell: bash
+        run: rm -f .site-publish/CNAME
+
+      # Copyable mirror convention:
+      #   - the publishing repository is always emitted as its own mirror;
+      #   - configured repository variables/secrets or manual inputs may add
+      #     instance-owned mirrors without modifying source files;
+      #   - workspace artifacts may declare ## Repository Mirrors as an opt-in
+      #     compatibility input; .gitmodules mirrors are also opt-in;
+      #   - if no mirror configuration is provided, only the publishing repository
+      #     is mirrored and .mirrors is excluded from that snapshot;
+      #   - mirror sources are cloned from their current remote default branch;
+      #   - the superproject's recorded gitlink commit is intentionally not used;
+      #   - ordinary submodules outside .mirrors are ignored by this publisher.
+      - name: Build repository mirrors
+        if: steps.settings.outputs.publish_enabled == 'true'
+        shell: bash
+        env:
+          SOURCE_REF: ${{ steps.settings.outputs.source_ref }}
+        run: |
+          set -euo pipefail
+
+          export GIT_TERMINAL_PROMPT=0
+
+          mirror_root="$GITHUB_WORKSPACE/.site-publish/mirrors"
+          temp_root="$RUNNER_TEMP/tiinex-mirror-build"
+          rm -rf "$mirror_root" "$temp_root"
+          mkdir -p "$mirror_root" "$temp_root"
+          touch "$GITHUB_WORKSPACE/.site-publish/.nojekyll"
+          declare -A published_identities=()
+
+          normalize_remote_identity() {
+            local remote="$1"
+            local remainder host repository_path
+
+            remote="${remote%/}"
+            case "$remote" in
+              https://*|http://*|ssh://*)
+                remainder="${remote#*://}"
+                remainder="${remainder#*@}"
+                host="${remainder%%/*}"
+                repository_path="${remainder#*/}"
+                ;;
+              *@*:* )
+                host="${remote%%:*}"
+                host="${host#*@}"
+                repository_path="${remote#*:}"
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+
+            host="${host%%:*}"
+            repository_path="${repository_path#/}"
+            repository_path="${repository_path%.git}"
+            repository_path="${repository_path%/}"
+            [ -n "$host" ] && [ -n "$repository_path" ] || return 1
+            printf '%s/%s\n' "$host" "$repository_path"
+          }
+
+          write_metadata() {
+            local metadata_path="$1"
+            local repository_url="$2"
+            local ref="$3"
+            local commit="$4"
+            local archive_name="$5"
+            local directory_name="$6"
+            local sha256="$7"
+            local selection="$8"
+            local generated_at="$9"
+
+            jq -n \
+              --arg repository "$repository_url" \
+              --arg ref "$ref" \
+              --arg commit "$commit" \
+              --arg archive "$archive_name" \
+              --arg directory "$directory_name" \
+              --arg sha256 "$sha256" \
+              --arg selection "$selection" \
+              --arg generatedAt "$generated_at" \
+              '{
+                type: "tiinex.repository.snapshot",
+                version: 1,
+                repository: $repository,
+                ref: $ref,
+                commit: $commit,
+                directory: $directory,
+                archive: $archive,
+                sha256: $sha256,
+                selection: $selection,
+                generatedAt: $generatedAt
+              }' > "$metadata_path"
+          }
+
+          publish_snapshot() {
+            local repository_dir="$1"
+            local public_identity="$2"
+            local repository_url="$3"
+            local ref="$4"
+            local commit="$5"
+            local selection="$6"
+
+            local output_parent repository_name directory_path archive_path metadata_path
+            local archive_name directory_name sha256 generated_at
+
+            if [ -n "${published_identities[$public_identity]+x}" ]; then
+              echo "Duplicate mirror identity: $public_identity" >&2
+              exit 1
+            fi
+            published_identities["$public_identity"]=1
+
+            output_parent="$mirror_root/$(dirname "$public_identity")"
+            repository_name="$(basename "$public_identity")"
+            directory_name="$repository_name/"
+            archive_name="$repository_name.zip"
+            directory_path="$output_parent/$repository_name"
+            archive_path="$output_parent/$archive_name"
+            metadata_path="$output_parent/$repository_name.json"
+
+            rm -rf "$directory_path" "$archive_path" "$metadata_path"
+            mkdir -p "$directory_path" "$output_parent"
+
+            # Mirror inputs are not repository material. Exclude them from every
+            # root and submodule snapshot so mirrors cannot recursively embed
+            # their own transport sources. Git metadata is never in git archive.
+            git -C "$repository_dir" archive --format=tar "$commit" -- . \
+              ':(exclude).mirrors' \
+              ':(exclude).mirrors/**' \
+              | tar -xf - -C "$directory_path"
+
+            git -C "$repository_dir" archive --format=zip \
+              --output="$archive_path" \
+              "$commit" -- . \
+              ':(exclude).mirrors' \
+              ':(exclude).mirrors/**'
+
+            sha256="$(sha256sum "$archive_path" | awk '{print $1}')"
+            generated_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            write_metadata \
+              "$metadata_path" \
+              "$repository_url" \
+              "$ref" \
+              "$commit" \
+              "$archive_name" \
+              "$directory_name" \
+              "$sha256" \
+              "$selection" \
+              "$generated_at"
+
+            printf 'Published mirror %s @ %s\n' "$public_identity" "$commit"
+          }
+
+          publish_remote_mirror() {
+            local public_identity="$1"
+            local module_url="$2"
+            local declaration_source="$3"
+            local remote_identity clone_dir resolved_ref resolved_commit
+
+            if [ -z "$public_identity" ] || [ -z "$module_url" ]; then
+              echo "Mirror declaration from $declaration_source must include both identity/path and URL." >&2
+              exit 1
+            fi
+
+            case "/$public_identity/" in
+              */../*|*//*|*\\*)
+                echo "Unsafe mirror identity from $declaration_source: $public_identity" >&2
+                exit 1
+                ;;
+            esac
+
+            remote_identity="$(normalize_remote_identity "$module_url")" || {
+              echo "Mirror URL must be an absolute HTTP(S), SSH, or scp-style Git URL: $module_url" >&2
+              exit 1
+            }
+
+            if [ "$remote_identity" != "$public_identity" ]; then
+              echo "Mirror path does not match remote identity from $declaration_source:" >&2
+              echo "  path:   $public_identity" >&2
+              echo "  remote: $remote_identity" >&2
+              exit 1
+            fi
+
+            # Forks can inherit a mirror declaration that becomes a self-reference
+            # after the fork is renamed. The publishing repository is already emitted
+            # unconditionally as the root mirror, so cloning it again is redundant and
+            # can fail when the inherited gitlink belongs to the pre-fork repository.
+            if [ "$remote_identity" = "$root_identity" ]; then
+              printf 'Ignoring self mirror declaration: %s (root mirror already published)\n' "$public_identity"
+              return 0
+            fi
+
+            if [ -n "${published_identities[$public_identity]+x}" ]; then
+              printf 'Ignoring duplicate mirror declaration: %s (%s)\n' "$public_identity" "$declaration_source"
+              return 0
+            fi
+
+            clone_dir="$temp_root/$public_identity"
+            mkdir -p "$(dirname "$clone_dir")"
+            git clone --depth 1 --single-branch --no-tags "$module_url" "$clone_dir"
+
+            resolved_ref="$(git -C "$clone_dir" symbolic-ref --quiet --short HEAD)"
+            resolved_commit="$(git -C "$clone_dir" rev-parse HEAD)"
+
+            publish_snapshot \
+              "$clone_dir" \
+              "$public_identity" \
+              "$module_url" \
+              "$resolved_ref" \
+              "$resolved_commit" \
+              "remote-default-branch"
+          }
+
+          emit_workspace_mirror_sources() {
+            python3 - <<'PY'
+          import os
+          import re
+          import sys
+          from urllib.parse import urlparse
+          
+          ROOT = '.topics'
+          
+          def strip_inline(value):
+              value = str(value or '').strip()
+              link = re.fullmatch(r'\[([^\]]+)\]\(([^)]+)\)', value)
+              if link:
+                  return link.group(2).strip()
+              return value.strip('`').strip()
+          
+          def repo_identity(value):
+              raw = strip_inline(value).rstrip('/')
+              if not raw:
+                  return ''
+              if re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?', raw):
+                  return 'github.com/' + re.sub(r'\.git$', '', raw, flags=re.I)
+              scp = re.fullmatch(r'[^@\s]+@([^:\s]+):(.+)', raw)
+              if scp:
+                  host = scp.group(1).split(':', 1)[0].lower()
+                  path = re.sub(r'\.git$', '', scp.group(2).strip('/'), flags=re.I)
+                  return f'{host}/{path}' if host and path else ''
+              parsed = urlparse(raw)
+              if parsed.scheme in {'http', 'https', 'ssh'} and parsed.hostname:
+                  path = re.sub(r'\.git$', '', parsed.path.strip('/'), flags=re.I)
+                  return f'{parsed.hostname.lower()}/{path}' if path else ''
+              return ''
+          
+          def enabled(value):
+              return str(value or '').strip().lower() not in {'false', 'no', 'off', 'disabled', '0'}
+          
+          def workspace_files():
+              if not os.path.isdir(ROOT):
+                  return []
+              matches = []
+              for dirpath, dirnames, filenames in os.walk(ROOT):
+                  dirnames[:] = [d for d in dirnames if d not in {'.git', '.mirrors', 'node_modules'}]
+                  for filename in filenames:
+                      if filename.endswith('.workspace.md'):
+                          matches.append(os.path.join(dirpath, filename))
+              return sorted(matches)
+          
+          def emit(file_path, title, fields, start_line):
+              if not fields:
+                  return
+              if not enabled(fields.get('enabled', '')):
+                  return
+              repository = fields.get('repository', '')
+              url = fields.get('url', '')
+              if not repository and not url:
+                  return
+              if not repository or not url:
+                  print(f'{file_path}:{start_line}: Repository Mirrors entries require Repository and URL.', file=sys.stderr)
+                  sys.exit(1)
+              identity = repo_identity(repository)
+              if not identity:
+                  print(f'{file_path}:{start_line}: Could not resolve mirror repository identity: {repository}', file=sys.stderr)
+                  sys.exit(1)
+              source = f'{file_path}#{title}'.replace('\t', ' ')
+              print(f'{identity}\t{strip_inline(url)}\t{source}')
+          
+          for file_path in workspace_files():
+              try:
+                  lines = open(file_path, encoding='utf-8').read().splitlines()
+              except UnicodeDecodeError:
+                  continue
+              in_section = False
+              title = ''
+              fields = {}
+              start_line = 0
+              for line_number, line in enumerate(lines, 1):
+                  h2 = re.match(r'^##\s+(.+?)\s*$', line)
+                  if h2:
+                      if in_section:
+                          emit(file_path, title, fields, start_line)
+                      in_section = h2.group(1).strip().lower() == 'repository mirrors'
+                      title = ''
+                      fields = {}
+                      start_line = 0
+                      continue
+                  if not in_section:
+                      continue
+                  h3 = re.match(r'^###\s+(.+?)\s*$', line)
+                  if h3:
+                      emit(file_path, title, fields, start_line)
+                      title = h3.group(1).strip()
+                      fields = {}
+                      start_line = line_number
+                      continue
+                  field = re.match(r'^-\s*([^:]+):\s*(.*)$', line)
+                  if field and title:
+                      key = field.group(1).strip().lower()
+                      fields[key] = field.group(2).strip()
+              if in_section:
+                  emit(file_path, title, fields, start_line)
+          PY
+          }
+
+          emit_configured_mirror_sources() {
+            python3 - <<'PY'
+          import os
+          import re
+          import sys
+          from urllib.parse import urlparse
+
+          def strip_inline(value):
+              value = str(value or '').strip()
+              link = re.fullmatch(r'\[([^\]]+)\]\(([^)]+)\)', value)
+              if link:
+                  return link.group(2).strip()
+              return value.strip('`').strip()
+
+          def repo_identity(value):
+              raw = strip_inline(value).rstrip('/')
+              if not raw:
+                  return ''
+              if re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?', raw):
+                  return 'github.com/' + re.sub(r'\.git$', '', raw, flags=re.I)
+              if re.fullmatch(r'github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?', raw, flags=re.I):
+                  return re.sub(r'\.git$', '', raw, flags=re.I)
+              scp = re.fullmatch(r'[^@\s]+@([^:\s]+):(.+)', raw)
+              if scp:
+                  host = scp.group(1).split(':', 1)[0].lower()
+                  path = re.sub(r'\.git$', '', scp.group(2).strip('/'), flags=re.I)
+                  return f'{host}/{path}' if host and path else ''
+              parsed = urlparse(raw)
+              if parsed.scheme in {'http', 'https', 'ssh'} and parsed.hostname:
+                  path = re.sub(r'\.git$', '', parsed.path.strip('/'), flags=re.I)
+                  return f'{parsed.hostname.lower()}/{path}' if path else ''
+              return ''
+
+          def default_url(identity, original):
+              raw = strip_inline(original)
+              parsed = urlparse(raw)
+              if parsed.scheme in {'http', 'https', 'ssh'} and parsed.hostname:
+                  return raw
+              if raw.startswith('git@'):
+                  return raw
+              if identity.startswith('github.com/'):
+                  return 'https://' + identity + '.git'
+              return raw
+
+          def parse_line(line, source, line_number):
+              line = str(line or '').strip()
+              if not line or line.startswith('#'):
+                  return
+              for sep in ('=', '|'):
+                  if sep in line:
+                      left, right = [part.strip() for part in line.split(sep, 1)]
+                      break
+              else:
+                  parts = line.split()
+                  if len(parts) >= 2:
+                      left, right = parts[0], parts[1]
+                  else:
+                      left, right = line, ''
+              identity = repo_identity(left)
+              if not identity:
+                  print(f'{source}:{line_number}: Could not resolve configured mirror identity: {left}', file=sys.stderr)
+                  sys.exit(1)
+              url = strip_inline(right) if right else default_url(identity, left)
+              if not url:
+                  print(f'{source}:{line_number}: Configured mirror needs a clone URL for non-GitHub identity: {left}', file=sys.stderr)
+                  sys.exit(1)
+              print(f'{identity}\t{url}\t{source}:{line_number}')
+
+          configured = '\n'.join([
+              os.environ.get('TIINEX_REPOSITORY_MIRRORS', ''),
+              os.environ.get('TIINEX_WORKFLOW_REPOSITORY_MIRRORS', '')
+          ])
+          for line_number, line in enumerate(configured.splitlines(), 1):
+              parse_line(line, 'github-actions-variable:TIINEX_REPOSITORY_MIRRORS', line_number)
+          PY
+          }
+
+          server_host="${GITHUB_SERVER_URL#*://}"
+          server_host="${server_host%%/*}"
+          server_host="${server_host%%:*}"
+          root_identity="$server_host/$GITHUB_REPOSITORY"
+          root_commit="$(git rev-parse HEAD)"
+          root_repository_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+
+          # Root publication is unconditional. .mirrors and .gitmodules are
+          # optional inputs for additional repositories, never prerequisites.
+          publish_snapshot \
+            "$GITHUB_WORKSPACE" \
+            "$root_identity" \
+            "$root_repository_url" \
+            "$SOURCE_REF" \
+            "$root_commit" \
+            "source-ref"
+
+          while IFS=$'	' read -r public_identity module_url declaration_source; do
+            [ -n "$public_identity" ] || continue
+            publish_remote_mirror "$public_identity" "$module_url" "$declaration_source"
+          done < <(emit_configured_mirror_sources)
+
+          workspace_mirrors_enabled="${TIINEX_WORKSPACE_REPOSITORY_MIRRORS:-}"
+          case "${workspace_mirrors_enabled,,}" in
+            true|yes|on|1)
+              while IFS=$'	' read -r public_identity module_url declaration_source; do
+                [ -n "$public_identity" ] || continue
+                publish_remote_mirror "$public_identity" "$module_url" "$declaration_source"
+              done < <(emit_workspace_mirror_sources)
+              ;;
+            *)
+              echo "Workspace Repository Mirrors are disabled; set TIINEX_WORKSPACE_REPOSITORY_MIRRORS=true to include them."
+              ;;
+          esac
+
+          gitmodules_mirrors_enabled="${TIINEX_GITMODULES_REPOSITORY_MIRRORS:-}"
+          case "${gitmodules_mirrors_enabled,,}" in
+            true|yes|on|1)
+              if [ -f .gitmodules ]; then
+                while IFS= read -r path_key; do
+                  [ -n "$path_key" ] || continue
+
+                  module_name="${path_key#submodule.}"
+                  module_name="${module_name%.path}"
+                  module_path="$(git config -f .gitmodules --get "$path_key")"
+
+                  case "$module_path" in
+                    .mirrors/*) ;;
+                    *)
+                      printf 'Ignoring non-mirror submodule: %s\n' "$module_path"
+                      continue
+                      ;;
+                  esac
+
+                  module_url="$(git config -f .gitmodules --get "submodule.$module_name.url")"
+                  public_identity="${module_path#.mirrors/}"
+                  publish_remote_mirror "$public_identity" "$module_url" ".gitmodules:$module_path"
+                done < <(git config -f .gitmodules --name-only --get-regexp '^submodule\..*\.path$' || true)
+              fi
+              ;;
+            *)
+              echo "Gitmodules mirror compatibility input is disabled; set TIINEX_GITMODULES_REPOSITORY_MIRRORS=true to include it."
+              ;;
+          esac
+
+          echo "Repository mirror output:"
+          for public_identity in "${!published_identities[@]}"; do
+            printf '%s\n'               "$mirror_root/$public_identity.json"               "$mirror_root/$public_identity.zip"
+          done | sort
+
+      - name: Build hosted issue snapshots
+        if: steps.settings.outputs.publish_enabled == 'true'
+        env:
+          SOURCE_REF: ${{ steps.settings.outputs.source_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f tools/build-issue-snapshots.mjs ]; then
+            node tools/build-issue-snapshots.mjs --out .site-publish
+          elif [ -f package.json ] && jq -e '.scripts["issues:snapshot"]' package.json >/dev/null; then
+            npm run issues:snapshot -- --out .site-publish
+          else
+            echo "Issue snapshot tooling is unavailable; skipping hosted issue snapshots for this repository." >&2
+          fi
+
+      - name: Write issue publication state
+        if: steps.settings.outputs.publish_enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f tools/write-issue-publish-state.mjs ]; then
+            node tools/write-issue-publish-state.mjs --out .site-publish --mode full-publish --cooldown ${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}
+          elif [ -f package.json ] && jq -e '.scripts["issues:state"]' package.json >/dev/null; then
+            npm run issues:state -- --out .site-publish --mode full-publish --cooldown ${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}
+          else
+            echo "Issue publish state tooling is unavailable; continuing without .tiinex/issue-publish-state.json." >&2
+          fi
+
+      - name: Sanitize public deploy root
+        if: steps.settings.outputs.publish_enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Source-side mirror declarations are build inputs, not deploy-root material.
+          # Keep repository copies under mirrors/... intact, but never expose root-level
+          # Git submodule metadata that can make GitHub Pages recurse into source gitlinks.
+          rm -rf .site-publish/.mirrors
+          rm -f .site-publish/.gitmodules
+
+          if [ -e .site-publish/.mirrors ] || [ -e .site-publish/.gitmodules ]; then
+            echo "Public deploy root still contains source mirror declarations." >&2
+            exit 1
+          fi
+
+      - name: Validate repository mirrors
+        if: steps.settings.outputs.publish_enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mirror_root="$GITHUB_WORKSPACE/.site-publish/mirrors"
+          server_host="${GITHUB_SERVER_URL#*://}"
+          server_host="${server_host%%/*}"
+          server_host="${server_host%%:*}"
+          root_metadata="$mirror_root/$server_host/$GITHUB_REPOSITORY.json"
+
+          if [ ! -f "$root_metadata" ]; then
+            echo "Publishing repository mirror is missing: $root_metadata" >&2
+            exit 1
+          fi
+
+          mapfile -t metadata_files < <(
+            while IFS= read -r metadata_path; do
+              stem="$(basename "$metadata_path" .json)"
+              parent="$(dirname "$metadata_path")"
+              if [ -f "$parent/$stem.zip" ] && [ -d "$parent/$stem" ]; then
+                printf '%s\n' "$metadata_path"
+              fi
+            done < <(find "$mirror_root" -type f -name '*.json' | sort)
+          )
+          if [ "${#metadata_files[@]}" -eq 0 ]; then
+            echo "No repository mirror metadata was produced." >&2
+            exit 1
+          fi
+
+          validation_root="$RUNNER_TEMP/tiinex-mirror-validation"
+          rm -rf "$validation_root"
+          mkdir -p "$validation_root"
+
+          for metadata_path in "${metadata_files[@]}"; do
+            jq -e '
+              .type == "tiinex.repository.snapshot"
+              and .version == 1
+              and (.repository | type == "string" and length > 0)
+              and (.ref | type == "string" and length > 0)
+              and (.commit | type == "string" and test("^[0-9a-fA-F]{40}$"))
+              and (.archive | type == "string" and length > 0)
+              and (.directory | type == "string" and length > 0)
+              and (.sha256 | type == "string" and test("^[0-9a-fA-F]{64}$"))
+              and (.selection == "source-ref" or .selection == "remote-default-branch")
+            ' "$metadata_path" >/dev/null
+
+            stem="$(basename "$metadata_path" .json)"
+            parent="$(dirname "$metadata_path")"
+            archive_name="$(jq -r '.archive' "$metadata_path")"
+            directory_name="$(jq -r '.directory' "$metadata_path")"
+            expected_sha256="$(jq -r '.sha256' "$metadata_path")"
+
+            if [ "$archive_name" != "$stem.zip" ] || [ "$directory_name" != "$stem/" ]; then
+              echo "Mirror metadata names do not match $stem: $metadata_path" >&2
+              exit 1
+            fi
+
+            archive_path="$parent/$archive_name"
+            directory_path="$parent/${directory_name%/}"
+            [ -f "$archive_path" ] || { echo "Missing mirror archive: $archive_path" >&2; exit 1; }
+            [ -d "$directory_path" ] || { echo "Missing mirror directory: $directory_path" >&2; exit 1; }
+
+            actual_sha256="$(sha256sum "$archive_path" | awk '{print $1}')"
+            if [ "$actual_sha256" != "$expected_sha256" ]; then
+              echo "Mirror checksum mismatch: $archive_path" >&2
+              exit 1
+            fi
+
+            unzip -tqq "$archive_path"
+            if unzip -Z1 "$archive_path" | grep -Eq '(^|/)\.git(/|$)|(^|/)\.mirrors(/|$)'; then
+              echo "Mirror archive contains excluded Git or mirror input material: $archive_path" >&2
+              exit 1
+            fi
+
+            archive_list="$validation_root/$stem.archive.txt"
+            directory_list="$validation_root/$stem.directory.txt"
+            unzip -Z1 "$archive_path" | sed '/\/$/d' | sort > "$archive_list"
+            (
+              cd "$directory_path"
+              find . \( -type f -o -type l \) -printf '%P\n' | sort
+            ) > "$directory_list"
+            if ! diff -u "$directory_list" "$archive_list"; then
+              echo "Mirror directory and archive differ: $metadata_path" >&2
+              exit 1
+            fi
+          done
+
+          printf 'Validated %s repository mirror(s).\n' "${#metadata_files[@]}"
+
+      - name: Check public viewer artifact
+        if: steps.settings.outputs.publish_enabled == 'true' && steps.publish_mode.outputs.viewer_build == 'true'
+        run: |
+          npm test
+          node --check .site-publish/tiinex.bundle.js
+          npm run metrics
+          npm run storage:scan
+
+      - name: Publish public branch
+        if: steps.settings.outputs.publish_enabled == 'true'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: .site-publish
+          publish_branch: public
+          force_orphan: true
+          commit_message: >-
+            Publish public branch from ${{ steps.settings.outputs.source_ref }} @ ${{ github.sha }}
+
+      - name: Configure GitHub Pages
+        if: steps.settings.outputs.publish_enabled == 'true' && steps.settings.outputs.pages_deploy_enabled == 'true'
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        if: steps.settings.outputs.publish_enabled == 'true' && steps.settings.outputs.pages_deploy_enabled == 'true'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: .site-publish
+
+  sync-issues:
+    if: github.event_name == 'issues' || github.event_name == 'issue_comment'
+    concurrency:
+      group: publish-public-${{ github.repository }}-public-branch
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    outputs:
+      pages_deploy_enabled: ${{ steps.issue_settings.outputs.pages_deploy_enabled }}
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PAGES_CNAME: ${{ vars.PAGES_CNAME || '' }}
+      TIINEX_PAGES_DEPLOY: ${{ vars.TIINEX_PAGES_DEPLOY || secrets.TIINEX_PAGES_DEPLOY || '' }}
+      TIINEX_ISSUE_SNAPSHOTS: ${{ vars.TIINEX_ISSUE_SNAPSHOTS || 'true' }}
+      TIINEX_ISSUE_SNAPSHOT_REPOSITORIES: ${{ vars.TIINEX_ISSUE_SNAPSHOT_REPOSITORIES || '' }}
+      TIINEX_ISSUE_SNAPSHOT_MAX_ISSUES: ${{ vars.TIINEX_ISSUE_SNAPSHOT_MAX_ISSUES || '' }}
+      TIINEX_ISSUE_SNAPSHOT_MAX_COMMENTS_PER_ISSUE: ${{ vars.TIINEX_ISSUE_SNAPSHOT_MAX_COMMENTS_PER_ISSUE || '' }}
+      TIINEX_ISSUE_PUBLISH_GRACE_SECONDS: ${{ vars.TIINEX_ISSUE_PUBLISH_GRACE_SECONDS || '120' }}
+    steps:
+      - name: Issue snapshot settings
+        id: issue_settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          pages_deploy="${TIINEX_PAGES_DEPLOY:-auto}"
+          case "${pages_deploy,,}" in
+            false|no|off|0|branch|branch-only) pages_deploy_enabled=false ;;
+            *) pages_deploy_enabled=true ;;
+          esac
+          echo "pages_deploy_enabled=$pages_deploy_enabled" >> "$GITHUB_OUTPUT"
+          echo "Issue snapshot publish is rate-limited/coalesced over ${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}s; it publishes immediately when cooldown has elapsed."
+
+      - name: Check out source tooling
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+
+      - name: Restore current public branch artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .site-publish
+          mkdir -p .site-publish
+          if git fetch origin public:refs/remotes/origin/public; then
+            git archive --format=tar origin/public | tar -xf - -C .site-publish
+          else
+            echo "No public branch exists yet; creating a minimal issue snapshot artifact."
+            touch .site-publish/.nojekyll
+          fi
+
+      - name: Coalesce issue snapshot publish
+        id: issue_coalesce
+        shell: bash
+        run: |
+          set -euo pipefail
+          cooldown="${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}"
+          case "$cooldown" in ''|*[!0-9]*) cooldown=120 ;; esac
+          if [ "$cooldown" -gt 600 ]; then cooldown=600; fi
+          state_file=".site-publish/.tiinex/issue-publish-state.json"
+          now_epoch="$(date -u +%s)"
+          last_published=""
+          last_epoch=0
+          if [ -f "$state_file" ]; then
+            last_published="$(node -e "const fs=require('fs'); const p=process.argv[1]; try { const s=JSON.parse(fs.readFileSync(p,'utf8')); process.stdout.write(String(s.last_published_at||'')); } catch (_) {}" "$state_file")"
+            if [ -n "$last_published" ]; then
+              last_epoch="$(node -e "const t=Date.parse(process.argv[1]||''); process.stdout.write(Number.isFinite(t) ? String(Math.floor(t/1000)) : '0');" "$last_published")"
+            fi
+          fi
+          elapsed=$(( now_epoch - last_epoch ))
+          if [ "$last_epoch" -eq 0 ]; then elapsed=$cooldown; fi
+          remaining=$(( cooldown - elapsed ))
+          if [ "$remaining" -lt 0 ]; then remaining=0; fi
+          generation="${GITHUB_RUN_ID:-manual}.${GITHUB_RUN_ATTEMPT:-1}"
+          echo "last_published=${last_published:-never}"
+          echo "cooldown_seconds=$cooldown"
+          echo "cooldown_remaining=$remaining"
+          echo "pending_generation=$generation"
+          echo "snapshot_generation=$generation"
+          echo "follow-up required: no; GitHub concurrency keeps the newest pending issue run queued if more events arrive while this one publishes."
+          echo "cooldown_remaining=$remaining" >> "$GITHUB_OUTPUT"
+          echo "pending_generation=$generation" >> "$GITHUB_OUTPUT"
+          if [ "$remaining" -gt 0 ]; then
+            echo "Waiting only the remaining cooldown (${remaining}s); newer events do not reset this timer."
+            sleep "$remaining"
+          else
+            echo "Cooldown elapsed; publishing issue snapshot immediately."
+          fi
+
+      - name: Build hosted issue snapshots
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f tools/build-issue-snapshots.mjs ]; then
+            node tools/build-issue-snapshots.mjs --out .site-publish
+          elif [ -f package.json ] && jq -e '.scripts["issues:snapshot"]' package.json >/dev/null; then
+            npm run issues:snapshot -- --out .site-publish
+          else
+            echo "Issue snapshot tooling is unavailable; skipping hosted issue snapshots for this repository." >&2
+          fi
+
+      - name: Write public issue publish identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f tools/write-public-build-identity.mjs ]; then
+            node tools/write-public-build-identity.mjs --out .site-publish --reason issue-sync
+          elif [ -f package.json ] && jq -e '.scripts["public:identity"]' package.json >/dev/null; then
+            npm run public:identity -- --out .site-publish --reason issue-sync
+          else
+            mkdir -p .site-publish
+            node -e "const fs=require('fs'),path=require('path');const out='.site-publish';const now=new Date().toISOString();const id=[process.env.GITHUB_SHA||'source',process.env.GITHUB_RUN_ID||now,process.env.GITHUB_RUN_ATTEMPT||'1'].join('-').replace(/[^A-Za-z0-9_.-]+/g,'-');fs.writeFileSync(path.join(out,'tiinex.build.json'),JSON.stringify({type:'tiinex.public.build.identity.v1',version:1,reason:'issue-sync',generatedAt:now,repository:process.env.GITHUB_REPOSITORY||'',commitSha:process.env.GITHUB_SHA||'',runId:process.env.GITHUB_RUN_ID||'',runAttempt:process.env.GITHUB_RUN_ATTEMPT||'',buildId:id,releaseCacheKey:id},null,2)+'\n');"
+          fi
+
+      - name: Write issue publication state
+        env:
+          GITHUB_EVENT_ACTION: ${{ github.event.action || '' }}
+          TIINEX_ISSUE_EVENT_NUMBER: ${{ github.event.issue.number || '' }}
+          TIINEX_ISSUE_COMMENT_ID: ${{ github.event.comment.id || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f tools/write-issue-publish-state.mjs ]; then
+            node tools/write-issue-publish-state.mjs --out .site-publish --mode issue-sync --cooldown ${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}
+          elif [ -f package.json ] && jq -e '.scripts["issues:state"]' package.json >/dev/null; then
+            npm run issues:state -- --out .site-publish --mode issue-sync --cooldown ${TIINEX_ISSUE_PUBLISH_GRACE_SECONDS:-120}
+          else
+            echo "Issue publish state tooling is unavailable; continuing without .tiinex/issue-publish-state.json." >&2
+          fi
+
+      - name: Validate hosted issue snapshots
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f .site-publish/issues/manifest.json ]; then
+            echo "No hosted issue snapshot manifest was produced. If this repository has issues disabled or TIINEX_ISSUE_SNAPSHOTS=false this is expected; otherwise copy tools/build-issue-snapshots.mjs with the workflow." >&2
+            exit 1
+          fi
+          if [ -f tools/build-issue-snapshots.mjs ]; then
+            node --check tools/build-issue-snapshots.mjs
+          fi
+
+      - name: Publish public branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: .site-publish
+          publish_branch: public
+          force_orphan: true
+          commit_message: >-
+            Publish issue snapshots after ${{ github.event_name }} #${{ github.event.issue.number || '' }} @ ${{ github.sha }}
+
+      - name: Configure GitHub Pages
+        if: steps.issue_settings.outputs.pages_deploy_enabled == 'true'
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        if: steps.issue_settings.outputs.pages_deploy_enabled == 'true'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: .site-publish
+
+  deploy-issues-pages:
+    needs: sync-issues
+    if: needs.sync-issues.outputs.pages_deploy_enabled == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.pages_deployment.outputs.page_url }}
+    steps:
+      - name: Deploy issue snapshot update to GitHub Pages
+        id: pages_deployment
+        uses: actions/deploy-pages@v4
+
+  deploy-pages:
+    needs: publish
+    if: needs.publish.outputs.publish_enabled == 'true' && needs.publish.outputs.pages_deploy_enabled == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.pages_deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: pages_deployment
+        uses: actions/deploy-pages@v4

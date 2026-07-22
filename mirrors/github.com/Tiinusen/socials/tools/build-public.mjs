@@ -1,0 +1,356 @@
+#!/usr/bin/env node
+import { fileURLToPath } from 'node:url';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+import { basename, dirname, isAbsolute, join } from 'node:path';
+
+const root = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '');
+const scriptOrder = Object.freeze([
+  'src/app/core-runtime.js',
+  'src/app/services-runtime.js',
+  'src/app/git-native-runtime.js',
+  'src/app/state-runtime.js',
+  'src/app/ui-runtime.js',
+  'src/app/viewstate-runtime.js',
+]);
+
+function argValue(name, fallback) {
+  const index = process.argv.indexOf(name);
+  if (index === -1) return fallback;
+  return process.argv[index + 1] || fallback;
+}
+
+function path(...parts) {
+  return join(root, ...parts);
+}
+
+function read(pathname) {
+  return readFileSync(path(pathname), 'utf8');
+}
+
+function ensureParent(filePath) {
+  mkdirSync(dirname(filePath), { recursive: true });
+}
+
+function copyPath(source, outDir, target = source) {
+  const from = path(source);
+  const to = join(outDir, target);
+  if (!existsSync(from)) throw new Error(`Missing publish source: ${source}`);
+  rmSync(to, { recursive: true, force: true });
+  ensureParent(to);
+  cpSync(from, to, { recursive: true });
+}
+
+function copyPathIfExists(source, outDir, target = source) {
+  if (!existsSync(path(source))) {
+    console.log(`Skipping absent optional publish source: ${source}`);
+    return false;
+  }
+  copyPath(source, outDir, target);
+  return true;
+}
+
+function envValue(name, fallback = '') {
+  return String(process.env[name] || fallback || '').trim();
+}
+
+function envList(name, fallback = []) {
+  const raw = envValue(name);
+  if (!raw) return fallback;
+  return raw.split(/[\n,]+/u).map((item) => item.trim()).filter(Boolean);
+}
+
+function truthyEnv(name) {
+  return /^(1|true|yes|on)$/iu.test(envValue(name));
+}
+
+function gitOutput(command, fallback = '') {
+  try {
+    return String(execSync(command, { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] }) || '').trim() || fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function safeBuildToken(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[^a-z0-9._-]+/giu, '-')
+    .replace(/^-+|-+$/gu, '')
+    .slice(0, 80);
+}
+
+function buildMetadata(buildSource) {
+  const commitSha = envValue('TIINEX_BUILD_COMMIT_SHA')
+    || envValue('GITHUB_SHA')
+    || gitOutput('git rev-parse HEAD');
+  const commitCreatedAt = envValue('TIINEX_BUILD_COMMIT_CREATED_AT')
+    || envValue('TIINEX_BUILD_COMMIT_DATE')
+    || (commitSha ? gitOutput(`git show -s --format=%cI ${commitSha}`) : gitOutput('git show -s --format=%cI HEAD'));
+  const builtAt = envValue('TIINEX_BUILD_TIME') || new Date().toISOString();
+  const shortSha = commitSha ? commitSha.slice(0, 12) : '';
+  const runId = envValue('GITHUB_RUN_ID');
+  const runAttempt = envValue('GITHUB_RUN_ATTEMPT');
+  const runKey = [runId, runAttempt].filter(Boolean).join('-');
+  // A public build can legitimately republish updated mirror/issue snapshot
+  // material from the same source commit. If the browser asset token and
+  // runtime release key only use the commit SHA, users can keep an old bundle
+  // with an old cache identity after a publish. Prefer the Actions run identity
+  // when available, and fall back to builtAt locally, so every public publish is
+  // an explicit cache boundary while still keeping the source commit visible.
+  const defaultBuildId = runKey
+    ? [shortSha || 'build', runKey].filter(Boolean).join('-')
+    : [shortSha || 'local', builtAt].filter(Boolean).join('-');
+  const buildId = safeBuildToken(envValue('TIINEX_BUILD_ID') || defaultBuildId);
+  const releaseCacheKey = safeBuildToken(envValue('TIINEX_RELEASE_CACHE_KEY') || `${buildSource || 'local'}-${commitSha || 'no-commit'}-${runKey || builtAt}`);
+  return {
+    repository: buildSource,
+    commitSha,
+    commitCreatedAt,
+    builtAt,
+    runId,
+    runAttempt,
+    buildId,
+    releaseCacheKey
+  };
+}
+
+
+function writeJsonFile(filePath, value) {
+  ensureParent(filePath);
+  writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+function publicBuildIdentity(buildMeta = {}, reason = 'viewer-build') {
+  const generatedAt = new Date().toISOString();
+  return {
+    type: 'tiinex.public.build.identity.v1',
+    version: 1,
+    reason,
+    generatedAt,
+    repository: buildMeta.repository || envValue('TIINEX_BUILD_REPOSITORY') || envValue('GITHUB_REPOSITORY') || '',
+    commitSha: buildMeta.commitSha || '',
+    commitCreatedAt: buildMeta.commitCreatedAt || '',
+    builtAt: buildMeta.builtAt || generatedAt,
+    runId: buildMeta.runId || envValue('GITHUB_RUN_ID'),
+    runAttempt: buildMeta.runAttempt || envValue('GITHUB_RUN_ATTEMPT'),
+    buildId: buildMeta.buildId || '',
+    releaseCacheKey: buildMeta.releaseCacheKey || buildMeta.buildId || buildMeta.commitSha || generatedAt
+  };
+}
+
+function writePublicBuildIdentity(outDir, buildMeta = {}, reason = 'viewer-build') {
+  const identity = publicBuildIdentity(buildMeta, reason);
+  writeJsonFile(join(outDir, 'tiinex.build.json'), identity);
+  return identity;
+}
+
+function cacheBustLocalAssets(html, token) {
+  const value = safeBuildToken(token);
+  if (!value) return html;
+  return String(html || '')
+    .replace(/(href=["']\.\/(?:styles\.css|favicon\.ico|assets\/tiinex-logo-white-transparent\.png))(["'])/gu, `$1?v=${value}$2`)
+    .replace(/(src=["']\.\/(?:tiinex\.bundle\.js|app\.js))(["'])/gu, `$1?v=${value}$2`);
+}
+
+function defaultRepositoryName() {
+  const repo = envValue('GITHUB_REPOSITORY') || envValue('TIINEX_BUILD_REPOSITORY');
+  return repo.split('/').filter(Boolean).slice(-1)[0] || 'Tiinex';
+}
+
+function workspaceBootstrapCandidatesFromEnv() {
+  const candidates = [];
+  const add = (kind, value, role, label) => {
+    const url = String(value || '').trim();
+    if (!url) return;
+    const candidate = { kind, role, label: label || role, source: `env:${role}` };
+    if (kind === 'local-path') candidate.path = url;
+    else candidate.url = url;
+    candidates.push(candidate);
+  };
+
+  add('github-issue-pointer', envValue('TIINEX_WORKSPACE_POINTER_PRIMARY'), 'primary', 'Primary workspace pointer');
+  add('github-issue-pointer', envValue('TIINEX_WORKSPACE_POINTER_SECONDARY'), 'secondary', 'Secondary workspace pointer');
+  envList('TIINEX_WORKSPACE_POINTERS').forEach((value, index) => {
+    add('github-issue-pointer', value, `pointer-${index + 1}`, `Workspace pointer ${index + 1}`);
+  });
+
+  add('workspace-url', envValue('TIINEX_DEFAULT_WORKSPACE'), 'default-workspace', 'Default workspace');
+  add('workspace-url', envValue('TIINEX_FALLBACK_WORKSPACE'), 'fallback-workspace', 'Fallback workspace');
+  envList('TIINEX_WORKSPACE_FALLBACKS').forEach((value, index) => {
+    add('workspace-url', value, `fallback-${index + 1}`, `Workspace fallback ${index + 1}`);
+  });
+
+  add('local-path', envValue('TIINEX_LOCAL_WORKSPACE_PATH'), 'local-packaged-workspace', 'Packaged workspace');
+  return candidates;
+}
+
+function writeOptionalCname(out) {
+  const envCname = envValue('PAGES_CNAME');
+  const sourceCname = truthyEnv('TIINEX_USE_SOURCE_CNAME') && existsSync(path('CNAME')) ? readFileSync(path('CNAME'), 'utf8').trim() : '';
+  const cname = envCname || sourceCname;
+  if (cname) writeFileSync(join(out, 'CNAME'), `${cname}\n`, 'utf8');
+  return Boolean(cname);
+}
+
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/gu, '&amp;')
+    .replace(/</gu, '&lt;')
+    .replace(/>/gu, '&gt;')
+    .replace(/"/gu, '&quot;');
+}
+
+function parseRedirectLine(line) {
+  const raw = String(line || '').trim();
+  if (!raw || raw.startsWith('#')) return null;
+  let left = '';
+  let right = '';
+  for (const separator of ['=', '|']) {
+    if (raw.includes(separator)) {
+      [left, right] = raw.split(separator, 2).map((part) => part.trim());
+      break;
+    }
+  }
+  if (!left && !right) {
+    const parts = raw.split(/\s+/u);
+    if (parts.length < 2) throw new Error(`Invalid TIINEX_PUBLIC_REDIRECTS line: ${raw}`);
+    left = parts.shift();
+    right = parts.join(' ');
+  }
+  const target = String(right || '').trim();
+  const route = String(left || '').trim().replace(/^\/+|\/+$/gu, '');
+  if (!route || route === '.') throw new Error(`Redirect path must not target public root: ${raw}`);
+  if (route.split('/').includes('..')) throw new Error(`Unsafe redirect path: ${raw}`);
+  if (!/^https?:\/\//iu.test(target)) throw new Error(`Redirect target must be absolute HTTP(S): ${raw}`);
+  return { route, target };
+}
+
+function writePublicRedirects(out) {
+  const redirects = envValue('TIINEX_PUBLIC_REDIRECTS');
+  if (!redirects) return 0;
+  let count = 0;
+  for (const line of redirects.split(/\n/u)) {
+    const redirect = parseRedirectLine(line);
+    if (!redirect) continue;
+    const redirectDir = join(out, redirect.route);
+    const escaped = escapeHtml(redirect.target);
+    mkdirSync(redirectDir, { recursive: true });
+    writeFileSync(join(redirectDir, 'index.html'), `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="0; url=${escaped}">
+  <meta name="robots" content="noindex">
+  <link rel="canonical" href="${escaped}">
+  <title>Redirecting</title>
+</head>
+<body>
+  <p>Redirecting to <a href="${escaped}">${escaped}</a>.</p>
+</body>
+</html>
+`, 'utf8');
+    count += 1;
+  }
+  return count;
+}
+
+function stripLocalScripts(html) {
+  let output = html;
+  for (const script of scriptOrder) {
+    const escaped = script.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    output = output.replace(new RegExp(`\\n?\\s*<script\\s+src=["']\\./${escaped}["']><\\/script>`, 'u'), '');
+  }
+  output = output.replace(/\n?\s*<script>\s*\/\/ App-level viewer options[\s\S]*?window\.TIINEX_VIEWER_OPTIONS = window\.TIINEX_VIEWER_OPTIONS \|\| \{[\s\S]*?createWorkspace: true[\s\S]*?\};\s*<\/script>/u, '');
+  output = output.replace(/\n?\s*<script\s+src=["']\.\/app\.js["']><\/script>/u, '\n  <script src="./tiinex.bundle.js"></script>');
+  return output;
+}
+
+function bundleSource(buildMeta = {}) {
+  const parts = [];
+  for (const script of scriptOrder) {
+    parts.push(`\n;/* ---- ${script} ---- */\n`);
+    parts.push(read(script));
+    parts.push('\n');
+  }
+  const repository = envValue('TIINEX_VIEWER_GIT_REPO') || envValue('GITHUB_REPOSITORY');
+  const ref = envValue('TIINEX_VIEWER_GIT_REF') || envValue('SOURCE_REF') || envValue('GITHUB_REF_NAME');
+  const rootPaths = envList('TIINEX_VIEWER_GIT_ROOTS', ['.topics']);
+  const browserTitle = envValue('TIINEX_VIEWER_TITLE') || defaultRepositoryName();
+  const gitNative = {
+    enabled: envValue('TIINEX_VIEWER_GIT_ENABLED', repository ? 'true' : 'false') !== 'false',
+    loadFromUnpkg: true,
+    allowDefaultVendorUrls: true,
+    depth: Number(envValue('TIINEX_VIEWER_GIT_DEPTH', '1')) || 1
+  };
+  if (repository) gitNative.repo = repository;
+  if (ref) gitNative.ref = ref;
+  if (rootPaths.length) gitNative.rootPaths = rootPaths;
+  const buildSource = envValue('TIINEX_BUILD_REPOSITORY') || envValue('GITHUB_REPOSITORY') || buildMeta.repository || 'local';
+  const workspaceCandidates = workspaceBootstrapCandidatesFromEnv();
+  const options = {
+    createWorkspace: true,
+    browserTitle,
+    buildIdentity: Object.assign({
+      repository: buildSource,
+      channel: envValue('TIINEX_BUILD_CHANNEL', 'source'),
+      builtFor: envValue('TIINEX_BUILD_LABEL', `${buildSource} public build`),
+      publicBuildOutputExcluded: true
+    }, buildMeta || {})
+  };
+  parts.push(`
+;/* ---- viewer options ---- */
+`);
+  parts.push(`(function () {
+  const defaultGitNative = ${JSON.stringify(gitNative, null, 2)};
+  const workspaceCandidates = ${JSON.stringify(workspaceCandidates, null, 2)};
+  const existing = window.TIINEX_VIEWER_OPTIONS || {};
+  window.TIINEX_VIEWER_OPTIONS = Object.assign(${JSON.stringify(options, null, 2)}, existing);
+  window.TIINEX_VIEWER_OPTIONS.gitNative = Object.assign({}, defaultGitNative, existing.gitNative || existing.gitNativeRuntime || {});
+  const existingWorkspace = window.TiinexWorkspace || window.tiinexWorkspace || window.TIINEX_WORKSPACE || {};
+  if (workspaceCandidates.length) {
+    const existingCandidates = Array.isArray(existingWorkspace.candidates) ? existingWorkspace.candidates : [];
+    window.TiinexWorkspace = Object.assign({}, existingWorkspace, { candidates: workspaceCandidates.concat(existingCandidates) });
+  }
+})();
+`);
+  parts.push(`\n;/* ---- app.js ---- */\n`);
+  parts.push(read('app.js'));
+  parts.push('\n');
+  return parts.join('');
+}
+
+function main() {
+  const outArg = argValue('--out', '.site-publish');
+  const out = isAbsolute(outArg) ? outArg : path(outArg);
+
+  rmSync(out, { recursive: true, force: true });
+  mkdirSync(out, { recursive: true });
+
+  const buildSource = envValue('TIINEX_BUILD_REPOSITORY') || envValue('GITHUB_REPOSITORY') || 'local';
+  const buildMeta = buildMetadata(buildSource);
+  let publicIndex = stripLocalScripts(read('index.html'));
+  publicIndex = publicIndex.replace(/(<meta name=["']tiinex:build-source["'] content=["'])[^"']*(["']>)/u, `$1${buildSource}$2`);
+  publicIndex = publicIndex.replace('</head>', `  <meta name="tiinex:build-id" content="${escapeHtml(buildMeta.buildId || '')}">\n  <meta name="tiinex:build-commit" content="${escapeHtml(buildMeta.commitSha || '')}">\n  <meta name="tiinex:build-created-at" content="${escapeHtml(buildMeta.commitCreatedAt || buildMeta.builtAt || '')}">\n</head>`);
+  publicIndex = cacheBustLocalAssets(publicIndex, buildMeta.buildId || buildMeta.commitSha || buildMeta.builtAt);
+  writeFileSync(join(out, 'index.html'), publicIndex, 'utf8');
+  writeFileSync(join(out, 'tiinex.bundle.js'), bundleSource(buildMeta), 'utf8');
+  writePublicBuildIdentity(out, buildMeta, 'viewer-build');
+
+  for (const file of ['styles.css', 'llms.txt', 'tiinex.app.llm.v1.md', 'tiinex.context.v1.md', 'tiinex.orientation.v1.md', 'tiinex.orientation.manifest.v1.json', 'robots.txt', 'favicon.ico']) {
+    copyPathIfExists(file, out);
+  }
+  for (const dir of ['assets', '.topics']) {
+    copyPathIfExists(dir, out);
+  }
+
+  writeFileSync(join(out, '.nojekyll'), '', 'utf8');
+  writeOptionalCname(out);
+  const redirectCount = writePublicRedirects(out);
+  if (redirectCount) console.log(`Generated ${redirectCount} public redirect(s).`);
+
+  console.log(`Built public site: ${basename(out)}`);
+}
+
+main();

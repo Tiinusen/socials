@@ -1,0 +1,24 @@
+# Tiinex/site LLM Router
+
+Read files in this order:
+
+1. Read `tiinex.orientation.v1.md` for Tiinex identity.
+2. Read `tiinex.context.v1.md` for bounded repo context.
+3. Read `README.md` for this repo.
+4. Read `tiinex.app.llm.v1.md` for viewer/runtime guidance.
+5. Use the current source, validation output, and Git history for implementation status.
+
+Important boundary:
+
+- `Tiinex/site` is the Tiinex viewer and one reference implementation.
+- Tiinex itself keeps provenance readable in Markdown artifacts you own.
+- Do not treat CP-specific release notes as the definition of the repo or the project.
+- Do not describe Tiinex as an AI runtime unless a specific current artifact implements that behavior.
+
+Runtime cautions:
+
+- Inspect actual app files before making claims about runtime behavior.
+- Keep Parent and Origin separate.
+- Do not guess local or draft material is GitHub-backed source.
+- Workspace files are entrypoints when opened as workspaces.
+- Use nearest `LINEAGE_POLICY.md` or `LINEAGE_LICENSE.md` when loaded material provides one.

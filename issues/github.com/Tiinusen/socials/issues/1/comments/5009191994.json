@@ -1,0 +1,17 @@
+{
+  "type": "tiinex.github.issue.snapshot.comment.v1",
+  "repository": "Tiinusen/socials",
+  "issue_number": 1,
+  "id": 5009191994,
+  "node_id": "IC_kwDOTa9HQs8AAAABKpI0Og",
+  "html_url": "https://github.com/Tiinusen/socials/issues/1#issuecomment-5009191994",
+  "user": {
+    "login": "Tiinusen",
+    "id": 1564942,
+    "html_url": "https://github.com/Tiinusen"
+  },
+  "author_association": "OWNER",
+  "created_at": "2026-07-18T01:31:02Z",
+  "updated_at": "2026-07-19T00:41:12Z",
+  "body_path": "5009191994.md"
+}

@@ -1,0 +1,17 @@
+{
+  "type": "tiinex.github.issues.snapshot",
+  "version": 1,
+  "repository": "https://github.com/Tiinusen/socials",
+  "repo": "Tiinusen/socials",
+  "identity": "github.com/Tiinusen/socials",
+  "directory": "socials/",
+  "manifest": "socials/manifest.json",
+  "archive": "",
+  "sha256": "",
+  "generatedAt": "2026-07-22T15:03:47.621Z",
+  "sourceUpdatedAt": "2026-07-22T15:03:33Z",
+  "issueCount": 4,
+  "commentCount": 5,
+  "truncatedIssues": false,
+  "publicationCommit": "1445d97f7fafa529baf1ce964a3dcf25e2cb80b2"
+}

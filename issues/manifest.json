@@ -1,0 +1,13 @@
+{
+  "type": "tiinex.github.issues.snapshot.index.v1",
+  "generatedAt": "2026-07-22T15:03:48.942Z",
+  "repositories": [
+    {
+      "repo": "Tiinusen/socials",
+      "metadata": "github.com/Tiinusen/socials.json",
+      "issueCount": 4,
+      "commentCount": 5,
+      "sourceUpdatedAt": "2026-07-22T15:03:33Z"
+    }
+  ]
+}

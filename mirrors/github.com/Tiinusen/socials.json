@@ -1,0 +1,12 @@
+{
+  "type": "tiinex.repository.snapshot",
+  "version": 1,
+  "repository": "https://github.com/Tiinusen/socials.git",
+  "ref": "personal",
+  "commit": "2d264274c8031fd4d6f46e331e20878ac584ca3e",
+  "directory": "socials/",
+  "archive": "socials.zip",
+  "sha256": "8ce6b0a91a590aaf136656775dda0a8b343a31b955e6caad794686e3280f83e9",
+  "selection": "source-ref",
+  "generatedAt": "2026-07-19T09:17:20Z"
+}

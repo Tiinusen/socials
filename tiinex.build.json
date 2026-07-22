@@ -1,0 +1,15 @@
+{
+  "type": "tiinex.public.build.identity.v1",
+  "version": 1,
+  "reason": "issue-sync",
+  "generatedAt": "2026-07-22T15:03:48.995Z",
+  "repository": "Tiinusen/socials",
+  "commitSha": "1445d97f7fafa529baf1ce964a3dcf25e2cb80b2",
+  "commitCreatedAt": "2026-07-19T11:16:59+02:00",
+  "builtAt": "2026-07-19T09:17:20.391Z",
+  "runId": "29931563329",
+  "runAttempt": "1",
+  "buildId": "2d264274c803-29681300681-1",
+  "releaseCacheKey": "issue-sync-Tiinusen-socials-1445d97f7faf-29931563329-1",
+  "previousReleaseCacheKey": "issue-sync-Tiinusen-socials-1445d97f7faf-29931356381-1"
+}

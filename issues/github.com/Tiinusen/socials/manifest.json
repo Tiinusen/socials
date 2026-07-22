@@ -1,0 +1,51 @@
+{
+  "type": "tiinex.github.issues.snapshot.manifest.v1",
+  "repository": "Tiinusen/socials",
+  "generatedAt": "2026-07-22T15:03:47.621Z",
+  "sourceUpdatedAt": "2026-07-22T15:03:33Z",
+  "issueCount": 4,
+  "commentCount": 5,
+  "truncatedIssues": false,
+  "issues": [
+    {
+      "number": 1,
+      "title": "Tiinusphere",
+      "state": "open",
+      "updated_at": "2026-07-19T00:41:12Z",
+      "issue": "issues/1/issue.json",
+      "body": "issues/1/issue.md",
+      "comment_count": 1,
+      "truncated_comments": false
+    },
+    {
+      "number": 2,
+      "title": "Welcome",
+      "state": "open",
+      "updated_at": "2026-07-18T00:28:15Z",
+      "issue": "issues/2/issue.json",
+      "body": "issues/2/issue.md",
+      "comment_count": 0,
+      "truncated_comments": false
+    },
+    {
+      "number": 3,
+      "title": "FS25 Markaryd",
+      "state": "open",
+      "updated_at": "2026-07-22T15:03:33Z",
+      "issue": "issues/3/issue.json",
+      "body": "issues/3/issue.md",
+      "comment_count": 4,
+      "truncated_comments": false
+    },
+    {
+      "number": 4,
+      "title": "Metrology",
+      "state": "open",
+      "updated_at": "2026-07-18T23:55:08Z",
+      "issue": "issues/4/issue.json",
+      "body": "issues/4/issue.md",
+      "comment_count": 0,
+      "truncated_comments": false
+    }
+  ]
+}

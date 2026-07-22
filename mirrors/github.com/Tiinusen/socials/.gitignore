@@ -1,0 +1,16 @@
+# Local development noise
+.DS_Store
+Thumbs.db
+[Dd]esktop.ini
+*.log
+*.tmp
+*.bak
+
+# Local package artifacts
+*.zip
+node_modules/
+.site-publish/
+.tmp-public-check/
+
+# Local mirror worktrees are source/build inputs, not published source state
+.mirrors/

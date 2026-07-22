@@ -1,0 +1,32 @@
+{
+  "type": "tiinex.issue.publication.state.v1",
+  "version": 1,
+  "mode": "issue-sync",
+  "last_published_at": "2026-07-22T15:03:49.045Z",
+  "cooldown_seconds": 120,
+  "pending_generation": "29931563329.1",
+  "published_generation": "29931563329.1",
+  "snapshot_generation": "2026-07-22T15:03:48.942Z",
+  "snapshot_source_updated_at": "2026-07-22T15:03:33Z",
+  "repository_count": 1,
+  "repositories": [
+    {
+      "repo": "Tiinusen/socials",
+      "sourceUpdatedAt": "2026-07-22T15:03:33Z",
+      "issueCount": 4,
+      "commentCount": 5
+    }
+  ],
+  "event": {
+    "name": "issue_comment",
+    "action": "deleted",
+    "issue": "3",
+    "comment": "5047802711"
+  },
+  "previous": {
+    "last_published_at": "2026-07-22T15:01:08.344Z",
+    "published_generation": "29931356381.1",
+    "snapshot_source_updated_at": "2026-07-22T15:00:52Z"
+  },
+  "follow_up_required": false
+}

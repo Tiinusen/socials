@@ -1,0 +1,20 @@
+{
+  "name": "tiinex-lineage-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Static client-side viewer for portable Tiinex markdown lineage and provenance workspaces.",
+  "scripts": {
+    "validate": "node tools/validate-static.mjs",
+    "test": "node tools/validate-static.mjs && node tools/check-public-build.mjs",
+    "metrics": "node tools/collect-metrics.mjs",
+    "storage:scan": "node tools/inspect-storage.mjs",
+    "build:public": "node tools/build-public.mjs",
+    "public:check": "node tools/check-public-build.mjs",
+    "issues:snapshot": "node tools/build-issue-snapshots.mjs",
+    "public:identity": "node tools/write-public-build-identity.mjs",
+    "issues:state": "node tools/write-issue-publish-state.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
